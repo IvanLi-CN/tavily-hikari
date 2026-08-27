@@ -738,10 +738,12 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
         .expect("claim representative")
         .expect("representative is claimed");
 
+    // Candidate selection uses the recent and backlog lanes, then key hydration.
+    // Interrupt the following BillingHydrate preflight before any remote request.
     proxy
         .key_store
         .sqlite_runtime
-        .force_next_cooperative_query_deadline_for_test();
+        .force_cooperative_query_deadline_after_reads_for_test(3);
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             "http://127.0.0.1:9",
@@ -807,6 +809,131 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
     .await
     .expect("read queued representative");
     assert_eq!(representatives, (1, now + 30));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 27, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-research-read-deadline"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.rebalance_mcp_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("keep the source row out of main reconciliation work");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject,
+            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        "#,
+    )
+    .bind("research-deadline-token")
+    .bind("research-deadline-key")
+    .bind("2026-08-27/R0")
+    .bind("research-deadline-project")
+    .bind("token:research-deadline-token")
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed research source usage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        "#,
+    )
+    .bind("research-deadline-request")
+    .bind("research-deadline-token")
+    .bind("research-deadline-key")
+    .bind("2026-08-27/R0")
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due research candidate");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+
+    // The empty recent/backlog lanes use the first two source sessions. The
+    // due research query is the next source read and must defer, not turn the
+    // claimed representative into a scheduler error.
+    proxy
+        .key_store
+        .sqlite_runtime
+        .force_cooperative_query_deadline_after_reads_for_test(2);
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("research source deadline becomes a typed defer");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "projection_read_budget",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+    let research: (Option<i64>, i64) = sqlx::query_as(
+        "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research WHERE request_id = 'research-deadline-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged research candidate");
+    assert_eq!(
+        research,
+        (None, 0),
+        "deadline must not mutate research work"
+    );
+    let persisted = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "projection_read_budget",
+            now + 30,
+        )
+        .await
+        .expect("persist the claim-fenced continuation");
+    assert!(
+        persisted.created || persisted.promoted,
+        "the research deadline retains one representative"
+    );
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

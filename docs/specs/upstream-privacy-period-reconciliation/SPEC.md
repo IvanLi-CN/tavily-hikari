@@ -105,7 +105,9 @@
   short control operations. Its own `SQLITE_INTERRUPT` is `projection_read_budget`: it stops later
   preparation and remote work, starts no merge transaction, advances no cursor, and leaves one
   claim-fenced delayed representative after 30 seconds. The handler must be removed before pool
-  return; uncertainty closes the physical connection.
+  return; uncertainty closes the physical connection. Billed-credit hydrate is the pre-request
+  source-read gate; after an observation, settlement reads current ledger state through a bounded
+  finalization connection so charges recorded during HTTP are not missed.
 - The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
   projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
   Manual work keeps priority; an automatic reconciliation representative eligible for 120 seconds

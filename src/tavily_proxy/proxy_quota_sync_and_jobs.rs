@@ -1168,6 +1168,30 @@ impl TavilyProxy {
                 }
             }
         };
+        if !preparation_budget_exhausted && !candidates.is_empty() {
+            let remaining = candidate_hydration_deadline
+                .saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+            }
+            match self
+                .key_store
+                .reconciliation_local_billed_credits_batch(&candidates)
+                .await
+            {
+                Ok(_) => {}
+                Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                    return Ok(ReconciliationEngine::deferred(
+                        self,
+                        "projection_read_budget",
+                    ));
+                }
+                Err(err) if is_transient_sqlite_write_error(&err) => {
+                    return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+                }
+                Err(err) => return Err(err),
+            }
+        }
         preparation_budget_exhausted |= std::time::Instant::now() >= candidate_hydration_deadline;
         tracing::debug!(
             component = "reconciliation",
@@ -1530,96 +1554,29 @@ impl TavilyProxy {
                 observed_candidates.push((candidate, upstream_usage, in_recent_lane, work_generation));
             }
 
-            // Billing can become charged while the remote request is in flight. Re-read
-            // all observed candidates in one batch immediately before settlement so the
-            // persisted adjustment uses the post-observation ledger state without
-            // reintroducing a per-candidate hydration query.
+            // Billing can become charged while the remote request is in flight. The
+            // source-phase batch above proves that BillingHydrate fits its native
+            // deadline before any HTTP starts. Re-read each observed candidate here
+            // through the bounded finalization connection so settlement uses the
+            // post-observation ledger state without a post-request source deadline.
             if !observed_candidates.is_empty() {
-                let observed = observed_candidates
-                    .iter()
-                    .map(|(candidate, _, _, _)| candidate.clone())
-                    .collect::<Vec<_>>();
-                let remaining = finalization_deadline
-                    .saturating_duration_since(std::time::Instant::now());
-                let fresh_local_billed_by_candidate = if remaining.is_zero() {
-                    budget_exhausted = true;
-                    None
-                } else {
-                    Some(
-                        self.key_store
-                            .reconciliation_local_billed_credits_batch(&observed)
-                            .await?,
-                    )
-                };
                 // A later remote request may exhaust the main budget after an earlier
                 // request has already succeeded. Do not let that later timeout discard
                 // observations that still fit the bounded finalization window.
-                if let Some(fresh_local_billed_by_candidate) = fresh_local_billed_by_candidate {
-                    for (candidate, upstream_usage, in_recent_lane, work_generation) in observed_candidates {
-                        let remaining = finalization_deadline
-                            .saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() {
-                            budget_exhausted = true;
-                            break;
-                        }
-                        let local_billed = fresh_local_billed_by_candidate
-                            .get(&(candidate.token_id.clone(), candidate.period_code.clone()))
-                            .copied()
-                            .unwrap_or(0);
-                        let settlement_result = if candidate.settlement_mode == "shadow" {
-                            self.key_store
-                                .settle_upstream_reconciliation_shadow(
-                                    &candidate,
-                                    upstream_usage,
-                                    local_billed,
-                                    Some(ReconciliationWorkFence {
-                                        work_generation,
-                                        claimed_job,
-                                    }),
-                                )
-                                .await
-                        } else {
-                            self.key_store
-                                .settle_upstream_reconciliation(
-                                    &candidate,
-                                    upstream_usage,
-                                    local_billed,
-                                    Some(ReconciliationWorkFence {
-                                        work_generation,
-                                        claimed_job,
-                                    }),
-                                )
-                                .await
-                        };
-                        let did_settle = match settlement_result {
-                            Ok(did_settle) => did_settle,
-                            Err(error) => {
-                                ReconciliationEngine::pause_active_settlement_integrity_failure(
-                                    self,
-                                    &candidate.settlement_mode,
-                                    &error,
-                                )
-                                .await?;
-                                return Err(error);
-                            }
-                        };
-                        if did_settle {
-                            completed += 1;
-                            if upstream_usage == local_billed {
-                                no_adjustment += 1;
-                            } else if candidate.settlement_mode == "shadow" {
-                                observed_terminal += 1;
-                            } else {
-                                settled += 1;
-                                if in_recent_lane {
-                                    settled_recent += 1;
-                                } else {
-                                    settled_backlog += 1;
-                                }
-                            }
-                        }
-                    }
-                }
+                let finalization = ReconciliationEngine::finalize_observed_candidates(
+                    self,
+                    observed_candidates,
+                    finalization_deadline,
+                    claimed_job,
+                )
+                .await?;
+                settled += finalization.settled;
+                completed += finalization.completed;
+                no_adjustment += finalization.no_adjustment;
+                observed_terminal += finalization.observed;
+                settled_recent += finalization.settled_recent;
+                settled_backlog += finalization.settled_backlog;
+                budget_exhausted |= finalization.budget_exhausted;
             }
             Ok::<ReconciliationRunResult, ProxyError>(ReconciliationRunResult {
                 settled,
@@ -1704,6 +1661,12 @@ impl TavilyProxy {
                         claim_generation,
                     );
                     return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
+                }
+                Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                    return Ok(ReconciliationEngine::deferred(
+                        self,
+                        "projection_read_budget",
+                    ));
                 }
                 Err(err) if is_transient_sqlite_write_error(&err) => {
                     research_local_pressure = true;
@@ -2124,7 +2087,7 @@ impl TavilyProxy {
                         research_ms,
                         reconciliation_source_read_ms = reconciliation_read_metrics.cooperative_read_elapsed_ms,
                         reconciliation_source_read_deadline_count = reconciliation_read_metrics.cooperative_read_deadlines,
-                        reconciliation_source_connection_cache_write_pages = %if reconciliation_read_metrics.connection_cache_write_sampled
+                        reconciliation_operation_connection_cache_write_pages = %if reconciliation_read_metrics.connection_cache_write_sampled
                             && !reconciliation_read_metrics.connection_cache_write_sample_failed
                         {
                             reconciliation_read_metrics.connection_cache_write_pages.to_string()

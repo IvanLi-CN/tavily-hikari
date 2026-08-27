@@ -33,6 +33,16 @@ struct ReconciliationRunResult {
     remote_ms: i64,
 }
 
+struct ReconciliationFinalizationResult {
+    settled: i64,
+    completed: i64,
+    no_adjustment: i64,
+    observed: i64,
+    settled_recent: i64,
+    settled_backlog: i64,
+    budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum ClaimedReconciliationRunOutcome {
@@ -135,6 +145,89 @@ impl ReconciliationEngine {
                 if message.contains("reconciliation post-processing deadline exceeded")
                     || message.contains("reconciliation retry bookkeeping deadline exceeded")
         )
+    }
+
+    async fn finalize_observed_candidates(
+        proxy: &TavilyProxy,
+        observed_candidates: Vec<(UpstreamReconciliationCandidate, i64, bool, i64)>,
+        finalization_deadline: std::time::Instant,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<ReconciliationFinalizationResult, ProxyError> {
+        let mut result = ReconciliationFinalizationResult {
+            settled: 0,
+            completed: 0,
+            no_adjustment: 0,
+            observed: 0,
+            settled_recent: 0,
+            settled_backlog: 0,
+            budget_exhausted: false,
+        };
+        for (candidate, upstream_usage, in_recent_lane, work_generation) in observed_candidates {
+            if finalization_deadline <= std::time::Instant::now() {
+                result.budget_exhausted = true;
+                break;
+            }
+            let local_billed = proxy
+                .key_store
+                .reconciliation_local_billed_credits_for_finalization(&candidate)
+                .await?;
+            let settlement_result = if candidate.settlement_mode == "shadow" {
+                proxy
+                    .key_store
+                    .settle_upstream_reconciliation_shadow(
+                        &candidate,
+                        upstream_usage,
+                        local_billed,
+                        Some(ReconciliationWorkFence {
+                            work_generation,
+                            claimed_job,
+                        }),
+                    )
+                    .await
+            } else {
+                proxy
+                    .key_store
+                    .settle_upstream_reconciliation(
+                        &candidate,
+                        upstream_usage,
+                        local_billed,
+                        Some(ReconciliationWorkFence {
+                            work_generation,
+                            claimed_job,
+                        }),
+                    )
+                    .await
+            };
+            let did_settle = match settlement_result {
+                Ok(did_settle) => did_settle,
+                Err(error) => {
+                    Self::pause_active_settlement_integrity_failure(
+                        proxy,
+                        &candidate.settlement_mode,
+                        &error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            if !did_settle {
+                continue;
+            }
+            result.completed += 1;
+            if upstream_usage == local_billed {
+                result.no_adjustment += 1;
+            } else if candidate.settlement_mode == "shadow" {
+                result.observed += 1;
+            } else {
+                result.settled += 1;
+                if in_recent_lane {
+                    result.settled_recent += 1;
+                } else {
+                    result.settled_backlog += 1;
+                }
+            }
+        }
+        Ok(result)
     }
 
     async fn run_claimed(

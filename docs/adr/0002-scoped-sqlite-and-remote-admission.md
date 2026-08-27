@@ -25,6 +25,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   Research candidates, and historical projection pages each use a connection-local SQLite progress
   handler. It checks a fixed 250ms deadline every 1,000 virtual-machine operations and maps its own
   interrupt to a typed `projection_read_budget` deferred outcome.
+- The billed-credit hydrate is a pre-request availability gate. After an observation, settlement
+  reads the current ledger through a separately bounded finalization connection so a charge written
+  during HTTP is reflected without allowing a post-request source-read deadline to replace durable
+  finalization.
 - The handler is removed before the read connection is restored to the pool. If removal cannot be
   confirmed, the physical connection is closed instead of being reused.
 - A read-budget defer stops preparation at that statement boundary. It starts no projection merge

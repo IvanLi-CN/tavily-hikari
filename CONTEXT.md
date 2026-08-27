@@ -59,6 +59,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   projection each receive the native 250ms deadline independently. A deadline is
   `projection_read_budget`: it stops later preparation and remote work and persists one
   claim-fenced 30-second continuation without changing work, settlement, or billing truth.
+  Billed-credit hydrate is the pre-request source-read gate; settlement later reads current ledger
+  state through a separately bounded finalization connection so charges written during HTTP remain
+  visible without moving the native source deadline past the remote boundary.
 - `terminal outcome`: a current work generation that needs no retry. Active non-zero differences
   are `settled`, zero differences are `no_adjustment`, and compare-mode non-zero differences are
   `observed`.

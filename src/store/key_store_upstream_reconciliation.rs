@@ -1764,6 +1764,33 @@ impl KeyStore {
             .collect())
     }
 
+    pub(crate) async fn reconciliation_local_billed_credits_for_finalization(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+    ) -> Result<i64, ProxyError> {
+        let mut connection = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ReconciliationProjection)
+            .await?;
+        let query_result = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COALESCE(SUM(business_credits), 0)
+            FROM billing_ledger
+            WHERE token_id = ?
+              AND billing_state = 'charged'
+              AND created_at >= ?
+              AND created_at < ?
+              AND COALESCE(business_credits, 0) > 0
+            "#,
+        )
+        .bind(&candidate.token_id)
+        .bind(candidate.period_start)
+        .bind(candidate.period_end)
+        .fetch_one(&mut *connection)
+        .await;
+        connection.complete_query(query_result).await
+    }
+
     pub(crate) async fn reserve_upstream_usage_attempt(
         &self,
         key_id: &str,

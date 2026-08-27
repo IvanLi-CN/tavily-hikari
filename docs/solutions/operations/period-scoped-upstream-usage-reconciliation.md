@@ -47,6 +47,11 @@ work truth unchanged, stops later preparation and remote work, and records one c
 30-second defer; the handler must be removed before the connection can return to the pool. Keep the
 source SQL unchanged until scoped read-kind timing proves it remains the bottleneck.
 
+Billed-credit hydrate is a pre-request source-read gate. Once HTTP has completed, settlement reads
+the current ledger through a separately bounded finalization connection so a charge recorded during
+the request is reflected without turning a post-request consistency read into a source-deadline
+defer.
+
 The global remote limit is a lease around the actual outbound HTTP request, not the whole
 reconciliation run. Local projection, hydrate, finalization, and Research bookkeeping release the
 lease. Manual remote work retains priority, while an automatic reconciliation representative that
