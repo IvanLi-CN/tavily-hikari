@@ -373,6 +373,8 @@ struct SqliteRuntimeInner {
     fail_next_reconciliation_research_read: AtomicBool,
     #[cfg(test)]
     force_next_cooperative_query_deadline: AtomicBool,
+    #[cfg(test)]
+    force_cooperative_query_deadline_after_reads: AtomicU32,
 }
 
 #[derive(Debug)]
@@ -534,6 +536,8 @@ impl SqliteRuntime {
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
                 #[cfg(test)]
                 force_next_cooperative_query_deadline: AtomicBool::new(false),
+                #[cfg(test)]
+                force_cooperative_query_deadline_after_reads: AtomicU32::new(0),
             }),
         }
     }
@@ -550,6 +554,19 @@ impl SqliteRuntime {
         self.inner
             .force_next_cooperative_query_deadline
             .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_cooperative_query_deadline_after_reads_for_test(
+        &self,
+        reads_before_deadline: u32,
+    ) {
+        self.inner
+            .force_cooperative_query_deadline_after_reads
+            .store(
+                reads_before_deadline.saturating_add(1),
+                AtomicOrdering::Release,
+            );
     }
 
     #[cfg(test)]
@@ -1828,11 +1845,24 @@ impl SqliteReadSnapshot {
         progress_handler_ops: i32,
     ) -> Result<(), ProxyError> {
         #[cfg(test)]
-        let force_deadline = self
+        let force_next_deadline = self
             .runtime
             .inner
             .force_next_cooperative_query_deadline
             .swap(false, AtomicOrdering::AcqRel);
+        #[cfg(test)]
+        let force_deadline = force_next_deadline
+            || matches!(
+                self.runtime
+                    .inner
+                    .force_cooperative_query_deadline_after_reads
+                    .fetch_update(
+                        AtomicOrdering::AcqRel,
+                        AtomicOrdering::Acquire,
+                        |remaining| { (remaining > 0).then(|| remaining - 1) }
+                    ),
+                Ok(1)
+            );
         #[cfg(not(test))]
         let force_deadline = false;
         let deadline = force_deadline

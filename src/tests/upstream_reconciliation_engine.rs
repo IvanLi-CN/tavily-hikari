@@ -813,6 +813,109 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
 }
 
 #[tokio::test]
+async fn reconciliation_projection_deadline_stops_a_run_before_remote_attempts() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 27, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-read-deadline"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.rebalance_mcp_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_work (
+             token_id, period_code, project_id, billing_subject, settlement_mode,
+             period_start, period_end, scheduling_key_id, updated_at
+           ) VALUES ('projection-deadline-token', '2026-08-27/P0', 'projection-project',
+             'token:projection-deadline-token', 'shadow', ?, ?, 'projection-key', ?)"#,
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert an eligible candidate");
+    for index in 0..128 {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at,
+                 last_used_at, updated_at, settlement_mode
+               ) VALUES (?, ?, ?, ?, ?, 1, 2, 1, 1, 2, 2, 'shadow')"#,
+        )
+        .bind(format!("projection-source-token-{index}"))
+        .bind(format!("projection-source-key-{index}"))
+        .bind(format!("2026-08-27/P{index}"))
+        .bind(format!("projection-source-project-{index}"))
+        .bind(format!("token:projection-source-token-{index}"))
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert historical projection source");
+    }
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+
+    // Candidate selection performs the recent and backlog source reads first; interrupt the
+    // following historical projection read while an eligible candidate is already present.
+    proxy
+        .key_store
+        .sqlite_runtime
+        .force_cooperative_query_deadline_after_reads_for_test(2);
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("projection deadline becomes a typed defer");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "projection_read_budget",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+    let work: (i64, i64) = sqlx::query_as(
+        "SELECT work_generation, completed_generation FROM upstream_reconciliation_work WHERE token_id = 'projection-deadline-token'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged candidate work");
+    assert!(work.0 > work.1, "the candidate remains unfinished");
+    let settlements: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_settlements WHERE settlement_key = 'v1:projection-deadline-token:2026-08-27/P0'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count settlements");
+    assert_eq!(settlements, 0, "deadline must start no remote request");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn claimed_engine_run_reaches_a_safe_boundary_after_the_caller_is_cancelled() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

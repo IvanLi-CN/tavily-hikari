@@ -1072,6 +1072,14 @@ impl TavilyProxy {
                             };
                         }
                     }
+                    Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                        reason: "projection_read_budget",
+                    }) => {
+                        return Ok(ReconciliationEngine::deferred(
+                            self,
+                            "projection_read_budget",
+                        ));
+                    }
                     Ok(ReconciliationProjectionSliceOutcome::Deferred { .. }) => {
                         preparation_budget_exhausted |=
                             ReconciliationEngine::projection_defer_exhausts_preparation(
