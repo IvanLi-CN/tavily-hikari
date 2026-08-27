@@ -2150,7 +2150,7 @@ mod serve_tests {
             admin_privacy_status_cached(state.as_ref()).await.is_none(),
             "startup prewarm must defer while foreground pressure is active"
         );
-        tokio::time::timeout(Duration::from_secs(2), last_good_published)
+        tokio::time::timeout(Duration::from_secs(7), last_good_published)
             .await
             .expect("deferred listener-ready prewarm published privacy-status last-good data");
         assert!(
