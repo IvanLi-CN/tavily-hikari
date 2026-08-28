@@ -3,9 +3,11 @@
 ## Current scheduling contract
 
 Candidate windows are maintained in an indexed durable work projection. The engine hydrates a bounded page,
-starts primary settlement before research polling, permits at most two serial remote attempts per run, and gives
-research at most two seconds of the remaining time. Research exhaustion is diagnostic follow-up, not primary
-local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff
+starts primary settlement before research polling, and permits at most two serial remote attempts per run. When
+due Research is known during preparation, it reserves two seconds for the later Research sweep and two seconds
+for main durable finalization before it starts main remote work; the reserve may preclude a second slow main
+request. Without due Research, main settlement retains its normal remote envelope. Research exhaustion is
+diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff
 (`2/5/10/30m`); non-429 failures do not reset the remote circuit. A current claim that reaches a
 low-foreground recovery window clears only its local-pressure state before trying the engine again;
 if SQLite is still pressured, that attempt durably defers again. This preserves foreground yielding
@@ -215,9 +217,11 @@ remote attempt and exhausted local budget, persist a short local backoff without
 a later Retry-After; a real remote attempt or successful settlement clears the relevant state. Keep
 normal per-key 429 logs at DEBUG and reserve state-transition logs for enter, escalation, and recovery.
 
-Main settlement must start before terminal-research polling. Hydrate the bounded candidate page and
-key/cooldown state in one indexed batch, reserve the first eligible key within the two-second local
-preparation budget, then use the remaining 20-second job budget for the research sweep.
+Main settlement must start before terminal-research polling. Hydrate the bounded candidate page,
+key/cooldown state, and Research eligibility in the two-second local preparation budget. If Research is due,
+reserve its two-second post-finalization sweep before starting main HTTP, along with the two-second main
+durable-finalization boundary. This is a progress guarantee for due Research, not permission to poll before
+main settlement; with no due Research, do not reduce main remote capacity.
 
 ## Claim-fenced deferred finalization
 

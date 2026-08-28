@@ -255,6 +255,7 @@ PR: none
 
 - [ADR 0001: HA Planned Cutover Control Plane](../../adr/0001-ha-planned-cutover-control-plane.md)
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
+- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)
 
 ## 参考（References）
 

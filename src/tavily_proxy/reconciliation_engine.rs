@@ -25,6 +25,7 @@ struct ReconciliationRunResult {
     key_backoff_window_count: i64,
     skipped_by_key_backoff: i64,
     attempted_candidate_count: i64,
+    main_remote_request_count: i64,
     budget_exhausted: bool,
     remote_attempt_limit_reached: bool,
     max_retry_after_until: Option<i64>,
@@ -56,6 +57,84 @@ pub enum ClaimedReconciliationRunOutcome {
 }
 
 pub(crate) struct ReconciliationEngine;
+
+#[derive(Clone, Copy)]
+struct ReconciliationRemoteBudget {
+    main_remote_deadline: std::time::Instant,
+    main_finalization_deadline: std::time::Instant,
+}
+
+impl ReconciliationRemoteBudget {
+    fn with_due_research_reserve(
+        research_reservation_required: bool,
+        remote_request_deadline: std::time::Instant,
+        finalization_deadline: std::time::Instant,
+        research_sweep_budget: std::time::Duration,
+        finalization_headroom: std::time::Duration,
+    ) -> Self {
+        if research_reservation_required {
+            Self {
+                main_remote_deadline: remote_request_deadline
+                    - research_sweep_budget
+                    - finalization_headroom,
+                main_finalization_deadline: remote_request_deadline - research_sweep_budget,
+            }
+        } else {
+            Self {
+                main_remote_deadline: remote_request_deadline,
+                main_finalization_deadline: finalization_deadline,
+            }
+        }
+    }
+}
+
+impl TavilyProxy {
+    async fn arm_reconciliation_backoff(
+        &self,
+        key_id: &str,
+        requested_until: Option<i64>,
+        reason: &str,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<i64, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let prior_retry_after_secs = self
+            .reconciliation_cooldown_until(key_id, now)
+            .await?
+            .map(|until| until.saturating_sub(now))
+            .or(self
+                .key_store
+                .api_key_transient_backoff_state(key_id, Self::RECONCILIATION_BACKOFF_SCOPE)
+                .await?
+                .map(|state| state.retry_after_secs));
+        let retry_after_secs = requested_until
+            .map(|until| until.saturating_sub(now).max(1))
+            .unwrap_or_else(|| match prior_retry_after_secs {
+                None | Some(0) => 300,
+                Some(1..=300) => 600,
+                Some(301..=600) => 1200,
+                _ => 1800,
+            });
+        let cooldown_until = now.saturating_add(retry_after_secs);
+        let arm = ApiKeyTransientBackoffArm {
+            key_id,
+            scope: Self::RECONCILIATION_BACKOFF_SCOPE,
+            cooldown_until,
+            retry_after_secs,
+            reason_code: Some(classify_reconciliation_retry_reason(Some(reason))),
+            source_request_log_id: None,
+            now,
+        };
+        let armed = match claimed_job {
+            Some((job_id, claim_generation)) => {
+                self.key_store
+                    .arm_api_key_transient_backoff_claimed(arm, job_id, claim_generation)
+                    .await?
+            }
+            None => self.key_store.arm_api_key_transient_backoff(arm).await?,
+        };
+        Ok(armed.map(|state| state.cooldown_until).unwrap_or(cooldown_until))
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ReconciliationRemoteAttemptContext<'a> {

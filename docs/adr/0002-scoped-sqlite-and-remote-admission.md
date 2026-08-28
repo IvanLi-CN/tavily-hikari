@@ -46,6 +46,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   WAL file metadata. Process and cgroup write bytes remain explicitly labelled aggregate values.
 - This ADR does not change the projection SQL shape. A keyset, batch-lookup, or index rewrite needs
   separate candidate evidence showing that the scoped source read remains the bottleneck.
+- Due Research timing is governed by ADR 0003; it uses the same request-scoped remote admission
+  boundary without extending the lease across local finalization.
 
 ## Consequences
 

@@ -71,7 +71,7 @@
 - `429` 只对 `period_reconciliation` scope 中的对应 Key 建立持久化冷却，使用 `Retry-After` 或 `5/10/20/30` 分钟退避；不得批量把同 Key 的其他窗口写为 rate-limited，也不得影响正常 API/MCP 流量。
 - 候选观测必须使用有界索引页：`queueEstimate` 可为空且最多统计 64 个候选，`hasEligible` 与最老候选年龄必须单独表达，首次观测前 coverage 为 `unknown`，不得以零伪装未观测状态。历史 degraded 状态必须由独立的索引化 `EXISTS` 探测保留，不能用当天计数替代。
 - 连续三轮存在候选、未产生远端尝试且本地预算耗尽时，持久化独立的本地短退避；它不得增加 upstream 429 全局退避。只有真实远端 429 才按 `2/5/10/30` 分钟升级，并以更晚的 `Retry-After` 为准；退避期间只保留一个 delayed representative job，真实远端尝试或成功结算后立即复位。
-- 主结算候选页、key/cooldown hydrate 与 reservation 的本地准备预算最多 2 秒，主结算优先启动；terminal-research sweep 仅在主结算之后使用同一轮剩余预算，且最多占用 2 秒。Research 超时不代表主结算本地预算耗尽，单轮总预算保持 20 秒。
+- 主结算候选页、key/cooldown hydrate 与 Research eligibility read 的本地准备预算最多 2 秒，主结算优先启动；terminal-research sweep 仅在主结算的 durable finalization 之后启动。存在 due Research 时，在发起主结算 HTTP 前预留 2 秒给 sweep，并预留 2 秒给主结果的 durable finalization；该 reserve 可以阻止第二个慢主 Key 请求。没有 due Research 时保留原有主结算远端窗口。Research 超时不代表主结算本地预算耗尽，单轮总预算保持 20 秒。
 - 远端请求启动、观察结果、结算写入和 Research 状态落盘均受同一轮截止时间约束；最后的持久化收尾预算不得被新一轮远端请求抢占。
 - 在发起远端请求前必须保留两秒给持久化收尾。收尾预算、post-processing 或 retry bookkeeping
   不足时，claimed run 只能返回 `Deferred { reason, retry_at }`，不得写 terminal job error。
@@ -126,8 +126,9 @@
 - Compare-mode non-zero differences write only the shadow observation and complete as `observed`;
   they do not create an actual billing adjustment and are not included in settled totals.
 - Main settlement work always precedes the terminal Research sweep. Candidate preparation and at
-  most one optional projection slice share the two-second preparation budget; Research uses at most
-  two seconds of the remaining run budget after main finalization.
+  most one optional projection slice share the two-second preparation budget. When due Research is
+  known during that preparation, main remote work reserves two seconds for its later sweep and two
+  seconds for main durable finalization; otherwise main settlement retains its full remote envelope.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）
@@ -392,3 +393,4 @@ PR: include
 ## Related ADRs
 
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
+- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)

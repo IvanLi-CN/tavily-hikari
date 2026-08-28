@@ -82,7 +82,7 @@ async fn reconciliation_projection_micro_slices_resume() {
 }
 
 #[tokio::test]
-async fn reconciliation_research_sweep_does_not_hold_an_empty_main_run() {
+async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 7, 15, 12, 0);
@@ -162,12 +162,18 @@ async fn reconciliation_research_sweep_does_not_hold_an_empty_main_run() {
 
     let research_started = Arc::new(AtomicBool::new(false));
     let research_started_for_route = Arc::clone(&research_started);
+    let research_request_started_at = Arc::new(std::sync::Mutex::new(None));
+    let research_request_started_at_for_route = Arc::clone(&research_request_started_at);
     let app = Router::new().route(
         "/research/research-budget-slow",
         get(move || {
             let research_started = Arc::clone(&research_started_for_route);
+            let research_request_started_at = Arc::clone(&research_request_started_at_for_route);
             async move {
                 research_started.store(true, Ordering::SeqCst);
+                *research_request_started_at
+                    .lock()
+                    .expect("record research request start") = Some(std::time::Instant::now());
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 Json(serde_json::json!({ "status": "completed" }))
             }
@@ -185,16 +191,39 @@ async fn reconciliation_research_sweep_does_not_hold_an_empty_main_run() {
             .expect("serve research upstream");
     });
 
-    let started_at = std::time::Instant::now();
-    let settled = proxy
-        .run_upstream_reconciliation_once(&format!("http://{addr}"))
-        .await
-        .expect("run reconciliation with research-only work");
+    // This direct helper has a short foreground-safe admission wait. Under a
+    // loaded shard, retry only its documented transient admission result; the
+    // test's subject is the bounded Research request, not pool arbitration.
+    let settled = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match proxy
+                .run_upstream_reconciliation_once(&format!("http://{addr}"))
+                .await
+            {
+                Ok(settled) => break settled,
+                Err(ProxyError::Other(message))
+                    if message.starts_with(
+                        "upstream reconciliation local preparation remained deferred",
+                    ) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => panic!("run reconciliation with research-only work: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("admit research-only reconciliation within a bounded retry window");
     assert_eq!(settled, 0);
     assert!(research_started.load(Ordering::SeqCst));
     assert!(
-        started_at.elapsed() < Duration::from_secs(5),
-        "a slow research probe must not consume the 20-second main settlement budget"
+        research_request_started_at
+            .lock()
+            .expect("read research request start")
+            .expect("research request started")
+            .elapsed()
+            < Duration::from_secs(3),
+        "a slow research probe must finish within its two-second sweep after it starts"
     );
     let (_, attempted, _, _, _, budget_exhausted) = proxy
         .key_store
@@ -207,31 +236,25 @@ async fn reconciliation_research_sweep_does_not_hold_an_empty_main_run() {
         "research's independent budget must not report primary local pressure"
     );
 
-    for _ in 0..3 {
-        proxy.fail_next_reconciliation_research_read_for_test();
-        assert_eq!(
-            proxy
-                .run_upstream_reconciliation_once(&format!("http://{addr}"))
-                .await
-                .expect("defer transient research pressure"),
-            0
-        );
-    }
-    let (streak, level, backoff_until) = proxy
+    proxy.fail_next_reconciliation_research_read_for_test();
+    assert_eq!(
+        proxy
+            .run_upstream_reconciliation_once(&format!("http://{addr}"))
+            .await
+            .expect("defer a transient research eligibility read"),
+        0
+    );
+    let (streak, level, _) = proxy
         .key_store
         .upstream_reconciliation_local_backoff_state()
         .await
-        .expect("read research pressure backoff");
-    assert_eq!((streak, level), (3, 1));
-    assert!(backoff_until >= now + 30);
-    assert!(
-        proxy
-            .key_store
-            .upstream_reconciliation_continuation_at()
-            .await
-            .expect("read durable continuation")
-            .is_some_and(|continuation_at| continuation_at >= backoff_until)
+        .expect("read local pressure state after a preparation defer");
+    assert_eq!(
+        (streak, level),
+        (0, 0),
+        "an unclaimed preparation defer must not fabricate a durable local-pressure backoff"
     );
+
     let (work_generation, completed_generation): (i64, i64) = sqlx::query_as(
         "SELECT work_generation, completed_generation FROM upstream_reconciliation_work \
          WHERE token_id = 'research-budget-token' AND period_code = '2026-07-15/R1'",
@@ -252,11 +275,319 @@ async fn reconciliation_research_sweep_does_not_hold_an_empty_main_run() {
         .sqlite_runtime
         .begin_immediate(SqliteOperation::ReconciliationProjection)
         .await
-        .expect("begin transaction after transient research read");
+        .expect("begin transaction after bounded research read");
     transaction
         .rollback()
         .await
         .expect("rollback reusable projection connection");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_due_research_uses_reserved_budget_after_a_slow_main_attempt() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-research-reserve"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-research-reserve")
+        .await
+        .expect("create reconciliation key");
+
+    for (token_id, period_code, project_id, billing_subject) in [
+        (
+            "slow-main-token",
+            "2026-07-15/S1",
+            "project-slow-main",
+            "token:slow-main-token",
+        ),
+        (
+            "reserved-research-token",
+            "2026-07-15/R1",
+            "project-reserved-research",
+            "token:reserved-research-token",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(token_id)
+        .bind(&key_id)
+        .bind(period_code)
+        .bind(project_id)
+        .bind(billing_subject)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed reconciliation usage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        "#,
+    )
+    .bind("reserved-research-request")
+    .bind("reserved-research-token")
+    .bind(&key_id)
+    .bind("2026-07-15/R1")
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due research");
+    sqlx::query(
+        r#"
+        UPDATE upstream_reconciliation_work
+        SET completed_generation = work_generation
+        WHERE token_id = 'reserved-research-token' AND period_code = '2026-07-15/R1'
+        "#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep pending research out of main settlement work");
+
+    let usage_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let usage_hits_for_route = Arc::clone(&usage_hits);
+    let research_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let research_hits_for_route = Arc::clone(&research_hits);
+    let app = Router::new()
+        .route(
+            "/usage",
+            get(move || {
+                let usage_hits = Arc::clone(&usage_hits_for_route);
+                async move {
+                    usage_hits.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(8_500)).await;
+                    Json(serde_json::json!({ "key": { "usage": 0 } }))
+                }
+            }),
+        )
+        .route(
+            "/research/reserved-research-request",
+            get(move || {
+                let research_hits = Arc::clone(&research_hits_for_route);
+                async move {
+                    research_hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "status": "completed" }))
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind reconciliation upstream");
+    let addr = listener
+        .local_addr()
+        .expect("read reconciliation upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation upstream");
+    });
+
+    assert_eq!(
+        proxy
+            .run_upstream_reconciliation_once(&format!("http://{addr}"))
+            .await
+            .expect("run reconciliation with a slow main attempt"),
+        0
+    );
+    assert!(
+        (1..=2).contains(&usage_hits.load(Ordering::SeqCst)),
+        "one eligible main candidate may use the existing bounded HTTP retry path"
+    );
+    assert_eq!(
+        research_hits.load(Ordering::SeqCst),
+        1,
+        "a due research item must receive its reserved request window after the durable main retry"
+    );
+    let main_work: (i64, i64, String) = sqlx::query_as(
+        r#"
+        SELECT work_generation, completed_generation, last_outcome
+        FROM upstream_reconciliation_work
+        WHERE token_id = 'slow-main-token' AND period_code = '2026-07-15/S1'
+        "#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read retryable main work");
+    assert!(main_work.1 < main_work.0);
+    assert_eq!(main_work.2, "transport_failure");
+    let research_terminal_at: Option<i64> = sqlx::query_scalar(
+        "SELECT terminal_at FROM upstream_reconciliation_research WHERE request_id = 'reserved-research-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read research terminal state");
+    assert_eq!(research_terminal_at, Some(now));
+    let (_, attempted_candidate_count, _, _, _, _) = proxy
+        .key_store
+        .upstream_reconciliation_last_run_stats()
+        .await
+        .expect("read reconciliation run stats");
+    assert_eq!(
+        attempted_candidate_count, 1,
+        "the due research reservation must not turn one main work item into another candidate"
+    );
+    let actual_adjustments: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM billing_reconciliation_adjustments")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count actual billing adjustments");
+    assert_eq!(actual_adjustments, 0);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_without_due_research_retains_two_main_remote_attempts() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-main-capacity-one",
+            "tvly-reconciliation-main-capacity-two",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare-only settings");
+    let first_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-main-capacity-one")
+        .await
+        .expect("create first reconciliation key");
+    let second_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-main-capacity-two")
+        .await
+        .expect("create second reconciliation key");
+    for key_id in [&first_key_id, &second_key_id] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind("two-main-attempts-token")
+        .bind(key_id)
+        .bind("2026-07-15/S1")
+        .bind("project-two-main-attempts")
+        .bind("token:two-main-attempts-token")
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed two-key reconciliation usage");
+    }
+
+    let usage_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let usage_hits_for_route = Arc::clone(&usage_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move || {
+            let usage_hits = Arc::clone(&usage_hits_for_route);
+            async move {
+                usage_hits.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({ "key": { "usage": 0 } }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind reconciliation upstream");
+    let addr = listener
+        .local_addr()
+        .expect("read reconciliation upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve reconciliation upstream");
+    });
+
+    assert_eq!(
+        proxy
+            .run_upstream_reconciliation_once(&format!("http://{addr}"))
+            .await
+            .expect("run reconciliation without due research"),
+        1
+    );
+    assert_eq!(
+        usage_hits.load(Ordering::SeqCst),
+        2,
+        "without due Research, reconciliation retains both bounded main remote attempts"
+    );
+    let (_, attempted_candidate_count, _, _, _, _) = proxy
+        .key_store
+        .upstream_reconciliation_last_run_stats()
+        .await
+        .expect("read reconciliation run stats");
+    assert_eq!(attempted_candidate_count, 1);
+    let research_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_research WHERE terminal_at IS NULL",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count due research");
+    assert_eq!(research_count, 0);
+    let actual_adjustments: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM billing_reconciliation_adjustments")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count actual billing adjustments");
+    assert_eq!(actual_adjustments, 0);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

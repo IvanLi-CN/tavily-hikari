@@ -27,8 +27,9 @@ fn should_emit_reconciliation_summary(now: i64) -> bool {
 impl TavilyProxy {
     const RECONCILIATION_BACKOFF_SCOPE: &'static str = "period_reconciliation";
     // Candidate hydration is deliberately bounded so the first main settlement
-    // request cannot be displaced by the terminal-research sweep. Research is
-    // allowed to use the remainder of the scheduler's 20 second budget.
+    // request cannot be displaced by the terminal-research sweep. When due
+    // Research exists, its two-second request window is reserved before main
+    // remote work starts.
     const RECONCILIATION_MAIN_PREP_BUDGET_SECS: u64 = 2;
     const RECONCILIATION_TOTAL_BUDGET_SECS: u64 = 20;
     const RECONCILIATION_FINALIZATION_HEADROOM_SECS: u64 = 2;
@@ -345,58 +346,12 @@ impl TavilyProxy {
             .map(|state| state.cooldown_until))
     }
 
-    async fn arm_reconciliation_backoff(
-        &self,
-        key_id: &str,
-        requested_until: Option<i64>,
-        reason: &str,
-        claimed_job: Option<(i64, i64)>,
-    ) -> Result<i64, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let prior_retry_after_secs = self
-            .reconciliation_cooldown_until(key_id, now)
-            .await?
-            .map(|until| until.saturating_sub(now))
-            .or(self
-                .key_store
-                .api_key_transient_backoff_state(key_id, Self::RECONCILIATION_BACKOFF_SCOPE)
-                .await?
-                .map(|state| state.retry_after_secs));
-        let retry_after_secs = requested_until
-            .map(|until| until.saturating_sub(now).max(1))
-            .unwrap_or_else(|| match prior_retry_after_secs {
-                None | Some(0) => 300,
-                Some(1..=300) => 600,
-                Some(301..=600) => 1200,
-                _ => 1800,
-            });
-        let cooldown_until = now.saturating_add(retry_after_secs);
-        let arm = ApiKeyTransientBackoffArm {
-            key_id,
-            scope: Self::RECONCILIATION_BACKOFF_SCOPE,
-            cooldown_until,
-            retry_after_secs,
-            reason_code: Some(classify_reconciliation_retry_reason(Some(reason))),
-            source_request_log_id: None,
-            now,
-        };
-        let armed = match claimed_job {
-            Some((job_id, claim_generation)) => {
-                self.key_store
-                    .arm_api_key_transient_backoff_claimed(arm, job_id, claim_generation)
-                    .await?
-            }
-            None => self.key_store.arm_api_key_transient_backoff(arm).await?,
-        };
-        Ok(armed.map(|state| state.cooldown_until).unwrap_or(cooldown_until))
-    }
-
     async fn run_research_terminal_sweep(
         &self,
         usage_base: &str,
         started_at: &std::time::Instant,
-        request_start_budget_secs: u64,
         request_deadline: std::time::Instant,
+        candidates: Vec<crate::models::UpstreamReconciliationResearchCandidate>,
         claimed_job: Option<(i64, i64)>,
         remote_attempt: ReconciliationRemoteAttemptContext<'_>,
     ) -> Result<(i64, i64, i64, i64, i64, bool), ProxyError> {
@@ -405,10 +360,6 @@ impl TavilyProxy {
         if remaining.is_zero() {
             return Ok((0, 0, 0, 0, 0, true));
         }
-        let candidates = self
-            .key_store
-            .next_upstream_reconciliation_research_candidates(80)
-            .await?;
         let candidate_count = candidates.len() as i64;
         tracing::debug!(
             component = "reconciliation",
@@ -427,10 +378,6 @@ impl TavilyProxy {
         let mut budget_exhausted = false;
         for candidate in candidates {
             if polled as usize >= Self::RESEARCH_SWEEP_LIMIT {
-                break;
-            }
-            if started_at.elapsed() >= std::time::Duration::from_secs(request_start_budget_secs) {
-                budget_exhausted = true;
                 break;
             }
             let cooldown_remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
@@ -453,10 +400,6 @@ impl TavilyProxy {
             if cooling_keys.contains(&candidate.key_id) || cooldown_active {
                 skipped_cooldown += 1;
                 continue;
-            }
-            if started_at.elapsed() >= std::time::Duration::from_secs(request_start_budget_secs) {
-                budget_exhausted = true;
-                break;
             }
             let selected = selected_per_key.entry(candidate.key_id.clone()).or_default();
             if *selected >= Self::RESEARCH_SWEEP_PER_KEY_LIMIT {
@@ -984,11 +927,6 @@ impl TavilyProxy {
                 Self::RECONCILIATION_TOTAL_BUDGET_SECS
                     .saturating_sub(Self::RECONCILIATION_OUTER_TIMEOUT_MARGIN_SECS),
             );
-        let research_start_budget_secs = Self::RECONCILIATION_TOTAL_BUDGET_SECS
-            .saturating_sub(QUOTA_SYNC_FETCH_TIMEOUT_SECS)
-            .saturating_sub(Self::RECONCILIATION_FINALIZATION_HEADROOM_SECS)
-            .saturating_sub(Self::RECONCILIATION_POST_PROCESS_HEADROOM_SECS);
-        let remote_request_start_budget_secs = research_start_budget_secs;
         let mut preparation_budget_exhausted = false;
         let mut candidate_batch;
         if preparation_deadline <= std::time::Instant::now() {
@@ -1193,6 +1131,37 @@ impl TavilyProxy {
             }
         }
         preparation_budget_exhausted |= std::time::Instant::now() >= candidate_hydration_deadline;
+        // This is only an eligibility read. The terminal probes remain after
+        // main candidate finalization, but knowing that Research is due lets
+        // us reserve its bounded request window before main HTTP begins.
+        let research_candidates = match self
+            .key_store
+            .next_upstream_reconciliation_research_candidates(80)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                return Ok(ReconciliationEngine::deferred(
+                    self,
+                    "projection_read_budget",
+                ));
+            }
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+            }
+            Err(err) => return Err(err),
+        };
+        let research_reservation_required = !research_candidates.is_empty();
+        let ReconciliationRemoteBudget {
+            main_remote_deadline,
+            main_finalization_deadline,
+        } = ReconciliationRemoteBudget::with_due_research_reserve(
+            research_reservation_required,
+            remote_request_deadline,
+            finalization_deadline,
+            std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS),
+            std::time::Duration::from_secs(Self::RECONCILIATION_FINALIZATION_HEADROOM_SECS),
+        );
         tracing::debug!(
             component = "reconciliation",
             event = "run_started",
@@ -1208,6 +1177,7 @@ impl TavilyProxy {
             research_pending_count = 0_i64,
             research_retry_count = 0_i64,
             research_skipped_cooldown_count = 0_i64,
+            research_reservation_required,
         );
         let hydrate_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
         // Remote I/O and durable settlement must never retain the local bulk
@@ -1248,9 +1218,7 @@ impl TavilyProxy {
                 if budget_exhausted {
                     break;
                 }
-                if started_at.elapsed()
-                    >= std::time::Duration::from_secs(remote_request_start_budget_secs)
-                {
+                if std::time::Instant::now() >= main_remote_deadline {
                     budget_exhausted = true;
                     break;
                 }
@@ -1345,11 +1313,11 @@ impl TavilyProxy {
                     // the bounded request timeout to finish and use the
                     // separate total-budget deadline for subsequent requests.
                     let reservation_deadline = if candidate_attempted || remote_request_started {
-                        remote_request_deadline
+                        main_remote_deadline
                     } else {
                         preparation_deadline
                     };
-                    let remote_remaining = remote_request_deadline
+                    let remote_remaining = main_remote_deadline
                         .saturating_duration_since(std::time::Instant::now());
                     let request_timeout = Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS);
                     if remote_remaining < request_timeout {
@@ -1382,7 +1350,7 @@ impl TavilyProxy {
                         attempted_candidate_count += 1;
                         candidate_attempted = true;
                     }
-                    let remaining = remote_request_deadline
+                    let remaining = main_remote_deadline
                         .saturating_duration_since(std::time::Instant::now());
                     remote_request_started = true;
                     if remote_request_count == 0 {
@@ -1482,12 +1450,7 @@ impl TavilyProxy {
                                     .max(retry_after_until),
                             );
                         }
-                        let retry_bookkeeping_deadline = started_at
-                            + std::time::Duration::from_secs(
-                                Self::RECONCILIATION_TOTAL_BUDGET_SECS
-                                    .saturating_sub(Self::RECONCILIATION_POST_PROCESS_HEADROOM_SECS),
-                            );
-                        ensure_reconciliation_post_process_reserve(retry_bookkeeping_deadline)?;
+                        ensure_reconciliation_post_process_reserve(main_finalization_deadline)?;
                         let cooldown_until = if reason_kind
                             == RECONCILIATION_RETRY_REASON_UPSTREAM_429
                         {
@@ -1566,7 +1529,7 @@ impl TavilyProxy {
                 let finalization = ReconciliationEngine::finalize_observed_candidates(
                     self,
                     observed_candidates,
-                    finalization_deadline,
+                    main_finalization_deadline,
                     claimed_job,
                 )
                 .await?;
@@ -1594,6 +1557,7 @@ impl TavilyProxy {
                 key_backoff_window_count,
                 skipped_by_key_backoff,
                 attempted_candidate_count,
+                main_remote_request_count: remote_request_count,
                 budget_exhausted,
                 remote_attempt_limit_reached,
                 max_retry_after_until,
@@ -1633,7 +1597,10 @@ impl TavilyProxy {
             research_retry_count,
             research_skipped_cooldown_count,
             research_budget_exhausted,
-        ) = if result.is_ok() && !self.sqlite_maintenance_runs_shutting_down() {
+        ) = if result.is_ok()
+            && !research_candidates.is_empty()
+            && !self.sqlite_maintenance_runs_shutting_down()
+        {
             let research_deadline = remote_request_deadline.min(
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS),
@@ -1642,8 +1609,8 @@ impl TavilyProxy {
                 .run_research_terminal_sweep(
                     usage_base,
                     &started_at,
-                    research_start_budget_secs,
                     research_deadline,
+                    research_candidates,
                     claimed_job,
                     remote_attempt_context,
                 )
@@ -1724,6 +1691,7 @@ impl TavilyProxy {
                 key_backoff_window_count,
                 skipped_by_key_backoff,
                 attempted_candidate_count,
+                main_remote_request_count,
                 mut budget_exhausted,
                 remote_attempt_limit_reached,
                 max_retry_after_until,
@@ -1762,6 +1730,8 @@ impl TavilyProxy {
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
                     job_type = "upstream_reconciliation",
                     candidate_count,
+                    attempted_candidate_count,
+                    main_remote_request_count,
                     settled_count = settled,
                     recent_lane_budget,
                     backlog_lane_budget,
@@ -1780,6 +1750,12 @@ impl TavilyProxy {
                     research_retry_count,
                     research_skipped_cooldown_count,
                     research_budget_exhausted,
+                    research_reservation_required,
+                    research_reserved_ms = if research_reservation_required {
+                        Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS * 1_000
+                    } else {
+                        0
+                    },
                     budget_exhausted,
                     remote_wait_ms,
                     remote_hold_ms,
@@ -2072,6 +2048,7 @@ impl TavilyProxy {
                         elapsed_ms = started_at.elapsed().as_millis() as u64,
                         candidate_count,
                         attempted_candidate_count,
+                        main_remote_request_count,
                         settled_count = settled,
                         completed_count = completed,
                         no_adjustment_count = no_adjustment,
@@ -2085,6 +2062,12 @@ impl TavilyProxy {
                         remote_ms,
                         finalization_ms = finalization_ms.max(0),
                         research_ms,
+                        research_reservation_required,
+                        research_reserved_ms = if research_reservation_required {
+                            Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS * 1_000
+                        } else {
+                            0
+                        },
                         reconciliation_source_read_ms = reconciliation_read_metrics.cooperative_read_elapsed_ms,
                         reconciliation_source_read_deadline_count = reconciliation_read_metrics.cooperative_read_deadlines,
                         reconciliation_operation_connection_cache_write_pages = %if reconciliation_read_metrics.connection_cache_write_sampled
