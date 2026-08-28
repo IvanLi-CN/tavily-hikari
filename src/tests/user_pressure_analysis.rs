@@ -1632,6 +1632,10 @@ async fn analysis_pressure_rebuild_drains_events_arriving_during_tail_replay() {
     )
     .await
     .expect("rebuild should enter the tail replay before the live producer starts");
+    let pressure_flush_complete = proxy
+        .server_pressure_flush_completed_notifier_for_test()
+        .await
+        .notified_owned();
     let producer = {
         let proxy = proxy.clone();
         tokio::spawn(async move {
@@ -1654,7 +1658,9 @@ async fn analysis_pressure_rebuild_drains_events_arriving_during_tail_replay() {
     .await
     .expect("pressure rebuild drains its live tail");
 
-    wait_for_server_pressure_totals(&proxy, 250, 100).await;
+    tokio::time::timeout(Duration::from_secs(3), pressure_flush_complete)
+        .await
+        .expect("deferred pressure writer drains events recorded during tail replay");
 
     let (success_count, failure_count): (i64, i64) = sqlx::query_as(
         r#"
