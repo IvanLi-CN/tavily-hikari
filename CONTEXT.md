@@ -78,6 +78,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   HTTP request only. It excludes local projection, candidate hydration, durable finalization, and
   Research bookkeeping. Manual work retains priority; automatic reconciliation waiting 120 seconds
   owns the next non-manual attempt turn.
+- `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in
+  bounded batches with a four-per-key and 20-row sweep cap. Its stable keyset cursor advances only
+  after claim-fenced acceptance; read pressure or cancellation leaves the page retryable.
 - `Research reserve`: when preparation finds due terminal Research, the reconciliation engine
   reserves a two-second post-finalization sweep and a two-second main durable-finalization boundary
   before beginning main remote work. Research still probes only after main finalization. The reserve

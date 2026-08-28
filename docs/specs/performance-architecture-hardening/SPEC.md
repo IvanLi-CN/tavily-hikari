@@ -88,6 +88,9 @@
   `SELECT` runs in its own 250ms native SQLite read session. A source-read deadline produces a
   claim-fenced `projection_read_budget` defer and one 30-second continuation without beginning a
   merge, completing work, or starting remote I/O.
+- The main reconciliation result is durably recorded before Research selection begins. Research
+  uses its own indexed, keyset-scanned page (at most 80 rows, at most 4 per key and 20 swept per
+  run); a Research read defer is independent of main transport, terminal, and billing state.
 - Historical usage projection has a versioned lifecycle independent of candidate selection. A
   pending upgrade projects one bounded page only after durable candidates drain, while new usage
   is maintained by triggers. A completed lifecycle must not requeue a completed no-adjustment

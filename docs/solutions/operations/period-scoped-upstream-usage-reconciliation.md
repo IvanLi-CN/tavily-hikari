@@ -26,6 +26,11 @@ timeout, body-read, credential/database, and unknown failures into a fixed categ
 work generation, and retry it on `30/60/120/300s`. Only a later terminal result clears the
 recovered state; do not log or expose the upstream body, URL, token, or database error text.
 
+The main candidate result must cross its durable fence before a Research sweep starts. Research
+selection uses the due covering index with an 80-row keyset page, a four-per-key cap, and a
+20-row sweep cap. A Research read-budget defer schedules one 30-second continuation without
+rewriting the main result or advancing the cursor.
+
 ## Activation controller
 
 Treat the existing precise-reconciliation switch as the sole operator action. Persist and replicate

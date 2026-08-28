@@ -44,6 +44,12 @@ struct ReconciliationFinalizationResult {
     budget_exhausted: bool,
 }
 
+enum ResearchCursorAcceptance {
+    Accepted,
+    LocalPressure,
+    StaleClaim,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum ClaimedReconciliationRunOutcome {
@@ -89,6 +95,65 @@ impl ReconciliationRemoteBudget {
 }
 
 impl TavilyProxy {
+    async fn persist_main_reconciliation_marker(&self) -> Result<bool, ProxyError> {
+        match self
+            .key_store
+            .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts())
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "run_marker_deferred",
+                    reason = "local_pressure",
+                    err = %err,
+                );
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn accept_research_cursor_if_ready(
+        &self,
+        cursor: Option<&crate::store::UpstreamReconciliationResearchCursor>,
+        wrapped: bool,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<ResearchCursorAcceptance, ProxyError> {
+        match self
+            .key_store
+            .accept_upstream_reconciliation_research_cursor(cursor, wrapped, claimed_job)
+            .await
+        {
+            Ok(()) => Ok(ResearchCursorAcceptance::Accepted),
+            Err(ProxyError::StaleClaim { .. }) => Ok(ResearchCursorAcceptance::StaleClaim),
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                Ok(ResearchCursorAcceptance::LocalPressure)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn finish_research_cursor(
+        &self,
+        page: &crate::store::UpstreamReconciliationResearchCandidatePage,
+        claimed_job: Option<(i64, i64)>,
+        defer_reason: &mut Option<&'static str>,
+    ) -> Result<bool, ProxyError> {
+        Ok(match self
+            .accept_research_cursor_if_ready(page.next_cursor.as_ref(), page.wrapped, claimed_job)
+            .await?
+        {
+            ResearchCursorAcceptance::Accepted => false,
+            ResearchCursorAcceptance::LocalPressure => {
+                *defer_reason = Some("research_local_pressure");
+                false
+            }
+            ResearchCursorAcceptance::StaleClaim => true,
+        })
+    }
+
     async fn arm_reconciliation_backoff(
         &self,
         key_id: &str,

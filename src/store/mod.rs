@@ -2751,6 +2751,7 @@ include!("key_store_api_key_transient_backoff_read.rs");
 include!("key_store_mcp_session_bindings.rs");
 include!("key_store_system_settings.rs");
 include!("key_store_upstream_reconciliation.rs");
+include!("key_store_upstream_reconciliation_research.rs");
 include!("key_store_admin_privacy_read.rs");
 include!("key_store_reconciliation_controller.rs");
 include!("reconciliation_projection_controller.rs");

@@ -286,6 +286,137 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
 }
 
 #[tokio::test]
+async fn reconciliation_research_selector_rotates_with_a_claim_fenced_cursor() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-research-selector"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    for index in 0..3 {
+        let token_id = format!("selector-token-{index}");
+        let key_id = format!("selector-key-{index}");
+        let period_code = format!("2026-07-15/R{index}");
+        let request_id = format!("selector-request-{index}");
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at, last_used_at,
+                 updated_at, settlement_mode
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')"#,
+        )
+        .bind(&token_id)
+        .bind(&key_id)
+        .bind(&period_code)
+        .bind(format!("selector-project-{index}"))
+        .bind(format!("token:{token_id}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed selector usage");
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_research (
+                 request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, NULL, ?)"#,
+        )
+        .bind(request_id)
+        .bind(token_id)
+        .bind(key_id)
+        .bind(period_code)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed selector research");
+    }
+
+    let query_plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT request_id FROM upstream_reconciliation_research
+          WHERE terminal_at IS NULL AND next_poll_at <= 9999999999
+          ORDER BY next_poll_at, key_id, request_id LIMIT 80",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("explain research selector")
+    .into_iter()
+    .map(|row| row.try_get("detail").expect("read selector plan detail"))
+    .collect();
+    assert!(
+        query_plan
+            .iter()
+            .any(|detail| detail.contains("idx_upstream_reconciliation_research_due_scan")),
+        "research selection must seek through the covering due index"
+    );
+
+    let first = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(2)
+        .await
+        .expect("read first research page");
+    assert_eq!(first.candidates.len(), 2);
+    let first_ids = first
+        .candidates
+        .iter()
+        .map(|candidate| candidate.request_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    proxy
+        .key_store
+        .accept_upstream_reconciliation_research_cursor(
+            first.next_cursor.as_ref(),
+            first.wrapped,
+            None,
+        )
+        .await
+        .expect("accept first cursor page");
+
+    let second = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(2)
+        .await
+        .expect("read second research page");
+    assert_eq!(second.candidates.len(), 1);
+    assert!(
+        second
+            .candidates
+            .iter()
+            .all(|candidate| !first_ids.contains(&candidate.request_id)),
+        "accepted cursor must not return a duplicate candidate"
+    );
+    proxy
+        .key_store
+        .accept_upstream_reconciliation_research_cursor(
+            second.next_cursor.as_ref(),
+            second.wrapped,
+            None,
+        )
+        .await
+        .expect("accept second cursor page");
+
+    let wrapped = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(2)
+        .await
+        .expect("wrap the research cursor once");
+    assert!(wrapped.wrapped);
+    assert_eq!(wrapped.candidates.len(), 2);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_due_research_uses_reserved_budget_after_a_slow_main_attempt() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

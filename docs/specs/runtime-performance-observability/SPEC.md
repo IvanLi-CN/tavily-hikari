@@ -52,6 +52,9 @@
 - Reconciliation run observation reports mode, projection phase/scanned rows/batch/transaction p95,
   hydrate/first-remote/remote/finalization/research timing, typed outcome counts, continuation reason,
   and next retry. Stable cursor values, token/key identifiers, SQL, and request content remain private.
+- Research diagnostics report only page size, selected/swept counts, cursor advance or wrap, read
+  deadline/defer counts, and terminal/pending deltas. The stable composite cursor and source rows
+  remain private; main outcome and Research defer are separate aggregate fields.
 - Dashboard read-model invalidation is a durable business-write signal, not only a request-statistics
   signal. A successful quota or other overview-visible write advances the shared dirty generation;
   the read model coalesces dirty rebuilds to at most once per ten seconds and uses a sixty-second

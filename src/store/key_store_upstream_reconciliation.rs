@@ -25,8 +25,6 @@ const RECONCILIATION_RECENT_LANE_BUDGET: i64 = 12;
 const RECONCILIATION_BACKLOG_LANE_BUDGET: i64 = 8;
 const RECONCILIATION_QUEUE_ESTIMATE_LIMIT: i64 = 64;
 
-use crate::store::sqlite_runtime::ReconciliationReadKind;
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UpstreamReconciliationRunAdmissionState {
     pub(crate) claim_current: bool,
@@ -1233,107 +1231,6 @@ impl KeyStore {
         }
         transaction.finish(Ok(())).await?;
         Ok(changed > 0)
-    }
-
-    pub(crate) async fn next_upstream_reconciliation_research_candidates(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<crate::models::UpstreamReconciliationResearchCandidate>, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let day_window = server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
-        let mut session = self
-            .sqlite_runtime
-            .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
-            .await?;
-        let rows_result = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, i64, i64)>(
-            r#"
-            WITH pending AS (
-                SELECT
-                    r.request_id, r.token_id, r.key_id, r.period_code,
-                    MIN(u.billing_subject) AS billing_subject,
-                    MAX(u.period_end) AS period_end,
-                    r.poll_attempt_count,
-                    1 AS window_pending_count
-                FROM upstream_reconciliation_research r
-                JOIN upstream_reconciliation_usage u
-                  ON u.token_id = r.token_id AND u.period_code = r.period_code
-                WHERE r.terminal_at IS NULL AND COALESCE(r.next_poll_at, 0) <= ?
-                GROUP BY r.request_id
-                HAVING MAX(u.period_end) <= ?
-            ), prioritized AS (
-                SELECT pending.*,
-                    CASE WHEN EXISTS (
-                        SELECT 1
-                        FROM upstream_reconciliation_usage prior_u
-                        JOIN upstream_reconciliation_settlements prior_s
-                          ON prior_s.settlement_key = 'v1:' || prior_u.token_id || ':' || prior_u.period_code
-                        WHERE prior_u.billing_subject = pending.billing_subject
-                          AND prior_u.period_start >= ? AND prior_u.period_start < ?
-                          AND prior_s.status = 'shadow_settled'
-                    ) THEN 1 ELSE 0 END AS has_settled_period
-                FROM pending
-            ), ranked AS (
-                SELECT *,
-                    ROW_NUMBER() OVER (PARTITION BY key_id ORDER BY has_settled_period, period_end DESC, window_pending_count, request_id) AS key_slot,
-                    ROW_NUMBER() OVER (PARTITION BY billing_subject ORDER BY period_end DESC, window_pending_count, request_id) AS subject_slot
-                FROM prioritized
-            )
-            SELECT request_id, token_id, key_id, period_code, billing_subject, period_end,
-                   poll_attempt_count, key_slot, subject_slot
-            FROM ranked
-            ORDER BY has_settled_period ASC, key_slot ASC, subject_slot ASC, period_end DESC, window_pending_count ASC, request_id ASC
-            LIMIT ?
-            "#,
-        )
-        .bind(now)
-        .bind(now)
-        .bind(day_window.start)
-        .bind(day_window.end)
-        .bind(limit.max(1))
-        .fetch_all(&mut *session)
-        .await;
-        let rows = session.complete_query_or_defer(rows_result).await?;
-        Ok(rows
-            .into_iter()
-            .map(|(request_id, token_id, key_id, period_code, billing_subject, period_end, poll_attempt_count, _, _)| {
-                crate::models::UpstreamReconciliationResearchCandidate {
-                    request_id,
-                    token_id,
-                    key_id,
-                    period_code,
-                    billing_subject,
-                    period_end,
-                    poll_attempt_count,
-                }
-            })
-            .collect())
-    }
-    pub(crate) async fn has_due_upstream_reconciliation_research(&self) -> Result<bool, ProxyError> {
-        let now = self.backend_time.now_ts();
-        let mut session = self
-            .sqlite_runtime
-            .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
-            .await?;
-        #[cfg(test)]
-        if self.sqlite_runtime.take_reconciliation_research_read_failure_for_test() {
-            let injected_result = Err::<i64, _>(sqlx::Error::PoolTimedOut);
-            return session.complete_query_or_defer(injected_result).await.map(|_| false);
-        }
-        let due_result = sqlx::query_scalar::<_, i64>(r#"
-            SELECT EXISTS(
-                SELECT 1 FROM upstream_reconciliation_research r
-                JOIN upstream_reconciliation_usage u
-                  ON u.token_id = r.token_id AND u.period_code = r.period_code
-                WHERE r.terminal_at IS NULL AND COALESCE(r.next_poll_at, 0) <= ?
-                GROUP BY r.request_id
-                HAVING MAX(u.period_end) <= ?
-                LIMIT 1
-            )
-            "#)
-        .bind(now).bind(now)
-        .fetch_one(&mut *session)
-        .await;
-        Ok(session.complete_query_or_defer(due_result).await? != 0)
     }
 
     pub(crate) async fn record_upstream_reconciliation_research_poll(

@@ -129,6 +129,12 @@
   most one optional projection slice share the two-second preparation budget. When due Research is
   known during that preparation, main remote work reserves two seconds for its later sweep and two
   seconds for main durable finalization; otherwise main settlement retains its full remote envelope.
+- The main result is persisted before the Research phase starts. A Research source deadline or
+  transient read failure records only `research_read_budget` or `research_local_pressure` continuation
+  state and schedules one 30-second representative; it cannot overwrite a main transport failure,
+  terminal outcome, completed generation, or billing truth. Research selection uses the v21
+  `(next_poll_at, key_id, request_id)` cursor and covering index: at most 80 rows are read and at
+  most four are selected per key. The cursor is accepted only after the claimed page boundary.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）

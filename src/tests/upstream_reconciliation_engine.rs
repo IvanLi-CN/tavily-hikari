@@ -907,7 +907,7 @@ async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
     assert!(matches!(
         outcome,
         ClaimedReconciliationRunOutcome::Deferred {
-            reason: "projection_read_budget",
+            reason: "research_read_budget",
             retry_at,
         } if retry_at == now + 30
     ));

@@ -44,8 +44,11 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
   At the same low-frequency window boundary it may sample only configured core/observability DB and
   WAL file metadata. Process and cgroup write bytes remain explicitly labelled aggregate values.
-- This ADR does not change the projection SQL shape. A keyset, batch-lookup, or index rewrite needs
-  separate candidate evidence showing that the scoped source read remains the bottleneck.
+- Scoped evidence now shows that the Research candidate aggregate is the remaining source-read
+  bottleneck. Migration v21 therefore adds only a local research scan state and a covering
+  `(terminal_at, next_poll_at, key_id, request_id)` index. The selector reads an indexed keyset
+  page, hydrates that bounded page, and accepts its cursor only after a claim-fenced run boundary.
+  The primary candidate SQL remains unchanged; any rewrite there still requires separate evidence.
 - Due Research timing is governed by ADR 0003; it uses the same request-scoped remote admission
   boundary without extending the lease across local finalization.
 

@@ -215,14 +215,26 @@ impl KeyStore {
             .begin_scheduled_job_control()
             .await?;
         let result = async {
-            let (_, _, local_backoff_until) =
-                Self::apply_upstream_reconciliation_local_backoff_locked(
+            let research_defer = reason == "research_read_budget";
+            let local_backoff_until = if research_defer {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT value FROM meta WHERE key = ? LIMIT 1",
+                )
+                .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+                .fetch_optional(&mut *tx)
+                .await?
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0)
+            } else {
+                let (_, _, until) = Self::apply_upstream_reconciliation_local_backoff_locked(
                     &mut tx,
                     true,
                     now,
                     Some((job_id, claim_generation)),
                 )
                 .await?;
+                until
+            };
             let available_at = retry_at.max(local_backoff_until).max(now);
             let message = format!(
                 "outcome=sqlite_admission_deferred defer_reason={reason} retry_at={available_at}"
@@ -244,18 +256,31 @@ impl KeyStore {
                     claim_generation,
                 });
             }
-            sqlx::query(
-                r#"UPDATE upstream_reconciliation_run_observation
-                   SET local_pressure_count = local_pressure_count + 1,
-                       last_retryable_outcome = 'local_pressure',
-                       continuation_reason = ?, next_retry_at = ?, observed_at = ?
-                   WHERE id = 'local'"#,
-            )
-            .bind(reason)
-            .bind(available_at)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+            if research_defer {
+                sqlx::query(
+                    r#"UPDATE upstream_reconciliation_run_observation
+                       SET continuation_reason = ?, next_retry_at = ?, observed_at = ?
+                       WHERE id = 'local'"#,
+                )
+                .bind(reason)
+                .bind(available_at)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    r#"UPDATE upstream_reconciliation_run_observation
+                       SET local_pressure_count = local_pressure_count + 1,
+                           last_retryable_outcome = 'local_pressure',
+                           continuation_reason = ?, next_retry_at = ?, observed_at = ?
+                       WHERE id = 'local'"#,
+                )
+                .bind(reason)
+                .bind(available_at)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+            }
             self.record_reconciliation_research_progress_window_locked(&mut tx, now)
                 .await?;
 

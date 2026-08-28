@@ -751,7 +751,6 @@ impl TavilyProxy {
         )
         .await
     }
-
     async fn run_upstream_reconciliation_once_inner(
         &self,
         usage_base: &str,
@@ -1591,9 +1590,12 @@ impl TavilyProxy {
             .as_ref()
             .map(|value| value.budget_exhausted)
             .unwrap_or(true);
+        if !self.persist_main_reconciliation_marker().await? {
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+        }
         let research_started_at = std::time::Instant::now();
-        let mut research_local_pressure = false;
-        let research_candidates = if result.is_ok()
+        let mut research_defer_reason: Option<&'static str> = None;
+        let research_page = if result.is_ok()
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
         {
@@ -1602,28 +1604,27 @@ impl TavilyProxy {
                 .next_upstream_reconciliation_research_candidates(80)
                 .await
             {
-                Ok(candidates) => candidates,
+                Ok(page) => page,
                 Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
-                    return Ok(ReconciliationEngine::deferred(
-                        self,
-                        "projection_read_budget",
-                    ));
+                    research_defer_reason = Some("research_read_budget");
+                    crate::store::UpstreamReconciliationResearchCandidatePage::empty()
                 }
                 Err(err) if is_transient_sqlite_write_error(&err) => {
-                    research_local_pressure = true;
+                    research_defer_reason = Some("research_local_pressure");
                     tracing::debug!(
                         component = "reconciliation",
                         event = "research_sweep_deferred",
                         reason = "local_pressure",
                         err = %err,
                     );
-                    Vec::new()
+                    crate::store::UpstreamReconciliationResearchCandidatePage::empty()
                 }
                 Err(err) => return Err(err),
             }
         } else {
-            Vec::new()
+            crate::store::UpstreamReconciliationResearchCandidatePage::empty()
         };
+        let research_candidates = research_page.candidates.clone();
         let (
             research_polled_count,
             research_terminal_count,
@@ -1661,13 +1662,11 @@ impl TavilyProxy {
                     return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
                 }
                 Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
-                    return Ok(ReconciliationEngine::deferred(
-                        self,
-                        "projection_read_budget",
-                    ));
+                    research_defer_reason = Some("research_read_budget");
+                    (0, 0, 0, 0, 0, true)
                 }
                 Err(err) if is_transient_sqlite_write_error(&err) => {
-                    research_local_pressure = true;
+                    research_defer_reason = Some("research_local_pressure");
                     tracing::debug!(
                         component = "reconciliation",
                         event = "research_sweep_deferred",
@@ -1681,6 +1680,13 @@ impl TavilyProxy {
         } else {
             (0, 0, 0, 0, 0, main_budget_exhausted)
         };
+        if research_defer_reason.is_none()
+            && research_reservation_required
+            && !self.sqlite_maintenance_runs_shutting_down()
+            && self.finish_research_cursor(&research_page, claimed_job, &mut research_defer_reason).await?
+        {
+            return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
+        }
         let research_ms = research_started_at
             .elapsed()
             .as_millis()
@@ -1689,22 +1695,6 @@ impl TavilyProxy {
         // write. Once durable work begins, do not turn a partially applied
         // sequence into a second local-pressure transition.
         ensure_reconciliation_post_process_reserve(post_process_deadline)?;
-        let run_marker_result = self
-            .key_store
-            .mark_upstream_reconciliation_run_completed_at(self.backend_time.now_ts())
-            .await;
-        if let Err(err) = run_marker_result {
-            if is_transient_sqlite_write_error(&err) {
-                tracing::debug!(
-                    component = "reconciliation",
-                    event = "run_marker_deferred",
-                    reason = "local_pressure",
-                    err = %err,
-                );
-                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
-            }
-            return Err(err);
-        }
         match result {
             Ok(ReconciliationRunResult {
                 settled,
@@ -1845,7 +1835,7 @@ impl TavilyProxy {
                     && upstream_429_retry_windows.saturating_mul(2)
                         >= attempted_candidate_count.max(1);
                 let local_pressure = local_usage_rate_limit_windows > 0
-                    || research_local_pressure
+                    || research_defer_reason == Some("research_local_pressure")
                     || ((candidate_count > 0 || preparation_budget_exhausted)
                         && attempted_candidate_count == 0
                         && budget_exhausted);
@@ -2065,7 +2055,8 @@ impl TavilyProxy {
                                     )
                                 })
                                 .map(ReconciliationOutcome::as_str),
-                            continuation_reason: reconciliation_outcome.map(|value| value.as_str()),
+                            continuation_reason: research_defer_reason
+                                .or_else(|| reconciliation_outcome.map(|value| value.as_str())),
                             next_retry_at,
                         },
                     ),
@@ -2113,10 +2104,19 @@ impl TavilyProxy {
                         remote_active_attempts = remote_attempt_metrics
                             .map(|metrics| metrics.active_attempts)
                             .unwrap_or_default(),
-                        continuation_reason = reconciliation_outcome.map(|value| value.as_str()),
+                        continuation_reason = research_defer_reason
+                            .or_else(|| reconciliation_outcome.map(|value| value.as_str())),
                         next_retry_at,
                         budget_exhausted,
                     );
+                }
+                if let Some(reason) = research_defer_reason {
+                    tracing::debug!(
+                        component = "reconciliation",
+                        event = "research_sweep_deferred",
+                        reason,
+                    );
+                    return Ok(ReconciliationEngine::deferred(self, reason));
                 }
                 Ok(ClaimedReconciliationRunOutcome::Completed {
                     settled,

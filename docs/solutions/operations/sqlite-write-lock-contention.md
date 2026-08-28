@@ -48,6 +48,9 @@ related_specs:
   remote request.
 - Report SQLite `CACHE_WRITE` pages from the operation connection separately from process/cgroup
   write-byte deltas. The latter are aggregate pressure evidence, not query attribution.
+- Keep Research source reads bounded by the covering due index and a stable keyset page. Accept the
+  cursor only in the claim-fenced control transaction after the page is safely processed; pressure
+  or cancellation must leave both the cursor and durable work retryable.
 
 ## Context
 
