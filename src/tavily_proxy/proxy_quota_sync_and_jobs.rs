@@ -1131,27 +1131,30 @@ impl TavilyProxy {
             }
         }
         preparation_budget_exhausted |= std::time::Instant::now() >= candidate_hydration_deadline;
-        // This is only an eligibility read. The terminal probes remain after
-        // main candidate finalization, but knowing that Research is due lets
-        // us reserve its bounded request window before main HTTP begins.
-        let research_candidates = match self
+        // This indexed eligibility probe is deliberately smaller than the
+        // prioritized Research sweep. A deadline here must not turn due
+        // Research into a precondition for main settlement: reserve
+        // conservatively and select the full sweep only after main durable
+        // finalization.
+        let research_reservation_required = match self
             .key_store
-            .next_upstream_reconciliation_research_candidates(80)
+            .has_due_upstream_reconciliation_research()
             .await
         {
-            Ok(candidates) => candidates,
-            Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
-                return Ok(ReconciliationEngine::deferred(
-                    self,
-                    "projection_read_budget",
-                ));
-            }
-            Err(err) if is_transient_sqlite_write_error(&err) => {
-                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+            Ok(due) => due,
+            Err(err)
+                if ReconciliationEngine::projection_read_budget_is_deferred(&err)
+                    || is_transient_sqlite_write_error(&err) =>
+            {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "research_reservation_unknown",
+                    "Research eligibility could not be read before main settlement; retaining the bounded reserve"
+                );
+                true
             }
             Err(err) => return Err(err),
         };
-        let research_reservation_required = !research_candidates.is_empty();
         let ReconciliationRemoteBudget {
             main_remote_deadline,
             main_finalization_deadline,
@@ -1590,6 +1593,37 @@ impl TavilyProxy {
             .unwrap_or(true);
         let research_started_at = std::time::Instant::now();
         let mut research_local_pressure = false;
+        let research_candidates = if result.is_ok()
+            && research_reservation_required
+            && !self.sqlite_maintenance_runs_shutting_down()
+        {
+            match self
+                .key_store
+                .next_upstream_reconciliation_research_candidates(80)
+                .await
+            {
+                Ok(candidates) => candidates,
+                Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                    return Ok(ReconciliationEngine::deferred(
+                        self,
+                        "projection_read_budget",
+                    ));
+                }
+                Err(err) if is_transient_sqlite_write_error(&err) => {
+                    research_local_pressure = true;
+                    tracing::debug!(
+                        component = "reconciliation",
+                        event = "research_sweep_deferred",
+                        reason = "local_pressure",
+                        err = %err,
+                    );
+                    Vec::new()
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            Vec::new()
+        };
         let (
             research_polled_count,
             research_terminal_count,
@@ -1597,10 +1631,7 @@ impl TavilyProxy {
             research_retry_count,
             research_skipped_cooldown_count,
             research_budget_exhausted,
-        ) = if result.is_ok()
-            && !research_candidates.is_empty()
-            && !self.sqlite_maintenance_runs_shutting_down()
-        {
+        ) = if result.is_ok() && !research_candidates.is_empty() {
             let research_deadline = remote_request_deadline.min(
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS),

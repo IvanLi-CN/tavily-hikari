@@ -888,13 +888,14 @@ async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
         .expect("claim representative")
         .expect("representative is claimed");
 
-    // The empty recent/backlog lanes use the first two source sessions. The
-    // due research query is the next source read and must defer, not turn the
-    // claimed representative into a scheduler error.
+    // The empty recent/backlog lanes and the bounded Research eligibility
+    // probe use the first three source sessions. Interrupt the following
+    // full Research candidate query: it must defer, not turn the claimed
+    // representative into a scheduler error.
     proxy
         .key_store
         .sqlite_runtime
-        .force_cooperative_query_deadline_after_reads_for_test(2);
+        .force_cooperative_query_deadline_after_reads_for_test(3);
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             "http://127.0.0.1:9",

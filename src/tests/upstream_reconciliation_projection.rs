@@ -473,7 +473,7 @@ async fn reconciliation_due_research_uses_reserved_budget_after_a_slow_main_atte
 }
 
 #[tokio::test]
-async fn reconciliation_without_due_research_retains_two_main_remote_attempts() {
+async fn reconciliation_unknown_research_eligibility_preserves_two_main_remote_attempts() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 7, 15, 12, 0);
@@ -557,17 +557,18 @@ async fn reconciliation_without_due_research_retains_two_main_remote_attempts() 
             .expect("serve reconciliation upstream");
     });
 
+    proxy.fail_next_reconciliation_research_read_for_test();
     assert_eq!(
         proxy
             .run_upstream_reconciliation_once(&format!("http://{addr}"))
             .await
-            .expect("run reconciliation without due research"),
+            .expect("run reconciliation with an unavailable Research eligibility probe"),
         1
     );
     assert_eq!(
         usage_hits.load(Ordering::SeqCst),
         2,
-        "without due Research, reconciliation retains both bounded main remote attempts"
+        "an unavailable Research eligibility probe must not defer main settlement"
     );
     let (_, attempted_candidate_count, _, _, _, _) = proxy
         .key_store

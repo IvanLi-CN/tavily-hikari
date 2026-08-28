@@ -3,8 +3,9 @@
 ## Current scheduling contract
 
 Candidate windows are maintained in an indexed durable work projection. The engine hydrates a bounded page,
-starts primary settlement before research polling, and permits at most two serial remote attempts per run. When
-due Research is known during preparation, it reserves two seconds for the later Research sweep and two seconds
+starts primary settlement before research polling, and permits at most two serial main settlement requests per
+run. Research remains an independent, globally single-concurrent sweep. When due Research is known during
+preparation, it reserves two seconds for the later Research sweep and two seconds
 for main durable finalization before it starts main remote work; the reserve may preclude a second slow main
 request. Without due Research, main settlement retains its normal remote envelope. Research exhaustion is
 diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff

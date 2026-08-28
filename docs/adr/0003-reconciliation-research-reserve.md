@@ -11,9 +11,10 @@ consume the former Research start threshold and leave due Research unprobed fore
 main work keeps retrying. Treating Research as only leftover time therefore does not provide a
 progress guarantee.
 
-Research must not run before main settlement, and the engine may issue at most two serial remote
-requests per run. The decision must preserve compare-mode billing truth and the durable
-claim-fenced continuation boundary.
+Research must not run before main settlement. The engine may issue at most two serial main
+settlement requests per run; Research remains an independent, globally single-concurrent sweep.
+The decision must preserve compare-mode billing truth and the durable claim-fenced continuation
+boundary.
 
 ## Decision
 
@@ -35,5 +36,5 @@ claim-fenced continuation boundary.
 
 - Due Research becomes independently progressable under recurring slow main `/usage` work.
 - A run with due Research may complete fewer main-key requests than an otherwise identical run.
-- The existing remote-attempt admission, two-attempt cap, mode semantics, and billing rules remain
-  unchanged.
+- The existing remote-attempt admission, two-main-attempt cap, mode semantics, and billing rules
+  remain unchanged. Research retains its independent two-second sweep budget.
