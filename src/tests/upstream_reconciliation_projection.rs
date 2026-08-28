@@ -532,6 +532,61 @@ async fn reconciliation_unknown_research_eligibility_preserves_two_main_remote_a
         .await
         .expect("seed two-key reconciliation usage");
     }
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind("current-period-research-token")
+    .bind(&first_key_id)
+    .bind("2026-07-15/S2")
+    .bind("project-current-period-research")
+    .bind("token:current-period-research-token")
+    .bind(now - 900)
+    .bind(now + 3_600)
+    .bind(now - 900)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed current-period research usage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+        "#,
+    )
+    .bind("current-period-research-request")
+    .bind("current-period-research-token")
+    .bind(&first_key_id)
+    .bind("2026-07-15/S2")
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed current-period research");
+    sqlx::query(
+        r#"
+        UPDATE upstream_reconciliation_work
+        SET completed_generation = work_generation
+        WHERE token_id = 'current-period-research-token' AND period_code = '2026-07-15/S2'
+        "#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep current-period research out of main settlement work");
+    assert!(
+        !proxy
+            .key_store
+            .has_due_upstream_reconciliation_research()
+            .await
+            .expect("read Research eligibility"),
+        "current-period Research must not reserve main settlement capacity"
+    );
 
     let usage_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let usage_hits_for_route = Arc::clone(&usage_hits);
@@ -581,8 +636,11 @@ async fn reconciliation_unknown_research_eligibility_preserves_two_main_remote_a
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("count due research");
-    assert_eq!(research_count, 0);
+    .expect("count current-period research");
+    assert_eq!(
+        research_count, 1,
+        "current-period Research must remain unpolled"
+    );
     let actual_adjustments: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM billing_reconciliation_adjustments")
             .fetch_one(&proxy.key_store.pool)

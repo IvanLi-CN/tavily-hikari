@@ -1332,12 +1332,17 @@ impl KeyStore {
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM upstream_reconciliation_research
-                WHERE terminal_at IS NULL AND next_poll_at <= ?
+                FROM upstream_reconciliation_research r
+                JOIN upstream_reconciliation_usage u
+                  ON u.token_id = r.token_id AND u.period_code = r.period_code
+                WHERE r.terminal_at IS NULL AND COALESCE(r.next_poll_at, 0) <= ?
+                GROUP BY r.request_id
+                HAVING MAX(u.period_end) <= ?
                 LIMIT 1
             )
             "#,
         )
+        .bind(now)
         .bind(now)
         .fetch_one(&mut *session)
         .await;
