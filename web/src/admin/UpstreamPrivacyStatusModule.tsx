@@ -373,9 +373,10 @@ export default function UpstreamPrivacyStatusModule({
         lastResearchSweep: '最近 Research 轮询',
         lastResearchTerminal: '最近 Research 完成',
         retryBucketsTitle: '重试原因分布',
-        retryBucketsDescription: '仅统计当前仍处于 rate_limited 的结算窗口，用来区分上游 429 与本地 usage 限流。',
+        retryBucketsDescription: '仅统计当前仍在等待的结算窗口，区分上游 429、本地 usage 限流与缺少可用上游 Key。',
         retryBucketUpstream429: '429 上游限流',
         retryBucketLocalUsageRateLimit: '本地 usage 限流',
+        retryBucketMissingEligibleUpstreamKey: '缺少可用上游 Key',
         retryBucketOther: '其他重试',
         keyActivityTitle: '当前时段 Key 活动',
         keyActivityDescription: '按上游 Key 聚合当前时段内的绑定用户数与待查询 Project ID 数，默认展示 Top 12。',
@@ -404,9 +405,10 @@ export default function UpstreamPrivacyStatusModule({
         lastResearchSweep: 'Last Research sweep',
         lastResearchTerminal: 'Last Research terminal',
         retryBucketsTitle: 'Retry reason distribution',
-        retryBucketsDescription: 'Counts settlement windows that are still rate_limited, split by upstream 429 versus local usage throttling.',
+        retryBucketsDescription: 'Counts settlement windows still awaiting retry, split by upstream 429, local usage throttling, and missing eligible upstream keys.',
         retryBucketUpstream429: 'Upstream 429',
         retryBucketLocalUsageRateLimit: 'Local usage throttle',
+        retryBucketMissingEligibleUpstreamKey: 'Missing eligible upstream key',
         retryBucketOther: 'Other retry',
         keyActivityTitle: 'Current-period key activity',
         keyActivityDescription: 'Groups current-period bound users and pending Project IDs by upstream key. Top 12 keys are shown by default.',
@@ -792,6 +794,10 @@ export default function UpstreamPrivacyStatusModule({
                 <PrivacyStat
                   label={diagnosticsLabels.retryBucketLocalUsageRateLimit}
                   value={numberFormatter.format(status.retryBuckets.localUsageRateLimit)}
+                />
+                <PrivacyStat
+                  label={diagnosticsLabels.retryBucketMissingEligibleUpstreamKey}
+                  value={numberFormatter.format(status.retryBuckets.missingEligibleUpstreamKey ?? 0)}
                 />
                 <PrivacyStat
                   label={diagnosticsLabels.retryBucketOther}

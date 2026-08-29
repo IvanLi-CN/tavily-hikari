@@ -8,6 +8,8 @@ pub(crate) const RECONCILIATION_STATUS_RATE_LIMITED: &str = "rate_limited";
 pub(crate) const RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT: &str =
     "local_usage_rate_limit";
 pub(crate) const RECONCILIATION_RETRY_REASON_UPSTREAM_429: &str = "upstream429";
+pub(crate) const RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY: &str =
+    "missing_eligible_upstream_key";
 pub(crate) const RECONCILIATION_RETRY_REASON_OTHER: &str = "other";
 pub(crate) const RECONCILIATION_OUTCOME_SETTLED: &str = "settled";
 pub(crate) const RECONCILIATION_OUTCOME_NO_ADJUSTMENT: &str = "no_adjustment";
@@ -15,6 +17,8 @@ pub(crate) const RECONCILIATION_OUTCOME_OBSERVED: &str = "observed";
 pub(crate) const RECONCILIATION_OUTCOME_UPSTREAM_429: &str = "upstream_429";
 pub(crate) const RECONCILIATION_OUTCOME_TRANSPORT_FAILURE: &str = "transport_failure";
 pub(crate) const RECONCILIATION_OUTCOME_SEMANTIC_FAILURE: &str = "semantic_failure";
+pub(crate) const RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY: &str =
+    "missing_eligible_upstream_key";
 pub(crate) const RECONCILIATION_OUTCOME_LOCAL_PRESSURE: &str = "local_pressure";
 pub(crate) const META_KEY_UPSTREAM_RECONCILIATION_WORK_PROJECTION_COMPLETE_V1: &str =
     "upstream_reconciliation_work_projection_complete_v1";
@@ -84,6 +88,9 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
     }
     if reason == RECONCILIATION_RETRY_REASON_UPSTREAM_429 {
         return RECONCILIATION_RETRY_REASON_UPSTREAM_429;
+    }
+    if reason == RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY {
+        return RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY;
     }
     if reason.starts_with("usage http error 429 ") {
         return RECONCILIATION_RETRY_REASON_UPSTREAM_429;
@@ -1034,14 +1041,7 @@ impl KeyStore {
             .await
     }
 
-    pub(crate) async fn mark_upstream_reconciliation_research_sweep_at(
-        &self,
-        timestamp: i64,
-    ) -> Result<(), ProxyError> {
-        self.mark_upstream_reconciliation_research_sweep_at_inner(timestamp, None)
-            .await
-    }
-
+    #[cfg(test)]
     pub(crate) async fn mark_upstream_reconciliation_research_sweep_at_claimed(
         &self,
         timestamp: i64,
@@ -1055,6 +1055,7 @@ impl KeyStore {
         .await
     }
 
+    #[cfg(test)]
     async fn mark_upstream_reconciliation_research_sweep_at_inner(
         &self,
         timestamp: i64,
@@ -2529,6 +2530,7 @@ impl KeyStore {
         let mut buckets = UpstreamReconciliationRetryBuckets {
             upstream_429: 0,
             local_usage_rate_limit: 0,
+            missing_eligible_upstream_key: 0,
             other: 0,
         };
         for (reason, count) in rows {
@@ -2539,11 +2541,21 @@ impl KeyStore {
                 RECONCILIATION_RETRY_REASON_UPSTREAM_429 => {
                     buckets.upstream_429 += count;
                 }
+                RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY => {
+                    buckets.missing_eligible_upstream_key += count;
+                }
                 _ => {
                     buckets.other += count;
                 }
             }
         }
+        buckets.missing_eligible_upstream_key = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM upstream_reconciliation_work \
+             WHERE work_generation > completed_generation AND last_outcome = ?",
+        )
+        .bind(RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(buckets)
     }
 

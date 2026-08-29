@@ -1771,28 +1771,19 @@ use super::upstream_support_and_manual_jobs::*;
             "initialize + prompts/resources parity methods should stay local under rebalance mode"
         );
 
+        proxy.wait_for_rebalance_audits_idle_for_test().await;
         let pool = connect_sqlite_test_pool(&db_str).await;
-        let rows = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let rows = sqlx::query(
-                    r#"
-                    SELECT proxy_session_id
-                    FROM observability.request_logs
-                    WHERE path = '/mcp'
-                    ORDER BY id ASC
-                    "#,
-                )
-                .fetch_all(&pool)
-                .await
-                .expect("fetch rebalance control-plane audit records");
-                if rows.len() == 4 {
-                    return rows;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
+        let rows = sqlx::query(
+            r#"
+            SELECT proxy_session_id
+            FROM observability.request_logs
+            WHERE path = '/mcp'
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&pool)
         .await
-        .expect("rebalance control-plane audits should flush promptly");
+        .expect("fetch rebalance control-plane audit records");
         assert_eq!(rows.len(), 4, "initialize plus three list calls should be logged");
         for row in rows {
             assert_eq!(

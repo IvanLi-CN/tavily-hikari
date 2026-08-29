@@ -23,7 +23,11 @@ boundary.
   two seconds for the main result's durable finalization boundary before it starts a main request.
   A second slow main-key request may therefore be skipped.
 - Research probes still start only after main observation retry/finalization reaches its durable
-  boundary. The sweep uses at most its reserved two seconds.
+  boundary. The sweep uses at most its reserved two seconds, of which the final 500ms is a fixed
+  local persistence reserve. Outbound probes may use only the preceding 1.5 seconds.
+- A probe timeout writes its claim-fenced `retry` outcome, normalized `timeout` kind, and next poll
+  time before the run defers. The page cursor and sweep marker advance together only after every
+  selected row has a durable outcome; an unfinished page remains at its current cursor.
 - When no Research is due, main remote work retains its existing request envelope and can use both
   serial main attempts.
 - If the protected durable boundary cannot be reached, the run returns the existing typed deferred

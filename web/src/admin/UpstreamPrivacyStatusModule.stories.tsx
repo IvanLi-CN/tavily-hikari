@@ -361,6 +361,14 @@ const semanticFailureStatus: UpstreamPrivacyStatus = {
   },
 }
 
+const missingEligibleUpstreamKeyStatus: UpstreamPrivacyStatus = {
+  ...pendingStatus,
+  retryBuckets: {
+    ...pendingStatus.retryBuckets,
+    missingEligibleUpstreamKey: 7,
+  },
+}
+
 const budgetExhaustedStatus: UpstreamPrivacyStatus = {
   ...compareStatus,
   reconciliationLastDurationMs: 20_000,
@@ -643,6 +651,15 @@ export const EvidencePrivacyStatusStaleMobile393x852: Story = {
 
 export const SemanticFailure: Story = {
   args: { status: semanticFailureStatus },
+}
+
+export const MissingEligibleUpstreamKey: Story = {
+  args: { status: missingEligibleUpstreamKeyStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('缺少可用上游 Key')).toBeInTheDocument()
+    await expect(canvas.getByText('7')).toBeInTheDocument()
+  },
 }
 
 export const Recovered: Story = {

@@ -123,7 +123,7 @@ impl TavilyProxy {
     ) -> Result<ResearchCursorAcceptance, ProxyError> {
         match self
             .key_store
-            .accept_upstream_reconciliation_research_cursor(cursor, wrapped, claimed_job)
+            .accept_upstream_reconciliation_research_page(cursor, wrapped, claimed_job, true)
             .await
         {
             Ok(()) => Ok(ResearchCursorAcceptance::Accepted),
@@ -684,6 +684,43 @@ async fn await_reconciliation_post_process<T>(
     operation: impl std::future::Future<Output = Result<T, ProxyError>>,
 ) -> Result<T, ProxyError> {
     operation.await
+}
+
+#[cfg(test)]
+mod privacy_status_phase_budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn privacy_status_stops_at_a_safe_boundary_and_closes_its_snapshot() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let db_path = temp_dir.path().join("privacy-status-phase-budget.db");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-privacy-status-phase-budget".to_string()],
+            crate::DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let error = proxy
+            .upstream_privacy_status_after_one_safe_boundary_for_test()
+            .await
+            .expect_err("the real status builder must stop before its second SQLite phase");
+        assert!(matches!(
+            error,
+            ProxyError::Database(sqlx::Error::PoolTimedOut)
+        ));
+        assert_eq!(
+            proxy.admin_privacy_read_discards_for_test(),
+            0,
+            "phase-bound refresh aborts must close the snapshot without discarding it"
+        );
+        proxy
+            .verify_admin_privacy_read_connection_clean_for_test()
+            .await
+            .expect("the next privacy transaction is clean after a phase-bound refresh abort");
+    }
 }
 
 fn ensure_reconciliation_post_process_reserve(

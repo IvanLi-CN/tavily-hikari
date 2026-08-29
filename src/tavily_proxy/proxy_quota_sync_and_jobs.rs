@@ -2,6 +2,17 @@ static LAST_RECONCILIATION_SUMMARY_LOG_AT: AtomicI64 = AtomicI64::new(0);
 
 include!("reconciliation_engine.rs");
 
+#[derive(Debug, Default)]
+struct ResearchSweepOutcome {
+    polled: i64,
+    terminal: i64,
+    pending: i64,
+    retries: i64,
+    skipped_cooldown: i64,
+    budget_exhausted: bool,
+    cursor_ready: bool,
+}
+
 fn should_emit_reconciliation_summary_at(last_emitted_at: &AtomicI64, now: i64) -> bool {
     let mut previous = last_emitted_at.load(Ordering::Relaxed);
     loop {
@@ -40,6 +51,11 @@ impl TavilyProxy {
     // them bounded even when the main durable projection is empty so a slow
     // remote terminal probe cannot occupy the maintenance worker's full run.
     const RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS: u64 = 2;
+    // Keep a fixed local-persistence window after the final outbound Research
+    // request. The request phase must not consume the time needed to write a
+    // terminal/pending/retry outcome before the scan cursor advances.
+    const RECONCILIATION_RESEARCH_PERSISTENCE_HEADROOM: std::time::Duration =
+        std::time::Duration::from_millis(500);
     const RESEARCH_SWEEP_LIMIT: usize = 20;
     const RESEARCH_SWEEP_PER_KEY_LIMIT: usize = 4;
 
@@ -354,11 +370,17 @@ impl TavilyProxy {
         candidates: Vec<crate::models::UpstreamReconciliationResearchCandidate>,
         claimed_job: Option<(i64, i64)>,
         remote_attempt: ReconciliationRemoteAttemptContext<'_>,
-    ) -> Result<(i64, i64, i64, i64, i64, bool), ProxyError> {
+    ) -> Result<ResearchSweepOutcome, ProxyError> {
         let now = self.backend_time.now_ts();
+        let request_deadline = request_deadline
+            .checked_sub(Self::RECONCILIATION_RESEARCH_PERSISTENCE_HEADROOM)
+            .unwrap_or_else(std::time::Instant::now);
         let remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            return Ok((0, 0, 0, 0, 0, true));
+            return Ok(ResearchSweepOutcome {
+                budget_exhausted: true,
+                ..ResearchSweepOutcome::default()
+            });
         }
         let candidate_count = candidates.len() as i64;
         tracing::debug!(
@@ -435,6 +457,38 @@ impl TavilyProxy {
             }
             match research_result {
                 Err(_) => {
+                    let next_poll_at = now.saturating_add(match candidate.poll_attempt_count {
+                        0..=1 => 60,
+                        2..=3 => 120,
+                        4..=5 => 300,
+                        6..=7 => 600,
+                        _ => 1800,
+                    });
+                    match claimed_job {
+                        Some((job_id, claim_generation)) => {
+                            self.key_store
+                                .record_upstream_reconciliation_research_poll_claimed(
+                                    &candidate.request_id,
+                                    next_poll_at,
+                                    "retry",
+                                    Some("timeout"),
+                                    job_id,
+                                    claim_generation,
+                                )
+                                .await?
+                        }
+                        None => {
+                            self.key_store
+                                .record_upstream_reconciliation_research_poll(
+                                    &candidate.request_id,
+                                    next_poll_at,
+                                    "retry",
+                                    Some("timeout"),
+                                )
+                                .await?
+                        }
+                    }
+                    retries += 1;
                     budget_exhausted = true;
                     break;
                 }
@@ -585,38 +639,9 @@ impl TavilyProxy {
                 }
             }
         }
-        let remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            budget_exhausted = true;
-        } else {
-            if let Some((job_id, claim_generation)) = claimed_job
-                && !self
-                    .key_store
-                    .scheduled_job_claim_is_current(job_id, claim_generation)
-                    .await?
-            {
-                return Err(ProxyError::StaleClaim {
-                    job_id,
-                    claim_generation,
-                });
-            }
-            match claimed_job {
-                Some((job_id, claim_generation)) => {
-                    self.key_store
-                        .mark_upstream_reconciliation_research_sweep_at_claimed(
-                            now,
-                            job_id,
-                            claim_generation,
-                        )
-                        .await?
-                }
-                None => {
-                    self.key_store
-                        .mark_upstream_reconciliation_research_sweep_at(now)
-                        .await?
-                }
-            }
-        }
+        budget_exhausted |= request_deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .is_zero();
         tracing::debug!(
             component = "reconciliation",
             event = "research_sweep_completed",
@@ -630,14 +655,15 @@ impl TavilyProxy {
             skipped_cooldown_count = skipped_cooldown,
             budget_exhausted,
         );
-        Ok((
+        Ok(ResearchSweepOutcome {
             polled,
             terminal,
             pending,
             retries,
             skipped_cooldown,
             budget_exhausted,
-        ))
+            cursor_ready: !budget_exhausted,
+        })
     }
 
     pub async fn run_upstream_reconciliation_once(
@@ -1262,15 +1288,14 @@ impl TavilyProxy {
                 let key_count = key_ids.len();
                 let mut successful_key_count = 0_usize;
                 if key_count == 0 {
-                    semantic_failure_windows += 1;
                     other_retry_windows += 1;
                     self.key_store
                         .mark_reconciliation_retry(
                             &candidate,
                             "waiting",
-                            self.backend_time.now_ts(),
-                            Some("no eligible upstream key"),
-                            RECONCILIATION_OUTCOME_SEMANTIC_FAILURE,
+                            self.backend_time.now_ts().saturating_add(900),
+                            Some(RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY),
+                            RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY,
                             Some(ReconciliationWorkFence {
                                 work_generation,
                                 claimed_job,
@@ -1625,14 +1650,7 @@ impl TavilyProxy {
             crate::store::UpstreamReconciliationResearchCandidatePage::empty()
         };
         let research_candidates = research_page.candidates.clone();
-        let (
-            research_polled_count,
-            research_terminal_count,
-            research_pending_count,
-            research_retry_count,
-            research_skipped_cooldown_count,
-            research_budget_exhausted,
-        ) = if result.is_ok() && !research_candidates.is_empty() {
+        let research = if result.is_ok() && !research_candidates.is_empty() {
             let research_deadline = remote_request_deadline.min(
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS),
@@ -1663,7 +1681,10 @@ impl TavilyProxy {
                 }
                 Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
                     research_defer_reason = Some("research_read_budget");
-                    (0, 0, 0, 0, 0, true)
+                    ResearchSweepOutcome {
+                        budget_exhausted: true,
+                        ..ResearchSweepOutcome::default()
+                    }
                 }
                 Err(err) if is_transient_sqlite_write_error(&err) => {
                     research_defer_reason = Some("research_local_pressure");
@@ -1673,13 +1694,23 @@ impl TavilyProxy {
                         reason = "local_pressure",
                         err = %err,
                     );
-                    (0, 0, 0, 0, 0, true)
+                    ResearchSweepOutcome {
+                        budget_exhausted: true,
+                        ..ResearchSweepOutcome::default()
+                    }
                 }
                 Err(err) => return Err(err),
             }
         } else {
-            (0, 0, 0, 0, 0, main_budget_exhausted)
+            ResearchSweepOutcome {
+                budget_exhausted: main_budget_exhausted,
+                cursor_ready: true,
+                ..ResearchSweepOutcome::default()
+            }
         };
+        if research_defer_reason.is_none() && !research.cursor_ready {
+            research_defer_reason = Some("research_budget");
+        }
         if research_defer_reason.is_none()
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
@@ -1765,12 +1796,12 @@ impl TavilyProxy {
                     rate_limited_other_count = other_retry_windows,
                     key_backoff_window_count,
                     skipped_by_key_backoff,
-                    research_polled_count,
-                    research_terminal_count,
-                    research_pending_count,
-                    research_retry_count,
-                    research_skipped_cooldown_count,
-                    research_budget_exhausted,
+                    research_polled_count = research.polled,
+                    research_terminal_count = research.terminal,
+                    research_pending_count = research.pending,
+                    research_retry_count = research.retries,
+                    research_skipped_cooldown_count = research.skipped_cooldown,
+                    research_budget_exhausted = research.budget_exhausted,
                     research_reservation_required,
                     research_reserved_ms = if research_reservation_required {
                         Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS * 1_000
@@ -2164,11 +2195,11 @@ impl TavilyProxy {
                     rate_limited_other_count = 0_i64,
                     key_backoff_window_count = 0_i64,
                     skipped_by_key_backoff = 0_i64,
-                    research_polled_count,
-                    research_terminal_count,
-                    research_pending_count,
-                    research_retry_count,
-                    research_skipped_cooldown_count,
+                    research_polled_count = research.polled,
+                    research_terminal_count = research.terminal,
+                    research_pending_count = research.pending,
+                    research_retry_count = research.retries,
+                    research_skipped_cooldown_count = research.skipped_cooldown,
                     err = %err,
                 );
                 Err(err)
@@ -3006,42 +3037,5 @@ fn normalize_quota_sync_fetch_error(err: ProxyError) -> ProxyError {
             QUOTA_SYNC_FETCH_TIMEOUT_SECS
         )),
         other => other,
-    }
-}
-
-#[cfg(test)]
-mod privacy_status_phase_budget_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn privacy_status_stops_at_a_safe_boundary_and_closes_its_snapshot() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let db_path = temp_dir.path().join("privacy-status-phase-budget.db");
-        let db_str = db_path.to_string_lossy().to_string();
-        let proxy = TavilyProxy::with_endpoint(
-            vec!["tvly-privacy-status-phase-budget".to_string()],
-            crate::DEFAULT_UPSTREAM,
-            &db_str,
-        )
-        .await
-        .expect("proxy created");
-
-        let error = proxy
-            .upstream_privacy_status_after_one_safe_boundary_for_test()
-            .await
-            .expect_err("the real status builder must stop before its second SQLite phase");
-        assert!(matches!(
-            error,
-            ProxyError::Database(sqlx::Error::PoolTimedOut)
-        ));
-        assert_eq!(
-            proxy.admin_privacy_read_discards_for_test(),
-            0,
-            "phase-bound refresh aborts must close the snapshot without discarding it"
-        );
-        proxy
-            .verify_admin_privacy_read_connection_clean_for_test()
-            .await
-            .expect("the next privacy transaction is clean after a phase-bound refresh abort");
     }
 }

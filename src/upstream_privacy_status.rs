@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct UpstreamReconciliationRetryBuckets {
     pub upstream_429: i64,
     pub local_usage_rate_limit: i64,
+    #[serde(default)]
+    pub missing_eligible_upstream_key: i64,
     pub other: i64,
 }
 

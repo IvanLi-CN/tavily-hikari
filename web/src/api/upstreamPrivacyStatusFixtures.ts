@@ -10,7 +10,7 @@ type ActivityDiagnostics = Pick<
 >
 
 const demoActivityDiagnostics: ActivityDiagnostics = {
-  retryBuckets: { upstream429: 1, localUsageRateLimit: 1, other: 0 },
+  retryBuckets: { upstream429: 1, localUsageRateLimit: 1, missingEligibleUpstreamKey: 0, other: 0 },
   currentPeriodBoundUsersByKey: [
     { keyIdHint: 'key-primary', count: 12 },
     { keyIdHint: 'key-backup', count: 5 },
@@ -39,7 +39,7 @@ const demoActivityDiagnostics: ActivityDiagnostics = {
 }
 
 const storyActivityDiagnostics: ActivityDiagnostics = {
-  retryBuckets: { upstream429: 4, localUsageRateLimit: 2, other: 1 },
+  retryBuckets: { upstream429: 4, localUsageRateLimit: 2, missingEligibleUpstreamKey: 3, other: 1 },
   currentPeriodBoundUsersByKey: [
     { keyIdHint: 'key-primary', count: 19 },
     { keyIdHint: 'key-backup', count: 8 },

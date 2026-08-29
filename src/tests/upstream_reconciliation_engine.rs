@@ -1548,7 +1548,7 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
 }
 
 #[tokio::test]
-async fn reconciliation_without_an_eligible_key_records_semantic_retry() {
+async fn reconciliation_without_an_eligible_key_records_durable_input_retry() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 7, 15, 12, 0);
@@ -1590,19 +1590,35 @@ async fn reconciliation_without_an_eligible_key_records_semantic_retry() {
         .run_upstream_reconciliation_once("http://127.0.0.1:9")
         .await
         .expect("run reconciliation without a key");
-    let retry: (String, i64, i64, i64) = sqlx::query_as(
-        r#"SELECT last_outcome, semantic_failure_streak, semantic_retry_at,
+    let retry: (String, i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT last_outcome, next_attempt_at, semantic_failure_streak, semantic_retry_at,
                   completed_generation
            FROM upstream_reconciliation_work
            WHERE token_id = 'missing-key-token' AND period_code = '2026-07-15/S1'"#,
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read semantic retry state");
-    assert_eq!(retry.0, RECONCILIATION_OUTCOME_SEMANTIC_FAILURE);
-    assert_eq!(retry.1, 1);
-    assert_eq!(retry.2, now + 300);
-    assert_eq!(retry.3, 0, "retryable work must remain incomplete");
+    .expect("read durable input retry state");
+    assert_eq!(
+        retry.0,
+        RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY
+    );
+    assert_eq!(retry.1, now + 900);
+    assert_eq!(
+        retry.2, 0,
+        "input absence must not inflate semantic failure state"
+    );
+    assert_eq!(
+        retry.3, 0,
+        "input absence must not share semantic retry state"
+    );
+    assert_eq!(retry.4, 0, "retryable work must remain incomplete");
+
+    let status = proxy
+        .upstream_privacy_status()
+        .await
+        .expect("read aggregate input retry diagnostic");
+    assert_eq!(status.retry_buckets.missing_eligible_upstream_key, 1);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

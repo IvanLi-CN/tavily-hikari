@@ -241,11 +241,23 @@ impl KeyStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn accept_upstream_reconciliation_research_cursor(
         &self,
         cursor: Option<&UpstreamReconciliationResearchCursor>,
         _wrapped: bool,
         claimed_job: Option<(i64, i64)>,
+    ) -> Result<(), ProxyError> {
+        self.accept_upstream_reconciliation_research_page(cursor, _wrapped, claimed_job, false)
+            .await
+    }
+
+    pub(crate) async fn accept_upstream_reconciliation_research_page(
+        &self,
+        cursor: Option<&UpstreamReconciliationResearchCursor>,
+        _wrapped: bool,
+        claimed_job: Option<(i64, i64)>,
+        mark_sweep_completed: bool,
     ) -> Result<(), ProxyError> {
         let mut transaction = self.begin_reconciliation_control().await?;
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
@@ -270,6 +282,16 @@ impl KeyStore {
         .bind(self.backend_time.now_ts())
         .execute(&mut *transaction)
         .await?;
+        if mark_sweep_completed {
+            sqlx::query(
+                "INSERT INTO meta (key, value) VALUES (?, ?) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_RESEARCH_SWEEP_AT_V1)
+            .bind(self.backend_time.now_ts().to_string())
+            .execute(&mut *transaction)
+            .await?;
+        }
         transaction.finish(Ok(())).await
     }
 

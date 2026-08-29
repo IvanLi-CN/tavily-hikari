@@ -329,6 +329,7 @@ impl KeyStore {
         let mut retry_buckets = UpstreamReconciliationRetryBuckets {
             upstream_429: 0,
             local_usage_rate_limit: 0,
+            missing_eligible_upstream_key: 0,
             other: 0,
         };
         for (reason, count) in retry_rows {
@@ -338,9 +339,20 @@ impl KeyStore {
                 RECONCILIATION_RETRY_REASON_LOCAL_USAGE_RATE_LIMIT => {
                     retry_buckets.local_usage_rate_limit += count
                 }
+                RECONCILIATION_RETRY_REASON_MISSING_ELIGIBLE_UPSTREAM_KEY => {
+                    retry_buckets.missing_eligible_upstream_key += count
+                }
                 _ => retry_buckets.other += count,
             }
         }
+        snapshot.ensure_cooperative_run_budget()?;
+        retry_buckets.missing_eligible_upstream_key = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM upstream_reconciliation_work \
+             WHERE work_generation > completed_generation AND last_outcome = ?",
+        )
+        .bind(RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY)
+        .fetch_one(&mut **snapshot)
+        .await?;
 
         snapshot.ensure_cooperative_run_budget()?;
         let bound_rows = sqlx::query_as::<_, (String, i64)>(

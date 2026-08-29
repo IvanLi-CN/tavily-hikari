@@ -31,6 +31,13 @@ selection uses the due covering index with an 80-row keyset page, a four-per-key
 20-row sweep cap. A Research read-budget defer schedules one 30-second continuation without
 rewriting the main result or advancing the cursor.
 
+The two-second Research sweep reserves its final 500ms for local durable writes. A slow probe can
+use only the first 1.5 seconds; when it times out, persist a normalized `retry`/`timeout` outcome
+and its next poll before returning the 30-second continuation. Accept the cursor and sweep marker
+in one claim-fenced transaction only when the whole selected page has durable outcomes. A missing
+eligible upstream key is a separate fifteen-minute input retry and aggregate diagnostic, not a
+semantic failure or a billing decision.
+
 ## Activation controller
 
 Treat the existing precise-reconciliation switch as the sole operator action. Persist and replicate

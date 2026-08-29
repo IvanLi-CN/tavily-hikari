@@ -49,6 +49,7 @@ export interface UpstreamReconciliationAdjustment {
 export interface UpstreamReconciliationRetryBuckets {
   upstream429: number
   localUsageRateLimit: number
+  missingEligibleUpstreamKey?: number
   other: number
 }
 

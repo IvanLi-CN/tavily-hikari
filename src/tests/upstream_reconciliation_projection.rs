@@ -191,30 +191,33 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
             .expect("serve research upstream");
     });
 
-    // This direct helper has a short foreground-safe admission wait. Under a
-    // loaded shard, retry only its documented transient admission result; the
-    // test's subject is the bounded Research request, not pool arbitration.
-    let settled = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match proxy
-                .run_upstream_reconciliation_once(&format!("http://{addr}"))
-                .await
-            {
-                Ok(settled) => break settled,
-                Err(ProxyError::Other(message))
-                    if message.starts_with(
-                        "upstream reconciliation local preparation remained deferred",
-                    ) =>
-                {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(err) => panic!("run reconciliation with research-only work: {err}"),
-            }
-        }
-    })
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue claimed research representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim research representative")
+        .expect("research representative is claimed");
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        proxy.run_upstream_reconciliation_once_claimed_outcome(
+            &format!("http://{addr}"),
+            claim.id,
+            claim.claim_generation,
+        ),
+    )
     .await
-    .expect("admit research-only reconciliation within a bounded retry window");
-    assert_eq!(settled, 0);
+    .expect("run claimed research-only reconciliation within its bounded budget")
+    .expect("return a typed claimed outcome");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "research_budget",
+            retry_at,
+        } if retry_at == now + 30
+    ));
     assert!(research_started.load(Ordering::SeqCst));
     assert!(
         research_request_started_at
@@ -235,25 +238,31 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
         !budget_exhausted,
         "research's independent budget must not report primary local pressure"
     );
-
-    proxy.fail_next_reconciliation_research_read_for_test();
+    let research_retry: (Option<String>, Option<String>, i64, i64) = sqlx::query_as(
+        "SELECT last_poll_outcome, last_poll_error_kind, next_poll_at, poll_attempt_count \
+         FROM upstream_reconciliation_research WHERE request_id = 'research-budget-slow'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the durable outcome for the timed-out Research probe");
     assert_eq!(
-        proxy
-            .run_upstream_reconciliation_once(&format!("http://{addr}"))
-            .await
-            .expect("defer a transient research eligibility read"),
-        0
+        research_retry,
+        (
+            Some("retry".to_string()),
+            Some("timeout".to_string()),
+            now + 60,
+            1,
+        ),
+        "a bounded Research timeout must persist a retry before the scan cursor is accepted"
     );
-    let (streak, level, _) = proxy
-        .key_store
-        .upstream_reconciliation_local_backoff_state()
-        .await
-        .expect("read local pressure state after a preparation defer");
-    assert_eq!(
-        (streak, level),
-        (0, 0),
-        "an unclaimed preparation defer must not fabricate a durable local-pressure backoff"
-    );
+    let cursor: (i64, String, String) = sqlx::query_as(
+        "SELECT cursor_next_poll_at, cursor_key_id, cursor_request_id \
+         FROM upstream_reconciliation_research_scan_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unaccepted scan cursor after a bounded Research timeout");
+    assert_eq!(cursor, (-1, String::new(), String::new()));
 
     let (work_generation, completed_generation): (i64, i64) = sqlx::query_as(
         "SELECT work_generation, completed_generation FROM upstream_reconciliation_work \

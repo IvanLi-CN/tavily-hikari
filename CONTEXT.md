@@ -72,6 +72,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `retryable outcome`: `upstream_429`, `transport_failure`, `semantic_failure`, or
   `local_pressure`. It preserves the current work generation and its independent retry state until
   a later terminal outcome.
+- `missing eligible upstream key`: a durable nonterminal input condition. It records a fixed
+  fifteen-minute retry without incrementing semantic or transport failure state, and administrators
+  see only its aggregate count.
 - `transport failure kind`: a fixed, non-sensitive category (`connect`, `timeout`,
   `response_body`, `invalid_endpoint`, `credentials_or_database`, or `unknown`) attached to the
   local reconciliation observation. It is diagnostic state, never a terminal result or billing
@@ -87,7 +90,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   reserves a two-second post-finalization sweep and a two-second main durable-finalization boundary
   before beginning main remote work. Research still probes only after main finalization. The reserve
   may forego a second slow main-key request; no due Research leaves the normal main remote envelope
-  unchanged.
+  unchanged. The final 500ms of the Research sweep is a persistence reserve: an outbound probe
+  cannot consume it, and timeout retry state must commit before an incomplete page can defer.
 
 ## Observability Boundaries
 
