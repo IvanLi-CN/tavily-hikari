@@ -283,6 +283,10 @@ async fn remote_attempt_budget_defer_does_not_raise_local_pressure() {
         observation.continuation_reason.as_deref(),
         Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET)
     );
+    assert_eq!(
+        observation.last_retryable_outcome.as_deref(),
+        Some(RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET)
+    );
     assert_eq!(observation.next_retry_at, Some(now + 30));
 
     drop(proxy);

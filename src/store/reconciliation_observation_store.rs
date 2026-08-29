@@ -262,9 +262,15 @@ impl KeyStore {
             if preserve_retry_state {
                 sqlx::query(
                     r#"UPDATE upstream_reconciliation_run_observation
-                       SET continuation_reason = ?, next_retry_at = ?, observed_at = ?
+                       SET last_retryable_outcome = CASE
+                               WHEN ? = 'remote_attempt_budget' THEN ?
+                               ELSE last_retryable_outcome
+                           END,
+                           continuation_reason = ?, next_retry_at = ?, observed_at = ?
                        WHERE id = 'local'"#,
                 )
+                .bind(reason)
+                .bind(reason)
                 .bind(reason)
                 .bind(available_at)
                 .bind(now)
@@ -374,7 +380,8 @@ impl KeyStore {
                    last_transport_kind = COALESCE(?, last_transport_kind),
                    last_transport_kind_at = COALESCE(?, last_transport_kind_at),
                    last_retryable_outcome = CASE
-                       WHEN ? IN ('upstream_429', 'transport_failure', 'semantic_failure', 'local_pressure')
+                       WHEN ? IN ('upstream_429', 'transport_failure', 'semantic_failure',
+                                  'local_pressure', 'remote_attempt_budget')
                            THEN ?
                        WHEN ? IN ('settled', 'no_adjustment', 'observed')
                            THEN NULL
