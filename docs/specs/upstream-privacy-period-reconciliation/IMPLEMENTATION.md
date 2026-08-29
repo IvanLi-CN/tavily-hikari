@@ -62,6 +62,16 @@
   acceptance window is ten minutes: terminal rate must become positive while pending Research does
   not grow. `upstream429` remains a rate-limited settlement bucket and is not evidence of Research
   convergence or non-convergence.
+- Multi-key candidate observation is durable across runs. Successful key responses are stored by
+  `(token_id, period_code, work_generation, key_id)` in a local derived table; each run fills at most
+  two missing keys and records `remote_attempt_budget` for a 30-second continuation until the full
+  key set is present. Only then can the existing compare/active settlement path terminalize the work;
+  terminal completion removes the local rows without creating HA outbox events.
+- Multi-key candidate observation is durable across runs. Successful key responses are stored by
+  `(token_id, period_code, work_generation, key_id)` in a local derived table; each run fills at most
+  two missing keys and records `remote_attempt_budget` for a 30-second continuation until the full
+  key set is present. Only then can the existing compare/active settlement path terminalize the work;
+  terminal completion removes the local rows without creating HA outbox events.
 
 ## Remaining Gaps
 

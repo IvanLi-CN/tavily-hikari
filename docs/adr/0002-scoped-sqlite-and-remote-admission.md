@@ -51,6 +51,12 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   The primary candidate SQL remains unchanged; any rewrite there still requires separate evidence.
 - Due Research timing is governed by ADR 0003; it uses the same request-scoped remote admission
   boundary without extending the lease across local finalization.
+- A candidate that references multiple eligible upstream keys stores each successful key response in
+  a local, generation-scoped observation table. Each run requests at most two still-missing keys and
+  only computes a cross-key total after every current-generation key is present. The v22 ledger
+  migration creates this derived table and index without scanning usage or emitting HA events;
+  terminal completion removes the rows. Exhausting the request cap is a typed
+  `remote_attempt_budget` continuation at 30 seconds, never a semantic failure.
 
 ## Consequences
 
@@ -60,3 +66,6 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - Terminal diagnostics distinguish connection-scoped SQLite pages from process/cgroup I/O totals.
 - A native progress handler is an FFI boundary and therefore requires cleanup and pooled-connection
   regression coverage.
+- Partial key observations are node-local rebuildable state. Usage, work generation, settlement, and
+  billing adjustments remain the reconciliation truth shared through the existing ledger and HA
+  paths; a stale generation or claim cannot consume observations from another run.

@@ -91,6 +91,10 @@
 - The main reconciliation result is durably recorded before Research selection begins. Research
   uses its own indexed, keyset-scanned page (at most 80 rows, at most 4 per key and 20 swept per
   run); a Research read defer is independent of main transport, terminal, and billing state.
+- Multi-key main candidates persist successful per-key observations by current work generation.
+  A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
+  continuation when the candidate is still incomplete; cross-key summation and terminalization wait
+  until every current-generation key is present.
 - Historical usage projection has a versioned lifecycle independent of candidate selection. A
   pending upgrade projects one bounded page only after durable candidates drain, while new usage
   is maintained by triggers. A completed lifecycle must not requeue a completed no-adjustment

@@ -1,5 +1,9 @@
 use super::upstream_reconciliation::{local_ts, reconciliation_test_db_path};
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[tokio::test]
 async fn reconciliation_transport_observation_survives_a_following_non_transport_run() {
@@ -1685,9 +1689,280 @@ async fn reconciliation_does_not_partially_fetch_a_candidate_over_remote_limit()
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read multi-key retry state");
-    assert_eq!(state.0, RECONCILIATION_OUTCOME_SEMANTIC_FAILURE);
-    assert_eq!(state.1, 1);
+    assert_eq!(state.0, RECONCILIATION_OUTCOME_TRANSPORT_FAILURE);
+    assert_eq!(
+        state.1, 0,
+        "a transport failure must not inflate semantic backoff"
+    );
     assert_eq!(state.2, 0, "partial fetch must not complete work");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_multi_key_observations_resume_without_partial_terminal() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-multi-key-resume"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+
+    let mut key_ids = Vec::new();
+    for index in 0..3 {
+        key_ids.push(
+            proxy
+                .add_or_undelete_key(&format!("tvly-reconciliation-resume-{index}"))
+                .await
+                .expect("create upstream key"),
+        );
+    }
+    for key_id in &key_ids {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at,
+                 last_used_at, updated_at, settlement_mode
+               ) VALUES ('multi-key-resume-token', ?, '2026-07-15/S1', 'multi-key-resume-project',
+                         'token:multi-key-resume-token', ?, ?, 1, ?, ?, ?, 'shadow')"#,
+        )
+        .bind(key_id)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert multi-key usage");
+    }
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_for_route = Arc::clone(&request_count);
+    let app = Router::new().route(
+        "/usage",
+        get(move || {
+            let request_count = Arc::clone(&request_count_for_route);
+            async move {
+                request_count.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({ "key": { "usage": 5 } }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind usage upstream");
+    let address = listener.local_addr().expect("read usage upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve usage upstream");
+    });
+
+    let first = proxy
+        .run_upstream_reconciliation_once(&format!("http://{address}"))
+        .await
+        .expect("first run completes after durable budget defer");
+    assert_eq!(first, 0, "partial observations must not be terminalized");
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+    let partial: (i64, String, i64) = sqlx::query_as(
+        r#"SELECT COUNT(*), last_outcome, completed_generation
+           FROM upstream_reconciliation_key_observations o
+           JOIN upstream_reconciliation_work w
+             ON w.token_id = o.token_id AND w.period_code = o.period_code
+          WHERE o.token_id = 'multi-key-resume-token' AND o.work_generation = w.work_generation"#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read partial observations");
+    assert_eq!(partial.0, 2);
+    assert_eq!(partial.1, RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET);
+    assert_eq!(partial.2, 0);
+
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_work
+              SET next_attempt_at = 0
+            WHERE token_id = 'multi-key-resume-token' AND period_code = '2026-07-15/S1'"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("make continuation due");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_settlements
+              SET next_attempt_at = NULL
+            WHERE settlement_key = 'v1:multi-key-resume-token:2026-07-15/S1'"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("make settlement continuation due");
+
+    let resumed = proxy
+        .run_upstream_reconciliation_once(&format!("http://{address}"))
+        .await
+        .expect("resume missing key and complete observation");
+    assert_eq!(resumed, 1);
+    assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    let observation_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = 'multi-key-resume-token'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed observation state");
+    assert_eq!(
+        observation_count.0, 0,
+        "terminal completion clears local observations"
+    );
+    let final_state: (i64, i64, String) = sqlx::query_as(
+        r#"SELECT work_generation, completed_generation, last_outcome
+             FROM upstream_reconciliation_work
+            WHERE token_id = 'multi-key-resume-token' AND period_code = '2026-07-15/S1'"#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed reconciliation work");
+    assert_eq!(final_state.0, final_state.1);
+    assert_eq!(final_state.2, RECONCILIATION_OUTCOME_OBSERVED);
+    let settlement: (i64, i64) = sqlx::query_as(
+        "SELECT delta_credits, attempt_count FROM upstream_reconciliation_settlements WHERE settlement_key = 'v1:multi-key-resume-token:2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read shadow settlement");
+    assert_eq!(settlement.0, 15);
+    assert_eq!(
+        settlement.1, 2,
+        "partial run and resumed run are two attempts"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-key-observation-fence"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: "key-observation-fence-token".to_string(),
+        period_code: "2026-07-15/S1".to_string(),
+        project_id: "key-observation-fence-project".to_string(),
+        billing_subject: "token:key-observation-fence-token".to_string(),
+        settlement_mode: "shadow".to_string(),
+        period_start: now - 4_000,
+        period_end: now - 900,
+        pending_research: 0,
+        degraded: false,
+    };
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_work (
+             token_id, period_code, project_id, billing_subject, settlement_mode,
+             period_start, period_end, scheduling_key_id, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'key-observation-fence-key', ?)
+        "#,
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .bind(&candidate.project_id)
+    .bind(&candidate.billing_subject)
+    .bind(&candidate.settlement_mode)
+    .bind(candidate.period_start)
+    .bind(candidate.period_end)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert durable work");
+
+    let stale_generation = proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            2,
+            &[ReconciliationKeyObservation {
+                key_id: "key-observation-fence-key".to_string(),
+                upstream_usage: 7,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 2,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("stale generation is handled");
+    assert!(!stale_generation);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
+    )
+    .bind(&candidate.token_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rejected generation observations");
+    assert_eq!(count, 0);
+
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    clock.set_now_ts(now + 61);
+    assert_eq!(proxy.recover_stale_scheduled_jobs().await.unwrap(), 1);
+    let stale_claim = proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            1,
+            &[ReconciliationKeyObservation {
+                key_id: "key-observation-fence-key".to_string(),
+                upstream_usage: 7,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 1,
+                claimed_job: Some((claim.id, claim.claim_generation)),
+            }),
+        )
+        .await
+        .expect("stale claim is handled");
+    assert!(!stale_claim);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
+    )
+    .bind(&candidate.token_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rejected stale-claim observations");
+    assert_eq!(count, 0);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

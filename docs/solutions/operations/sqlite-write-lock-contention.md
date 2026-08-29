@@ -57,6 +57,16 @@ related_specs:
 - Keep Research source reads bounded by the covering due index and a stable keyset page. Accept the
   cursor only in the claim-fenced control transaction after the page is safely processed; pressure
   or cancellation must leave both the cursor and durable work retryable.
+- Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
+  They upsert only successful responses for the current work generation, while the two-request cap is
+  represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal
+  completion, so writer contention cannot turn a partial remote sample into semantic failure or lose
+  billing truth.
+- Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
+  They upsert only successful responses for the current work generation, while the two-request cap is
+  represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal
+  completion, so writer contention cannot turn a partial remote sample into semantic failure or lose
+  billing truth.
 
 ## Context
 

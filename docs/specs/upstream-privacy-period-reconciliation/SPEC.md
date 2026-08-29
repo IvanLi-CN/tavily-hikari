@@ -140,6 +140,22 @@
   most four are selected per key. A remote Research timeout writes a normalized retry before
   returning `research_budget`; the cursor and sweep marker are accepted atomically only after the
   full claimed page has durable outcomes.
+- When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
+  response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
+  run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second
+  continuation while the set is incomplete. Sum usage and enter the existing compare/active terminal
+  path only after all current-generation keys are observed; a partial observation never becomes a
+  semantic failure or terminal result. Terminal completion clears these node-local rows, and
+  generation or claim fencing ignores stale observations. The observation table is derived state,
+  not HA outbox truth.
+- When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
+  response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
+  run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second
+  continuation while the set is incomplete. Sum usage and enter the existing compare/active terminal
+  path only after all current-generation keys are observed; a partial observation never becomes a
+  semantic failure or terminal result. Terminal completion clears these node-local rows, and
+  generation or claim fencing ignores stale observations. The observation table is derived state,
+  not HA outbox truth.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）

@@ -75,6 +75,13 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `missing eligible upstream key`: a durable nonterminal input condition. It records a fixed
   fifteen-minute retry without incrementing semantic or transport failure state, and administrators
   see only its aggregate count.
+- `partial key observation`: a node-local, generation-scoped successful upstream usage response for
+  one key in a multi-key candidate. It is rebuildable diagnostic state, never a terminal result or
+  HA outbox truth. The engine requests at most two missing keys per run and cannot sum or complete
+  the candidate until every current-generation key is observed.
+- `remote attempt budget`: the typed nonterminal continuation used when a candidate still has missing
+  keys after the two-request run cap. It schedules one claim-fenced representative 30 seconds later
+  without incrementing semantic, transport, 429, or local-pressure streaks.
 - `transport failure kind`: a fixed, non-sensitive category (`connect`, `timeout`,
   `response_body`, `invalid_endpoint`, `credentials_or_database`, or `unknown`) attached to the
   local reconciliation observation. It is diagnostic state, never a terminal result or billing

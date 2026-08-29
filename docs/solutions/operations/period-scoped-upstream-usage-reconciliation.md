@@ -38,6 +38,20 @@ in one claim-fenced transaction only when the whole selected page has durable ou
 eligible upstream key is a separate fifteen-minute input retry and aggregate diagnostic, not a
 semantic failure or a billing decision.
 
+For a period that maps to more than one eligible upstream key, persist each successful key observation
+by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
+write `remote_attempt_budget` and schedule one durable 30-second continuation; do not write a semantic
+failure or terminal result. Sum usage and enter the existing compare/active terminal path only after
+all current-generation key observations are present. Delete the local observations atomically with
+terminal completion, and fence both observation writes and reads by claim generation.
+
+For a period that maps to more than one eligible upstream key, persist each successful key observation
+by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
+write `remote_attempt_budget` and schedule one durable 30-second continuation; do not write a semantic
+failure or terminal result. Sum usage and enter the existing compare/active terminal path only after
+all current-generation key observations are present. Delete the local observations atomically with
+terminal completion, and fence both observation writes and reads by claim generation.
+
 ## Activation controller
 
 Treat the existing precise-reconciliation switch as the sole operator action. Persist and replicate

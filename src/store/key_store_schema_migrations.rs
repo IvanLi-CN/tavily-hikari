@@ -81,6 +81,13 @@ const RECONCILIATION_RESEARCH_SELECTION_VERSION: i64 = 21;
 const RECONCILIATION_RESEARCH_SELECTION_NAME: &str = "reconciliation-research-selection-v1";
 const RECONCILIATION_RESEARCH_SELECTION_CHECKSUM: &str =
     "sha256:2b9b3c74d8a1e5f6c7b8d9e0f1a2b3c4";
+// Version 21 is already occupied by the research scan cursor on deployed
+// databases. Keep the key-observation state additive at the next ledger slot
+// so rolling upgrades never rewrite an existing migration record.
+const RECONCILIATION_KEY_OBSERVATION_VERSION: i64 = 22;
+const RECONCILIATION_KEY_OBSERVATION_NAME: &str = "reconciliation-key-observation-v1";
+const RECONCILIATION_KEY_OBSERVATION_CHECKSUM: &str =
+    "sha256:9c8d8f2d3c75a9a0f0c6b2e19d6b7a11";
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
@@ -783,6 +790,11 @@ impl KeyStore {
                 RECONCILIATION_RESEARCH_SELECTION_NAME,
                 RECONCILIATION_RESEARCH_SELECTION_CHECKSUM,
             ),
+            (
+                RECONCILIATION_KEY_OBSERVATION_VERSION,
+                RECONCILIATION_KEY_OBSERVATION_NAME,
+                RECONCILIATION_KEY_OBSERVATION_CHECKSUM,
+            ),
         ];
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
@@ -932,6 +944,24 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 21".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(RECONCILIATION_KEY_OBSERVATION_VERSION)
+            .await?
+            && (!self
+                .schema_object_exists("main", "upstream_reconciliation_key_observations")
+                .await?
+                || !self
+                    .schema_named_object_exists(
+                        "main",
+                        "index",
+                        "idx_reconciliation_key_observations_generation",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 22".to_string(),
             ));
         }
         if self
@@ -1690,6 +1720,34 @@ impl KeyStore {
         .await
     }
 
+    async fn apply_reconciliation_key_observation_migration(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_key_observations (
+                token_id TEXT NOT NULL,
+                period_code TEXT NOT NULL,
+                work_generation INTEGER NOT NULL,
+                key_id TEXT NOT NULL,
+                upstream_usage INTEGER NOT NULL,
+                observed_at INTEGER NOT NULL,
+                PRIMARY KEY (token_id, period_code, work_generation, key_id)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_reconciliation_key_observations_generation \
+             ON upstream_reconciliation_key_observations(token_id, period_code, work_generation, key_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            RECONCILIATION_KEY_OBSERVATION_VERSION,
+            RECONCILIATION_KEY_OBSERVATION_NAME,
+            RECONCILIATION_KEY_OBSERVATION_CHECKSUM,
+        )
+        .await
+    }
+
     async fn apply_reconciliation_work_migration(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_work (
@@ -2128,6 +2186,12 @@ impl KeyStore {
             self.apply_reconciliation_research_selection_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(RECONCILIATION_KEY_OBSERVATION_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_key_observation_migration().await?;
+        }
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -2183,6 +2247,7 @@ impl KeyStore {
             .await?;
         self.apply_reconciliation_research_selection_migration()
             .await?;
+        self.apply_reconciliation_key_observation_migration().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -2190,7 +2255,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 21_i64,
+            migration_count = 22_i64,
         );
         Ok(())
     }

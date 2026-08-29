@@ -1279,14 +1279,18 @@ impl TavilyProxy {
                     skipped_by_key_backoff += 1;
                     continue;
                 }
-                let mut upstream_usage = 0_i64;
+                let observed_key_usage = self
+                    .key_store
+                    .reconciliation_key_observations(&candidate, work_generation, &key_ids)
+                    .await?;
+                let mut upstream_usage = observed_key_usage.values().copied().sum::<i64>();
                 let mut retry_at = None;
                 let mut retry_reason = None;
                 let mut retry_key_id = None;
                 let mut retry_outcome = None;
                 let mut candidate_attempted = false;
                 let key_count = key_ids.len();
-                let mut successful_key_count = 0_usize;
+                let mut successful_key_count = observed_key_usage.len();
                 if key_count == 0 {
                     other_retry_windows += 1;
                     self.key_store
@@ -1304,36 +1308,14 @@ impl TavilyProxy {
                         .await?;
                     continue;
                 }
-                let remaining_remote_attempts = ReconciliationEngine::MAX_REMOTE_ATTEMPTS
-                    .saturating_sub(remote_request_count) as usize;
-                if key_count > remaining_remote_attempts {
-                    if remote_request_count > 0 {
-                        remote_attempt_limit_reached = true;
-                        budget_exhausted = true;
-                        break 'candidates;
-                    }
-                    semantic_failure_windows += 1;
-                    other_retry_windows += 1;
-                    self.key_store
-                        .mark_reconciliation_retry(
-                            &candidate,
-                            "waiting",
-                            self.backend_time.now_ts(),
-                            Some("candidate exceeds remote request limit"),
-                            RECONCILIATION_OUTCOME_SEMANTIC_FAILURE,
-                            Some(ReconciliationWorkFence {
-                                work_generation,
-                                claimed_job,
-                            }),
-                        )
-                        .await?;
-                    continue;
-                }
-                for key_id in key_ids {
+                let missing_key_ids = key_ids
+                    .into_iter()
+                    .filter(|key_id| !observed_key_usage.contains_key(key_id))
+                    .collect::<Vec<_>>();
+                for key_id in missing_key_ids {
                     if remote_request_count >= ReconciliationEngine::MAX_REMOTE_ATTEMPTS {
                         remote_attempt_limit_reached = true;
-                        budget_exhausted = true;
-                        break 'candidates;
+                        break;
                     }
                     // The two-second limit applies only to local candidate
                     // preparation. Once a remote request has started, allow
@@ -1408,6 +1390,31 @@ impl TavilyProxy {
                         Ok(Ok(usage)) => {
                             upstream_usage = upstream_usage.saturating_add(usage);
                             successful_key_count += 1;
+                            let persisted = self
+                                .key_store
+                                .persist_reconciliation_key_observations(
+                                    &candidate,
+                                    work_generation,
+                                    &[ReconciliationKeyObservation {
+                                        key_id: key_id.clone(),
+                                        upstream_usage: usage,
+                                    }],
+                                    Some(ReconciliationWorkFence {
+                                        work_generation,
+                                        claimed_job,
+                                    }),
+                                )
+                                .await?;
+                            if !persisted {
+                                if let Some((job_id, claim_generation)) = claimed_job {
+                                    return Err(ProxyError::StaleClaim {
+                                        job_id,
+                                        claim_generation,
+                                    });
+                                }
+                                budget_exhausted = true;
+                                break;
+                            }
                         }
                         Ok(Err((err, upstream_retry_at))) => {
                             let outcome = if matches!(
@@ -1443,10 +1450,7 @@ impl TavilyProxy {
                         }
                     }
                 }
-                if budget_exhausted {
-                    break;
-                }
-                    if let (Some(_retry_reason), Some(retry_key_id)) = (retry_reason, retry_key_id) {
+                if let (Some(_retry_reason), Some(retry_key_id)) = (retry_reason, retry_key_id) {
                         if let Some((job_id, claim_generation)) = claimed_job
                             && !self
                                 .key_store
@@ -1535,7 +1539,28 @@ impl TavilyProxy {
                             cooldown_until,
                             affected_window_count,
                         );
-                        continue;
+                    continue;
+                }
+                if successful_key_count != key_count && remote_attempt_limit_reached {
+                    remote_attempt_limit_reached = true;
+                    budget_exhausted = true;
+                    other_retry_windows += 1;
+                    self.key_store
+                        .mark_reconciliation_retry(
+                            &candidate,
+                            "waiting",
+                            self.backend_time.now_ts().saturating_add(
+                                ReconciliationEngine::DEFER_RETRY_DELAY_SECS,
+                            ),
+                            Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET),
+                            RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET,
+                            Some(ReconciliationWorkFence {
+                                work_generation,
+                                claimed_job,
+                            }),
+                        )
+                        .await?;
+                    break 'candidates;
                 }
                 if successful_key_count != key_count {
                     budget_exhausted = true;
@@ -1620,7 +1645,17 @@ impl TavilyProxy {
         }
         let research_started_at = std::time::Instant::now();
         let mut research_defer_reason: Option<&'static str> = None;
+        let remote_attempt_budget_deferred = result
+            .as_ref()
+            .is_ok_and(|value| value.remote_attempt_limit_reached);
+        if remote_attempt_budget_deferred {
+            // Main work has durable partial observations but still needs one or
+            // more keys. Do not let Research consume the remaining dispatch
+            // turn before the candidate can resume on its own continuation.
+            research_defer_reason = Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET);
+        }
         let research_page = if result.is_ok()
+            && !remote_attempt_budget_deferred
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
         {
@@ -2055,6 +2090,11 @@ impl TavilyProxy {
                 let next_retry_at = [local_backoff_until, backoff_until]
                     .into_iter()
                     .filter(|value| *value > self.backend_time.now_ts())
+                    .chain(remote_attempt_budget_deferred.then(|| {
+                        self.backend_time
+                            .now_ts()
+                            .saturating_add(ReconciliationEngine::DEFER_RETRY_DELAY_SECS)
+                    }))
                     .max();
                 await_reconciliation_post_process(
                     post_process_deadline,
@@ -2085,7 +2125,11 @@ impl TavilyProxy {
                                             | ReconciliationOutcome::LocalPressure
                                     )
                                 })
-                                .map(ReconciliationOutcome::as_str),
+                                .map(ReconciliationOutcome::as_str)
+                                .or_else(|| {
+                                    remote_attempt_budget_deferred
+                                        .then_some(RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET)
+                                }),
                             continuation_reason: research_defer_reason
                                 .or_else(|| reconciliation_outcome.map(|value| value.as_str())),
                             next_retry_at,

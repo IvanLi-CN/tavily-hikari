@@ -58,6 +58,9 @@
 - Research diagnostics report only page size, selected/swept counts, cursor advance or wrap, read
   deadline/defer counts, and terminal/pending deltas. The stable composite cursor and source rows
   remain private; main outcome and Research defer are separate aggregate fields.
+- Reconciliation diagnostics also aggregate partial-key observations, multi-key pending candidates,
+  `remote_attempt_budget` defers, resumed runs, and terminal completions. They expose counts only;
+  token ids, key ids, SQL, and upstream response content remain private.
 - Dashboard read-model invalidation is a durable business-write signal, not only a request-statistics
   signal. A successful quota or other overview-visible write advances the shared dirty generation;
   the read model coalesces dirty rebuilds to at most once per ten seconds and uses a sixty-second
