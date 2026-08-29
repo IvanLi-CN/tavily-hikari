@@ -1509,9 +1509,10 @@ impl TavilyProxy {
         }
         let research_started_at = std::time::Instant::now();
         let mut research_defer_reason: Option<&'static str> = None;
-        let remote_attempt_budget_deferred = result
-            .as_ref()
-            .is_ok_and(|value| value.remote_attempt_limit_reached);
+        let remote_attempt_budget_deferred = claimed_job.is_some()
+            && result
+                .as_ref()
+                .is_ok_and(|value| value.remote_attempt_limit_reached);
         if remote_attempt_budget_deferred {
             // Main work has durable partial observations but still needs one or
             // more keys. Do not let Research consume the remaining dispatch
