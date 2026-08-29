@@ -120,6 +120,9 @@ describe('SystemSettingsModule rendering', () => {
     expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('当前 UTC 月')
     expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('唯一')
     expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('不是请求次数')
+    expect(zhStrings.form.requestRateLimitHint).toContain('每个已绑定用户')
+    expect(zhStrings.form.requestRateLimitHint).toContain('多个 Token 共享')
+    expect(zhStrings.form.requestRateLimitHint).toContain('未绑定用户的 Token')
     expect(zhStrings.form.authTokenLogRetentionDaysHint).toContain('保留窗口')
     expect(zhStrings.form.globalIpLimitHint).toContain('不会拦截请求')
     expect(markup).toContain('配置可信 IP')
@@ -131,6 +134,13 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).not.toContain(zhStrings.form.percentLabel)
     expect(markup).not.toContain(zhStrings.form.apiRebalancePercentLabel)
     expect(markup).not.toContain(zhStrings.form.applyScopeHint)
+  })
+
+  it('keeps request-rate scope explicit in both translation sets', () => {
+    expect(zhStrings.form.requestRateLimitHint).toContain('每个已绑定用户')
+    expect(zhStrings.form.requestRateLimitHint).toContain('未绑定用户的 Token 按 Token 分别计数')
+    expect(enStrings.form.requestRateLimitHint).toContain('each bound user')
+    expect(enStrings.form.requestRateLimitHint).toContain('Unbound tokens are counted separately per token')
   })
 
   it('renders the auth token retention copy from the provided translation set', () => {
