@@ -227,7 +227,9 @@ impl KeyStore {
         let result = async {
             let preserve_retry_state = matches!(
                 reason,
-                "research_read_budget" | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
+                "research_read_budget"
+                    | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
+                    | RECONCILIATION_RETRY_REASON_GENERATION_CHANGED
             );
             let local_backoff_until = if preserve_retry_state {
                 sqlx::query_scalar::<_, String>(

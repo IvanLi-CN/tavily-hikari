@@ -645,6 +645,18 @@ export default function UpstreamPrivacyStatusModule({
                     : `${numberFormatter.format(status.reconciliationRunObservation.settled)} / ${numberFormatter.format(status.reconciliationRunObservation.noAdjustment)} / ${numberFormatter.format(status.reconciliationRunObservation.observed)}`}
                 />
                 <PrivacyStat
+                  label={language === 'zh' ? '多 key 观测 / 待续跑' : 'Multi-key observed / pending'}
+                  value={status.reconciliationRunObservation == null
+                    ? strings.statusMissing
+                    : `${numberFormatter.format(status.reconciliationRunObservation.partialKeyObservations)} / ${numberFormatter.format(status.reconciliationRunObservation.multiKeyPending)}`}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? '远端预算让步 / 恢复 / 终态' : 'Remote budget defers / resumed / terminal'}
+                  value={status.reconciliationRunObservation == null
+                    ? strings.statusMissing
+                    : `${numberFormatter.format(status.reconciliationRunObservation.remoteAttemptBudgetDefers)} / ${numberFormatter.format(status.reconciliationRunObservation.resumedRuns)} / ${numberFormatter.format(status.reconciliationRunObservation.terminalRuns)}`}
+                />
+                <PrivacyStat
                   label={language === 'zh' ? '429 / 传输 / 语义 / 本地压力' : '429 / transport / semantic / local pressure'}
                   value={status.reconciliationRunObservation == null
                     ? strings.statusMissing

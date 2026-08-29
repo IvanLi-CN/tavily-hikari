@@ -21,6 +21,7 @@ pub(crate) const RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY: &str =
     "missing_eligible_upstream_key";
 pub(crate) const RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET: &str =
     "remote_attempt_budget";
+pub(crate) const RECONCILIATION_RETRY_REASON_GENERATION_CHANGED: &str = "generation_changed";
 pub(crate) const RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET: &str =
     "remote_attempt_budget";
 pub(crate) const RECONCILIATION_OUTCOME_LOCAL_PRESSURE: &str = "local_pressure";
@@ -95,6 +96,9 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
     }
     if reason == RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET {
         return RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET;
+    }
+    if reason == RECONCILIATION_RETRY_REASON_GENERATION_CHANGED {
+        return RECONCILIATION_RETRY_REASON_GENERATION_CHANGED;
     }
     if reason.starts_with("usage http error 429 ") {
         return RECONCILIATION_RETRY_REASON_UPSTREAM_429;

@@ -35,6 +35,7 @@ struct ReconciliationRunResult {
     partial_key_observations: i64,
     multi_key_pending: i64,
     resumed_runs: i64,
+    generation_changed: bool,
 }
 
 struct ReconciliationFinalizationResult {

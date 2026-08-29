@@ -1108,6 +1108,7 @@ impl TavilyProxy {
             let mut partial_key_observations = 0_i64;
             let mut multi_key_pending = 0_i64;
             let mut resumed_run = false;
+            let mut generation_changed = false;
             let mut observed_candidates = Vec::<(
                 UpstreamReconciliationCandidate,
                 i64,
@@ -1281,15 +1282,23 @@ impl TavilyProxy {
                                     }),
                                 )
                                 .await?;
-                            if !persisted {
-                                if let Some((job_id, claim_generation)) = claimed_job {
-                                    return Err(ProxyError::StaleClaim {
-                                        job_id,
-                                        claim_generation,
-                                    });
+                            match persisted {
+                                ReconciliationKeyObservationPersistOutcome::Persisted => {}
+                                ReconciliationKeyObservationPersistOutcome::StaleClaim => {
+                                    if let Some((job_id, claim_generation)) = claimed_job {
+                                        return Err(ProxyError::StaleClaim {
+                                            job_id,
+                                            claim_generation,
+                                        });
+                                    }
+                                    budget_exhausted = true;
+                                    break;
                                 }
-                                budget_exhausted = true;
-                                break;
+                                ReconciliationKeyObservationPersistOutcome::StaleGeneration => {
+                                    generation_changed = true;
+                                    budget_exhausted = true;
+                                    break 'candidates;
+                                }
                             }
                             if key_count > 1 {
                                 partial_key_observations =
@@ -1513,9 +1522,21 @@ impl TavilyProxy {
                 partial_key_observations,
                 multi_key_pending,
                 resumed_runs: i64::from(resumed_run),
+                generation_changed,
             })
         }
         .await;
+        if claimed_job.is_some() && result.as_ref().is_ok_and(|value| value.generation_changed) {
+            tracing::debug!(
+                component = "reconciliation",
+                event = "generation_changed_during_observation",
+                "reconciliation claim remains current but its work generation changed; deferring for a fenced continuation"
+            );
+            return Ok(ReconciliationEngine::deferred(
+                self,
+                RECONCILIATION_RETRY_REASON_GENERATION_CHANGED,
+            ));
+        }
         if let Some((job_id, claim_generation)) = claimed_job
             && !self
                 .key_store
@@ -1683,6 +1704,7 @@ impl TavilyProxy {
                 partial_key_observations,
                 multi_key_pending,
                 resumed_runs,
+                generation_changed: _,
             }) => {
                 let remote_attempt_metrics = remote_attempt_admission
                     .as_ref()

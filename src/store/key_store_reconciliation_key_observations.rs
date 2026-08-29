@@ -6,6 +6,13 @@ pub(crate) struct ReconciliationKeyObservation {
     pub(crate) upstream_usage: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReconciliationKeyObservationPersistOutcome {
+    Persisted,
+    StaleGeneration,
+    StaleClaim,
+}
+
 impl KeyStore {
     pub(crate) async fn reconciliation_key_observations(
         &self,
@@ -52,20 +59,31 @@ impl KeyStore {
         work_generation: i64,
         observations: &[ReconciliationKeyObservation],
         fence: Option<ReconciliationWorkFence>,
-    ) -> Result<bool, ProxyError> {
+    ) -> Result<ReconciliationKeyObservationPersistOutcome, ProxyError> {
         if observations.is_empty() {
-            return Ok(true);
+            return Ok(ReconciliationKeyObservationPersistOutcome::Persisted);
         }
         let mut tx = self
             .sqlite_runtime
             .begin_immediate(SqliteOperation::ReconciliationProjection)
             .await?;
+
+        match self
+            .reconciliation_key_observation_fence_status(&mut tx, candidate, work_generation, fence)
+            .await?
+        {
+            ReconciliationKeyObservationPersistOutcome::Persisted => {}
+            stale => {
+                tx.rollback().await?;
+                return Ok(stale);
+            }
+        }
         if !self
             .lock_reconciliation_work_generation(&mut tx, candidate, fence)
             .await?
         {
             tx.rollback().await?;
-            return Ok(false);
+            return Ok(ReconciliationKeyObservationPersistOutcome::StaleClaim);
         }
         // A new usage generation must never reuse a previous generation's
         // local observations. Stale rows are rebuildable and are removed only
@@ -99,7 +117,50 @@ impl KeyStore {
             .await?;
         }
         tx.finish(Ok(())).await?;
-        Ok(true)
+        Ok(ReconciliationKeyObservationPersistOutcome::Persisted)
+    }
+
+    async fn reconciliation_key_observation_fence_status(
+        &self,
+        tx: &mut SqliteImmediateTransaction,
+        candidate: &UpstreamReconciliationCandidate,
+        work_generation: i64,
+        fence: Option<ReconciliationWorkFence>,
+    ) -> Result<ReconciliationKeyObservationPersistOutcome, ProxyError> {
+        if fence.is_none() {
+            return Ok(ReconciliationKeyObservationPersistOutcome::Persisted);
+        }
+        if let Some((job_id, claim_generation)) = fence.and_then(|fence| fence.claimed_job) {
+            let current_claim = sqlx::query_scalar::<_, i64>(
+                "SELECT claim_generation FROM scheduled_jobs
+                  WHERE id = ? AND status = 'running'",
+            )
+            .bind(job_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if current_claim != Some(claim_generation) {
+                return Ok(ReconciliationKeyObservationPersistOutcome::StaleClaim);
+            }
+        }
+
+        let Some((current_generation, completed_generation)) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT work_generation, completed_generation
+               FROM upstream_reconciliation_work
+              WHERE token_id = ? AND period_code = ?",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            return Ok(ReconciliationKeyObservationPersistOutcome::StaleGeneration);
+        };
+
+        if current_generation != work_generation || completed_generation >= current_generation {
+            return Ok(ReconciliationKeyObservationPersistOutcome::StaleGeneration);
+        }
+
+        Ok(ReconciliationKeyObservationPersistOutcome::Persisted)
     }
 
     async fn clear_reconciliation_key_observations(

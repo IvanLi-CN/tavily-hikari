@@ -2067,7 +2067,10 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
         )
         .await
         .expect("stale generation is handled");
-    assert!(!stale_generation);
+    assert!(matches!(
+        stale_generation,
+        ReconciliationKeyObservationPersistOutcome::StaleGeneration
+    ));
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
     )
@@ -2104,7 +2107,10 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
         )
         .await
         .expect("stale claim is handled");
-    assert!(!stale_claim);
+    assert!(matches!(
+        stale_claim,
+        ReconciliationKeyObservationPersistOutcome::StaleClaim
+    ));
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
     )
@@ -2113,6 +2119,82 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
     .await
     .expect("read rejected stale-claim observations");
     assert_eq!(count, 0);
+
+    sqlx::query(
+        "UPDATE scheduled_jobs SET available_at = 0 WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("make recovered representative due");
+    let queued_generation_change = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue generation-change representative");
+    let generation_claim = proxy
+        .scheduled_job_mark_running(queued_generation_change.job_id)
+        .await
+        .expect("claim generation-change representative")
+        .expect("generation-change representative is claimed");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_work
+              SET work_generation = 2, completed_generation = 0
+            WHERE token_id = ? AND period_code = ?"#,
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance work generation while claim remains current");
+    let generation_changed = proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            1,
+            &[ReconciliationKeyObservation {
+                key_id: "key-observation-fence-key".to_string(),
+                upstream_usage: 7,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 1,
+                claimed_job: Some((generation_claim.id, generation_claim.claim_generation)),
+            }),
+        )
+        .await
+        .expect("generation change is classified without losing the claim");
+    assert!(matches!(
+        generation_changed,
+        ReconciliationKeyObservationPersistOutcome::StaleGeneration
+    ));
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            generation_claim.id,
+            generation_claim.claim_generation,
+            RECONCILIATION_RETRY_REASON_GENERATION_CHANGED,
+            now + 90,
+        )
+        .await
+        .expect("generation change has a durable continuation");
+    let generation_claim_status: String =
+        sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
+            .bind(generation_claim.id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read generation-change claim status");
+    assert_eq!(generation_claim_status, "success");
+    let active_representatives: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count generation-change representatives");
+    assert_eq!(active_representatives, 1);
+    let continuation_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(continuation.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read generation-change continuation");
+    assert_eq!(continuation_at, now + 90);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);
