@@ -32,6 +32,9 @@ struct ReconciliationRunResult {
     hydrate_ms: i64,
     first_remote_ms: Option<i64>,
     remote_ms: i64,
+    partial_key_observations: i64,
+    multi_key_pending: i64,
+    resumed_runs: i64,
 }
 
 struct ReconciliationFinalizationResult {

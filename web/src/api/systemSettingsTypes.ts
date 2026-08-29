@@ -114,6 +114,12 @@ export interface ReconciliationRunObservation {
   transportFailure: number
   semanticFailure: number
   localPressure: number
+  /** Count-only diagnostics for bounded multi-key reconciliation progress. */
+  partialKeyObservations: number
+  multiKeyPending: number
+  remoteAttemptBudgetDefers: number
+  resumedRuns: number
+  terminalRuns: number
   lastTransportKind?: 'connect' | 'timeout' | 'response_body' | 'invalid_endpoint' | 'credentials_or_database' | 'unknown' | string | null
   lastTransportKindAt?: number | null
   lastRetryableOutcome?: string | null

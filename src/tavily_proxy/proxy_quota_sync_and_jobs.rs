@@ -735,6 +735,11 @@ impl TavilyProxy {
                         transport_failure: 0,
                         semantic_failure: 0,
                         local_pressure: 0,
+                        partial_key_observations: 0,
+                        multi_key_pending: 0,
+                        remote_attempt_budget_defers: 0,
+                        resumed_runs: 0,
+                        terminal_runs: 0,
                         last_transport_kind: None,
                         last_retryable_outcome: None,
                         continuation_reason: None,
@@ -1100,6 +1105,9 @@ impl TavilyProxy {
             let mut first_remote_ms = None;
             let remote_phase_started = std::time::Instant::now();
             let mut remote_attempt_limit_reached = false;
+            let mut partial_key_observations = 0_i64;
+            let mut multi_key_pending = 0_i64;
+            let mut resumed_run = false;
             let mut observed_candidates = Vec::<(
                 UpstreamReconciliationCandidate,
                 i64,
@@ -1147,6 +1155,7 @@ impl TavilyProxy {
                     .key_store
                     .reconciliation_key_observations(&candidate, work_generation, &key_ids)
                     .await?;
+                resumed_run |= !observed_key_usage.is_empty();
                 let mut upstream_usage = observed_key_usage
                     .values()
                     .copied()
@@ -1282,6 +1291,10 @@ impl TavilyProxy {
                                 budget_exhausted = true;
                                 break;
                             }
+                            if key_count > 1 {
+                                partial_key_observations =
+                                    partial_key_observations.saturating_add(1);
+                            }
                         }
                         Ok(Err((err, upstream_retry_at))) => {
                             let outcome = if matches!(
@@ -1318,6 +1331,9 @@ impl TavilyProxy {
                     }
                 }
                 if let (Some(_retry_reason), Some(retry_key_id)) = (retry_reason, retry_key_id) {
+                        if key_count > 1 && successful_key_count < key_count {
+                            multi_key_pending = multi_key_pending.saturating_add(1);
+                        }
                         if let Some((job_id, claim_generation)) = claimed_job
                             && !self
                                 .key_store
@@ -1408,7 +1424,8 @@ impl TavilyProxy {
                         );
                     continue;
                 }
-                if successful_key_count != key_count && remote_attempt_limit_reached {
+                if key_count > 1 && successful_key_count != key_count && remote_attempt_limit_reached {
+                    multi_key_pending = multi_key_pending.saturating_add(1);
                     remote_attempt_limit_reached = true;
                     budget_exhausted = true;
                     other_retry_windows += 1;
@@ -1429,7 +1446,8 @@ impl TavilyProxy {
                         .await?;
                     break 'candidates;
                 }
-                if successful_key_count != key_count {
+                if key_count > 1 && successful_key_count != key_count {
+                    multi_key_pending = multi_key_pending.saturating_add(1);
                     budget_exhausted = true;
                     break;
                 }
@@ -1486,6 +1504,9 @@ impl TavilyProxy {
                     .elapsed()
                     .as_millis()
                     .min(i64::MAX as u128) as i64,
+                partial_key_observations,
+                multi_key_pending,
+                resumed_runs: i64::from(resumed_run),
             })
         }
         .await;
@@ -1653,6 +1674,9 @@ impl TavilyProxy {
                 hydrate_ms,
                 first_remote_ms,
                 remote_ms,
+                partial_key_observations,
+                multi_key_pending,
+                resumed_runs,
             }) => {
                 let remote_attempt_metrics = remote_attempt_admission
                     .as_ref()
@@ -1982,6 +2006,13 @@ impl TavilyProxy {
                             transport_failure: transport_failure_windows,
                             semantic_failure: semantic_failure_windows,
                             local_pressure: i64::from(local_pressure),
+                            partial_key_observations,
+                            multi_key_pending,
+                            remote_attempt_budget_defers: i64::from(remote_attempt_budget_deferred),
+                            resumed_runs,
+                            terminal_runs: settled
+                                .saturating_add(no_adjustment)
+                                .saturating_add(observed),
                             last_transport_kind,
                             last_retryable_outcome: reconciliation_outcome
                                 .filter(|outcome| {
@@ -2018,6 +2049,10 @@ impl TavilyProxy {
                         completed_count = completed,
                         no_adjustment_count = no_adjustment,
                         observed_count = observed,
+                        partial_key_observations,
+                        multi_key_pending,
+                        remote_attempt_budget_defers = i64::from(remote_attempt_budget_deferred),
+                        resumed_runs,
                         rate_limited_429_count = upstream_429_retry_windows,
                         transport_failure_count = transport_failure_windows,
                         semantic_failure_count = semantic_failure_windows,

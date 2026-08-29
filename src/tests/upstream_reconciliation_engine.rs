@@ -39,6 +39,11 @@ async fn reconciliation_transport_observation_survives_a_following_non_transport
                 transport_failure: 1,
                 semantic_failure: 0,
                 local_pressure: 0,
+                partial_key_observations: 2,
+                multi_key_pending: 1,
+                remote_attempt_budget_defers: 1,
+                resumed_runs: 1,
+                terminal_runs: 0,
                 last_transport_kind: Some("timeout"),
                 last_retryable_outcome: Some("transport_failure"),
                 continuation_reason: Some("transport_failure"),
@@ -59,6 +64,10 @@ async fn reconciliation_transport_observation_survives_a_following_non_transport
         first.last_retryable_outcome.as_deref(),
         Some("transport_failure")
     );
+    assert_eq!(first.partial_key_observations, 2);
+    assert_eq!(first.multi_key_pending, 1);
+    assert_eq!(first.remote_attempt_budget_defers, 1);
+    assert_eq!(first.resumed_runs, 1);
 
     proxy
         .key_store
@@ -78,6 +87,11 @@ async fn reconciliation_transport_observation_survives_a_following_non_transport
                 transport_failure: 0,
                 semantic_failure: 0,
                 local_pressure: 0,
+                partial_key_observations: 0,
+                multi_key_pending: 0,
+                remote_attempt_budget_defers: 0,
+                resumed_runs: 0,
+                terminal_runs: 1,
                 last_transport_kind: None,
                 last_retryable_outcome: None,
                 continuation_reason: Some("no_adjustment"),
@@ -314,6 +328,11 @@ async fn record_research_progress_window_observation(
                 transport_failure: 0,
                 semantic_failure: 0,
                 local_pressure: 0,
+                partial_key_observations: 0,
+                multi_key_pending: 0,
+                remote_attempt_budget_defers: 0,
+                resumed_runs: 0,
+                terminal_runs: 0,
                 last_transport_kind: None,
                 last_retryable_outcome: None,
                 continuation_reason: Some("observed"),

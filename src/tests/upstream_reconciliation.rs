@@ -111,6 +111,18 @@ async fn reconciliation_status_reports_observation_and_unknown_estimates() {
         value.get("reconciliationLocalBackoff").is_some(),
         "admin status must expose local backoff independently from remote 429 state"
     );
+    for field in [
+        "partialKeyObservations",
+        "multiKeyPending",
+        "remoteAttemptBudgetDefers",
+        "resumedRuns",
+        "terminalRuns",
+    ] {
+        assert!(
+            value["reconciliationRunObservation"].get(field).is_some(),
+            "admin status must expose bounded reconciliation progress field {field}"
+        );
+    }
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

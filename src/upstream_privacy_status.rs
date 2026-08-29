@@ -85,6 +85,16 @@ pub struct ReconciliationRunObservation {
     pub transport_failure: i64,
     pub semantic_failure: i64,
     pub local_pressure: i64,
+    #[serde(default)]
+    pub partial_key_observations: i64,
+    #[serde(default)]
+    pub multi_key_pending: i64,
+    #[serde(default)]
+    pub remote_attempt_budget_defers: i64,
+    #[serde(default)]
+    pub resumed_runs: i64,
+    #[serde(default)]
+    pub terminal_runs: i64,
     pub last_transport_kind: Option<String>,
     #[serde(default)]
     pub last_transport_kind_at: Option<i64>,

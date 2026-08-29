@@ -31,7 +31,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
         ]
     );
     let transport_observation_column: i64 = sqlx::query_scalar(
@@ -48,6 +48,13 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read transport state columns");
     assert_eq!(transport_state_columns, 2);
+    let observation_metric_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name IN ('partial_key_observation_count', 'multi_key_pending_count', 'remote_attempt_budget_defer_count', 'resumed_run_count', 'terminal_run_count')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read reconciliation observation metric columns");
+    assert_eq!(observation_metric_columns, 5);
     let research_progress_window: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'upstream_reconciliation_research_progress_window'",
     )
