@@ -679,6 +679,145 @@ impl ReconciliationOutcome {
         }
     }
 }
+
+impl TavilyProxy {
+    async fn fetch_upstream_project_usage(
+        &self,
+        key_id: &str,
+        usage_base: &str,
+        project_id: &str,
+        remote_attempt: ReconciliationRemoteAttemptContext<'_>,
+    ) -> Result<i64, (ProxyError, Option<i64>)> {
+        let secret = self
+            .key_store
+            .fetch_api_key_secret(key_id)
+            .await
+            .map_err(|err| (err, None))?
+            .ok_or_else(|| (ProxyError::Database(sqlx::Error::RowNotFound), None))?;
+        let base = Url::parse(usage_base).map_err(|source| {
+            (
+                ProxyError::InvalidEndpoint {
+                    endpoint: usage_base.to_string(),
+                    source,
+                },
+                None,
+            )
+        })?;
+        let url = build_path_prefixed_url(&base, "/usage");
+        let remote_attempt = remote_attempt
+            .acquire()
+            .await
+            .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?;
+        let response = self
+            .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
+                client
+                    .get(url.clone())
+                    .header("Authorization", format!("Bearer {secret}"))
+                    .header("X-Project-ID", project_id)
+                    .timeout(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
+            })
+            .await
+            .map(|(response, _)| response)
+            .map_err(|err| (err, None))?;
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(|seconds| self.backend_time.now_ts().saturating_add(seconds.max(1)));
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| (ProxyError::Http(err), retry_after))?;
+        drop(remote_attempt);
+        if !status.is_success() {
+            return Err((
+                ProxyError::UsageHttp {
+                    status,
+                    body: String::from_utf8_lossy(&bytes).into_owned(),
+                },
+                retry_after,
+            ));
+        }
+        let json: Value = serde_json::from_slice(&bytes)
+            .map_err(|err| (ProxyError::Other(format!("invalid usage json: {err}")), None))?;
+        json.get("key")
+            .and_then(|key| key.get("usage"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                (
+                    ProxyError::QuotaDataMissing {
+                        reason: "missing key.usage for reconciliation".to_string(),
+                    },
+                    None,
+                )
+            })
+    }
+
+    async fn fetch_upstream_research_terminal(
+        &self,
+        key_id: &str,
+        usage_base: &str,
+        request_id: &str,
+        remote_attempt: ReconciliationRemoteAttemptContext<'_>,
+    ) -> Result<bool, (ProxyError, Option<i64>)> {
+        let secret = self
+            .key_store
+            .fetch_api_key_secret(key_id)
+            .await
+            .map_err(|err| (err, None))?
+            .ok_or_else(|| (ProxyError::Database(sqlx::Error::RowNotFound), None))?;
+        let base = Url::parse(usage_base).map_err(|source| {
+            (
+                ProxyError::InvalidEndpoint {
+                    endpoint: usage_base.to_string(),
+                    source,
+                },
+                None,
+            )
+        })?;
+        let path = format!("/research/{}", urlencoding::encode(request_id));
+        let url = build_path_prefixed_url(&base, &path);
+        let remote_attempt = remote_attempt
+            .acquire()
+            .await
+            .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?;
+        let response = self
+            .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
+                client
+                    .get(url.clone())
+                    .header("Authorization", format!("Bearer {secret}"))
+                    .timeout(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
+            })
+            .await
+            .map(|(response, _)| response)
+            .map_err(|err| (err, None))?;
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(|seconds| self.backend_time.now_ts().saturating_add(seconds.max(1)));
+        let body = response
+            .bytes()
+            .await
+            .map_err(|err| (ProxyError::Http(err), retry_after))?;
+        drop(remote_attempt);
+        if !status.is_success() {
+            return Err((
+                ProxyError::UsageHttp {
+                    status,
+                    body: String::from_utf8_lossy(&body).into_owned(),
+                },
+                retry_after,
+            ));
+        }
+        Ok(research_response_is_terminal(&body))
+    }
+}
+
 async fn await_reconciliation_post_process<T>(
     _deadline: std::time::Instant,
     operation: impl std::future::Future<Output = Result<T, ProxyError>>,
