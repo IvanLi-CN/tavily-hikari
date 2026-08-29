@@ -1857,6 +1857,28 @@ async fn reconciliation_multi_key_observations_resume_without_partial_terminal()
         .expect("insert multi-key usage");
     }
 
+    let single_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-resume-single")
+        .await
+        .expect("create single-key upstream key");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES ('single-key-resume-token', ?, '2026-07-15/S1', 'single-key-resume-project',
+                     'token:single-key-resume-token', ?, ?, 1, ?, ?, ?, 'shadow')"#,
+    )
+    .bind(&single_key_id)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert single-key usage");
+
     let request_count = Arc::new(AtomicUsize::new(0));
     let request_count_for_route = Arc::clone(&request_count);
     let app = Router::new().route(
@@ -1898,6 +1920,32 @@ async fn reconciliation_multi_key_observations_resume_without_partial_terminal()
     assert_eq!(partial.0, 2);
     assert_eq!(partial.1, RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET);
     assert_eq!(partial.2, 0);
+    let single_state: (i64, i64) = sqlx::query_as(
+        r#"SELECT completed_generation, work_generation
+             FROM upstream_reconciliation_work
+            WHERE token_id = 'single-key-resume-token'
+              AND period_code = '2026-07-15/S1'"#,
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read deferred single-key work");
+    assert_ne!(
+        single_state.0, single_state.1,
+        "a single-key candidate without an observation must remain incomplete"
+    );
+
+    sqlx::query(
+        "DELETE FROM upstream_reconciliation_usage WHERE token_id = 'single-key-resume-token'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("remove single-key probe before resuming multi-key work");
+    sqlx::query(
+        "DELETE FROM upstream_reconciliation_work WHERE token_id = 'single-key-resume-token'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("remove single-key work probe");
 
     sqlx::query(
         r#"UPDATE upstream_reconciliation_work

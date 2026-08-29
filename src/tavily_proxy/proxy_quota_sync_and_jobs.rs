@@ -1446,10 +1446,16 @@ impl TavilyProxy {
                         .await?;
                     break 'candidates;
                 }
-                if key_count > 1 && successful_key_count != key_count {
-                    multi_key_pending = multi_key_pending.saturating_add(1);
+                if successful_key_count != key_count {
+                    if key_count > 1 {
+                        multi_key_pending = multi_key_pending.saturating_add(1);
+                    }
+                    // A candidate with no observations (or with only a partial
+                    // observation set) must never enter finalization. The remote
+                    // cap and the cooperative deadline can both leave a later
+                    // single-key candidate here after the loop has stopped.
                     budget_exhausted = true;
-                    break;
+                    break 'candidates;
                 }
                 observed_candidates.push((candidate, upstream_usage, in_recent_lane, work_generation));
             }
