@@ -19,9 +19,23 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
+    expect(systemSettingsStories.LimitHelpTooltips).toMatchObject({})
     expect(systemSettingsStories.BlockedKeyBaseConfigured).toMatchObject({})
     expect(systemSettingsStories.AutosaveOnBlur).toMatchObject({})
     expect(systemSettingsStories.ClientIpDialogWithObservedValues).toMatchObject({})
+  })
+
+  it('renders the limit-help story with four field-level triggers and unambiguous copy', () => {
+    const renderStory = systemSettingsStories.LimitHelpTooltips.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup.match(/data-testid="system-settings-[^"]+-help"/g)).toHaveLength(4)
+    expect(markup).toContain('当前 UTC 月')
+    expect(markup).toContain('唯一、仍不可用上游封禁/失效 Key')
+    expect(markup).toContain('不是请求次数')
+    expect(markup).toContain('保留窗口')
+    expect(markup).toContain('不会拦截请求')
   })
 
   it('renders the applying story without Storybook runtime helpers', () => {

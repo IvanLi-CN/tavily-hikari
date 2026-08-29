@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from 'react'
+import { expect, userEvent, within } from 'storybook/test'
 
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
@@ -293,6 +294,38 @@ export const ErrorState: Story = {
 
 export const HelpBubbleOpen: Story = {
   render: () => <SystemSettingsCanvas helpBubbleOpen />,
+}
+
+export const LimitHelpTooltips: Story = {
+  render: () => <SystemSettingsCanvas blockedKeyBaseLimit={861949} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const helpButtons = [
+      '查看 5 分钟最大请求数说明',
+      '查看封禁数基础值说明',
+      '查看 auth_token_logs 保留天数说明',
+      '查看全局 IP 数限制说明',
+    ]
+    for (const label of helpButtons) {
+      await expect(canvas.getByRole('button', { name: label })).toBeInTheDocument()
+    }
+
+    const blockedKeyHelp = canvas.getByRole('button', { name: '查看封禁数基础值说明' })
+    await userEvent.hover(blockedKeyHelp)
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    const page = within(document.body)
+    await expect(page.getByRole('tooltip')).toHaveTextContent('当前 UTC 月')
+    await userEvent.keyboard('{Escape}')
+    await expect(page.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    const requestRateHelp = canvas.getByRole('button', { name: '查看 5 分钟最大请求数说明' })
+    requestRateHelp.focus()
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    await expect(page.getByRole('tooltip')).toHaveTextContent('5 分钟滚动窗口')
+    await userEvent.keyboard('{Escape}')
+    await expect(page.queryByRole('tooltip')).not.toBeInTheDocument()
+    await expect(requestRateHelp).toHaveFocus()
+  },
 }
 
 export const RequestRateEdited: Story = {

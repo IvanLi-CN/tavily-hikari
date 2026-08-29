@@ -52,6 +52,55 @@ afterEach(() => {
 })
 
 describe('SystemSettingsModule interactions', () => {
+  it('shows a field tooltip on focus without losing trigger focus', async () => {
+    document.body.innerHTML = ''
+    const container = document.createElement('div')
+    document.documentElement.appendChild(container)
+    const root = createRoot(container)
+
+    await act(async () => {
+      root.render(
+        <SystemSettingsModule
+          strings={strings}
+          settings={initialSettings}
+          loadState="ready"
+          error={null}
+          saving={false}
+          onApply={() => {}}
+        />,
+      )
+    })
+    await flushEffects()
+
+    const helpButtons = [
+      ['system-settings-request-rate-limit-help', strings.form.requestRateLimitHelpLabel],
+      ['system-settings-blocked-key-base-limit-help', strings.form.blockedKeyBaseLimitHelpLabel],
+      ['system-settings-auth-token-log-retention-days-help', strings.form.authTokenLogRetentionDaysHelpLabel],
+      ['system-settings-global-ip-limit-help', strings.form.globalIpLimitHelpLabel],
+    ] as const
+    for (const [testId, label] of helpButtons) {
+      const button = document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)
+      expect(button).not.toBeNull()
+      expect(button!.getAttribute('aria-label')).toBe(label)
+    }
+
+    const blockedKeyHelp = document.querySelector<HTMLButtonElement>(
+      '[data-testid="system-settings-blocked-key-base-limit-help"]',
+    )!
+    await act(async () => {
+      blockedKeyHelp.focus()
+    })
+    await flushEffects()
+
+    const tooltipId = blockedKeyHelp.getAttribute('aria-describedby')
+    expect(tooltipId).not.toBeNull()
+    expect(tooltipId).not.toBe('')
+
+    expect(document.activeElement).toBe(blockedKeyHelp)
+
+    await act(async () => root.unmount())
+  })
+
   it('saves switches immediately and keeps the previous value when save fails', async () => {
     const applied: SystemSettings[] = []
     const container = document.createElement('div')

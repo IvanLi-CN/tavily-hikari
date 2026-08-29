@@ -249,6 +249,36 @@ function SystemSettingsHelpBubble({
   )
 }
 
+function SystemSettingsFieldHelp({
+  helpLabel,
+  hint,
+  testId,
+}: {
+  helpLabel: string
+  hint: string
+  testId: string
+}): JSX.Element {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="h-7 w-7 rounded-full px-0 text-muted-foreground hover:text-foreground"
+          aria-label={helpLabel}
+          data-testid={testId}
+        >
+          <Icon icon="mdi:information-outline" width={16} height={16} aria-hidden="true" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" className="max-w-[min(24rem,calc(100vw-2rem))]">
+        {hint}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export default function SystemSettingsModule({
   strings,
   settings,
@@ -993,126 +1023,158 @@ export default function SystemSettingsModule({
 
           <section className="system-settings-config-section">
             <h4>{strings.form.limitsTitle}</h4>
-            <div className="system-settings-field-grid system-settings-field-grid--limits">
-              <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-request-rate-limit">
-                  {strings.form.requestRateLimitLabel}
-                </label>
-                <Input
-                  id="system-settings-request-rate-limit"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  step={1}
-                  value={draftRequestRateLimit}
-                  disabled={saving}
-                  onChange={(event) => setDraftRequestRateLimit(event.target.value)}
-                  onBlur={() => {
-                    void commitNormalSettings()
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  aria-invalid={fieldErrors.requestRateLimit ? true : undefined}
-                  aria-describedby={fieldErrors.requestRateLimit ? requestRateLimitErrorId : undefined}
-                />
-                {fieldErrors.requestRateLimit && (
-                  <p id={requestRateLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
-                    {fieldErrors.requestRateLimit}
-                  </p>
-                )}
-                <p className="system-settings-field-hint text-xs text-muted-foreground">
-                  {strings.form.requestRateLimitHint}
-                </p>
-              </div>
-              <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-blocked-key-base-limit">
-                  {strings.form.blockedKeyBaseLimitLabel}
-                </label>
-                <Input
-                  id="system-settings-blocked-key-base-limit"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={draftBlockedKeyBaseLimit}
-                  disabled={saving}
-                  onChange={(event) => setDraftBlockedKeyBaseLimit(event.target.value)}
-                  onBlur={() => {
-                    void commitNormalSettings()
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  aria-invalid={fieldErrors.blockedKeyBaseLimit ? true : undefined}
-                  aria-describedby={fieldErrors.blockedKeyBaseLimit ? blockedKeyBaseLimitErrorId : undefined}
-                />
-                {fieldErrors.blockedKeyBaseLimit && (
-                  <p id={blockedKeyBaseLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
-                    {fieldErrors.blockedKeyBaseLimit}
-                  </p>
-                )}
-                <p className="system-settings-field-hint text-xs text-muted-foreground">
-                  {strings.form.blockedKeyBaseLimitHint}
-                </p>
-              </div>
-
-              <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-auth-token-log-retention-days">
-                  {strings.form.authTokenLogRetentionDaysLabel}
-                </label>
-                <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),64px] md:items-center">
-                  <input
-                    id="system-settings-auth-token-log-retention-days"
-                    className="range"
-                    type="range"
-                    min={0}
-                    max={authTokenLogRetentionDayStops.length - 1}
+            <TooltipProvider delayDuration={120} skipDelayDuration={250}>
+              <div className="system-settings-field-grid system-settings-field-grid--limits">
+                <div className="system-settings-field">
+                  <div className="system-settings-field-label-row">
+                    <label className="text-sm font-medium" htmlFor="system-settings-request-rate-limit">
+                      {strings.form.requestRateLimitLabel}
+                    </label>
+                    <SystemSettingsFieldHelp
+                      helpLabel={strings.form.requestRateLimitHelpLabel}
+                      hint={strings.form.requestRateLimitHint}
+                      testId="system-settings-request-rate-limit-help"
+                    />
+                  </div>
+                  <Input
+                    id="system-settings-request-rate-limit"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
                     step={1}
-                    value={authTokenLogRetentionDayStopIndex(draftAuthTokenLogRetentionDays)}
+                    value={draftRequestRateLimit}
                     disabled={saving}
-                    onChange={(event) => {
-                      const retentionDays =
-                        authTokenLogRetentionDayStops[Number.parseInt(event.target.value, 10)] ?? 92
-                      setDraftAuthTokenLogRetentionDays(retentionDays)
-                    }}
+                    onChange={(event) => setDraftRequestRateLimit(event.target.value)}
                     onBlur={() => {
-                      void commitNormalSettings({
-                        authTokenLogRetentionDays: draftAuthTokenLogRetentionDays,
-                      })
+                      void commitNormalSettings()
                     }}
+                    onKeyDown={handleCommitKeyDown}
+                    aria-invalid={fieldErrors.requestRateLimit ? true : undefined}
+                    aria-describedby={fieldErrors.requestRateLimit ? requestRateLimitErrorId : undefined}
                   />
-                  <span className="text-right font-mono text-sm">{draftAuthTokenLogRetentionDays}d</span>
-                </div>
-                <p className="system-settings-field-hint text-xs text-muted-foreground">
-                  {strings.form.authTokenLogRetentionDaysHint}
-                </p>
-              </div>
-
-              <div className="system-settings-field">
-                <label className="text-sm font-medium" htmlFor="system-settings-global-ip-limit">
-                  {strings.form.globalIpLimitLabel}
-                </label>
-                <Input
-                  id="system-settings-global-ip-limit"
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  value={draftGlobalIpLimit}
-                  disabled={saving}
-                  onChange={(event) => setDraftGlobalIpLimit(event.target.value)}
-                  onBlur={() => {
-                    void commitNormalSettings()
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  aria-invalid={fieldErrors.globalIpLimit ? true : undefined}
-                  aria-describedby={fieldErrors.globalIpLimit ? globalIpLimitErrorId : undefined}
-                />
-                {fieldErrors.globalIpLimit && (
-                  <p id={globalIpLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
-                    {fieldErrors.globalIpLimit}
+                  {fieldErrors.requestRateLimit && (
+                    <p id={requestRateLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
+                      {fieldErrors.requestRateLimit}
+                    </p>
+                  )}
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    {strings.form.requestRateLimitHint}
                   </p>
-                )}
-                <p className="system-settings-field-hint text-xs text-muted-foreground">{strings.form.globalIpLimitHint}</p>
+                </div>
+                <div className="system-settings-field">
+                  <div className="system-settings-field-label-row">
+                    <label className="text-sm font-medium" htmlFor="system-settings-blocked-key-base-limit">
+                      {strings.form.blockedKeyBaseLimitLabel}
+                    </label>
+                    <SystemSettingsFieldHelp
+                      helpLabel={strings.form.blockedKeyBaseLimitHelpLabel}
+                      hint={strings.form.blockedKeyBaseLimitHint}
+                      testId="system-settings-blocked-key-base-limit-help"
+                    />
+                  </div>
+                  <Input
+                    id="system-settings-blocked-key-base-limit"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    value={draftBlockedKeyBaseLimit}
+                    disabled={saving}
+                    onChange={(event) => setDraftBlockedKeyBaseLimit(event.target.value)}
+                    onBlur={() => {
+                      void commitNormalSettings()
+                    }}
+                    onKeyDown={handleCommitKeyDown}
+                    aria-invalid={fieldErrors.blockedKeyBaseLimit ? true : undefined}
+                    aria-describedby={fieldErrors.blockedKeyBaseLimit ? blockedKeyBaseLimitErrorId : undefined}
+                  />
+                  {fieldErrors.blockedKeyBaseLimit && (
+                    <p id={blockedKeyBaseLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
+                      {fieldErrors.blockedKeyBaseLimit}
+                    </p>
+                  )}
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    {strings.form.blockedKeyBaseLimitHint}
+                  </p>
+                </div>
+
+                <div className="system-settings-field">
+                  <div className="system-settings-field-label-row">
+                    <label className="text-sm font-medium" htmlFor="system-settings-auth-token-log-retention-days">
+                      {strings.form.authTokenLogRetentionDaysLabel}
+                    </label>
+                    <SystemSettingsFieldHelp
+                      helpLabel={strings.form.authTokenLogRetentionDaysHelpLabel}
+                      hint={strings.form.authTokenLogRetentionDaysHint}
+                      testId="system-settings-auth-token-log-retention-days-help"
+                    />
+                  </div>
+                  <div className="system-settings-range-control grid gap-3 md:grid-cols-[minmax(0,1fr),64px] md:items-center">
+                    <input
+                      id="system-settings-auth-token-log-retention-days"
+                      className="range"
+                      type="range"
+                      min={0}
+                      max={authTokenLogRetentionDayStops.length - 1}
+                      step={1}
+                      value={authTokenLogRetentionDayStopIndex(draftAuthTokenLogRetentionDays)}
+                      disabled={saving}
+                      onChange={(event) => {
+                        const retentionDays =
+                          authTokenLogRetentionDayStops[Number.parseInt(event.target.value, 10)] ?? 92
+                        setDraftAuthTokenLogRetentionDays(retentionDays)
+                      }}
+                      onBlur={() => {
+                        void commitNormalSettings({
+                          authTokenLogRetentionDays: draftAuthTokenLogRetentionDays,
+                        })
+                      }}
+                    />
+                    <span className="text-right font-mono text-sm">{draftAuthTokenLogRetentionDays}d</span>
+                  </div>
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    {strings.form.authTokenLogRetentionDaysHint}
+                  </p>
+                </div>
+
+                <div className="system-settings-field">
+                  <div className="system-settings-field-label-row">
+                    <label className="text-sm font-medium" htmlFor="system-settings-global-ip-limit">
+                      {strings.form.globalIpLimitLabel}
+                    </label>
+                    <SystemSettingsFieldHelp
+                      helpLabel={strings.form.globalIpLimitHelpLabel}
+                      hint={strings.form.globalIpLimitHint}
+                      testId="system-settings-global-ip-limit-help"
+                    />
+                  </div>
+                  <Input
+                    id="system-settings-global-ip-limit"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    value={draftGlobalIpLimit}
+                    disabled={saving}
+                    onChange={(event) => setDraftGlobalIpLimit(event.target.value)}
+                    onBlur={() => {
+                      void commitNormalSettings()
+                    }}
+                    onKeyDown={handleCommitKeyDown}
+                    aria-invalid={fieldErrors.globalIpLimit ? true : undefined}
+                    aria-describedby={fieldErrors.globalIpLimit ? globalIpLimitErrorId : undefined}
+                  />
+                  {fieldErrors.globalIpLimit && (
+                    <p id={globalIpLimitErrorId} className="system-settings-field-error text-xs font-medium text-destructive">
+                      {fieldErrors.globalIpLimit}
+                    </p>
+                  )}
+                  <p className="system-settings-field-hint text-xs text-muted-foreground">
+                    {strings.form.globalIpLimitHint}
+                  </p>
+                </div>
               </div>
-            </div>
+            </TooltipProvider>
           </section>
 
           <section

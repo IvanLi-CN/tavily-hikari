@@ -982,7 +982,7 @@ export interface AdminTranslationsShape {
       gatewayTitle: string
       gatewaySectionTitle: string
       upstreamIdentityTitle: string
-      requestRateLimitLabel: string
+      requestRateLimitLabel: string; requestRateLimitHelpLabel: string
       requestRateLimitHint: string
       countLabel: string
       countHint: string
@@ -1021,11 +1021,11 @@ export interface AdminTranslationsShape {
       activeUsersDefaultHint: string
       activeUsersDefaultCount: string
       activeUsersDefinition: string
-      blockedKeyBaseLimitLabel: string
+      blockedKeyBaseLimitLabel: string; blockedKeyBaseLimitHelpLabel: string
       blockedKeyBaseLimitHint: string
-      authTokenLogRetentionDaysLabel: string
+      authTokenLogRetentionDaysLabel: string; authTokenLogRetentionDaysHelpLabel: string
       authTokenLogRetentionDaysHint: string
-      globalIpLimitLabel: string
+      globalIpLimitLabel: string; globalIpLimitHelpLabel: string
       globalIpLimitHint: string
       applyScopeHint: string
       autosaveHint: string

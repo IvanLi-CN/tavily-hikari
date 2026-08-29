@@ -76,6 +76,27 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(zhStrings.form.displayDensityComfortable)
     expect(markup).toContain(zhStrings.form.displayDensityCompact)
     expect(markup.match(/system-settings-help-trigger/g)?.length).toBe(1)
+    for (const testId of [
+      'system-settings-request-rate-limit-help',
+      'system-settings-blocked-key-base-limit-help',
+      'system-settings-auth-token-log-retention-days-help',
+      'system-settings-global-ip-limit-help',
+    ]) {
+      expect(markup.match(new RegExp(`data-testid="${testId}"`, 'g'))?.length).toBe(1)
+    }
+    for (const inputId of [
+      'system-settings-request-rate-limit',
+      'system-settings-blocked-key-base-limit',
+      'system-settings-auth-token-log-retention-days',
+      'system-settings-global-ip-limit',
+    ]) {
+      expect(markup.match(new RegExp(`id="${inputId}"`, 'g'))?.length).toBe(1)
+    }
+    expect(markup).toContain(`aria-label="${zhStrings.form.requestRateLimitHelpLabel}"`)
+    expect(markup).toContain(`aria-label="${zhStrings.form.blockedKeyBaseLimitHelpLabel}"`)
+    expect(markup).toContain(`aria-label="${zhStrings.form.authTokenLogRetentionDaysHelpLabel}"`)
+    expect(markup).toContain(`aria-label="${zhStrings.form.globalIpLimitHelpLabel}"`)
+    expect(markup.match(/aria-hidden="true"/g)?.length).toBeGreaterThanOrEqual(5)
     expect(markup).not.toContain('当前阈值：100')
     expect(markup).toContain(zhStrings.form.requestRateLimitHint)
     expect(markup).not.toContain('当前值：5')
@@ -96,6 +117,11 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(zhStrings.form.blockedKeyBaseLimitHint)
     expect(markup).not.toContain('当前限制：5')
     expect(markup).toContain(zhStrings.form.globalIpLimitHint)
+    expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('当前 UTC 月')
+    expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('唯一')
+    expect(zhStrings.form.blockedKeyBaseLimitHint).toContain('不是请求次数')
+    expect(zhStrings.form.authTokenLogRetentionDaysHint).toContain('保留窗口')
+    expect(zhStrings.form.globalIpLimitHint).toContain('不会拦截请求')
     expect(markup).toContain('配置可信 IP')
     expect(markup).not.toContain('system-settings-apply')
     expect(markup).not.toContain(zhStrings.description)
@@ -146,6 +172,14 @@ describe('SystemSettingsModule rendering', () => {
     )
 
     expect(markup).toContain(enStrings.form.authTokenLogRetentionDaysLabel)
+    for (const helpLabel of [
+      enStrings.form.requestRateLimitHelpLabel,
+      enStrings.form.blockedKeyBaseLimitHelpLabel,
+      enStrings.form.authTokenLogRetentionDaysHelpLabel,
+      enStrings.form.globalIpLimitHelpLabel,
+    ]) {
+      expect(markup).toContain(`aria-label="${helpLabel}"`)
+    }
     expect(markup).toContain(enStrings.form.authTokenLogRetentionDaysHint)
   })
 
