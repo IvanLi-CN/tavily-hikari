@@ -210,6 +210,85 @@ async fn post_process_defer_finalization_is_atomic_and_never_marks_the_claim_err
     let _ = std::fs::remove_file(db_path);
 }
 
+#[tokio::test]
+async fn remote_attempt_budget_defer_does_not_raise_local_pressure() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 2, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-budget-defer"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    sqlx::query(
+        "INSERT INTO meta (key, value) VALUES (?, ?), (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind("upstream_reconciliation_local_backoff_level_v1")
+    .bind("0")
+    .bind("upstream_reconciliation_local_pressure_streak_v1")
+    .bind("0")
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed local backoff state");
+
+    proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET,
+            now + 30,
+        )
+        .await
+        .expect("persist remote-attempt budget continuation");
+
+    let local_backoff: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM meta WHERE key IN ('upstream_reconciliation_local_pressure_streak_v1', 'upstream_reconciliation_local_backoff_level_v1') ORDER BY key",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read local backoff");
+    assert_eq!(
+        local_backoff,
+        vec![
+            (
+                "upstream_reconciliation_local_backoff_level_v1".to_string(),
+                "0".to_string(),
+            ),
+            (
+                "upstream_reconciliation_local_pressure_streak_v1".to_string(),
+                "0".to_string(),
+            ),
+        ]
+    );
+    let observation = proxy
+        .key_store
+        .upstream_reconciliation_run_observation()
+        .await
+        .expect("read budget defer observation");
+    assert_eq!(
+        observation.continuation_reason.as_deref(),
+        Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET)
+    );
+    assert_eq!(observation.next_retry_at, Some(now + 30));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
 async fn record_research_progress_window_observation(
     proxy: &TavilyProxy,
 ) -> Result<(), ProxyError> {

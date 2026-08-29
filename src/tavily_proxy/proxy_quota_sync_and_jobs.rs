@@ -1147,7 +1147,10 @@ impl TavilyProxy {
                     .key_store
                     .reconciliation_key_observations(&candidate, work_generation, &key_ids)
                     .await?;
-                let mut upstream_usage = observed_key_usage.values().copied().sum::<i64>();
+                let mut upstream_usage = observed_key_usage
+                    .values()
+                    .copied()
+                    .fold(0_i64, |total, usage| total.saturating_add(usage));
                 let mut retry_at = None;
                 let mut retry_reason = None;
                 let mut retry_key_id = None;

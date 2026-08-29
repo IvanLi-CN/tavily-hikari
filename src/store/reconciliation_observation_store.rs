@@ -215,8 +215,11 @@ impl KeyStore {
             .begin_scheduled_job_control()
             .await?;
         let result = async {
-            let research_defer = reason == "research_read_budget";
-            let local_backoff_until = if research_defer {
+            let preserve_retry_state = matches!(
+                reason,
+                "research_read_budget" | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
+            );
+            let local_backoff_until = if preserve_retry_state {
                 sqlx::query_scalar::<_, String>(
                     "SELECT value FROM meta WHERE key = ? LIMIT 1",
                 )
@@ -256,7 +259,7 @@ impl KeyStore {
                     claim_generation,
                 });
             }
-            if research_defer {
+            if preserve_retry_state {
                 sqlx::query(
                     r#"UPDATE upstream_reconciliation_run_observation
                        SET continuation_reason = ?, next_retry_at = ?, observed_at = ?
