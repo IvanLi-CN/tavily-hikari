@@ -10,6 +10,7 @@ struct ResearchSweepOutcome {
     retries: i64,
     skipped_cooldown: i64,
     earliest_cooldown_until: Option<i64>,
+    remote_attempt_budget_deferred: bool,
     budget_exhausted: bool,
     cursor_ready: bool,
 }
@@ -263,6 +264,7 @@ impl TavilyProxy {
         let mut retries = 0_i64;
         let mut skipped_cooldown = 0_i64;
         let mut earliest_cooldown_until = None::<i64>;
+        let mut remote_attempt_budget_deferred = false;
         let mut budget_exhausted = false;
         for candidate in candidates {
             if polled as usize >= Self::RESEARCH_SWEEP_LIMIT {
@@ -312,7 +314,7 @@ impl TavilyProxy {
                     &candidate.key_id,
                     usage_base,
                     &candidate.request_id,
-                    remote_attempt,
+                    remote_attempt.with_attempt_deadline(request_deadline),
                 ),
             )
             .await;
@@ -328,6 +330,22 @@ impl TavilyProxy {
                 });
             }
             match research_result {
+                Ok(Err((err, _))) if ReconciliationEngine::remote_attempt_is_deferred(&err) => {
+                    // Admission failure means no Research request was made. Preserve
+                    // the cursor and retry with the existing durable continuation.
+                    polled = polled.saturating_sub(1);
+                    if ReconciliationEngine::remote_attempt_is_stale(&err)
+                        && let Some((job_id, claim_generation)) = claimed_job
+                    {
+                        return Err(ProxyError::StaleClaim {
+                            job_id,
+                            claim_generation,
+                        });
+                    }
+                    remote_attempt_budget_deferred = true;
+                    budget_exhausted = true;
+                    break;
+                }
                 Err(_) => {
                     let next_poll_at = now.saturating_add(match candidate.poll_attempt_count {
                         0..=1 => 60,
@@ -538,6 +556,7 @@ impl TavilyProxy {
             retries,
             skipped_cooldown,
             earliest_cooldown_until,
+            remote_attempt_budget_deferred,
             budget_exhausted,
             cursor_ready: !budget_exhausted,
         })
@@ -674,6 +693,7 @@ impl TavilyProxy {
             remote_attempt_admission: remote_attempt_admission.as_ref(),
             reconciliation_turn,
             manual_remote_attempt,
+            attempt_deadline: None,
         };
         let mut local_admission_outcome = self.admit_upstream_reconciliation_projection();
         if matches!(
@@ -838,8 +858,9 @@ impl TavilyProxy {
                 Err(err) => return Err(err),
             };
         }
-        preparation_budget_exhausted |=
-            std::time::Instant::now() >= preparation_deadline;
+        if std::time::Instant::now() >= preparation_deadline {
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+        }
         if !preparation_budget_exhausted {
             // The projection is a compatibility bootstrap for usage written
             // before the durable work triggers existed. Advance one bounded
@@ -896,6 +917,9 @@ impl TavilyProxy {
                                 }
                                 Err(err) => return Err(err),
                             };
+                            if std::time::Instant::now() >= preparation_deadline {
+                                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+                            }
                         }
                     }
                     Ok(ReconciliationProjectionSliceOutcome::Deferred {
@@ -922,6 +946,9 @@ impl TavilyProxy {
                             );
                     }
                     Err(err) => return Err(err),
+                }
+                if std::time::Instant::now() >= preparation_deadline {
+                    return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
                 }
             }
         }
@@ -965,6 +992,9 @@ impl TavilyProxy {
                 }
             }
         };
+        if std::time::Instant::now() >= candidate_hydration_deadline {
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+        }
         let all_key_ids = key_ids_by_candidate
             .values()
             .flat_map(|key_ids| key_ids.iter().cloned())
@@ -994,6 +1024,9 @@ impl TavilyProxy {
                 }
             }
         };
+        if std::time::Instant::now() >= candidate_hydration_deadline {
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+        }
         let mut earliest_key_cooldown_until = active_key_cooldowns
             .values()
             .map(|state| state.cooldown_until)
@@ -1021,23 +1054,35 @@ impl TavilyProxy {
                 }
                 Err(err) => return Err(err),
             }
+            if std::time::Instant::now() >= candidate_hydration_deadline {
+                return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+            }
         }
-        preparation_budget_exhausted |= std::time::Instant::now() >= candidate_hydration_deadline;
+        if std::time::Instant::now() >= candidate_hydration_deadline {
+            return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
+        }
         // This indexed eligibility probe is deliberately smaller than the
         // prioritized Research sweep. A deadline here must not turn due
         // Research into a precondition for main settlement: reserve
         // conservatively and select the full sweep only after main durable
         // finalization.
+        let mut research_reservation_read_budget_deferred = false;
         let research_reservation_required = match self
             .key_store
             .has_due_upstream_reconciliation_research()
             .await
         {
             Ok(due) => due,
-            Err(err)
-                if ReconciliationEngine::projection_read_budget_is_deferred(&err)
-                    || is_transient_sqlite_write_error(&err) =>
-            {
+            Err(err) if ReconciliationEngine::projection_read_budget_is_deferred(&err) => {
+                research_reservation_read_budget_deferred = true;
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "research_reservation_unknown",
+                    "Research eligibility could not be read before main settlement; retaining the bounded reserve"
+                );
+                true
+            }
+            Err(err) if is_transient_sqlite_write_error(&err) => {
                 tracing::debug!(
                     component = "reconciliation",
                     event = "research_reservation_unknown",
@@ -1047,6 +1092,16 @@ impl TavilyProxy {
             }
             Err(err) => return Err(err),
         };
+        if std::time::Instant::now() >= candidate_hydration_deadline {
+            return Ok(ReconciliationEngine::deferred(
+                self,
+                if research_reservation_read_budget_deferred {
+                    "projection_read_budget"
+                } else {
+                    "local_pressure"
+                },
+            ));
+        }
         let ReconciliationRemoteBudget {
             main_remote_deadline,
             main_finalization_deadline,
@@ -1153,6 +1208,12 @@ impl TavilyProxy {
                     .key_store
                     .reconciliation_key_observations(&candidate, work_generation, &key_ids)
                     .await?;
+                if !remote_request_started
+                    && std::time::Instant::now() >= preparation_deadline
+                {
+                    budget_exhausted = true;
+                    break 'candidates;
+                }
                 resumed_run |= !observed_key_usage.is_empty();
                 let mut upstream_usage = observed_key_usage
                     .values()
@@ -1229,6 +1290,12 @@ impl TavilyProxy {
                             break;
                         }
                     }
+                    if !remote_request_started
+                        && std::time::Instant::now() >= preparation_deadline
+                    {
+                        budget_exhausted = true;
+                        break 'candidates;
+                    }
                     if !candidate_attempted {
                         attempted_candidate_count += 1;
                         candidate_attempted = true;
@@ -1248,11 +1315,36 @@ impl TavilyProxy {
                             &key_id,
                             usage_base,
                             &candidate.project_id,
-                            remote_attempt_context,
+                            remote_attempt_context.with_attempt_deadline(main_remote_deadline),
                         ),
                     )
                     .await;
                     match usage_result {
+                        Ok(Err((err, _)))
+                            if ReconciliationEngine::remote_attempt_is_deferred(&err) =>
+                        {
+                            // Admission failure means no outbound request was made. Keep
+                            // metrics and retry semantics distinct from transport/semantic
+                            // failures, and let the durable representative retry later.
+                            remote_request_count = remote_request_count.saturating_sub(1);
+                            if remote_request_count == 0 {
+                                remote_request_started = false;
+                                first_remote_ms = None;
+                            }
+                            if ReconciliationEngine::remote_attempt_is_stale(&err) {
+                                if let Some((job_id, claim_generation)) = claimed_job {
+                                    return Err(ProxyError::StaleClaim {
+                                        job_id,
+                                        claim_generation,
+                                    });
+                                }
+                                budget_exhausted = true;
+                                break;
+                            }
+                            remote_attempt_limit_reached = true;
+                            budget_exhausted = true;
+                            break;
+                        }
                         Err(_) => {
                             transport_failure_windows += 1;
                             last_transport_kind = Some(TransportFailureKind::Timeout.as_str());
@@ -1520,6 +1612,9 @@ impl TavilyProxy {
             })
         }
         .await;
+        if matches!(result.as_ref(), Err(ProxyError::StaleClaim { .. })) {
+            return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
+        }
         if claimed_job.is_some() && result.as_ref().is_ok_and(|value| value.generation_changed) {
             tracing::debug!(
                 component = "reconciliation",
@@ -1653,6 +1748,9 @@ impl TavilyProxy {
                 ..ResearchSweepOutcome::default()
             }
         };
+        if research.remote_attempt_budget_deferred && research_defer_reason.is_none() {
+            research_defer_reason = Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET);
+        }
         let key_cooldown_retry_at = result
             .as_ref()
             .ok()

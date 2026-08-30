@@ -210,6 +210,7 @@ struct ReconciliationRemoteAttemptContext<'a> {
     remote_attempt_admission: Option<&'a Arc<RemoteAttemptAdmissionController>>,
     reconciliation_turn: Option<&'a crate::ReconciliationTurn>,
     manual_remote_attempt: bool,
+    attempt_deadline: Option<std::time::Instant>,
 }
 
 /// A stable, non-sensitive classification for failures before a reconciliation
@@ -250,14 +251,34 @@ impl TransportFailureKind {
 }
 
 impl ReconciliationRemoteAttemptContext<'_> {
-    async fn acquire(self) -> Result<Option<crate::RemoteAttemptLease>, &'static str> {
-        match (self.reconciliation_turn, self.remote_attempt_admission) {
-        (Some(turn), _) => turn.acquire_attempt().await.map(Some),
-        (None, Some(controller)) if self.manual_remote_attempt => {
-            controller.acquire_manual_attempt().await.map(Some)
+    fn with_attempt_deadline(self, deadline: std::time::Instant) -> Self {
+        Self {
+            attempt_deadline: Some(deadline),
+            ..self
         }
-        (None, Some(controller)) => controller.acquire_reconciliation_attempt().await.map(Some),
-        (None, None) => Ok(None),
+    }
+
+    async fn acquire(self) -> Result<Option<crate::RemoteAttemptLease>, &'static str> {
+        let acquire = async {
+            match (self.reconciliation_turn, self.remote_attempt_admission) {
+                (Some(turn), _) => turn.acquire_attempt().await.map(Some),
+                (None, Some(controller)) if self.manual_remote_attempt => {
+                    controller.acquire_manual_attempt().await.map(Some)
+                }
+                (None, Some(controller)) => {
+                    controller.acquire_reconciliation_attempt().await.map(Some)
+                }
+                (None, None) => Ok(None),
+            }
+        };
+        match self.attempt_deadline {
+            Some(deadline) => tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                acquire,
+            )
+            .await
+            .map_err(|_| ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON)?,
+            None => acquire.await,
         }
     }
 }
@@ -265,6 +286,9 @@ impl ReconciliationRemoteAttemptContext<'_> {
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
     const DEFER_RETRY_DELAY_SECS: i64 = 30;
+    const REMOTE_ATTEMPT_ADMISSION_OPERATION: &'static str = "reconciliation_remote_attempt";
+    const REMOTE_ATTEMPT_STALE_TURN_REASON: &'static str = "reconciliation_turn_stale";
+    const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
     // The compatibility one-shot API has no durable representative job.
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -296,6 +320,33 @@ impl ReconciliationEngine {
             ProxyError::Deferred { operation, reason }
                 if *operation == "reconciliation_projection" && reason == "projection_read_budget"
         )
+    }
+
+    fn remote_attempt_admission_error(reason: &'static str) -> ProxyError {
+        ProxyError::Deferred {
+            operation: Self::REMOTE_ATTEMPT_ADMISSION_OPERATION,
+            reason: reason.to_string(),
+        }
+    }
+
+    fn remote_attempt_admission_reason(error: &ProxyError) -> Option<&str> {
+        match error {
+            ProxyError::Deferred { operation, reason }
+                if *operation == Self::REMOTE_ATTEMPT_ADMISSION_OPERATION =>
+            {
+                Some(reason.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn remote_attempt_is_deferred(error: &ProxyError) -> bool {
+        Self::remote_attempt_admission_reason(error).is_some()
+    }
+
+    fn remote_attempt_is_stale(error: &ProxyError) -> bool {
+        Self::remote_attempt_admission_reason(error)
+            == Some(Self::REMOTE_ATTEMPT_STALE_TURN_REASON)
     }
 
     fn post_process_exhaustion_is_deferred(error: &ProxyError) -> bool {
@@ -681,6 +732,26 @@ mod reconciliation_engine_tests {
             "unknown"
         );
     }
+
+    #[test]
+    fn remote_admission_failures_are_typed_without_becoming_transport_or_semantic() {
+        let stale = ReconciliationEngine::remote_attempt_admission_error(
+            ReconciliationEngine::REMOTE_ATTEMPT_STALE_TURN_REASON,
+        );
+        assert!(ReconciliationEngine::remote_attempt_is_deferred(&stale));
+        assert!(ReconciliationEngine::remote_attempt_is_stale(&stale));
+        assert_eq!(
+            ReconciliationEngine::remote_attempt_admission_reason(&stale),
+            Some(ReconciliationEngine::REMOTE_ATTEMPT_STALE_TURN_REASON)
+        );
+        assert!(!ReconciliationEngine::is_transport_failure(&stale));
+
+        let budget = ReconciliationEngine::remote_attempt_admission_error(
+            ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON,
+        );
+        assert!(ReconciliationEngine::remote_attempt_is_deferred(&budget));
+        assert!(!ReconciliationEngine::remote_attempt_is_stale(&budget));
+    }
 }
 
 impl ReconciliationOutcome {
@@ -724,7 +795,7 @@ impl TavilyProxy {
         let remote_attempt = remote_attempt
             .acquire()
             .await
-            .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?;
+            .map_err(|reason| (ReconciliationEngine::remote_attempt_admission_error(reason), None))?;
         let response = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
                 client
@@ -799,7 +870,7 @@ impl TavilyProxy {
         let remote_attempt = remote_attempt
             .acquire()
             .await
-            .map_err(|reason| (ProxyError::Other(reason.to_string()), None))?;
+            .map_err(|reason| (ReconciliationEngine::remote_attempt_admission_error(reason), None))?;
         let response = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
                 client
