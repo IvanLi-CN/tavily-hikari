@@ -1944,6 +1944,13 @@ async fn reconciliation_key_429_does_not_stop_other_key_research() {
             .expect("read unchanged legacy global gate"),
         (3, 1, now + 600)
     );
+    let privacy_status = proxy
+        .upstream_privacy_status()
+        .await
+        .expect("read legacy global diagnostics without using them as a gate");
+    assert_eq!(privacy_status.reconciliation_pressure_streak, 3);
+    assert_eq!(privacy_status.reconciliation_backoff_level, 1);
+    assert_eq!(privacy_status.reconciliation_backoff_until, Some(now + 600));
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);
@@ -2159,22 +2166,6 @@ async fn reconciliation_mixed_key_cooldown_allows_healthy_sibling() {
         .await
         .expect("insert mixed-key candidate usage");
     }
-    sqlx::query(
-        r#"
-        INSERT INTO api_key_transient_backoffs (
-            key_id, scope, cooldown_until, retry_after_secs, reason_code,
-            source_request_log_id, created_at, updated_at
-        ) VALUES (?, 'period_reconciliation', ?, 300, 'upstream429', NULL, ?, ?)
-        "#,
-    )
-    .bind(&cooling_key_id)
-    .bind(now + 600)
-    .bind(now)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("seed one key cooldown");
-
     let healthy_hits = Arc::new(AtomicUsize::new(0));
     let cooling_hits = Arc::new(AtomicUsize::new(0));
     let app_healthy_hits = Arc::clone(&healthy_hits);
@@ -2230,10 +2221,10 @@ async fn reconciliation_mixed_key_cooldown_allows_healthy_sibling() {
         ClaimedReconciliationRunOutcome::Deferred {
             reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
             retry_at,
-        } if retry_at == now + 600
+        } if retry_at == now + 300
     ));
     assert_eq!(healthy_hits.load(Ordering::SeqCst), 1);
-    assert_eq!(cooling_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(cooling_hits.load(Ordering::SeqCst), 1);
     let work: (i64, i64, String) = sqlx::query_as(
         "SELECT work_generation, completed_generation, last_outcome FROM upstream_reconciliation_work WHERE token_id = 'mixed-cooldown-token'",
     )

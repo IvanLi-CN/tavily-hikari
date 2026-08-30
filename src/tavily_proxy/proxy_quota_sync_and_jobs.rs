@@ -1423,6 +1423,46 @@ impl TavilyProxy {
                                 ReconciliationOutcome::SemanticFailure
                             };
                             retry_at = upstream_retry_at;
+                            if outcome == ReconciliationOutcome::Upstream429 && key_count > 1 {
+                                // A 429 belongs to the key that returned it. Persist its
+                                // cooldown, then let healthy siblings use the remaining
+                                // request budget in this same candidate.
+                                ensure_reconciliation_post_process_reserve(
+                                    main_finalization_deadline,
+                                )?;
+                                let cooldown_until = self
+                                    .arm_reconciliation_backoff(
+                                        &key_id,
+                                        retry_at,
+                                        RECONCILIATION_RETRY_REASON_UPSTREAM_429,
+                                        claimed_job,
+                                    )
+                                    .await?;
+                                candidate_key_cooldown_until = Some(
+                                    candidate_key_cooldown_until
+                                        .map_or(cooldown_until, |current| current.min(cooldown_until)),
+                                );
+                                earliest_key_cooldown_until = Some(
+                                    earliest_key_cooldown_until
+                                        .map_or(cooldown_until, |current| current.min(cooldown_until)),
+                                );
+                                upstream_429_retry_windows += 1;
+                                key_backoff_window_count += 1;
+                                cooling_keys.insert(key_id.clone());
+                                key_cooldown_untils.insert(key_id.clone(), cooldown_until);
+                                tracing::debug!(
+                                    component = "reconciliation",
+                                    event = "key_backoff_applied",
+                                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                                    job_type = "upstream_reconciliation",
+                                    key_id = %key_id,
+                                    period_code = %candidate.period_code,
+                                    reason_kind = RECONCILIATION_RETRY_REASON_UPSTREAM_429,
+                                    cooldown_until,
+                                    affected_window_count = 1_i64,
+                                );
+                                continue;
+                            }
                             if outcome == ReconciliationOutcome::TransportFailure {
                                 last_transport_kind = Some(
                                     TransportFailureKind::from_proxy_error(&err).as_str(),
