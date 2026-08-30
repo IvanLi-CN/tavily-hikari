@@ -50,6 +50,16 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "The scheduler retains the consolidated durable-job lifecycle while request-scoped remote-attempt admission is rolled out across existing maintenance job types; task-dispatch extraction remains a separate behavior-preserving change.",
     ),
     (
+        "src/tavily_proxy/proxy_quota_sync_and_jobs.rs",
+        3200,
+        "Reconciliation execution and quota synchronization remain together while per-key cooldown and request-scoped admission converge; extracting the remaining run phases is a separate behavior-preserving change.",
+    ),
+    (
+        "src/tests/upstream_reconciliation.rs",
+        3500,
+        "The consolidated upstream reconciliation integration suite carries the multi-key observation, per-key cooldown, and continuation-fencing coverage while a broader test extraction remains a separate behavior-preserving change.",
+    ),
+    (
         "src/store/sqlite_runtime.rs",
         3550,
         "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
