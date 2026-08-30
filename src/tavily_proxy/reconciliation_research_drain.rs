@@ -111,10 +111,8 @@ impl TavilyProxy {
             Err(error) => return Err(error),
         };
         if page.candidates.is_empty() && page.cooled_due_count > 0 {
-            let retry_at = self
-                .key_store
-                .upstream_reconciliation_research_drain_available_at()
-                .await?
+            let retry_at = page
+                .earliest_cooldown_until
                 .unwrap_or_else(|| now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS));
             return Ok(Self::observe_research_drain_outcome(
                 now,
@@ -135,10 +133,10 @@ impl TavilyProxy {
             return Ok(Self::observe_research_drain_outcome(
                 now,
                 ClaimedResearchDrainOutcome::Completed {
-                polled: 0,
-                terminal: 0,
-                pending: 0,
-                retries: 0,
+                    polled: 0,
+                    terminal: 0,
+                    pending: 0,
+                    retries: 0,
                     next_at,
                 },
                 0,

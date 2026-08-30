@@ -1143,6 +1143,24 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         .execute(&proxy.key_store.pool)
         .await
         .expect("seed ineligible Research prefix");
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, \
+             project_id, billing_subject, period_start, period_end, request_count, first_used_at, \
+             last_used_at, updated_at, settlement_mode) VALUES (?, ?, '2026-08-27/R1', ?, ?, \
+             ?, ?, 1, ?, ?, ?, 'shadow')",
+        )
+        .bind(format!("missing-usage-{index:03}"))
+        .bind(key_id)
+        .bind(format!("future-project-{index:03}"))
+        .bind(format!("future-subject-{index:03}"))
+        .bind(now - 100)
+        .bind(now + 600)
+        .bind(now - 100)
+        .bind(now - 100)
+        .bind(now - 100)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed open-period Research usage");
     }
     proxy
         .key_store
@@ -1196,7 +1214,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
             Arc::new(RemoteAttemptAdmissionController::default()),
         )
         .await
-        .expect("run Research drain");
+        .expect("run eligible Research drain page");
     assert!(matches!(
         outcome,
         ClaimedResearchDrainOutcome::Completed {

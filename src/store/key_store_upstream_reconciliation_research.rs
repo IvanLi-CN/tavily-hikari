@@ -11,6 +11,7 @@ pub(crate) struct UpstreamReconciliationResearchCursor {
 pub(crate) struct UpstreamReconciliationResearchCandidatePage {
     pub(crate) candidates: Vec<crate::models::UpstreamReconciliationResearchCandidate>,
     pub(crate) cooled_due_count: i64,
+    pub(crate) earliest_cooldown_until: Option<i64>,
     pub(crate) start_cursor: UpstreamReconciliationResearchCursor,
     pub(crate) candidate_cursors:
         std::collections::HashMap<String, UpstreamReconciliationResearchCursor>,
@@ -23,6 +24,7 @@ impl UpstreamReconciliationResearchCandidatePage {
         Self {
             candidates: Vec::new(),
             cooled_due_count: 0,
+            earliest_cooldown_until: None,
             start_cursor: UpstreamReconciliationResearchCursor {
                 next_poll_at: -1,
                 key_id: String::new(),
@@ -75,6 +77,7 @@ impl KeyStore {
                 UpstreamReconciliationResearchCandidatePage {
                     candidates: Vec::new(),
                     cooled_due_count: 0,
+                    earliest_cooldown_until: None,
                     start_cursor: UpstreamReconciliationResearchCursor {
                         next_poll_at: -1,
                         key_id: String::new(),
@@ -126,11 +129,14 @@ impl KeyStore {
                    AND r.next_poll_at <= ?
                    AND EXISTS (
                        SELECT 1 FROM upstream_reconciliation_usage eligible_u
+                        INDEXED BY idx_upstream_reconciliation_usage_window_mode
                         WHERE eligible_u.token_id = r.token_id
                           AND eligible_u.period_code = r.period_code
+                          AND eligible_u.period_end <= ?
                    )
                    AND NOT EXISTS (
                        SELECT 1 FROM upstream_reconciliation_usage future_u
+                        INDEXED BY idx_upstream_reconciliation_usage_window_mode
                         WHERE future_u.token_id = r.token_id
                           AND future_u.period_code = r.period_code
                           AND future_u.period_end > ?
@@ -150,6 +156,7 @@ impl KeyStore {
                  LIMIT ?
                 "#,
             )
+            .bind(now)
             .bind(now)
             .bind(now)
             .bind(now)
@@ -192,6 +199,7 @@ impl KeyStore {
                         r.poll_attempt_count
                       FROM upstream_reconciliation_research r
                       JOIN upstream_reconciliation_usage u
+                        INDEXED BY idx_upstream_reconciliation_usage_window_mode
                         ON u.token_id = r.token_id AND u.period_code = r.period_code
                      WHERE r.terminal_at IS NULL AND r.request_id IN ("#,
             );
@@ -209,6 +217,7 @@ impl KeyStore {
                        h.billing_subject, h.period_end, h.poll_attempt_count,
                        CASE WHEN EXISTS (
                           SELECT 1 FROM upstream_reconciliation_usage prior_u
+                            INDEXED BY idx_upstream_reconciliation_usage_subject_mode_period
                           JOIN upstream_reconciliation_settlements prior_s
                             ON prior_s.settlement_key = 'v1:' || prior_u.token_id || ':' || prior_u.period_code
                          WHERE prior_u.billing_subject = h.billing_subject
@@ -250,34 +259,46 @@ impl KeyStore {
                 }
             }
         };
-        let cooled_due_result = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM upstream_reconciliation_research r
-             WHERE r.terminal_at IS NULL AND r.next_poll_at <= ?
-               AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
-                           WHERE eligible_u.token_id = r.token_id
-                             AND eligible_u.period_code = r.period_code)
-               AND NOT EXISTS (SELECT 1 FROM upstream_reconciliation_usage future_u
-                               WHERE future_u.token_id = r.token_id
-                                 AND future_u.period_code = r.period_code
-                                 AND future_u.period_end > ?)
-               AND EXISTS (SELECT 1 FROM api_key_transient_backoffs b
-                           WHERE b.key_id = r.key_id
-                             AND b.scope = 'period_reconciliation'
-                             AND b.cooldown_until > ?)",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(now)
-        .fetch_one(&mut *session)
-        .await;
-        let cooled_due_count = match cooled_due_result {
-            Ok(count) => count,
-            Err(error) => {
+        let cooled_due_result = if raw_rows.is_empty() {
+            Some(sqlx::query_as::<_, (Option<i64>, i64)>(
+                "SELECT MIN(cooled.cooldown_until), COUNT(*) FROM (
+                   SELECT b.cooldown_until
+                     FROM upstream_reconciliation_research r
+                     JOIN api_key_transient_backoffs b
+                       ON b.key_id = r.key_id AND b.scope = 'period_reconciliation'
+                      AND b.cooldown_until > ?
+                    WHERE r.terminal_at IS NULL AND r.next_poll_at <= ?
+                      AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
+                                  INDEXED BY idx_upstream_reconciliation_usage_window_mode
+                                  WHERE eligible_u.token_id = r.token_id
+                                    AND eligible_u.period_code = r.period_code
+                                    AND eligible_u.period_end <= ?)
+                      AND NOT EXISTS (SELECT 1 FROM upstream_reconciliation_usage future_u
+                                      INDEXED BY idx_upstream_reconciliation_usage_window_mode
+                                      WHERE future_u.token_id = r.token_id
+                                        AND future_u.period_code = r.period_code
+                                        AND future_u.period_end > ?)
+                    ORDER BY r.next_poll_at, r.key_id, r.request_id LIMIT 80
+                 ) cooled",
+            )
+                .bind(now)
+                .bind(now)
+                .bind(now)
+                .bind(now)
+                .fetch_one(&mut *session)
+                .await)
+        } else {
+            None
+        };
+        let (earliest_cooldown_until, cooled_due_count) = match cooled_due_result {
+            Some(Ok(value)) => value,
+            Some(Err(error)) => {
                 return session
                     .complete_query_or_defer::<i64>(Err(error))
                     .await
                     .map(|_| unreachable!("a failed cooldown count cannot complete"));
             }
+            None => (None, 0),
         };
         let mut selected_per_key = std::collections::HashMap::<String, usize>::new();
         let mut candidates = rows
@@ -341,11 +362,13 @@ impl KeyStore {
                 next_cursor,
                 wrapped,
                 cooled_due_count,
+                earliest_cooldown_until,
             )))
             .await?;
         Ok(UpstreamReconciliationResearchCandidatePage {
             candidates: result.0,
             cooled_due_count: result.4,
+            earliest_cooldown_until: result.5,
             start_cursor,
             candidate_cursors: result.1,
             next_cursor: result.2,
