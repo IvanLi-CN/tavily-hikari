@@ -25,8 +25,10 @@ struct ReconciliationRunResult {
     key_backoff_window_count: i64,
     skipped_by_key_backoff: i64,
     earliest_key_cooldown_until: Option<i64>,
+    key_cooldown_deferred: bool,
     attempted_candidate_count: i64,
     main_remote_request_count: i64,
+    main_remote_budget_deferred: bool,
     budget_exhausted: bool,
     remote_attempt_limit_reached: bool,
     hydrate_ms: i64,
@@ -241,12 +243,33 @@ impl TransportFailureKind {
             ProxyError::Http(error) if error.is_timeout() => Self::Timeout,
             ProxyError::Http(error) if error.is_connect() => Self::Connect,
             ProxyError::Http(_) => Self::ResponseBody,
+            ProxyError::Other(message)
+                if message == ReconciliationEngine::REMOTE_REQUEST_DEADLINE_ERROR =>
+            {
+                Self::Timeout
+            }
             _ => Self::Unknown,
         }
     }
 }
 
 impl ReconciliationRemoteAttemptContext<'_> {
+    fn deadline_remaining(self) -> Option<std::time::Duration> {
+        self.attempt_deadline
+            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+    }
+
+    fn request_timeout(self) -> std::time::Duration {
+        self.attempt_deadline
+            .map(|deadline| {
+                deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(std::time::Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
+                    .max(std::time::Duration::from_millis(1))
+            })
+            .unwrap_or_else(|| std::time::Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
+    }
+
     fn with_attempt_deadline(self, deadline: std::time::Instant) -> Self {
         Self {
             attempt_deadline: Some(deadline),
@@ -285,6 +308,7 @@ impl ReconciliationEngine {
     const REMOTE_ATTEMPT_ADMISSION_OPERATION: &'static str = "reconciliation_remote_attempt";
     const REMOTE_ATTEMPT_STALE_TURN_REASON: &'static str = "reconciliation_turn_stale";
     const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
+    const REMOTE_REQUEST_DEADLINE_ERROR: &'static str = "reconciliation remote request deadline exceeded";
     // The compatibility one-shot API has no durable representative job.
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -536,6 +560,19 @@ impl ReconciliationEngine {
         matches!(
             err,
             ProxyError::Http(_) | ProxyError::Database(_) | ProxyError::InvalidEndpoint { .. }
+        ) || matches!(
+            err,
+            ProxyError::Other(message) if message == Self::REMOTE_REQUEST_DEADLINE_ERROR
+        )
+    }
+
+    fn is_remote_request_timeout(err: &ProxyError) -> bool {
+        matches!(
+            err,
+            ProxyError::Http(error) if error.is_timeout()
+        ) || matches!(
+            err,
+            ProxyError::Other(message) if message == Self::REMOTE_REQUEST_DEADLINE_ERROR
         )
     }
 
@@ -828,19 +865,51 @@ impl TavilyProxy {
             )
         })?;
         let url = build_path_prefixed_url(&base, "/usage");
-        let remote_attempt = remote_attempt
+        let remote_attempt_context = remote_attempt;
+        let remote_attempt = remote_attempt_context
             .acquire()
             .await
             .map_err(|reason| (ReconciliationEngine::remote_attempt_admission_error(reason), None))?;
-        let response = self
+        let request_timeout = remote_attempt_context.request_timeout();
+        let request_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let outbound = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
+                request_started.store(true, std::sync::atomic::Ordering::Relaxed);
                 client
                     .get(url.clone())
                     .header("Authorization", format!("Bearer {secret}"))
                     .header("X-Project-ID", project_id)
-                    .timeout(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
-            })
-            .await
+                    .timeout(request_timeout)
+            });
+        let response_result = match remote_attempt_context.deadline_remaining() {
+            Some(remaining) if remaining.is_zero() => {
+                drop(remote_attempt);
+                return Err((
+                    ReconciliationEngine::remote_attempt_admission_error(
+                        ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON,
+                    ),
+                    None,
+                ));
+            }
+            Some(remaining) => match tokio::time::timeout(remaining, outbound).await {
+                Ok(result) => result,
+                Err(_) => {
+                    drop(remote_attempt);
+                    let error = if request_started.load(std::sync::atomic::Ordering::Relaxed) {
+                        ProxyError::Other(
+                            ReconciliationEngine::REMOTE_REQUEST_DEADLINE_ERROR.to_string(),
+                        )
+                    } else {
+                        ReconciliationEngine::remote_attempt_admission_error(
+                            ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON,
+                        )
+                    };
+                    return Err((error, None));
+                }
+            },
+            None => outbound.await,
+        };
+        let response = response_result
             .map(|(response, _)| response)
             .map_err(|err| (err, None))?;
         let status = response.status();
@@ -903,18 +972,50 @@ impl TavilyProxy {
         })?;
         let path = format!("/research/{}", urlencoding::encode(request_id));
         let url = build_path_prefixed_url(&base, &path);
-        let remote_attempt = remote_attempt
+        let remote_attempt_context = remote_attempt;
+        let remote_attempt = remote_attempt_context
             .acquire()
             .await
             .map_err(|reason| (ReconciliationEngine::remote_attempt_admission_error(reason), None))?;
-        let response = self
+        let request_timeout = remote_attempt_context.request_timeout();
+        let request_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let outbound = self
             .send_with_forward_proxy(key_id, "period_reconciliation", |client| {
+                request_started.store(true, std::sync::atomic::Ordering::Relaxed);
                 client
                     .get(url.clone())
                     .header("Authorization", format!("Bearer {secret}"))
-                    .timeout(Duration::from_secs(QUOTA_SYNC_FETCH_TIMEOUT_SECS))
-            })
-            .await
+                    .timeout(request_timeout)
+            });
+        let response_result = match remote_attempt_context.deadline_remaining() {
+            Some(remaining) if remaining.is_zero() => {
+                drop(remote_attempt);
+                return Err((
+                    ReconciliationEngine::remote_attempt_admission_error(
+                        ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON,
+                    ),
+                    None,
+                ));
+            }
+            Some(remaining) => match tokio::time::timeout(remaining, outbound).await {
+                Ok(result) => result,
+                Err(_) => {
+                    drop(remote_attempt);
+                    let error = if request_started.load(std::sync::atomic::Ordering::Relaxed) {
+                        ProxyError::Other(
+                            ReconciliationEngine::REMOTE_REQUEST_DEADLINE_ERROR.to_string(),
+                        )
+                    } else {
+                        ReconciliationEngine::remote_attempt_admission_error(
+                            ReconciliationEngine::REMOTE_ATTEMPT_BUDGET_REASON,
+                        )
+                    };
+                    return Err((error, None));
+                }
+            },
+            None => outbound.await,
+        };
+        let response = response_result
             .map(|(response, _)| response)
             .map_err(|err| (err, None))?;
         let status = response.status();

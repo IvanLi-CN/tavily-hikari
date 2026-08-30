@@ -537,6 +537,7 @@
         "tests::upstream_reconciliation::reconciliation_global_backoff_counts_only_attempted_candidates",
         "tests::upstream_reconciliation::reconciliation_key_429_does_not_stop_other_key_research",
         "tests::upstream_reconciliation::reconciliation_all_key_cooldowns_defer_to_earliest_retry",
+        "tests::upstream_reconciliation::reconciliation_mixed_key_cooldown_allows_healthy_sibling",
         "tests::upstream_reconciliation::reconciliation_no_adjustment_completes_only_the_current_usage_generation",
         "tests::upstream_reconciliation::reconciliation_observation_reports_due_window_without_queue_count",
         "tests::upstream_reconciliation::reconciliation_rejects_reclaimed_claim_after_remote_fetch",

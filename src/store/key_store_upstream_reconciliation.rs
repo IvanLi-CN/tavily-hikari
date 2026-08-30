@@ -15,6 +15,7 @@ pub(crate) const RECONCILIATION_OUTCOME_SETTLED: &str = "settled";
 pub(crate) const RECONCILIATION_OUTCOME_NO_ADJUSTMENT: &str = "no_adjustment";
 pub(crate) const RECONCILIATION_OUTCOME_OBSERVED: &str = "observed";
 pub(crate) const RECONCILIATION_OUTCOME_UPSTREAM_429: &str = "upstream_429";
+pub(crate) const RECONCILIATION_OUTCOME_KEY_COOLDOWN: &str = "key_cooldown";
 pub(crate) const RECONCILIATION_OUTCOME_TRANSPORT_FAILURE: &str = "transport_failure";
 pub(crate) const RECONCILIATION_OUTCOME_SEMANTIC_FAILURE: &str = "semantic_failure";
 pub(crate) const RECONCILIATION_OUTCOME_MISSING_ELIGIBLE_UPSTREAM_KEY: &str =
@@ -1409,13 +1410,34 @@ impl KeyStore {
             .push_bind(now)
             .push(r#"
               AND w.work_generation > w.completed_generation
-              AND MAX(
-                  w.next_attempt_at,
-                  CASE WHEN s.status IN ('pending', 'waiting', 'rate_limited')
-                       THEN COALESCE(s.next_attempt_at, 0) ELSE 0 END
-              ) <= "#)
+              AND (
+                  MAX(
+                      w.next_attempt_at,
+                      CASE WHEN s.status IN ('pending', 'waiting', 'rate_limited')
+                           THEN COALESCE(s.next_attempt_at, 0) ELSE 0 END
+                  ) <= "#)
             .push_bind(now)
-            .push(" ");
+            .push(r#"
+                  OR (
+                      s.status = 'rate_limited'
+                      AND s.degraded_reason = 'upstream429'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM upstream_reconciliation_usage healthy_usage
+                          WHERE healthy_usage.token_id = w.token_id
+                            AND healthy_usage.period_code = w.period_code
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM api_key_transient_backoffs cooling_backoff
+                                WHERE cooling_backoff.key_id = healthy_usage.key_id
+                                  AND cooling_backoff.scope = 'period_reconciliation'
+                                  AND cooling_backoff.cooldown_until > "#)
+            .push_bind(now)
+            .push(r#"
+                            )
+                      )
+                  )
+              ) "#);
         match scope {
             ReconciliationCandidateScope::Recent { start, end } => {
                 query

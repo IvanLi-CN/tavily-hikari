@@ -2101,6 +2101,162 @@ async fn reconciliation_all_key_cooldowns_defer_to_earliest_retry() {
 }
 
 #[tokio::test]
+async fn reconciliation_mixed_key_cooldown_allows_healthy_sibling() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-mixed-cooldown-a",
+            "tvly-reconciliation-mixed-cooldown-b",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare settings");
+    let cooling_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-mixed-cooldown-a")
+        .await
+        .expect("create cooling key");
+    let healthy_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-mixed-cooldown-b")
+        .await
+        .expect("create healthy key");
+    for key_id in [&cooling_key_id, &healthy_key_id] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                period_start, period_end, request_count, first_used_at,
+                last_used_at, updated_at, settlement_mode
+            ) VALUES ('mixed-cooldown-token', ?, '2026-07-15/M1',
+                       'mixed-cooldown-project', 'account:mixed-cooldown',
+                       ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(key_id)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert mixed-key candidate usage");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_transient_backoffs (
+            key_id, scope, cooldown_until, retry_after_secs, reason_code,
+            source_request_log_id, created_at, updated_at
+        ) VALUES (?, 'period_reconciliation', ?, 300, 'upstream429', NULL, ?, ?)
+        "#,
+    )
+    .bind(&cooling_key_id)
+    .bind(now + 600)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed one key cooldown");
+
+    let healthy_hits = Arc::new(AtomicUsize::new(0));
+    let cooling_hits = Arc::new(AtomicUsize::new(0));
+    let app_healthy_hits = Arc::clone(&healthy_hits);
+    let app_cooling_hits = Arc::clone(&cooling_hits);
+    let app = Router::new().route(
+        "/usage",
+        get(move |headers: HeaderMap| {
+            let app_healthy_hits = Arc::clone(&app_healthy_hits);
+            let app_cooling_hits = Arc::clone(&app_cooling_hits);
+            async move {
+                let authorization = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                if authorization.contains("tvly-reconciliation-mixed-cooldown-b") {
+                    app_healthy_hits.fetch_add(1, Ordering::SeqCst);
+                    return Json(serde_json::json!({ "key": { "usage": 4 } })).into_response();
+                }
+                if authorization.contains("tvly-reconciliation-mixed-cooldown-a") {
+                    app_cooling_hits.fetch_add(1, Ordering::SeqCst);
+                }
+                StatusCode::TOO_MANY_REQUESTS.into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve mixed-key reconciliation upstream");
+    });
+
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue mixed-key representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim mixed-key representative")
+        .expect("mixed-key representative is claimable");
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            &format!("http://{addr}"),
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("defer mixed-key candidate at cooling key");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
+            retry_at,
+        } if retry_at == now + 600
+    ));
+    assert_eq!(healthy_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(cooling_hits.load(Ordering::SeqCst), 0);
+    let work: (i64, i64, String) = sqlx::query_as(
+        "SELECT work_generation, completed_generation, last_outcome FROM upstream_reconciliation_work WHERE token_id = 'mixed-cooldown-token'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read mixed-key work state");
+    assert!(work.0 > 0, "mixed-key work has a durable generation");
+    assert_eq!(work.1, 0, "cooling key keeps the candidate incomplete");
+    assert_eq!(work.2, RECONCILIATION_OUTCOME_KEY_COOLDOWN.to_string());
+    let observed_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = 'mixed-cooldown-token' AND key_id = ?",
+    )
+    .bind(&healthy_key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read healthy key observation");
+    assert_eq!(observed_count, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn upstream_429_backoff_escalates_persists_across_restart_and_resets() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
