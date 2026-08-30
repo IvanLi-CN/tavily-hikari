@@ -175,14 +175,10 @@ impl TavilyProxy {
                 .api_key_transient_backoff_state(key_id, Self::RECONCILIATION_BACKOFF_SCOPE)
                 .await?
                 .map(|state| state.retry_after_secs));
-        let retry_after_secs = requested_until
-            .map(|until| until.saturating_sub(now).max(1))
-            .unwrap_or_else(|| match prior_retry_after_secs {
-                None | Some(0) => 300,
-                Some(1..=300) => 600,
-                Some(301..=600) => 1200,
-                _ => 1800,
-            });
+        let retry_after_secs = ReconciliationEngine::reconciliation_retry_delay_secs(
+            prior_retry_after_secs,
+            requested_until.map(|until| until.saturating_sub(now)),
+        );
         let cooldown_until = now.saturating_add(retry_after_secs);
         let arm = ApiKeyTransientBackoffArm {
             key_id,
@@ -291,6 +287,26 @@ impl ReconciliationEngine {
     const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
     // The compatibility one-shot API has no durable representative job.
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+    fn reconciliation_retry_ladder_secs(prior_retry_after_secs: Option<i64>) -> i64 {
+        match prior_retry_after_secs {
+            None | Some(0) => 300,
+            Some(1..=300) => 600,
+            Some(301..=600) => 1200,
+            _ => 1800,
+        }
+    }
+
+    fn reconciliation_retry_delay_secs(
+        prior_retry_after_secs: Option<i64>,
+        requested_retry_after_secs: Option<i64>,
+    ) -> i64 {
+        let ladder_secs = Self::reconciliation_retry_ladder_secs(prior_retry_after_secs);
+        requested_retry_after_secs
+            .map(|seconds| seconds.max(1))
+            .unwrap_or_default()
+            .max(ladder_secs)
+    }
 
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
         Self::deferred_at(
@@ -751,6 +767,26 @@ mod reconciliation_engine_tests {
         );
         assert!(ReconciliationEngine::remote_attempt_is_deferred(&budget));
         assert!(!ReconciliationEngine::remote_attempt_is_stale(&budget));
+    }
+
+    #[test]
+    fn retry_after_never_shortens_the_key_cooldown_ladder() {
+        assert_eq!(
+            ReconciliationEngine::reconciliation_retry_delay_secs(None, Some(1)),
+            300
+        );
+        assert_eq!(
+            ReconciliationEngine::reconciliation_retry_delay_secs(Some(300), Some(1)),
+            600
+        );
+        assert_eq!(
+            ReconciliationEngine::reconciliation_retry_delay_secs(None, Some(600)),
+            600
+        );
+        assert_eq!(
+            ReconciliationEngine::reconciliation_retry_delay_secs(Some(600), Some(1)),
+            1200
+        );
     }
 }
 

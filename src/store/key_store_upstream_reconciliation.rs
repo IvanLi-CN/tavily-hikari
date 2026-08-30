@@ -611,7 +611,20 @@ impl KeyStore {
                 w.next_attempt_at,
                 w.period_end + 600,
                 CASE WHEN s.status IN ('pending', 'waiting', 'rate_limited')
-                     THEN COALESCE(s.next_attempt_at, 0) ELSE 0 END
+                     THEN COALESCE(s.next_attempt_at, 0) ELSE 0 END,
+                COALESCE((
+                    SELECT MIN(b.cooldown_until)
+                    FROM api_key_transient_backoffs b
+                    WHERE b.scope = 'period_reconciliation'
+                      AND b.cooldown_until > ?
+                      AND EXISTS (
+                          SELECT 1
+                          FROM upstream_reconciliation_usage u
+                          WHERE u.token_id = w.token_id
+                            AND u.period_code = w.period_code
+                            AND u.key_id = b.key_id
+                      )
+                ), 0)
             ))
             FROM upstream_reconciliation_work w
             LEFT JOIN upstream_reconciliation_settlements s
@@ -629,6 +642,7 @@ impl KeyStore {
               )
             "#,
         )
+        .bind(now)
         .bind(now)
         .fetch_one(&mut *conn)
         .await?;

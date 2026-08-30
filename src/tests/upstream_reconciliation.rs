@@ -2061,6 +2061,14 @@ async fn reconciliation_all_key_cooldowns_defer_to_earliest_retry() {
     .await
     .expect("read unfinished cooldown work");
     assert_eq!(work_counts, (2, 0));
+    assert_eq!(
+        proxy
+            .key_store
+            .upstream_reconciliation_continuation_at()
+            .await
+            .expect("read earliest key cooldown wake"),
+        Some(now + 300)
+    );
 
     let continuation = proxy
         .finalize_deferred_upstream_reconciliation_claim(
