@@ -94,6 +94,8 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("testbox-reconciliation-shadow-period", COMPARISON)
         self.assertIn("snapshot reconciliation fixture preparation failed", COMPARISON)
         self.assertIn("testbox-reconciliation-research-request", COMPARISON)
+        self.assertIn("DELETE FROM api_key_transient_backoffs", COMPARISON)
+        self.assertIn("upstream_reconciliation_research_scan_state", COMPARISON)
         self.assertIn("upstream_reconciliation_control_state", COMPARISON)
         self.assertIn("the persisted legacy switch above produces compare mode", COMPARISON)
 

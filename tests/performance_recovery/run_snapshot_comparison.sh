@@ -340,7 +340,7 @@ INSERT INTO upstream_reconciliation_research (
   'testbox-reconciliation-research-token',
   (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key'),
   'testbox-reconciliation-research-period', unixepoch() - 601, NULL,
-  NULL, 0, 0, NULL, NULL, unixepoch() - 601
+  NULL, -1, 0, NULL, NULL, unixepoch() - 601
 )
 ON CONFLICT(request_id) DO UPDATE SET
   token_id = excluded.token_id,
@@ -349,11 +349,20 @@ ON CONFLICT(request_id) DO UPDATE SET
   created_at = excluded.created_at,
   terminal_at = NULL,
   last_polled_at = NULL,
-  next_poll_at = 0,
+  next_poll_at = -1,
   poll_attempt_count = 0,
   last_poll_outcome = NULL,
   last_poll_error_kind = NULL,
   updated_at = excluded.updated_at;
+DELETE FROM api_key_transient_backoffs
+ WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
+   AND scope = 'period_reconciliation';
+UPDATE upstream_reconciliation_research_scan_state
+   SET cursor_next_poll_at = -1,
+       cursor_key_id = '',
+       cursor_request_id = '',
+       updated_at = 0
+ WHERE id = 'local';
 SQL
 
   # Older baselines predate the controller table. When the copied schema
@@ -402,6 +411,14 @@ SQL
          AND usage.key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
          AND usage.settlement_mode = 'shadow'
          AND work.completed_generation < work.work_generation
+    ) AND EXISTS (
+      SELECT 1 FROM upstream_reconciliation_research
+       WHERE request_id = 'testbox-reconciliation-research-request'
+         AND terminal_at IS NULL AND next_poll_at = -1
+    ) AND NOT EXISTS (
+      SELECT 1 FROM api_key_transient_backoffs
+       WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
+         AND scope = 'period_reconciliation'
     )
       THEN 1 ELSE 0 END;
   ")"
