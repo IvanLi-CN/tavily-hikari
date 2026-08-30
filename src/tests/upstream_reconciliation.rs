@@ -2108,7 +2108,7 @@ async fn reconciliation_all_key_cooldowns_defer_to_earliest_retry() {
 }
 
 #[tokio::test]
-async fn reconciliation_mixed_key_cooldown_allows_healthy_sibling() {
+async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 7, 15, 12, 0);
