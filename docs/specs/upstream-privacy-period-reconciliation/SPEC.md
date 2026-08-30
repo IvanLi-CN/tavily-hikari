@@ -70,7 +70,7 @@
 - reconciliation 在每轮结算前主动轮询已关闭窗口中未终态的 Research；轮询最多 20 条、每个 Key 最多 4 条，并优先补足当天尚无标准成功账期的账号覆盖。
 - `429` 只对 `period_reconciliation` scope 中的对应 Key 建立持久化冷却，使用 `Retry-After` 或 `5/10/20/30` 分钟退避；不得批量把同 Key 的其他窗口写为 rate-limited，也不得影响正常 API/MCP 流量。
 - 候选观测必须使用有界索引页：`queueEstimate` 可为空且最多统计 64 个候选，`hasEligible` 与最老候选年龄必须单独表达，首次观测前 coverage 为 `unknown`，不得以零伪装未观测状态。历史 degraded 状态必须由独立的索引化 `EXISTS` 探测保留，不能用当天计数替代。
-- 连续三轮存在候选、未产生远端尝试且本地预算耗尽时，持久化独立的本地短退避；它不得增加 upstream 429 全局退避。只有真实远端 429 才按 `2/5/10/30` 分钟升级，并以更晚的 `Retry-After` 为准；退避期间只保留一个 delayed representative job，真实远端尝试或成功结算后立即复位。
+- 连续三轮存在候选、未产生远端尝试且本地预算耗尽时，持久化独立的本地短退避；它不得改变任何 Key 的 429 冷却。真实远端 429 只对触发它的 `period_reconciliation` Key 按 `5/10/20/30` 分钟阶梯冷却，并以更晚的 `Retry-After` 为准；所有可选 Key 都在冷却时，使用最早到期时间保留一个 delayed representative job，非冷却 Key 不受影响。
 - 主结算候选页、key/cooldown hydrate 与 Research eligibility read 的本地准备预算最多 2 秒，主结算优先启动；terminal-research sweep 仅在主结算的 durable finalization 之后启动。存在 due Research 时，在发起主结算 HTTP 前预留 2 秒给 sweep，并预留 2 秒给主结果的 durable finalization；该 reserve 可以阻止第二个慢主 Key 请求。没有 due Research 时保留原有主结算远端窗口。Research 超时不代表主结算本地预算耗尽，单轮总预算保持 20 秒。
 - 远端请求启动、观察结果、结算写入和 Research 状态落盘均受同一轮截止时间约束；最后的持久化收尾预算不得被新一轮远端请求抢占。
 - 在发起远端请求前必须保留两秒给持久化收尾。收尾预算、post-processing 或 retry bookkeeping
@@ -187,11 +187,11 @@
   lease，并具有 20 秒单轮总预算；剩余预算不足时不得发起新的上游请求。candidate、projection、
   hydrate、finalization 与 Research bookkeeping 不占该 lease，因此本地 HA GC 等维护任务不被长时间
   远程 I/O 占用。
-- 全局 429 压力状态与 job continuation 原子持久化。连续三轮零结算且 429 占比至少一半后，按
-  `2/5/10/30` 分钟退避，并采用 `max(退避, Retry-After)`；退避期间只保留一个 delayed
-  representative job。
-- 成功结算或压力比例恢复后清零全局压力状态。逐 key 429 为采样 DEBUG，进入、升级和恢复全局
-  退避才产生状态跃迁日志。
+- `period_reconciliation` Key 的 429 cooldown 与 job continuation 原子持久化。单 Key 使用
+  `5/10/20/30` 分钟阶梯并采用 `max(阶梯, Retry-After)`；退避期间只保留一个 delayed
+  representative job。所有可选 Key 都冷却时，continuation 使用最早的 Key 到期时间。
+- 遗留 global-backoff meta 仅为滚动升级兼容保留，不参与 reconciliation engine、代表任务唤醒或
+  管理员 live blocker。逐 Key 429 为采样 DEBUG，只有 Key cooldown 的进入、升级和恢复产生状态跃迁日志。
 - 管理员状态同时返回 `reconciliationObservation` 与 `reconciliationLocalBackoff`；未观测时
   coverage 为 `unknown`，`queueEstimate=null`，页面显示“未知”而不是“0”。
 - 历史 degraded 相位由独立索引化 `EXISTS` 决定；管理员 `degradedSettlements` 为最多 64 条的
@@ -262,7 +262,7 @@
   last-good，Then 在同一预算内返回 `503 Retry-After: 1`。
 - Given reconciliation backlog 中存在 `rate_limited` 窗口，When 管理员查看系统状态页，Then 能区分上游 429、本地 usage 限流与其他重试，并能看到当前时段每个上游 Key 的绑定用户数与待查询 Project ID 数分布。
 - Given 近期窗口与旧 backlog 同时堆积，When reconciliation worker 选择候选窗口，Then 今日+昨日窗口优先进入 recent lane，且不会被老 backlog 长期饿死。
-- Given 同一上游 Key 的多个窗口同时到期且首次 `/usage` 查询收到 429 或本地 usage 限流，When reconciliation worker 执行，Then 该 Key 的到期窗口整体进入同一退避时间，本轮不再反复打同一个 Key，其他 Key 的候选仍可继续结算。
+- Given 同一上游 Key 的多个窗口同时到期且首次 `/usage` 查询收到 429 或本地 usage 限流，When reconciliation worker 执行，Then 该 Key 的到期窗口整体进入同一 `period_reconciliation` cooldown，本轮不再反复打同一个 Key，其他非冷却 Key 的候选仍可继续结算；只有全部可选 Key 冷却时才按最早到期时间 deferred。
 - Given a claimed run reaches its finalization reserve or post-processing deadline, When the scheduler
   persists the outcome, Then the job finish, local-backoff state, local-pressure observation, retry deadline, and one
   delayed representative commit in one claim-fenced control transaction; a control-acquire failure

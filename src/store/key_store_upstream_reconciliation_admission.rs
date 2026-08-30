@@ -1,6 +1,7 @@
 type UpstreamReconciliationLastRunStats = (Option<i64>, i64, i64, i64, i64, bool);
 
 impl KeyStore {
+    #[cfg(test)]
     pub(crate) async fn upstream_reconciliation_global_backoff_state(
         &self,
     ) -> Result<(i64, i64, i64), ProxyError> {
@@ -71,14 +72,14 @@ impl KeyStore {
     where
         T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
     {
-        let available_at = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(CAST(value AS INTEGER)) FROM meta WHERE key IN (?, ?)",
+        // The legacy global 429 metadata remains readable for compatibility but
+        // is not a live reconciliation gate or representative wake source.
+        let available_at = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?), 0)",
         )
         .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
-        .bind(META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1)
         .fetch_one(&mut **transaction)
-        .await?
-        .unwrap_or(0);
+        .await?;
         if let Some((job_id, claim_generation)) = claimed_job {
             if available_at <= now {
                 if !Self::reconciliation_claim_is_current_locked(

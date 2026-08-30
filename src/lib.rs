@@ -1433,12 +1433,16 @@ const META_KEY_UPSTREAM_RECONCILIATION_LAST_RESEARCH_SWEEP_AT_V1: &str =
     "upstream_reconciliation_last_research_sweep_at_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_LAST_RESEARCH_TERMINAL_AT_V1: &str =
     "upstream_reconciliation_last_research_terminal_at_v1";
+#[cfg(test)]
 const META_KEY_UPSTREAM_RECONCILIATION_PRESSURE_STREAK_V1: &str =
     "upstream_reconciliation_pressure_streak_v1";
+#[cfg(test)]
 const META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_LEVEL_V1: &str =
     "upstream_reconciliation_backoff_level_v1";
+#[cfg(test)]
 const META_KEY_UPSTREAM_RECONCILIATION_BACKOFF_UNTIL_V1: &str =
     "upstream_reconciliation_backoff_until_v1";
+#[cfg(test)]
 const META_KEY_UPSTREAM_RECONCILIATION_LAST_RECOVERED_AT_V1: &str =
     "upstream_reconciliation_last_recovered_at_v1";
 const META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1: &str =

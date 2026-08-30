@@ -1756,11 +1756,339 @@ async fn reconciliation_global_backoff_counts_only_attempted_candidates() {
         .key_store
         .upstream_reconciliation_global_backoff_state()
         .await
-        .expect("read global backoff state");
-    assert_eq!(pressure_streak, 3);
-    assert_eq!(backoff_level, 1);
-    assert_eq!(backoff_until, now + 902 + 120);
+        .expect("read legacy global backoff state");
+    assert_eq!(
+        (pressure_streak, backoff_level, backoff_until),
+        (0, 0, 0),
+        "legacy global 429 metadata must not be advanced by reconciliation"
+    );
 
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_key_429_does_not_stop_other_key_research() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-global-gate-hot",
+            "tvly-reconciliation-global-gate-research",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare settings");
+    let hot_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-global-gate-hot")
+        .await
+        .expect("create hot key");
+    let research_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-global-gate-research")
+        .await
+        .expect("create research key");
+
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES ('global-gate-main', ?, '2026-07-15/S1', 'global-gate-main-project',
+                  'account:global-gate-main', ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind(&hot_key_id)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert main candidate");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("keep research fixture out of main work");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+            request_count, first_used_at, last_used_at, updated_at, settlement_mode
+        ) VALUES ('global-gate-research', ?, '2026-07-15/R1', 'global-gate-research-project',
+                  'account:global-gate-research', ?, ?, 1, ?, ?, ?, 'shadow')
+        "#,
+    )
+    .bind(&research_key_id)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert research usage");
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_reconciliation_research (
+            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+        ) VALUES ('global-gate-research-request', 'global-gate-research', ?, '2026-07-15/R1', ?, NULL, ?)
+        "#,
+    )
+    .bind(&research_key_id)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert due research");
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_transient_backoffs (
+            key_id, scope, cooldown_until, retry_after_secs, reason_code,
+            source_request_log_id, created_at, updated_at
+        ) VALUES (?, 'period_reconciliation', ?, 300, 'upstream429', NULL, ?, ?)
+        "#,
+    )
+    .bind(&hot_key_id)
+    .bind(now + 600)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("cool the main candidate key");
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value) VALUES
+            ('upstream_reconciliation_pressure_streak_v1', '3'),
+            ('upstream_reconciliation_backoff_level_v1', '1'),
+            ('upstream_reconciliation_backoff_until_v1', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(now + 600)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy global gate");
+
+    let usage_hits = Arc::new(AtomicUsize::new(0));
+    let research_hits = Arc::new(AtomicUsize::new(0));
+    let app_usage_hits = Arc::clone(&usage_hits);
+    let app_research_hits = Arc::clone(&research_hits);
+    let app = Router::new()
+        .route(
+            "/usage",
+            get(move || {
+                let app_usage_hits = Arc::clone(&app_usage_hits);
+                async move {
+                    app_usage_hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }),
+        )
+        .route(
+            "/research/global-gate-research-request",
+            get(move || {
+                let app_research_hits = Arc::clone(&app_research_hits);
+                async move {
+                    app_research_hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({ "status": "completed" }))
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve cross-key reconciliation upstream");
+    });
+
+    let observed = proxy
+        .run_upstream_reconciliation_once(&format!("http://{addr}"))
+        .await
+        .expect("run reconciliation with a legacy global gate");
+    assert_eq!(
+        observed, 0,
+        "Research terminal observations do not settle a main candidate"
+    );
+    assert_eq!(usage_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(research_hits.load(Ordering::SeqCst), 1);
+    let terminal_at: Option<i64> = sqlx::query_scalar(
+        "SELECT terminal_at FROM upstream_reconciliation_research WHERE request_id = 'global-gate-research-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read research terminal state");
+    assert!(terminal_at.is_some());
+    assert_eq!(
+        proxy
+            .key_store
+            .upstream_reconciliation_global_backoff_state()
+            .await
+            .expect("read unchanged legacy global gate"),
+        (3, 1, now + 600)
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_all_key_cooldowns_defer_to_earliest_retry() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec![
+            "tvly-reconciliation-cooldown-earliest-a",
+            "tvly-reconciliation-cooldown-earliest-b",
+        ],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    settings.upstream_precise_reconciliation_enabled = false;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save compare settings");
+    let key_ids = [
+        proxy
+            .add_or_undelete_key("tvly-reconciliation-cooldown-earliest-a")
+            .await
+            .expect("create first key"),
+        proxy
+            .add_or_undelete_key("tvly-reconciliation-cooldown-earliest-b")
+            .await
+            .expect("create second key"),
+    ];
+    for (index, key_id) in key_ids.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject,
+                period_start, period_end, request_count, first_used_at,
+                last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("all-cooldown-token-{index}"))
+        .bind(key_id)
+        .bind(format!("2026-07-15/C{index}"))
+        .bind(format!("all-cooldown-project-{index}"))
+        .bind(format!("account:all-cooldown-{index}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert cooldown candidate");
+    }
+    for (key_id, cooldown_until) in key_ids.iter().zip([now + 600, now + 300]) {
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_transient_backoffs (
+                key_id, scope, cooldown_until, retry_after_secs, reason_code,
+                source_request_log_id, created_at, updated_at
+            ) VALUES (?, 'period_reconciliation', ?, 300, 'upstream429', NULL, ?, ?)
+            "#,
+        )
+        .bind(key_id)
+        .bind(cooldown_until)
+        .bind(now)
+        .bind(now)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed key cooldown");
+    }
+
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("all key cooldowns produce a typed defer");
+    assert!(matches!(
+        outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
+            retry_at,
+        } if retry_at == now + 300
+    ));
+    let work_counts: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(completed_generation), 0) FROM upstream_reconciliation_work WHERE token_id LIKE 'all-cooldown-token-%'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unfinished cooldown work");
+    assert_eq!(work_counts, (2, 0));
+
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
+            now + 300,
+        )
+        .await
+        .expect("persist earliest cooldown continuation");
+    assert_eq!(continuation.status, "queued");
+    let representatives: (i64, Option<i64>) = sqlx::query_as(
+        "SELECT COUNT(*), MIN(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unique cooldown representative");
+    assert_eq!(representatives, (1, Some(now + 300)));
+    assert_eq!(
+        proxy
+            .key_store
+            .upstream_reconciliation_local_backoff_state()
+            .await
+            .expect("read unchanged local pressure state"),
+        (0, 0, 0)
+    );
+
+    drop(proxy);
     let _ = std::fs::remove_file(db_path);
 }
 

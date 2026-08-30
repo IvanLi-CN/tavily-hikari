@@ -493,11 +493,12 @@ PR: none
 - Reconciliation candidate-query timeouts are recorded as local pressure rather than an empty
   queue, and successful remote observations are finalized within the reserved write tail even when
   a later candidate exhausts the request budget.
-- Reconciliation completion markers, run statistics, and local/global pressure state share one
-  bounded post-processing deadline. SQLite contention may produce an explicit persistence timeout,
-  but must not leave the worker waiting past the run budget or report a durable success without
-  recording the state transition; the deadline must end before the scheduler's outer timeout so
-  cancellation cannot race the controlled timeout path.
+- Reconciliation completion markers, run statistics, local-pressure state, and affected-Key cooldown
+  state share one bounded post-processing deadline. SQLite contention may produce an explicit
+  persistence timeout, but must not leave the worker waiting past the run budget or report a durable
+  success without recording the state transition; the deadline must end before the scheduler's outer
+  timeout so cancellation cannot race the controlled timeout path. Legacy global-backoff metadata is
+  compatibility-only and is never a live reconciliation gate.
 - Reconciliation preparation source reads use one fresh native SQLite progress-handler session per
   statement rather than cancellation of the awaiting task. Recent/backlog candidates, candidate and
   billed-credit hydrate, Research candidates, and historical projection source pages have a 250ms

@@ -141,11 +141,11 @@
 
 ## Reconciliation pressure telemetry
 
-- Reconciliation persists a global pressure streak and backoff level. Three consecutive runs with
-  zero settlements and predominantly upstream 429 responses enter a 2/5/10/30 minute backoff;
-  per-key cooldown remains authoritative, while normal per-key backoff logs are DEBUG and the
-  state transition is summarized once at WARN. The administrative system-status surface exposes the
-  current pressure streak, level, and retry time.
+- Reconciliation persists cooldown state per `period_reconciliation` Key. A real upstream 429 uses
+  the `5/10/20/30` minute ladder (honoring `Retry-After`) only for the affected Key; other Keys
+  remain eligible, and an all-Key cooldown defers to the earliest retry time. Legacy global-backoff
+  meta remains readable for rolling compatibility but is not a live gate or representative wake
+  source. Normal per-Key cooldown logs are DEBUG; only Key state transitions are summarized at WARN.
 
 ## Low-cost memory and transition telemetry
 
@@ -173,12 +173,12 @@
 
 PR: include
 
-![System status global reconciliation backoff](./assets/system-status-global-reconciliation-backoff.png)
+![Historical system status reconciliation pressure fixture](./assets/system-status-global-reconciliation-backoff.png)
 
 - Storybook canvas: `Admin/Modules/SystemStatusModule/GlobalBackoff`
-- evidence_note: Mock-only system-status state showing the persisted global reconciliation backoff
-  after three pressure runs. Bound to `525c07d305537a6c60cf176d28f8ec9788895424`; it must be
-  recaptured after any UI or fixture change.
+- evidence_note: Historical mock-only system-status fixture retained for compatibility documentation;
+  it is not a live reconciliation gate. Current runtime status uses per-Key cooldown and an earliest
+  retry time.
 
 ## 状态
 

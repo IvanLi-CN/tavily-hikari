@@ -24,11 +24,11 @@ struct ReconciliationRunResult {
     other_retry_windows: i64,
     key_backoff_window_count: i64,
     skipped_by_key_backoff: i64,
+    earliest_key_cooldown_until: Option<i64>,
     attempted_candidate_count: i64,
     main_remote_request_count: i64,
     budget_exhausted: bool,
     remote_attempt_limit_reached: bool,
-    max_retry_after_until: Option<i64>,
     hydrate_ms: i64,
     first_remote_ms: Option<i64>,
     remote_ms: i64,
@@ -269,12 +269,24 @@ impl ReconciliationEngine {
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
-        ClaimedReconciliationRunOutcome::Deferred {
+        Self::deferred_at(
+            proxy,
             reason,
-            retry_at: proxy
+            proxy
                 .backend_time()
                 .now_ts()
                 .saturating_add(Self::DEFER_RETRY_DELAY_SECS),
+        )
+    }
+
+    fn deferred_at(
+        _proxy: &TavilyProxy,
+        reason: &'static str,
+        retry_at: i64,
+    ) -> ClaimedReconciliationRunOutcome {
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason,
+            retry_at,
         }
     }
 
@@ -502,6 +514,7 @@ impl ReconciliationEngine {
         )
     }
 
+    #[cfg(test)]
     fn clears_upstream_429(outcome: ReconciliationOutcome) -> bool {
         Self::clears_local_pressure(outcome)
     }

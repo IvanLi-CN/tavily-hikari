@@ -72,6 +72,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `retryable outcome`: `upstream_429`, `transport_failure`, `semantic_failure`, or
   `local_pressure`. It preserves the current work generation and its independent retry state until
   a later terminal outcome.
+- `Key cooldown`: a `period_reconciliation`-scoped retry window written only for the upstream Key
+  that returned `429`, using the `5/10/20/30` minute ladder and `Retry-After`. Non-cooling Keys keep
+  progressing; if every eligible Key is cooling, the representative defers to the earliest expiry.
+  Legacy global-backoff meta is compatibility data, not a live gate or wake source.
 - `missing eligible upstream key`: a durable nonterminal input condition. It records a fixed
   fifteen-minute retry without incrementing semantic or transport failure state, and administrators
   see only its aggregate count.

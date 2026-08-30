@@ -229,6 +229,7 @@ impl KeyStore {
                 reason,
                 "research_read_budget"
                     | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
+                    | RECONCILIATION_RETRY_REASON_KEY_COOLDOWN
                     | RECONCILIATION_RETRY_REASON_GENERATION_CHANGED
             );
             let local_backoff_until = if preserve_retry_state {
@@ -275,7 +276,7 @@ impl KeyStore {
                 sqlx::query(
                     r#"UPDATE upstream_reconciliation_run_observation
                        SET last_retryable_outcome = CASE
-                               WHEN ? = 'remote_attempt_budget' THEN ?
+                               WHEN ? IN ('remote_attempt_budget', 'key_cooldown') THEN ?
                                ELSE last_retryable_outcome
                            END,
                            continuation_reason = ?, next_retry_at = ?, observed_at = ?

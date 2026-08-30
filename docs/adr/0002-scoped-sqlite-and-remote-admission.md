@@ -57,6 +57,11 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   migration creates this derived table and index without scanning usage or emitting HA events;
   terminal completion removes the rows. Exhausting the request cap is a typed
   `remote_attempt_budget` continuation at 30 seconds, never a semantic failure.
+- An upstream `429` writes cooldown only for the affected `period_reconciliation` Key. The existing
+  `5/10/20/30` minute ladder and `Retry-After` determine its next attempt; non-cooling Keys remain
+  eligible, and an all-Key cooldown schedules the claim-fenced representative at the earliest
+  expiry. Legacy global-backoff metadata remains readable for rolling compatibility but is not a
+  reconciliation gate or representative wake source.
 
 ## Consequences
 

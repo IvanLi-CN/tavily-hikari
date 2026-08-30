@@ -73,7 +73,7 @@
   state unchanged; a separately throttled observation heartbeat maintains recent-tail liveness.
   Sidecar Dashboard aggregation returns only scalar counts and the bounded top-group page, never an
   unbounded payload collection.
-- 事务污染、stale claim recovery、连续零进展、预算耗尽和全局退避只在进入、升级或恢复时告警。
+- 事务污染、stale claim recovery、连续零进展、预算耗尽和逐 Key cooldown 只在进入、升级或恢复时告警；遗留 global-backoff meta 不作为 live 状态。
 - HA GC 低压恢复、SLO deadline、最老可删事件年龄与真实删除率必须可从管理员状态和聚合日志
   还原；sequence span 仅作趋势估算，不作为库存或 ETA。
 - Request-log GC admission and an unsealed-day retention guard are DEBUG-level typed outcomes. They
