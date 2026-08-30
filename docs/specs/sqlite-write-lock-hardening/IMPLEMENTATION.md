@@ -582,8 +582,10 @@
 - `scheduled_jobs.claim_generation` fences stale finish/error/continuation writes. HA continuation
   enqueue is atomic with finish; failed persistence is left for stale reaper recovery instead of an
   unbounded retry task.
-- Reconciliation candidate selection is an indexed bounded page, and the persisted local pressure
-  state applies `2/5/10/30` minute backoff with the maximum upstream `Retry-After`.
+- Reconciliation candidate selection is an indexed bounded page. Local pressure has its own short
+  backoff; an observed upstream 429 applies the `5/10/20/30` minute cooldown only to the triggering
+  `period_reconciliation` key and honors the maximum `Retry-After`. Legacy global-backoff metadata
+  remains diagnostic-only and never gates reconciliation.
 - Business-call usage keeps only the last hour as events, stores older history in five-minute buckets,
   and backfills in 500-row pages while preserving a request-log tail captured at the start.
 - Normal GC/reconciliation phases and per-key 429 diagnostics are DEBUG. INFO is aggregated at a

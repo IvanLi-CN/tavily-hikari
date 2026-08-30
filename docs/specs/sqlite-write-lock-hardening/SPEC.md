@@ -316,7 +316,8 @@ source when a usable persisted runtime already exists.
   any remote request; they must acquire admission and release it before remote I/O. Three consecutive
   rounds with eligible candidates but no remote attempt and exhausted local budget enter a persisted
   short local backoff with one delayed representative job. Only actual upstream 429 attempts enter
-  the persisted `2/5/10/30` minute remote backoff and honor `Retry-After`.
+  the persisted `5/10/20/30` minute cooldown for the affected `period_reconciliation` key and honor
+  `Retry-After`; a cooldown never gates healthy keys.
 - Reconciliation's main settlement pass owns the first remote-attempt budget. Research terminal
   polling is permitted only after the main pass (or when no eligible main candidate exists), and
   all remote requests plus their durable bookkeeping are bounded by the same per-run deadline.

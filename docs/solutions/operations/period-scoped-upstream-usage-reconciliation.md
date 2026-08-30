@@ -8,8 +8,9 @@ run. Research remains an independent, globally single-concurrent sweep. When due
 preparation, it reserves two seconds for the later Research sweep and two seconds
 for main durable finalization before it starts main remote work; the reserve may preclude a second slow main
 request. Without due Research, main settlement retains its normal remote envelope. Research exhaustion is
-diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from upstream-429 backoff
-(`2/5/10/30m`); non-429 failures do not reset the remote circuit. A current claim that reaches a
+diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
+per-key upstream-429 cooldown (`5/10/20/30m`); a 429 only cools the affected `period_reconciliation` key,
+and non-429 failures do not reset that key's cooldown. A current claim that reaches a
 low-foreground recovery window clears only its local-pressure state before trying the engine again;
 if SQLite is still pressured, that attempt durably defers again. This preserves foreground yielding
 without letting a stale local backoff consume the whole recovery tail.

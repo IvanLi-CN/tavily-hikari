@@ -281,9 +281,10 @@ reads:
   first observation. Never render an unknown queue as zero.
 - When three rounds have candidates but no remote attempt and local budget exhaustion, persist one
   representative delayed job and apply a short local backoff. Keep that state separate from the
-  `2/5/10/30` minute upstream-429 backoff, which only changes after real remote 429 attempts and
-  honors the maximum Retry-After. This protects the SQLite worker from a one-minute no-op loop
-  without hiding real progress.
+  per-key upstream-429 cooldown (`5/10/20/30` minutes), which only changes after a real remote 429
+  attempt for that `period_reconciliation` key and honors the maximum Retry-After. Legacy
+  global-backoff metadata is readable for compatibility but is not a live gate. This protects the
+  SQLite worker from a one-minute no-op loop without hiding progress on healthy keys.
 - For in-memory owner-facing usage windows, retain only the last hour as events and aggregate older
   1–25 hour history into five-minute buckets. Backfill with 500-row pages and merge the captured live
   tail so a lock-held full-history copy is never required.

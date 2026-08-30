@@ -31,14 +31,16 @@
 - reconciliation keeps a one-at-a-time remote attempt lease only while an outbound HTTP request is
   active and remains under the 20-second total budget. Local projection, hydrate, finalization, and
   Research bookkeeping do not hold that lease; a 120-second eligible automatic representative owns
-  the next non-manual request turn. Global 429 pressure state and the delayed representative remain
-  durable, avoiding minute-by-minute empty work.
+  the next non-manual request turn. The per-key 429 cooldown and delayed representative remain
+  durable, avoiding minute-by-minute empty work; legacy global-backoff metadata is diagnostic-only
+  and never gates execution or representative wake.
 - 候选页先以 period/settlement 索引限制扫描，再做有界 hydrate 与 Research `EXISTS` 判断；执行
   前后不再运行精确队列聚合。系统状态读取 bounded observation，未首次观测时保留 unknown/null
   语义。
-- 本地压力连续三轮触发 `30/60/120/300` 秒退避；真实 upstream 429 独立触发
-  `2/5/10/30` 分钟退避并尊重更晚的 `Retry-After`。transport、semantic failure 与本地预算耗尽
-  不会清空已有 429 状态。
+- 本地压力连续三轮触发 `30/60/120/300` 秒退避；真实 upstream 429 仅对触发它的
+  `period_reconciliation` Key 独立触发 `5/10/20/30` 分钟退避并尊重更晚的 `Retry-After`。
+  transport、semantic failure 与本地预算耗尽不会清空已有逐 Key 429 状态；遗留 global-backoff
+  meta 只为滚动兼容保留。
 - `upstream_reconciliation_work` 由 usage 写入增量维护。升级前历史行由
   `ReconciliationProjectionController` 使用稳定复合 keyset 和 `25..100` 行自适应微片吸收：读扫描
   在事务外完成，work merge、claim fence、cursor CAS 和进度在同一短事务提交。低压续跑最快一秒，
@@ -102,7 +104,11 @@
 ## Current performance contract
 
 - Main settlement hydrates the bounded candidate page, referenced key/cooldown state, and Research eligibility before starting the first `/usage` request. The terminal sweep still runs only after main durable finalization. When due Research exists, the run reserves two seconds for the later sweep and two seconds for main finalization before it starts main remote work; without due Research, it retains the existing main request envelope. A sweep timeout is not primary budget exhaustion.
-- Local budget exhaustion is persisted separately from the upstream-429 backoff. Only observed upstream 429 attempts advance the 2/5/10/30-minute global state; local pressure uses a short independent delay and never fabricates a remote rate-limit signal.
+- Local budget exhaustion is persisted separately from the per-key upstream-429 backoff. Only an
+  observed upstream 429 advances the cooldown for that `period_reconciliation` key, using the
+  existing `5/10/20/30`-minute ladder and `Retry-After`; local pressure uses a short independent
+  delay and never fabricates a remote rate-limit signal. Legacy global-backoff metadata remains
+  readable for compatibility but is not a live gate or wake source.
 - Remote request start, observation, settlement finalization, and research bookkeeping use nested
   deadlines with reserved post-processing headroom. The four local-pressure meta keys are included
   in HA incremental and baseline replication so failover retains the same recovery state.
