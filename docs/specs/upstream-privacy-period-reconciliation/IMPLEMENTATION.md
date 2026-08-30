@@ -27,7 +27,9 @@
 - reconciliation 候选调度已切成 recent/backlog 双车道：今日+昨日窗口优先按 `period_end DESC` 取最多 `12` 条，旧 backlog 再按 `period_end ASC` 取最多 `8` 条，空余预算双向回填，避免近期窗口长期被旧积压饿死。
 - Research 记录已加入持久化 poll 元数据；独立
   `upstream_reconciliation_research_drain` job 复用 v21 selector/cursor，每 5 秒最多执行一个
-  terminal poll。poll outcome、逐 Key cooldown、精确 cursor 与 claim fence 原子提交。
+  terminal poll。eligibility 在 80 行 limit 前完成；只接受实际处理候选的精确 cursor，并以
+  5 分钟强制回绕重新发现 cursor 后方新近闭合的记录。poll outcome、逐 Key cooldown、cursor、
+  sweep clock 与 claim fence 原子提交。
 - 对账限流已改用 `period_reconciliation` 独立 Key cooldown：429 不再扇出写入同 Key 的全部窗口，其他 Key 可继续结算；状态 API/页面提供今日账号与账期覆盖、Research 收敛和 per-Key cooldown 进度。
 - `/api/users` compare-only 项新增 observed/standard-settled/degraded period count，用户列表和用量页在 hybrid 值旁展示标准对账覆盖及降级数。
 - reconciliation keeps a one-at-a-time remote attempt lease only while an outbound HTTP request is

@@ -191,6 +191,7 @@ async fn reconciliation_research_drain_stale_claim_does_not_commit_cursor_or_res
                 request_id: "stale-drain-request",
                 expected_cursor: &cursor,
                 accepted_cursor: &cursor,
+                wrapped: false,
                 poll: crate::store::UpstreamReconciliationResearchDrainPoll::Terminal,
                 key_backoff: None,
                 job_id: claim.id,

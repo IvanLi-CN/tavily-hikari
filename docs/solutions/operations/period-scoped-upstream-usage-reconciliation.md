@@ -29,6 +29,11 @@ Research selection uses the due covering index with an 80-row keyset page and th
 four-per-key and 20-row selection bounds. Each drain run polls one candidate. Its pending, terminal,
 retry, or per-Key 429 result commits with the exact selected cursor and claim fence; read or lease
 pressure schedules one `research_drain_budget` continuation without changing the main result.
+Apply closed-period eligibility before the page limit and identically during hydrate. Advance the
+cursor only for the processed candidate, force a stable-start sweep every five minutes to rediscover
+records that became eligible behind the cursor, and refresh that sweep clock in the accepted atomic
+commit. When all eligible due Keys are cooling, determine the globally earliest eligible cooldown
+independently of the cursor page.
 
 For a period that maps to more than one eligible upstream key, persist each successful key observation
 by work generation before requesting another key. Cap each run at two remote requests. If keys remain,

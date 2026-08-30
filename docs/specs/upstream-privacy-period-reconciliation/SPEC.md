@@ -137,6 +137,11 @@
   one request, and atomically accepts its pending/terminal/retry result, exact cursor, Key cooldown,
   and claim fence. `research_drain_budget` advances no cursor or retry streak and schedules one
   30-second continuation.
+- Research eligibility must be applied before the 80-row page limit and match hydrate eligibility.
+  The cursor advances only for the exact processed candidate. A forced stable-start sweep runs at
+  least every five minutes so rows that become eligible behind a busy cursor cannot starve; its
+  accepted claim-fenced commit refreshes the sweep clock. If every eligible due Key is cooling, the
+  wake time is the globally earliest eligible cooldown, independent of the current cursor page.
 - When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
   response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
   run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second

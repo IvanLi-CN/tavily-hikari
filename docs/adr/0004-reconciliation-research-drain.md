@@ -21,8 +21,13 @@ stable cursor, so tying its liveness to the main run is unnecessary.
 - A claim-fenced control transaction accepts the Research result, any affected
   `period_reconciliation` Key cooldown, the exact processed cursor, and the drain observation
   together. Cancellation, stale claims, and local pressure advance none of them.
+- Selection applies the same closed-period eligibility before the 80-row limit and during hydrate.
+  Only an actually processed candidate advances the cursor. A five-minute forced wrap rediscovers
+  dynamically eligible rows behind the cursor; accepting the forced page refreshes the sweep clock
+  in the same transaction so the selector does not repeatedly rescan the prefix.
 - A Key-level `429` affects only that Key. Other due Keys remain selectable; when every due Key is
-  cooling, the representative wakes at the earliest cooldown expiry.
+  cooling, a separate bounded lookup wakes the representative at the globally earliest eligible
+  cooldown expiry rather than the earliest value in the current cursor page.
 - Startup, the stale-job watchdog, and a safely completed main run ensure the unique drain
   representative. Research no longer contributes to the main representative's continuation time.
 

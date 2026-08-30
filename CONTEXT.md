@@ -96,7 +96,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   owns the next non-manual attempt turn.
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in
   bounded batches with a four-per-key and 20-row sweep cap. Its stable keyset cursor advances only
-  after claim-fenced acceptance; read pressure or cancellation leaves the page retryable.
+  after claim-fenced acceptance of an actually processed candidate; read pressure or cancellation
+  leaves the page retryable. Eligibility is resolved before the page limit. A five-minute forced
+  wrap rediscovers rows that become eligible behind the cursor, and accepting that wrap atomically
+  starts the next sweep interval.
 - `Research drain`: the unique durable `upstream_reconciliation_research_drain` representative that
   owns terminal Research polling and the v21 scan cursor. It performs at most one request every five
   seconds, commits the poll result, per-Key cooldown, exact cursor, and claim fence atomically, and

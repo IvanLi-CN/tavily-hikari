@@ -56,7 +56,10 @@ related_specs:
   write-byte deltas. The latter are aggregate pressure evidence, not query attribution.
 - Keep Research source reads in a separate durable drain, bounded by the covering due index and a
   stable keyset page. Commit the single processed outcome, exact cursor, optional Key cooldown, and
-  claim fence together; pressure or cancellation leaves all of them retryable.
+  claim fence together; pressure or cancellation leaves all of them retryable. Apply dynamic
+  eligibility before the page limit and force a stable-start sweep every five minutes, with the
+  accepted wrap and sweep clock committed together, so bounded keyset progress does not strand rows
+  that become eligible behind the cursor.
 - Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
   They upsert only successful responses for the current work generation, while the two-request cap is
   represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal

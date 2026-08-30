@@ -290,6 +290,7 @@ impl TavilyProxy {
                     request_id: &candidate.request_id,
                     expected_cursor: &page.start_cursor,
                     accepted_cursor,
+                    wrapped: page.wrapped,
                     poll,
                     key_backoff,
                     job_id,

@@ -1062,7 +1062,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 8, 27, 12, 0);
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
     let proxy = TavilyProxy::with_options_and_time(
         vec!["tvly-research-drain-cooling", "tvly-research-drain-healthy"],
         "http://127.0.0.1:9",
@@ -1091,6 +1091,11 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
     for (request_id, token_id, key_id) in [
         ("drain-cooled-request", "drain-cooled-token", &cooling_key),
         ("drain-healthy-request", "drain-healthy-token", &healthy_key),
+        (
+            "zz-drain-healthy-later",
+            "drain-healthy-later-token",
+            &healthy_key,
+        ),
     ] {
         sqlx::query(
             "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, \
@@ -1245,6 +1250,54 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
     .await
     .expect("read accepted drain cursor");
     assert_eq!(cursor_request_id, "drain-healthy-request");
+    let first_sweep_at: i64 = sqlx::query_scalar(
+        "SELECT updated_at FROM upstream_reconciliation_research_scan_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read initial sweep clock");
+    assert_eq!(
+        first_sweep_at, now,
+        "the first accepted cursor starts the sweep clock"
+    );
+
+    clock.set_now_ts(now + 299);
+    let continued = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(80)
+        .await
+        .expect("continue after the accepted cursor before the sweep interval");
+    assert!(
+        !continued.wrapped,
+        "the selector must not force-wrap before 300 seconds"
+    );
+    let continued_candidate = continued
+        .candidates
+        .first()
+        .expect("later eligible Research remains after the cursor");
+    assert_eq!(continued_candidate.request_id, "zz-drain-healthy-later");
+    let continued_cursor = continued
+        .candidate_cursors
+        .get(&continued_candidate.request_id)
+        .expect("later candidate cursor");
+    assert!(
+        proxy
+            .key_store
+            .commit_upstream_reconciliation_research_drain(
+                crate::store::UpstreamReconciliationResearchDrainCommit {
+                    request_id: &continued_candidate.request_id,
+                    expected_cursor: &continued.start_cursor,
+                    accepted_cursor: continued_cursor,
+                    wrapped: continued.wrapped,
+                    poll: crate::store::UpstreamReconciliationResearchDrainPoll::Terminal,
+                    key_backoff: None,
+                    job_id: claim.id,
+                    claim_generation: claim.claim_generation,
+                },
+            )
+            .await
+            .expect("accept the continued Research cursor")
+    );
     let all_cooled = proxy
         .run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{address}"),
@@ -1265,6 +1318,63 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         hits.load(Ordering::SeqCst),
         1,
         "cooldown defer sends no HTTP"
+    );
+    clock.set_now_ts(now + 601);
+    let reopened = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(80)
+        .await
+        .expect("periodic sweep wrap rediscovers newly closed Research");
+    assert!(
+        reopened
+            .candidates
+            .iter()
+            .any(|candidate| candidate.request_id.starts_with("000-ineligible-")),
+        "a row that closes behind the cursor must be rediscovered"
+    );
+    assert!(
+        reopened.wrapped,
+        "the overdue sweep must force one stable-start pass"
+    );
+    let reopened_candidate = reopened
+        .candidates
+        .first()
+        .expect("forced sweep returns a newly eligible Research row");
+    let reopened_cursor = reopened
+        .candidate_cursors
+        .get(&reopened_candidate.request_id)
+        .expect("forced-sweep candidate cursor");
+    assert!(
+        proxy
+            .key_store
+            .commit_upstream_reconciliation_research_drain(
+                crate::store::UpstreamReconciliationResearchDrainCommit {
+                    request_id: &reopened_candidate.request_id,
+                    expected_cursor: &reopened.start_cursor,
+                    accepted_cursor: reopened_cursor,
+                    wrapped: reopened.wrapped,
+                    poll: crate::store::UpstreamReconciliationResearchDrainPoll::Pending {
+                        next_poll_at: now + 1_200,
+                        outcome: "pending",
+                        error_kind: None,
+                    },
+                    key_backoff: None,
+                    job_id: claim.id,
+                    claim_generation: claim.claim_generation,
+                },
+            )
+            .await
+            .expect("accept the forced-sweep cursor")
+    );
+    clock.set_now_ts(now + 602);
+    let after_forced_wrap = proxy
+        .key_store
+        .next_upstream_reconciliation_research_candidates(80)
+        .await
+        .expect("continue after one forced sweep");
+    assert!(
+        !after_forced_wrap.wrapped,
+        "an accepted forced sweep must suppress another wrap for 300 seconds"
     );
 
     drop(proxy);
