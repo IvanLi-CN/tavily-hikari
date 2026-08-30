@@ -165,8 +165,8 @@
 - Reconciliation aggregates include main-settlement and research timing plus typed outcome counts,
   including `no_adjustment`. The status view keeps unknown coverage nullable instead of publishing a
   zero queue or zero adjustment count before its first durable observation.
-- Main settlement now precedes Research, and remote observations plus bookkeeping share bounded
-  nested deadlines with reserved finalization headroom. HA metadata carries local pressure across
+- Main settlement and Research now use separate durable jobs. The Research drain aggregates one
+  poll at a time, while its outcome and exact cursor share one claim-fenced write. HA metadata carries local pressure across
   takeover without increasing normal log volume.
 
 ## Visual Evidence

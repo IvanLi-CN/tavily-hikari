@@ -31,6 +31,7 @@ impl KeyStore {
                 | "mcp_session_init_backoffs_gc"
                 | "token_usage_rollup"
                 | "upstream_reconciliation"
+                | "upstream_reconciliation_research_drain"
                 | "usage_aggregation",
             ) => 3,
             (
@@ -60,7 +61,7 @@ impl KeyStore {
                 WHEN {trigger_source_column} = 'manual' AND ({job_type_column} = 'request_logs_gc' OR {job_type_column} = 'db_compaction') THEN 0 \
                 WHEN {trigger_source_column} = 'manual' THEN 1 \
                 WHEN {job_type_column} = 'request_logs_gc' OR {job_type_column} = 'db_compaction' THEN 2 \
-                WHEN {job_type_column} = 'auth_token_logs_gc' OR {job_type_column} = 'ha_outbox_gc' OR {job_type_column} = 'mcp_sessions_gc' OR {job_type_column} = 'mcp_session_init_backoffs_gc' OR {job_type_column} = 'token_usage_rollup' OR {job_type_column} = 'upstream_reconciliation' OR {job_type_column} = 'usage_aggregation' THEN 3 \
+                WHEN {job_type_column} = 'auth_token_logs_gc' OR {job_type_column} = 'ha_outbox_gc' OR {job_type_column} = 'mcp_sessions_gc' OR {job_type_column} = 'mcp_session_init_backoffs_gc' OR {job_type_column} = 'token_usage_rollup' OR {job_type_column} = 'upstream_reconciliation' OR {job_type_column} = 'upstream_reconciliation_research_drain' OR {job_type_column} = 'usage_aggregation' THEN 3 \
                 WHEN {job_type_column} = 'linuxdo_user_tag_binding_refresh' OR {job_type_column} = 'forward_proxy_geo_refresh' OR {job_type_column} = 'linuxdo_credit_recharge_lifecycle' OR {job_type_column} = 'linuxdo_user_status_sync' THEN 4 \
                 WHEN {job_type_column} = 'quota_sync' OR {job_type_column} = 'quota_sync/manual' OR {job_type_column} = 'quota_sync/hot' THEN 5 \
                 ELSE 6 \
@@ -1416,7 +1417,7 @@ impl KeyStore {
                    claim_generation = claim_generation + 1,
                    message = CASE
                        WHEN job_type = 'ha_outbox_gc' THEN 'deferred=stale_recovery'
-                       WHEN job_type = 'upstream_reconciliation' THEN 'deferred=stale_reconciliation_recovery'
+                       WHEN job_type IN ('upstream_reconciliation', 'upstream_reconciliation_research_drain') THEN 'deferred=stale_reconciliation_recovery'
                        WHEN job_type = 'request_logs_gc' THEN 'deferred=stale_request_logs_gc_recovery'
                        ELSE 'deferred=stale_control_recovery'
                    END
@@ -1424,10 +1425,10 @@ impl KeyStore {
                  AND started_at IS NOT NULL
                  AND (
                      (job_type = 'ha_outbox_gc' AND started_at <= ?)
-                     OR (job_type = 'upstream_reconciliation' AND started_at <= ?)
+                     OR (job_type IN ('upstream_reconciliation', 'upstream_reconciliation_research_drain') AND started_at <= ?)
                      OR (job_type = 'request_logs_gc' AND started_at <= ?)
                      OR (
-                         job_type NOT IN ('ha_outbox_gc', 'upstream_reconciliation', 'request_logs_gc', 'db_compaction')
+                         job_type NOT IN ('ha_outbox_gc', 'upstream_reconciliation', 'upstream_reconciliation_research_drain', 'request_logs_gc', 'db_compaction')
                          AND started_at <= ?
                      )
                  )"#,

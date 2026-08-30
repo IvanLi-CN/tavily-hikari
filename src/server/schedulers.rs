@@ -1,5 +1,6 @@
 use tavily_hikari::{
     ClaimedReconciliationRunOutcome,
+    ClaimedResearchDrainOutcome,
     LinuxDoCreditRechargeOrder,
     LINUXDO_CREDIT_RECHARGE_REFUND_EXTERNAL_SUCCEEDED_PHASE,
     LINUXDO_CREDIT_RECHARGE_STATUS_REFUNDED,
@@ -78,6 +79,8 @@ const DASHBOARD_ALERT_PROJECTION_INITIAL_DELAY_SECS: u64 = 30;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_RETRY_DELAY_SECS: i64 = 5 * 60;
 const SCHEDULED_JOB_WAIT_WARN_SECS: i64 = 5 * 60;
 const RECONCILIATION_REMOTE_TURN_WAIT_SECS: i64 = 120;
+const RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE: &str =
+    "upstream_reconciliation_research_drain";
 const SCHEDULED_JOB_WAIT_WARN_SAMPLE_SECS: u64 = 5 * 60;
 static REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED_JOB_QUEUE_WAIT_WARN_WINDOWS: OnceLock<StdMutex<HashMap<String, Instant>>> =
@@ -333,13 +336,14 @@ fn duration_until_next_local_daily_run(now: DateTime<Local>, hour: u32, minute: 
     tavily_hikari::duration_until_next_local_daily_run(now, hour, minute)
 }
 
-const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 7] = [
+const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 8] = [
     "quota_sync",
     "quota_sync/manual",
     "quota_sync/hot",
     LINUXDO_USER_STATUS_SYNC_JOB_TYPE,
     LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE,
     "upstream_reconciliation",
+    RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
     "forward_proxy_geo_refresh",
 ];
 
@@ -349,20 +353,6 @@ fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
 
 fn scheduled_job_is_manual_remote(job: &QueuedScheduledJob) -> bool {
     job.trigger_source == TRIGGER_SOURCE_MANUAL
-}
-
-fn scheduled_job_uses_db_execution_gate(job_type: &str) -> bool {
-    job_type != "upstream_reconciliation"
-}
-
-#[cfg(test)]
-#[test]
-fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
-    assert!(scheduled_job_uses_remote_io("upstream_reconciliation"));
-    assert!(!scheduled_job_uses_db_execution_gate(
-        "upstream_reconciliation"
-    ));
-    assert!(scheduled_job_uses_db_execution_gate("ha_outbox_gc"));
 }
 
 async fn dequeue_next_scheduled_job(
@@ -403,6 +393,15 @@ async fn dequeue_next_scheduled_job(
     {
         reconciliation_turn = Some(turn);
         selected = Some(aged_reconciliation);
+    }
+
+    if selected.is_none()
+        && let Some(drain) = candidates
+            .iter()
+            .find(|candidate| candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE)
+            .cloned()
+    {
+        selected = Some(drain);
     }
 
     for candidate in candidates {
@@ -714,30 +713,6 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
     });
 }
 
-fn spawn_upstream_reconciliation_startup_resume(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        match state
-            .proxy
-            .ensure_upstream_reconciliation_representative_job()
-            .await
-        {
-            Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
-            Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => tracing::debug!(
-                component = "reconciliation",
-                event = "startup_resume_enqueue_deferred",
-                defer_reason = "sqlite_contention",
-                retry_via = "stale_reaper",
-                err = %err,
-            ),
-            Err(err) => tracing::error!(
-                component = "reconciliation",
-                event = "startup_resume_enqueue_failed",
-                err = %err,
-            ),
-        }
-    });
-}
-
 fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -775,6 +750,18 @@ fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) {
                 Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
                 Err(err) => tracing::debug!(
                     component = "reconciliation",
+                    event = "resume_watcher_enqueue_failed",
+                    err = %err,
+                ),
+            }
+            match state
+                .proxy
+                .ensure_upstream_reconciliation_research_drain_job()
+                .await
+            {
+                Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
+                Err(err) => tracing::debug!(
+                    component = "reconciliation_research_drain",
                     event = "resume_watcher_enqueue_failed",
                     err = %err,
                 ),
@@ -2721,6 +2708,34 @@ async fn run_manual_claimed_job(
                 .await;
             persist_claimed_reconciliation_run(state, job_id, claim_generation, run_result).await
         }
+        RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE => {
+            drop(_job_execution_gate);
+            let foreground_rps = state.proxy.foreground_activity_rps();
+            if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+                let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
+                return persist_claimed_research_drain(
+                    state,
+                    job_id,
+                    claim_generation,
+                    Ok(ClaimedResearchDrainOutcome::Deferred {
+                        reason: "research_drain_budget",
+                        retry_at,
+                    }),
+                )
+                .await;
+            }
+            let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
+            let run_result = state
+                .proxy
+                .run_upstream_reconciliation_research_drain_claimed(
+                    &state.usage_base,
+                    job_id,
+                    claim_generation,
+                    remote_attempt_admission,
+                )
+                .await;
+            persist_claimed_research_drain(state, job_id, claim_generation, run_result).await
+        }
         "auth_token_logs_gc" => {
             let _maintenance = acquire_db_maintenance_read_gate().await;
             match state.proxy.gc_auth_token_logs().await {
@@ -2804,6 +2819,18 @@ async fn persist_claimed_reconciliation_run(
             no_adjustment,
             observed,
         }) => {
+            if let Err(error) = state
+                .proxy
+                .ensure_upstream_reconciliation_research_drain_job()
+                .await
+            {
+                tracing::debug!(
+                    component = "reconciliation_research_drain",
+                    event = "main_completion_drain_enqueue_deferred",
+                    err = %error,
+                    retry_via = "startup_or_stale_reaper_watchdog",
+                );
+            }
             match state.proxy.upstream_reconciliation_representative_available_at().await {
                 Ok(Some(available_at)) => state
                     .proxy
@@ -2882,6 +2909,8 @@ async fn persist_claimed_reconciliation_run(
         Err(err) => finish(state, "error", err.to_string()).await,
     }
 }
+
+include!("schedulers_reconciliation_research_drain.rs");
 
 async fn defer_reconciliation_for_sqlite_admission(
     state: &Arc<AppState>,

@@ -97,12 +97,11 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in
   bounded batches with a four-per-key and 20-row sweep cap. Its stable keyset cursor advances only
   after claim-fenced acceptance; read pressure or cancellation leaves the page retryable.
-- `Research reserve`: when preparation finds due terminal Research, the reconciliation engine
-  reserves a two-second post-finalization sweep and a two-second main durable-finalization boundary
-  before beginning main remote work. Research still probes only after main finalization. The reserve
-  may forego a second slow main-key request; no due Research leaves the normal main remote envelope
-  unchanged. The final 500ms of the Research sweep is a persistence reserve: an outbound probe
-  cannot consume it, and timeout retry state must commit before an incomplete page can defer.
+- `Research drain`: the unique durable `upstream_reconciliation_research_drain` representative that
+  owns terminal Research polling and the v21 scan cursor. It performs at most one request every five
+  seconds, commits the poll result, per-Key cooldown, exact cursor, and claim fence atomically, and
+  never consumes the main reconciliation run's two-request budget. Main settlement and the drain
+  share only the instance-wide request-scoped remote lease.
 
 ## Observability Boundaries
 

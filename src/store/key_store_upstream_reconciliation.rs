@@ -647,16 +647,6 @@ impl KeyStore {
         .bind(now)
         .fetch_one(&mut *conn)
         .await?;
-        let research_at: Option<i64> = sqlx::query_scalar(
-            r#"
-            SELECT MIN(CASE WHEN next_poll_at > 0 THEN next_poll_at ELSE ? END)
-            FROM upstream_reconciliation_research
-            WHERE terminal_at IS NULL
-            "#,
-        )
-        .bind(now)
-        .fetch_one(&mut *conn)
-        .await?;
         // A one-time versioned lifecycle flag keeps historical source projection off the hot
         // continuation read path. New usage is maintained by triggers and therefore never
         // reopens a completed period merely because the legacy cursor is absent.
@@ -671,17 +661,11 @@ impl KeyStore {
         let projection_at = projection_state
             .filter(|(completed, _)| *completed == 0)
             .map(|(_, next_retry_at)| next_retry_at.max(now.saturating_add(1)));
-        let Some(pending_at) = (match (work_at, research_at, projection_at) {
-            (Some(work_at), Some(research_at), Some(projection_at)) => {
-                Some(work_at.min(research_at).min(projection_at))
-            }
-            (Some(work_at), Some(research_at), None) => Some(work_at.min(research_at)),
-            (Some(work_at), None, Some(projection_at)) => Some(work_at.min(projection_at)),
-            (None, Some(research_at), Some(projection_at)) => Some(research_at.min(projection_at)),
-            (Some(work_at), None, None) => Some(work_at),
-            (None, Some(research_at), None) => Some(research_at),
-            (None, None, Some(projection_at)) => Some(projection_at),
-            (None, None, None) => None,
+        let Some(pending_at) = (match (work_at, projection_at) {
+            (Some(work_at), Some(projection_at)) => Some(work_at.min(projection_at)),
+            (Some(work_at), None) => Some(work_at),
+            (None, Some(projection_at)) => Some(projection_at),
+            (None, None) => None,
         }) else {
             return Ok(None);
         };
@@ -726,6 +710,58 @@ impl KeyStore {
         };
         self.scheduled_job_enqueue_at(
             "upstream_reconciliation",
+            "auto",
+            None,
+            1,
+            available_at,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn upstream_reconciliation_research_drain_available_at(
+        &self,
+    ) -> Result<Option<i64>, ProxyError> {
+        if !self.upstream_reconciliation_shadow_ready_for_control().await?
+            || !self.reconciliation_controller_allows_representative().await?
+        {
+            return Ok(None);
+        }
+        let now = self.backend_time.now_ts();
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let available_at = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MIN(MAX(CASE WHEN r.next_poll_at > 0 THEN r.next_poll_at ELSE ? END, \
+             COALESCE((SELECT b.cooldown_until FROM api_key_transient_backoffs b \
+             WHERE b.key_id = r.key_id AND b.scope = 'period_reconciliation' \
+             AND b.cooldown_until > ? LIMIT 1), 0))) \
+             FROM upstream_reconciliation_research r WHERE r.terminal_at IS NULL \
+             AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage u \
+             WHERE u.token_id = r.token_id AND u.period_code = r.period_code \
+             AND u.period_end <= ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut *conn)
+        .await?;
+        conn.close().await?;
+        Ok(available_at.map(|value| value.max(now)))
+    }
+
+    pub(crate) async fn ensure_upstream_reconciliation_research_drain_job(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let Some(available_at) = self
+            .upstream_reconciliation_research_drain_available_at()
+            .await?
+        else {
+            return Ok(());
+        };
+        self.scheduled_job_enqueue_at(
+            "upstream_reconciliation_research_drain",
             "auto",
             None,
             1,

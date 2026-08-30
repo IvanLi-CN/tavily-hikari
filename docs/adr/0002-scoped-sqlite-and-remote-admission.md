@@ -49,8 +49,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   `(terminal_at, next_poll_at, key_id, request_id)` index. The selector reads an indexed keyset
   page, hydrates that bounded page, and accepts its cursor only after a claim-fenced run boundary.
   The primary candidate SQL remains unchanged; any rewrite there still requires separate evidence.
-- Due Research timing is governed by ADR 0003; it uses the same request-scoped remote admission
-  boundary without extending the lease across local finalization.
+- Due Research timing is governed by ADR 0004. Its independent durable drain uses the same
+  request-scoped remote admission boundary without extending the lease across local finalization or
+  consuming a main reconciliation fairness turn.
 - A candidate that references multiple eligible upstream keys stores each successful key response in
   a local, generation-scoped observation table. Each run requests at most two still-missing keys and
   only computes a cross-key total after every current-generation key is present. The v22 ledger

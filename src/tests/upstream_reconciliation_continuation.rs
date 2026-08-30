@@ -128,17 +128,17 @@ async fn reconciliation_continuation_waits_for_pending_research_poll() {
     assert_eq!(
         proxy
             .key_store
-            .upstream_reconciliation_continuation_at()
+            .upstream_reconciliation_research_drain_available_at()
             .await
             .expect("read delayed research continuation"),
         Some(now + 120)
     );
     proxy
-        .ensure_upstream_reconciliation_representative_job()
+        .ensure_upstream_reconciliation_research_drain_job()
         .await
         .expect("enqueue delayed research continuation");
     let scheduled: (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), MAX(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+        "SELECT COUNT(*), MAX(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation_research_drain' AND status = 'queued'",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
@@ -165,6 +165,21 @@ async fn reconciliation_disabled_gate_preserves_work_without_representative_chur
     .expect("create proxy");
 
     sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, project_id, \
+         billing_subject, period_start, period_end, request_count, first_used_at, last_used_at, \
+         updated_at, settlement_mode) VALUES ('disabled-gate-token', 'disabled-gate-key', \
+         '2026-07-15/S1', 'disabled-gate-project', 'token:disabled-gate-token', ?, ?, 1, ?, ?, ?, \
+         'shadow')",
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed eligible Research usage");
+    sqlx::query(
         r#"
         INSERT INTO upstream_reconciliation_research (
             request_id, token_id, key_id, period_code, created_at, terminal_at, next_poll_at, updated_at
@@ -187,14 +202,21 @@ async fn reconciliation_disabled_gate_preserves_work_without_representative_chur
         .await
         .expect("mark durable projection pending");
 
+    let pending_research: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_research WHERE terminal_at IS NULL",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read raw pending Research diagnostics");
+    assert_eq!(pending_research, 1);
     assert_eq!(
         proxy
             .key_store
             .upstream_reconciliation_continuation_at()
             .await
-            .expect("read raw durable continuation"),
-        Some(now),
-        "due research remains visible for diagnostics while disabled"
+            .expect("read raw main continuation"),
+        None,
+        "Research does not wake the main representative"
     );
     assert_eq!(
         proxy
@@ -208,8 +230,12 @@ async fn reconciliation_disabled_gate_preserves_work_without_representative_chur
         .ensure_upstream_reconciliation_representative_job()
         .await
         .expect("suppress disabled representative");
+    proxy
+        .ensure_upstream_reconciliation_research_drain_job()
+        .await
+        .expect("suppress disabled Research drain");
     let disabled_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type IN ('upstream_reconciliation', 'upstream_reconciliation_research_drain') AND status IN ('queued', 'running')",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
@@ -229,8 +255,12 @@ async fn reconciliation_disabled_gate_preserves_work_without_representative_chur
         .set_system_settings(&settings)
         .await
         .expect("enable reconciliation shadow gate");
+    proxy
+        .ensure_upstream_reconciliation_research_drain_job()
+        .await
+        .expect("enqueue enabled Research drain");
     let enabled_job: (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), MIN(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+        "SELECT COUNT(*), MIN(available_at) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation_research_drain' AND status = 'queued'",
     )
     .fetch_one(&proxy.key_store.pool)
     .await

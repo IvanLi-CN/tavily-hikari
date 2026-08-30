@@ -34,6 +34,8 @@
 
 - Reconciliation and HA GC diagnostics now expose the causal boundary directly: main settlement starts before research sweep, local pressure has its own state, and normal GC progress is sampled per channel instead of logged per slice.
 - The final review preserved that boundary with explicit request-start, settlement, and post-processing
+- Research diagnostics now follow the independent durable drain rather than a reserved main-run
+  tail; main and drain outcomes remain separate low-cardinality aggregates.
   deadlines; local pressure metadata is replicated during HA takeover and normal GC diagnostics remain
   channel-sampled.
 

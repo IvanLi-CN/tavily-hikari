@@ -142,6 +142,84 @@ async fn reconciliation_rejects_reclaimed_claim_before_research_writes() {
 }
 
 #[tokio::test]
+async fn reconciliation_research_drain_stale_claim_does_not_commit_cursor_or_result() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 16, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-stale-drain"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_research \
+         (request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at) \
+         VALUES ('stale-drain-request', 'stale-drain-token', 'stale-drain-key', \
+                 '2026-07-16/S1', ?, NULL, ?)",
+    )
+    .bind(now - 100)
+    .bind(now - 100)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed drain row");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, now)
+        .await
+        .expect("enqueue drain");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim drain")
+        .expect("drain claim exists");
+    clock.set_now_ts(now + 61);
+    assert_eq!(proxy.recover_stale_scheduled_jobs().await.unwrap(), 1);
+
+    let cursor = crate::store::UpstreamReconciliationResearchCursor {
+        next_poll_at: -1,
+        key_id: String::new(),
+        request_id: String::new(),
+    };
+    let accepted = proxy
+        .key_store
+        .commit_upstream_reconciliation_research_drain(
+            crate::store::UpstreamReconciliationResearchDrainCommit {
+                request_id: "stale-drain-request",
+                expected_cursor: &cursor,
+                accepted_cursor: &cursor,
+                poll: crate::store::UpstreamReconciliationResearchDrainPoll::Terminal,
+                key_backoff: None,
+                job_id: claim.id,
+                claim_generation: claim.claim_generation,
+            },
+        )
+        .await;
+    assert!(matches!(accepted, Err(ProxyError::StaleClaim { .. })));
+    let row: (Option<i64>, i64) = sqlx::query_as(
+        "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research \
+         WHERE request_id = 'stale-drain-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged stale drain row");
+    assert_eq!(row, (None, 0));
+    let persisted_cursor: (i64, String, String) = sqlx::query_as(
+        "SELECT cursor_next_poll_at, cursor_key_id, cursor_request_id \
+         FROM upstream_reconciliation_research_scan_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged cursor");
+    assert_eq!(persisted_cursor, (-1, String::new(), String::new()));
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_ignores_429_text_in_non_429_responses() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
@@ -406,6 +484,21 @@ async fn startup_resume_schedules_pending_research_with_default_poll_time() {
         .await
         .expect("enable reconciliation shadow gate");
     sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, project_id, \
+         billing_subject, period_start, period_end, request_count, first_used_at, last_used_at, \
+         updated_at, settlement_mode) VALUES ('default-poll-token', 'default-poll-key', \
+         '2026-07-15/S1', 'default-poll-project', 'token:default-poll-token', ?, ?, 1, ?, ?, ?, \
+         'shadow')",
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed eligible Research usage");
+    sqlx::query(
         r#"
         INSERT INTO upstream_reconciliation_research (
             request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
@@ -430,14 +523,14 @@ async fn startup_resume_schedules_pending_research_with_default_poll_time() {
     .await
     .expect("restart proxy");
     restarted
-        .ensure_upstream_reconciliation_representative_job()
+        .ensure_upstream_reconciliation_research_drain_job()
         .await
         .expect("resume historical pending research");
     let representative: (i64, i64) = sqlx::query_as(
         r#"
         SELECT COUNT(*), MIN(available_at)
         FROM scheduled_jobs
-        WHERE job_type = 'upstream_reconciliation'
+        WHERE job_type = 'upstream_reconciliation_research_drain'
           AND status IN ('queued', 'running')
         "#,
     )

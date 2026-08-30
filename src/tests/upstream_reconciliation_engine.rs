@@ -921,7 +921,7 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
 }
 
 #[tokio::test]
-async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
+async fn reconciliation_research_read_deadline_defers_only_the_drain() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 8, 27, 12, 0);
@@ -994,14 +994,6 @@ async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
         .expect("claim representative")
         .expect("representative is claimed");
 
-    // The empty recent/backlog lanes and the bounded Research eligibility
-    // probe use the first three source sessions. Interrupt the following
-    // full Research candidate query: it must defer, not turn the claimed
-    // representative into a scheduler error.
-    proxy
-        .key_store
-        .sqlite_runtime
-        .force_cooperative_query_deadline_after_reads_for_test(3);
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             "http://127.0.0.1:9",
@@ -1009,13 +1001,10 @@ async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
             claim.claim_generation,
         )
         .await
-        .expect("research source deadline becomes a typed defer");
+        .expect("main reconciliation ignores due Research");
     assert!(matches!(
         outcome,
-        ClaimedReconciliationRunOutcome::Deferred {
-            reason: "research_read_budget",
-            retry_at,
-        } if retry_at == now + 30
+        ClaimedReconciliationRunOutcome::Completed { .. }
     ));
     let research: (Option<i64>, i64) = sqlx::query_as(
         "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research WHERE request_id = 'research-deadline-request'",
@@ -1028,18 +1017,236 @@ async fn reconciliation_research_read_deadline_defers_the_claimed_run() {
         (None, 0),
         "deadline must not mutate research work"
     );
-    let persisted = proxy
-        .finalize_deferred_upstream_reconciliation_claim(
+    proxy
+        .scheduled_job_finish_claimed(
             claim.id,
             claim.claim_generation,
-            "projection_read_budget",
-            now + 30,
+            "success",
+            Some("main completed without Research"),
         )
         .await
-        .expect("persist the claim-fenced continuation");
-    assert!(
-        persisted.created || persisted.promoted,
-        "the research deadline retains one representative"
+        .expect("finish main representative");
+    let drain = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, 1)
+        .await
+        .expect("enqueue Research drain");
+    let drain_claim = proxy
+        .scheduled_job_mark_running(drain.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    proxy.fail_next_reconciliation_research_read_for_test();
+    let drain_outcome = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            "http://127.0.0.1:9",
+            drain_claim.id,
+            drain_claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
+        )
+        .await
+        .expect("Research read pressure becomes a typed drain defer");
+    assert!(matches!(
+        drain_outcome,
+        ClaimedResearchDrainOutcome::Deferred {
+            reason: "research_drain_budget",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 27, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-research-drain-cooling", "tvly-research-drain-healthy"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.rebalance_mcp_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    let cooling_key = proxy
+        .add_or_undelete_key("tvly-research-drain-cooling")
+        .await
+        .expect("create cooling key");
+    let healthy_key = proxy
+        .add_or_undelete_key("tvly-research-drain-healthy")
+        .await
+        .expect("create healthy key");
+    for (request_id, token_id, key_id) in [
+        ("drain-cooled-request", "drain-cooled-token", &cooling_key),
+        ("drain-healthy-request", "drain-healthy-token", &healthy_key),
+    ] {
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, \
+             project_id, billing_subject, period_start, period_end, request_count, first_used_at, \
+             last_used_at, updated_at, settlement_mode) VALUES (?, ?, '2026-08-27/R1', ?, ?, \
+             ?, ?, 1, ?, ?, ?, 'shadow')",
+        )
+        .bind(token_id)
+        .bind(key_id)
+        .bind(format!("project-{token_id}"))
+        .bind(format!("token:{token_id}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed Research usage");
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, \
+             period_code, created_at, terminal_at, updated_at) VALUES (?, ?, ?, \
+             '2026-08-27/R1', ?, NULL, ?)",
+        )
+        .bind(request_id)
+        .bind(token_id)
+        .bind(key_id)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed due Research");
+    }
+    for index in 0..81 {
+        let key_id = if index == 0 {
+            &cooling_key
+        } else {
+            &healthy_key
+        };
+        sqlx::query(
+            "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, \
+             period_code, created_at, terminal_at, updated_at) VALUES (?, ?, ?, \
+             '2026-08-27/R1', ?, NULL, ?)",
+        )
+        .bind(format!("000-ineligible-{index:03}"))
+        .bind(format!("missing-usage-{index:03}"))
+        .bind(key_id)
+        .bind(now - 1_000)
+        .bind(now - 1_000)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed ineligible Research prefix");
+    }
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(crate::store::ApiKeyTransientBackoffArm {
+            key_id: &cooling_key,
+            scope: "period_reconciliation",
+            cooldown_until: now + 600,
+            retry_after_secs: 600,
+            reason_code: Some("upstream429"),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("cool the first key");
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let route_hits = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/research/drain-healthy-request",
+        get(move || {
+            let route_hits = Arc::clone(&route_hits);
+            async move {
+                route_hits.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({ "status": "completed" }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Research upstream");
+    let address = listener.local_addr().expect("read upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve Research upstream");
+    });
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, 1)
+        .await
+        .expect("enqueue Research drain");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    let outcome = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            &format!("http://{address}"),
+            claim.id,
+            claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
+        )
+        .await
+        .expect("run Research drain");
+    assert!(matches!(
+        outcome,
+        ClaimedResearchDrainOutcome::Completed {
+            polled: 1,
+            terminal: 1,
+            ..
+        }
+    ));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let rows = sqlx::query_as::<_, (String, Option<i64>)>(
+        "SELECT request_id, terminal_at FROM upstream_reconciliation_research \
+         WHERE request_id LIKE 'drain-%' ORDER BY request_id",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read Research outcomes");
+    assert_eq!(
+        rows,
+        vec![
+            ("drain-cooled-request".to_string(), None),
+            ("drain-healthy-request".to_string(), Some(now)),
+        ]
+    );
+    let cursor_request_id: String = sqlx::query_scalar(
+        "SELECT cursor_request_id FROM upstream_reconciliation_research_scan_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read accepted drain cursor");
+    assert_eq!(cursor_request_id, "drain-healthy-request");
+    let all_cooled = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            &format!("http://{address}"),
+            claim.id,
+            claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
+        )
+        .await
+        .expect("all-cooled Research returns a typed defer");
+    assert!(matches!(
+        all_cooled,
+        ClaimedResearchDrainOutcome::Deferred {
+            reason: "key_cooldown",
+            retry_at,
+        } if retry_at == now + 600
+    ));
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "cooldown defer sends no HTTP"
     );
 
     drop(proxy);

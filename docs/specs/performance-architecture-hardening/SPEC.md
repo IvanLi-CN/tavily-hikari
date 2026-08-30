@@ -88,9 +88,9 @@
   `SELECT` runs in its own 250ms native SQLite read session. A source-read deadline produces a
   claim-fenced `projection_read_budget` defer and one 30-second continuation without beginning a
   merge, completing work, or starting remote I/O.
-- The main reconciliation result is durably recorded before Research selection begins. Research
-  uses its own indexed, keyset-scanned page (at most 80 rows, at most 4 per key and 20 swept per
-  run); a Research read defer is independent of main transport, terminal, and billing state.
+- Main reconciliation and Research use separate durable representatives. The Research drain owns
+  the indexed keyset page and exact cursor, performs at most one poll every five seconds, and keeps
+  read/lease defers independent of main transport, terminal, and billing state.
 - Multi-key main candidates persist successful per-key observations by current work generation.
   A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
   continuation when the candidate is still incomplete; cross-key summation and terminalization wait
@@ -262,7 +262,7 @@ PR: none
 
 - [ADR 0001: HA Planned Cutover Control Plane](../../adr/0001-ha-planned-cutover-control-plane.md)
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
-- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)
+- [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)
 
 ## 参考（References）
 

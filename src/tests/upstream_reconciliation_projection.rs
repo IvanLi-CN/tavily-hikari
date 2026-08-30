@@ -192,7 +192,7 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
     });
 
     let queued = proxy
-        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, 1)
         .await
         .expect("enqueue claimed research representative");
     let claim = proxy
@@ -202,10 +202,11 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
         .expect("research representative is claimed");
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        proxy.run_upstream_reconciliation_once_claimed_outcome(
+        proxy.run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{addr}"),
             claim.id,
             claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
         ),
     )
     .await
@@ -213,10 +214,11 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
     .expect("return a typed claimed outcome");
     assert!(matches!(
         outcome,
-        ClaimedReconciliationRunOutcome::Deferred {
-            reason: "research_budget",
-            retry_at,
-        } if retry_at == now + 30
+        ClaimedResearchDrainOutcome::Completed {
+            polled: 1,
+            retries: 1,
+            ..
+        }
     ));
     assert!(research_started.load(Ordering::SeqCst));
     assert!(
@@ -262,7 +264,7 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read unaccepted scan cursor after a bounded Research timeout");
-    assert_eq!(cursor, (-1, String::new(), String::new()));
+    assert_eq!(cursor.2, "research-budget-slow");
 
     let (work_generation, completed_generation): (i64, i64) = sqlx::query_as(
         "SELECT work_generation, completed_generation FROM upstream_reconciliation_work \

@@ -247,6 +247,9 @@ window as HA export/sync diagnostics.
 
 The final review tightened the deadline contract: remote request starts stop before the finalization
 tail, successful observations may still settle during that tail, and research bookkeeping cannot
+
+The Research sweep later moved to its own durable representative. This removes the main-run tail
+dependency while retaining the v21 selector, request-scoped lease, and claim-fenced cursor safety.
 outlive the run budget. Local reconciliation pressure metadata is replicated with the HA meta set so
 failover does not reset a deliberate local backoff.
 

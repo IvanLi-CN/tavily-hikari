@@ -604,7 +604,7 @@
   atomic continuations match the generation, while the periodic stale reaper safely requeues only
   the currently running generation.
 
-- Reconciliation now performs the main settlement pass before research polling and batches the
+- Reconciliation now separates main settlement from a unique Research drain. The drain batches the
   candidate key/cooldown hydration. Local budget pressure is persisted separately from remote 429
   pressure, while HA GC normal progress is emitted through the existing per-channel 60-second
   sampling window.
@@ -612,7 +612,8 @@
   after a valid zero-delta observation, while transport, semantic, local-pressure and upstream-429
   outcomes retain independent retry state instead of being collapsed into a generic retry.
 - The final reconciliation path separates request-start, remote-observation, settlement-finalization,
-  and durable-postprocessing deadlines. Research bookkeeping writes are individually bounded, and
+  and durable-postprocessing deadlines. Research outcome, Key cooldown, exact cursor, and claim
+  fence share one bounded transaction, and
   local pressure metadata is included in the HA meta baseline so takeover preserves its backoff state.
 
 ## Status

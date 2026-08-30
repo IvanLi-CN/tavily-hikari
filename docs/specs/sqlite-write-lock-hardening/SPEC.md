@@ -318,9 +318,9 @@ source when a usable persisted runtime already exists.
   short local backoff with one delayed representative job. Only actual upstream 429 attempts enter
   the persisted `5/10/20/30` minute cooldown for the affected `period_reconciliation` key and honor
   `Retry-After`; a cooldown never gates healthy keys.
-- Reconciliation's main settlement pass owns the first remote-attempt budget. Research terminal
-  polling is permitted only after the main pass (or when no eligible main candidate exists), and
-  all remote requests plus their durable bookkeeping are bounded by the same per-run deadline.
+- Reconciliation main settlement and Research polling have separate durable jobs. The drain owns
+  Research selection and performs one request at a time no earlier than five seconds apart; both
+  jobs share only the request-scoped single remote lease, not one run deadline or local transaction.
 - A completed upstream observation with zero signed delta is a `no_adjustment` terminal outcome for
   the matching usage generation. It must not recreate the representative job until a later usage
   write projects new work.
@@ -510,11 +510,12 @@ PR: none
   permit and must be released before reconciliation finalization or other SQLite work.
 - A reconciliation 429 records only the affected Key cooldown and its claim-fenced continuation;
   the legacy global-backoff metadata is never consulted as a SQLite or scheduler gate.
-- Research selection is a bounded indexed source read: one page contains at most 80 due rows and
-  advances its `(next_poll_at, key_id, request_id)` cursor only after a claim-fenced acceptance
-  transaction. A read deadline, cancellation, or stale claim leaves the cursor and work unchanged.
+- Research selection is a bounded indexed source read owned only by the drain: one page contains at
+  most 80 due rows. The exact processed `(next_poll_at, key_id, request_id)` cursor, Research outcome,
+  and optional Key cooldown commit in one claim-fenced transaction. A read deadline, cancellation,
+  or stale claim leaves all three unchanged.
 
 ## Related ADRs
 
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
-- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)
+- [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)

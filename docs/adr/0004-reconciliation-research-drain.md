@@ -1,0 +1,38 @@
+# ADR 0004: Research Uses an Independent Durable Drain
+
+## Status
+
+Accepted
+
+## Context
+
+ADR 0003 reserved a tail of each main reconciliation run for terminal Research polling. That
+bounded the tail, but did not guarantee progress when main multi-Key work repeatedly consumed its
+two-request allowance before the Research phase. Research already has a durable v21 selector and
+stable cursor, so tying its liveness to the main run is unnecessary.
+
+## Decision
+
+- `upstream_reconciliation_research_drain` is the single production owner of Research polling and
+  the v21 scan cursor. The main claimed reconciliation path never sends Research HTTP requests.
+- The drain processes at most one candidate and schedules its next normal run no earlier than five
+  seconds later. It shares the instance-wide single actual-request lease but does not consume the
+  aged main reconciliation turn.
+- A claim-fenced control transaction accepts the Research result, any affected
+  `period_reconciliation` Key cooldown, the exact processed cursor, and the drain observation
+  together. Cancellation, stale claims, and local pressure advance none of them.
+- A Key-level `429` affects only that Key. Other due Keys remain selectable; when every due Key is
+  cooling, the representative wakes at the earliest cooldown expiry.
+- Startup, the stale-job watchdog, and a safely completed main run ensure the unique drain
+  representative. Research no longer contributes to the main representative's continuation time.
+
+## Consequences
+
+- Main work keeps its complete two-request budget, while due Research has an independent liveness
+  path capped at 12 polls per minute with burst one.
+- Research outcome and cursor acceptance no longer form two transactions.
+- Existing v21 tables and indexes are sufficient; no schema migration or historical replay is
+  required.
+- ADR 0003's reserved-tail scheduling decision is superseded. Its requirement that main results be
+  durable before optional follow-up remains satisfied because production Research is now a separate
+  claimed job.

@@ -54,9 +54,9 @@ related_specs:
   remote request.
 - Report SQLite `CACHE_WRITE` pages from the operation connection separately from process/cgroup
   write-byte deltas. The latter are aggregate pressure evidence, not query attribution.
-- Keep Research source reads bounded by the covering due index and a stable keyset page. Accept the
-  cursor only in the claim-fenced control transaction after the page is safely processed; pressure
-  or cancellation must leave both the cursor and durable work retryable.
+- Keep Research source reads in a separate durable drain, bounded by the covering due index and a
+  stable keyset page. Commit the single processed outcome, exact cursor, optional Key cooldown, and
+  claim fence together; pressure or cancellation leaves all of them retryable.
 - Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
   They upsert only successful responses for the current work generation, while the two-request cap is
   represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal

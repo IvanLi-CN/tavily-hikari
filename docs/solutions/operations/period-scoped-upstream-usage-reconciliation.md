@@ -2,13 +2,11 @@
 
 ## Current scheduling contract
 
-Candidate windows are maintained in an indexed durable work projection. The engine hydrates a bounded page,
-starts primary settlement before research polling, and permits at most two serial main settlement requests per
-run. Research remains an independent, globally single-concurrent sweep. When due Research is known during
-preparation, it reserves two seconds for the later Research sweep and two seconds
-for main durable finalization before it starts main remote work; the reserve may preclude a second slow main
-request. Without due Research, main settlement retains its normal remote envelope. Research exhaustion is
-diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
+Candidate windows are maintained in an indexed durable work projection. The engine hydrates a bounded page
+and permits at most two serial main settlement requests per run. Terminal Research uses a separate unique
+durable drain that owns the v21 cursor, performs at most one actual poll every five seconds, and shares only the
+request-scoped single remote lease with main settlement. Main runs neither reserve time for nor issue Research
+requests. Research exhaustion is diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
 per-key upstream-429 cooldown (`5/10/20/30m`); a 429 only cools the affected `period_reconciliation` key,
 and non-429 failures do not reset that key's cooldown. A current claim that reaches a
 low-foreground recovery window clears only its local-pressure state before trying the engine again;
@@ -27,17 +25,10 @@ timeout, body-read, credential/database, and unknown failures into a fixed categ
 work generation, and retry it on `30/60/120/300s`. Only a later terminal result clears the
 recovered state; do not log or expose the upstream body, URL, token, or database error text.
 
-The main candidate result must cross its durable fence before a Research sweep starts. Research
-selection uses the due covering index with an 80-row keyset page, a four-per-key cap, and a
-20-row sweep cap. A Research read-budget defer schedules one 30-second continuation without
-rewriting the main result or advancing the cursor.
-
-The two-second Research sweep reserves its final 500ms for local durable writes. A slow probe can
-use only the first 1.5 seconds; when it times out, persist a normalized `retry`/`timeout` outcome
-and its next poll before returning the 30-second continuation. Accept the cursor and sweep marker
-in one claim-fenced transaction only when the whole selected page has durable outcomes. A missing
-eligible upstream key is a separate fifteen-minute input retry and aggregate diagnostic, not a
-semantic failure or a billing decision.
+Research selection uses the due covering index with an 80-row keyset page and the existing
+four-per-key and 20-row selection bounds. Each drain run polls one candidate. Its pending, terminal,
+retry, or per-Key 429 result commits with the exact selected cursor and claim fence; read or lease
+pressure schedules one `research_drain_budget` continuation without changing the main result.
 
 For a period that maps to more than one eligible upstream key, persist each successful key observation
 by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
@@ -249,11 +240,10 @@ cooldown and honors a later Retry-After; a real remote attempt or successful set
 the recovered Key state. Keep normal per-Key 429 logs at DEBUG and reserve state-transition logs for
 enter, escalation, and recovery.
 
-Main settlement must start before terminal-research polling. Hydrate the bounded candidate page,
-key/cooldown state, and Research eligibility in the two-second local preparation budget. If Research is due,
-reserve its two-second post-finalization sweep before starting main HTTP, along with the two-second main
-durable-finalization boundary. This is a progress guarantee for due Research, not permission to poll before
-main settlement; with no due Research, do not reduce main remote capacity.
+Do not make Research liveness depend on main tail budget. Keep a unique drain representative,
+exclude Research from main continuation discovery, and let startup, the watchdog, and safely
+completed main runs ensure the drain. The scheduler gives an aged main reconciliation turn priority
+over the drain, while the drain precedes other automatic remote work.
 
 ## Claim-fenced deferred finalization
 

@@ -25,7 +25,9 @@
 - reconciliation backlog 诊断已区分 `rate_limited` 的上游 429、本地 usage 限流与其他重试；系统状态页同步展示当前时段每个上游 Key 的绑定用户数与待查询 Project ID 数活动图。
 - `upstream_reconciliation` worker 已对同一上游 Key 的到期窗口应用 key-scoped backoff：首次遇到 429 或本地 usage 限流后，本轮复用该 Key 的退避状态，不再反复查询同一 hot key，同时保留其他 Key 的结算机会。
 - reconciliation 候选调度已切成 recent/backlog 双车道：今日+昨日窗口优先按 `period_end DESC` 取最多 `12` 条，旧 backlog 再按 `period_end ASC` 取最多 `8` 条，空余预算双向回填，避免近期窗口长期被旧积压饿死。
-- Research 记录已加入持久化 poll 元数据；每轮现有 reconciliation job 先执行最多 20 条、每 Key 最多 4 条的 terminal sweep，历史 pending 自动进入恢复队列。终态写入与 settlement 均保持幂等。
+- Research 记录已加入持久化 poll 元数据；独立
+  `upstream_reconciliation_research_drain` job 复用 v21 selector/cursor，每 5 秒最多执行一个
+  terminal poll。poll outcome、逐 Key cooldown、精确 cursor 与 claim fence 原子提交。
 - 对账限流已改用 `period_reconciliation` 独立 Key cooldown：429 不再扇出写入同 Key 的全部窗口，其他 Key 可继续结算；状态 API/页面提供今日账号与账期覆盖、Research 收敛和 per-Key cooldown 进度。
 - `/api/users` compare-only 项新增 observed/standard-settled/degraded period count，用户列表和用量页在 hybrid 值旁展示标准对账覆盖及降级数。
 - reconciliation keeps a one-at-a-time remote attempt lease only while an outbound HTTP request is
@@ -103,7 +105,9 @@
 
 ## Current performance contract
 
-- Main settlement hydrates the bounded candidate page, referenced key/cooldown state, and Research eligibility before starting the first `/usage` request. The terminal sweep still runs only after main durable finalization. When due Research exists, the run reserves two seconds for the later sweep and two seconds for main finalization before it starts main remote work; without due Research, it retains the existing main request envelope. A sweep timeout is not primary budget exhaustion.
+- Main settlement hydrates only its bounded candidate page and referenced key/cooldown state before
+  `/usage`. Claimed production runs never poll Research or reserve Research tail time. Startup, the
+  stale-job watchdog, and safe main completion ensure the unique Research drain representative.
 - Local budget exhaustion is persisted separately from the per-key upstream-429 backoff. Only an
   observed upstream 429 advances the cooldown for that `period_reconciliation` key, using the
   existing `5/10/20/30`-minute ladder and `Retry-After`; local pressure uses a short independent

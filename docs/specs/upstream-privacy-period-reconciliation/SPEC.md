@@ -67,11 +67,14 @@
 
 - `/usage` 队列按 upstream Key 遵守每 10 分钟 10 次并解析 `Retry-After`。
 - 无 Research 在窗口结束 10 分钟后结算；有 Research 在全部终态后 10 分钟结算，最长等待 24 小时后 degraded 结算。
-- reconciliation 在每轮结算前主动轮询已关闭窗口中未终态的 Research；轮询最多 20 条、每个 Key 最多 4 条，并优先补足当天尚无标准成功账期的账号覆盖。
+- 独立 `upstream_reconciliation_research_drain` 轮询已关闭窗口中未终态的 Research；每次最多
+  一个实际请求、正常间隔至少 5 秒，并沿用 v21 的 80 行索引页、每 Key 4 条和 20 条选择边界。
 - `429` 只对 `period_reconciliation` scope 中的对应 Key 建立持久化冷却，使用 `Retry-After` 或 `5/10/20/30` 分钟退避；不得批量把同 Key 的其他窗口写为 rate-limited，也不得影响正常 API/MCP 流量。
 - 候选观测必须使用有界索引页：`queueEstimate` 可为空且最多统计 64 个候选，`hasEligible` 与最老候选年龄必须单独表达，首次观测前 coverage 为 `unknown`，不得以零伪装未观测状态。历史 degraded 状态必须由独立的索引化 `EXISTS` 探测保留，不能用当天计数替代。
 - 连续三轮存在候选、未产生远端尝试且本地预算耗尽时，持久化独立的本地短退避；它不得改变任何 Key 的 429 冷却。真实远端 429 只对触发它的 `period_reconciliation` Key 按 `5/10/20/30` 分钟阶梯冷却，并以更晚的 `Retry-After` 为准；所有可选 Key 都在冷却时，使用最早到期时间保留一个 delayed representative job，非冷却 Key 不受影响。
-- 主结算候选页、key/cooldown hydrate 与 Research eligibility read 的本地准备预算最多 2 秒，主结算优先启动；terminal-research sweep 仅在主结算的 durable finalization 之后启动。存在 due Research 时，在发起主结算 HTTP 前预留 2 秒给 sweep，并预留 2 秒给主结果的 durable finalization；该 reserve 可以阻止第二个慢主 Key 请求。没有 due Research 时保留原有主结算远端窗口。Research 超时不代表主结算本地预算耗尽，单轮总预算保持 20 秒。
+- 主结算候选页与 key/cooldown hydrate 的本地准备预算最多 2 秒，主结算每轮仍最多两个
+  `/usage` 请求。生产主路径不再预留或执行 terminal Research；独立 drain 通过唯一 durable
+  representative 和请求级 lease 续跑，因此 Research 超时不改变主轮预算或 outcome。
 - 远端请求启动、观察结果、结算写入和 Research 状态落盘均受同一轮截止时间约束；最后的持久化收尾预算不得被新一轮远端请求抢占。
 - 在发起远端请求前必须保留两秒给持久化收尾。收尾预算、post-processing 或 retry bookkeeping
   不足时，claimed run 只能返回 `Deferred { reason, retry_at }`，不得写 terminal job error。
@@ -128,18 +131,12 @@
   keep work incomplete on the `30/60/120/300s` retry ladder.
 - Compare-mode non-zero differences write only the shadow observation and complete as `observed`;
   they do not create an actual billing adjustment and are not included in settled totals.
-- Main settlement work always precedes the terminal Research sweep. Candidate preparation and at
-  most one optional projection slice share the two-second preparation budget. When due Research is
-  known during that preparation, main remote work reserves two seconds for its later sweep and two
-  seconds for main durable finalization; otherwise main settlement retains its full remote envelope.
-- The main result is persisted before the Research phase starts. A Research source deadline or
-  transient read failure records only `research_read_budget` or `research_local_pressure` continuation
-  state and schedules one 30-second representative; it cannot overwrite a main transport failure,
-  terminal outcome, completed generation, or billing truth. Research selection uses the v21
-  `(next_poll_at, key_id, request_id)` cursor and covering index: at most 80 rows are read and at
-  most four are selected per key. A remote Research timeout writes a normalized retry before
-  returning `research_budget`; the cursor and sweep marker are accepted atomically only after the
-  full claimed page has durable outcomes.
+- Main settlement and terminal Research use separate durable representatives. The main path never
+  spends remote or local tail budget on Research. The drain owns the v21
+  `(next_poll_at, key_id, request_id)` cursor, selects from an 80-row indexed page, performs at most
+  one request, and atomically accepts its pending/terminal/retry result, exact cursor, Key cooldown,
+  and claim fence. `research_drain_budget` advances no cursor or retry streak and schedules one
+  30-second continuation.
 - When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
   response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
   run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second
@@ -439,4 +436,4 @@ PR: include
 ## Related ADRs
 
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
-- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)
+- [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)

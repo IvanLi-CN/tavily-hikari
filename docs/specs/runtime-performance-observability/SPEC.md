@@ -55,9 +55,9 @@
 - Reconciliation run observation reports mode, projection phase/scanned rows/batch/transaction p95,
   hydrate/first-remote/remote/finalization/research timing, typed outcome counts, continuation reason,
   and next retry. Stable cursor values, token/key identifiers, SQL, and request content remain private.
-- Research diagnostics report only page size, selected/swept counts, cursor advance or wrap, read
-  deadline/defer counts, and terminal/pending deltas. The stable composite cursor and source rows
-  remain private; main outcome and Research defer are separate aggregate fields.
+- Research-drain diagnostics report only polls, terminal/pending/retry counts, cooldown skips,
+  resumes, backlog deltas, cursor advance or wrap, and read/lease defers. The stable composite cursor
+  and source rows remain private; main outcome and drain outcome are separate aggregate fields.
 - Reconciliation diagnostics also aggregate partial-key observations, multi-key pending candidates,
   `remote_attempt_budget` defers, resumed runs, and terminal completions. They expose counts only;
   token ids, key ids, SQL, and upstream response content remain private.
@@ -79,9 +79,9 @@
 - Request-log GC admission and an unsealed-day retention guard are DEBUG-level typed outcomes. They
   retain the existing five-minute continuation but must not emit one WARN or repeat one failed
   cleanup batch per scheduler loop.
-- 对账主结算必须先于 Research sweep；本地预算压力与 upstream 429 必须分开记录，且最终
-  远端观察、结算和状态落盘都必须受同一轮预算约束。HA GC 正常进展继续按通道 60 秒聚合，
-  不能恢复逐片 WARN。
+- 对账主结算与 Research drain 分别记录；本地预算压力与 upstream 429 必须分开记录。每个
+  Research poll 的远端观察、状态和精确 cursor 在 drain claim 下原子落盘。HA GC 正常进展继续
+  按通道 60 秒聚合，不能恢复逐片 WARN。
 - Reconciliation 429 state is scoped to the affected `period_reconciliation` Key. Non-cooling Keys
   remain eligible; an all-Key cooldown reports the earliest retry time. Legacy global-backoff meta
   is compatibility data only and cannot gate work or representative wake.
@@ -204,4 +204,4 @@ PR: none
 ## Related ADRs
 
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
-- [ADR 0003: Due Research Reserves a Reconciliation Window](../../adr/0003-reconciliation-research-reserve.md)
+- [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)

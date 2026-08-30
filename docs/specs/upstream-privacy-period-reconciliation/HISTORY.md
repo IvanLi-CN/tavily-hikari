@@ -24,6 +24,8 @@
 - 2026-07-25: Research 不再依赖客户端结果 GET 才变为 terminal；现有 reconciliation worker 在结算前有界 sweep 已关闭窗口，并以独立 `period_reconciliation` Key cooldown 阻止 429 扇出。管理员可查看今日账号/账期/Research 覆盖和每 Key 阻塞状态。
 - 主结算与 Research 的预算边界已明确分离：先完成最多 2 秒的候选 hydrate 并启动主结算，Research 只能使用同一轮剩余预算；本地预算压力与真实 upstream 429 退避也已分开持久化。
 - 最终审查进一步固定远端请求启动、观察、结算与收尾的嵌套截止时间；Research 的状态写入也受同一截止时间约束。local pressure 元数据现在随 HA meta 接管恢复。
+- 2026-08-30: terminal Research 从主 reconciliation 尾部预算迁到独立 durable drain。v21
+  cursor 不变；每次 poll 的 outcome、逐 Key cooldown 和精确 cursor 在 drain claim 下原子接受。
 - 历史 usage 投影改为版本化 lifecycle：旧库只在没有 durable candidate 时执行有界单页，空新库直接完成；
   新写入由触发器维护，不再让已完成的 no-adjustment 因 source cursor 反复入队。
 

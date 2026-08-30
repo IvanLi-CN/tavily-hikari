@@ -1,6 +1,7 @@
 static LAST_RECONCILIATION_SUMMARY_LOG_AT: AtomicI64 = AtomicI64::new(0);
 
 include!("reconciliation_engine.rs");
+include!("reconciliation_research_drain.rs");
 
 #[derive(Debug, Default)]
 struct ResearchSweepOutcome {
@@ -1066,7 +1067,7 @@ impl TavilyProxy {
         // conservatively and select the full sweep only after main durable
         // finalization.
         let mut research_reservation_read_budget_deferred = false;
-        let research_reservation_required = match self
+        let research_reservation_required = claimed_job.is_none() && match self
             .key_store
             .has_due_upstream_reconciliation_research()
             .await
@@ -2902,6 +2903,14 @@ impl TavilyProxy {
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         self.key_store
             .scheduled_job_enqueue_at(job_type, trigger_source, key_id, attempt, available_at)
+            .await
+    }
+
+    pub async fn ensure_upstream_reconciliation_research_drain_job(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .ensure_upstream_reconciliation_research_drain_job()
             .await
     }
 
