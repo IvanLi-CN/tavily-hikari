@@ -160,7 +160,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         )
         upstream = reconciliation_shards["lib-upstream-reconciliation"]
         self.assertEqual(RUNNER.shard_resource_limits(upstream, 4, 2), (4, 1))
-        self.assertEqual(len(upstream["include_prefixes"]), 26)
+        self.assertEqual(len(upstream["include_prefixes"]), 28)
         self.assertEqual(len(upstream["include_prefixes"]), len(set(upstream["include_prefixes"])))
         self.assertTrue(
             all(
@@ -181,6 +181,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertEqual(
             set(prefixes),
             {
+                "remote_attempt_admission::tests::",
                 "tests::maintenance_queue_performance::",
                 "tests::schema_migrations::",
                 "tests::reconciliation_controller::",
