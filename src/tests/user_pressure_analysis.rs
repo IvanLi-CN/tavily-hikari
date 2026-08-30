@@ -1658,7 +1658,9 @@ async fn analysis_pressure_rebuild_drains_events_arriving_during_tail_replay() {
     .await
     .expect("pressure rebuild drains its live tail");
 
-    tokio::time::timeout(Duration::from_secs(3), pressure_flush_complete)
+    // The deferred writer may yield for the five-second contention cooldown
+    // before its one-second retry cadence can observe the completed replay.
+    tokio::time::timeout(Duration::from_secs(8), pressure_flush_complete)
         .await
         .expect("deferred pressure writer drains events recorded during tail replay");
 
