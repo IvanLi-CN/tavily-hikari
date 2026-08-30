@@ -192,6 +192,8 @@
   representative job。所有可选 Key 都冷却时，continuation 使用最早的 Key 到期时间。
 - 遗留 global-backoff meta 仅为滚动升级兼容保留，不参与 reconciliation engine、代表任务唤醒或
   管理员 live blocker。逐 Key 429 为采样 DEBUG，只有 Key cooldown 的进入、升级和恢复产生状态跃迁日志。
+- 单 Key 429 不得阻断其他未冷却 Key；仅当本轮所有可选 Key 都在 cooldown 时，才以最早到期时间
+  安排 `key_cooldown` continuation，且不推进 completed generation。
 - 管理员状态同时返回 `reconciliationObservation` 与 `reconciliationLocalBackoff`；未观测时
   coverage 为 `unknown`，`queueEstimate=null`，页面显示“未知”而不是“0”。
 - 历史 degraded 相位由独立索引化 `EXISTS` 决定；管理员 `degradedSettlements` 为最多 64 条的

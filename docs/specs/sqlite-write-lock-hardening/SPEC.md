@@ -507,6 +507,8 @@ PR: none
   mandatory before returning a connection to the pool.
 - A remote admission lease describes only one outbound HTTP attempt. It is not a broad maintenance
   permit and must be released before reconciliation finalization or other SQLite work.
+- A reconciliation 429 records only the affected Key cooldown and its claim-fenced continuation;
+  the legacy global-backoff metadata is never consulted as a SQLite or scheduler gate.
 - Research selection is a bounded indexed source read: one page contains at most 80 due rows and
   advances its `(next_poll_at, key_id, request_id)` cursor only after a claim-fenced acceptance
   transaction. A read deadline, cancellation, or stale claim leaves the cursor and work unchanged.

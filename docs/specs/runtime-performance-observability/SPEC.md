@@ -82,6 +82,9 @@
 - 对账主结算必须先于 Research sweep；本地预算压力与 upstream 429 必须分开记录，且最终
   远端观察、结算和状态落盘都必须受同一轮预算约束。HA GC 正常进展继续按通道 60 秒聚合，
   不能恢复逐片 WARN。
+- Reconciliation 429 state is scoped to the affected `period_reconciliation` Key. Non-cooling Keys
+  remain eligible; an all-Key cooldown reports the earliest retry time. Legacy global-backoff meta
+  is compatibility data only and cannot gate work or representative wake.
 - Privacy status owns an AppState-owned immutable last-good controller. After ready it starts one
   low-priority prewarm; deferred prewarm retries in the background until last-good is published or
   shutdown fences it, without delaying readiness or competing with foreground work.
