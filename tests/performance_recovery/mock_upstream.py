@@ -19,6 +19,9 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if self.path.startswith("/research/"):
+            self.respond(200, {"status": "completed"})
+            return
         self.respond(404, {"error": "not found"})
 
     def do_POST(self) -> None:
