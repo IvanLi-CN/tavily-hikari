@@ -194,7 +194,10 @@ export async function registerPwaServiceWorker(identity: PwaIdentity): Promise<v
   }
 
   observeControllerChange()
-  const registration = await navigator.serviceWorker.register(swPath(identity), { scope: swScope(identity) })
+  const registration = await navigator.serviceWorker.register(swPath(identity), {
+    scope: swScope(identity),
+    updateViaCache: 'none',
+  })
   currentRegistration = registration
   observePwaRegistration(registration)
 }

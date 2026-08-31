@@ -15,6 +15,7 @@
 - 所有业务数据请求、SSE、MCP、登录提交与保存/操作在离线时都保持明确失败语义，不伪造成功，不回显旧快照。
 - 非管理员不注册 admin service worker、不看到 admin manifest 安装入口、不在 public SW cache 中形成 admin 壳页长期缓存。
 - 将 public/admin 双身份 PWA 的图标、touch icon 与站点 favicon 收口到 repo-local 的经批准 Relay Mesh lockup/icon 导出链，不改变 identity/scope/start_url。
+- 安装元数据必须可重新验证：manifest 保持稳定 identity，图标 URL 随最终内容哈希变化，HTML 与 service worker 不得把旧 manifest 或旧安装图标固定在缓存链路中。
 - 将完整 Relay Mesh lockup 的副标语固定为 `KEY POOL · BALANCE. ROUTE.`；完整 lockup 只在可用品牌容器宽度不小于 `260px` 时显示，较窄容器统一使用无副标语 compact 版本。
 - 补齐测试、Storybook 状态、浏览器离线验证与视觉证据，并将合同冻结到本 spec。
 
@@ -67,6 +68,7 @@
 ### 公共 / 用户侧 identity
 
 - `manifest.webmanifest`
+- `id=/`
 - `scope=/`
 - `start_url=/`
 - 安装入口存在于 `/`、`/console/**`、`/login`、`/registration-paused`
@@ -75,8 +77,9 @@
 ### 管理员 identity
 
 - `manifest-admin.webmanifest`
+- `id=/admin/`
 - `scope=/admin/`
-- `start_url=/admin`
+- `start_url=/admin/`
 - 安装入口只存在于 `/admin/**`
 - admin service worker 只缓存 admin HTML 壳与对应静态资源
 
@@ -86,6 +89,21 @@
 - `admin.html` 不承载公共 manifest。
 - public service worker 不能把 `/admin/**` 作为 navigation fallback，也不能把 admin HTML 或 admin 入口图纳入 precache/runtime cache。
 - admin identity 只在管理员真实进入 `/admin/**` 后才注册并形成持久缓存。
+
+### 安装元数据与图标更新合同
+
+- `id`、`scope` 与 `start_url` 是稳定的 identity 合同：public 固定为 `/`，admin 固定为 `/admin/`；`/admin` 仍由入口路由归一到 `/admin/`。
+- 各 HTML shell 只声明自身对应的 manifest，不声明 `rel="apple-touch-icon"`。在 WebKit 中 legacy `apple-touch-icon` 会优先于 manifest 图标，因此不能让它成为未重新验证的第二套安装元数据来源。
+- PWA PNG 必须以最终 PNG 字节的短 SHA-256 摘要命名，例如 `pwa/admin-1024-<content-hash>.png` 与 `pwa/admin-touch-icon-<content-hash>.png`；manifest 只能引用当前导出的 URL。图标 artwork 继续使用已批准的 Relay Mesh light/dark icon，不在本轮重新设计。
+- HTML shell、两个 manifest、两个 service worker 与 `version.json` 必须使用 `no-cache, must-revalidate`；带内容哈希的 `pwa/*.png` 使用 `public, max-age=31536000, immutable`。
+- 每个 identity 的 service worker 必须 precache 自己的 manifest 与自己引用的图标，并使用绕过 HTTP cache 的请求完成安装；public/admin 不得互相 precache manifest 或图标。页面注册 worker 时使用 `updateViaCache: 'none'`。
+
+### 平台更新边界
+
+- Android Chrome/WebAPK 与 Chromium desktop 依赖稳定 `id` 将发布后的 manifest 继续识别为同一已安装应用；新的图标 URL 和可重新验证的 manifest 让支持这些更新语义的平台取得新安装元数据。Android/WebAPK 通常在应用被启动或浏览器执行更新检查时处理，desktop Chromium 会在应用窗口关闭后应用选定的 manifest 更新；更新交付不以重新安装作为正常机制。
+- iOS/iPadOS 的新安装在支持 manifest 图标的版本上使用 manifest；但既有 Web Clip 的图标已经写入系统主屏幕，平台没有可由网站触发的强制迁移机制。若页面同时提供 `apple-touch-icon`，WebKit 可能优先使用它，因此本合同不再提供该 legacy link。
+- 其他不支持或不重新同步 Web App manifest 元数据的浏览器同样不能被网站强制迁移既有安装图标。部署只能保证后续支持该合同的新安装/更新检查使用当前 manifest；不得把“重新安装”作为常规修复指引。
+- 平台依据：Chromium `id` 合同参见 [Chrome manifest id guidance](https://developer.chrome.com/docs/capabilities/pwa-manifest-id)，跨平台更新行为参见 [Web App Manifest update behavior](https://web.dev/learn/pwa/update?hl=en)，WebKit 的 `apple-touch-icon` 优先级参见 [Web Push for Web Apps on iOS and iPadOS](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)。
 
 ## 更新提示合同
 
@@ -127,10 +145,10 @@
 - `web/dist/manifest-admin.webmanifest`
 - `web/dist/sw-public.js`
 - `web/dist/sw-admin.js`
-- `web/dist/pwa/public-*.png`
-- `web/dist/pwa/admin-*.png`
-- `web/dist/pwa/public-touch-icon.png`
-- `web/dist/pwa/admin-touch-icon.png`
+- `web/dist/pwa/public-*-<content-hash>.png`
+- `web/dist/pwa/admin-*-<content-hash>.png`
+- `web/dist/pwa/public-touch-icon-<content-hash>.png`
+- `web/dist/pwa/admin-touch-icon-<content-hash>.png`
 - `web/public/assets/relay-mesh-lockup*.png`
 - `web/public/assets/relay-mesh-icon*.png`
 - `web/public/assets/relay-mesh-mark*.{png,svg}`
@@ -162,6 +180,7 @@
 
 - Rust 静态服务必须可直出 `.webmanifest`、`sw-public.js`、`sw-admin.js` 与 `pwa/*` 图标资产。
 - `.webmanifest` 返回 `application/manifest+json`。
+- HTML shell、manifest、service worker 与 `version.json` 必须要求重新验证；内容哈希 PWA 图标必须返回 immutable 缓存策略。
 - service worker 脚本必须可在浏览器直接访问。
 - owner-facing 品牌位统一通过 `/assets/*` 暴露；`/favicon.svg` 只作为站点 favicon 入口保留根路径合同。
 
@@ -228,6 +247,22 @@
   When post-build 写入 HTML shell meta、`version.json` 与两个 service worker
   Then 五个 HTML shell、两个 worker 与 `version.json` 携带新版本，旧 shell 仍可离线运行，且 worker cache identity 发生变化。
 
+- Given public 或 admin 的安装图标内容发生变化
+  When post-build 生成 PWA 产物
+  Then 对应 manifest 的图标 URL 必须包含新内容哈希，旧 URL 不得被 manifest 继续引用，且该 identity 的 worker precache 必须包含当前 manifest 与当前图标 URL。
+
+- Given 浏览器请求 HTML、manifest、service worker、version metadata 或内容哈希 PWA 图标
+  When Rust 静态服务返回资源
+  Then metadata 必须要求重新验证，内容哈希图标必须允许长期 immutable 缓存。
+
+- Given Chromium Android/WebAPK 或 desktop Chromium 检查同一稳定 `id` 的更新 manifest
+  When 图标 URL 和 manifest 内容按本合同发布
+  Then 平台可把新图标作为同一安装 identity 的更新元数据处理，不要求用户按常规流程重新安装。
+
+- Given 已存在的 iOS/iPadOS Web Clip 或不支持 manifest 元数据同步的浏览器安装
+  When 服务端发布新的 manifest 图标 URL
+  Then 网站不得承诺强制改写既有系统图标；该平台限制必须保持文档化，且页面不得通过 legacy `apple-touch-icon` 引入跨来源覆盖。
+
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
@@ -245,7 +280,7 @@
 
 - `bun run test:e2e:pwa-offline`
 - Chromium 自动化覆盖公共页、控制台、管理员后台三段离线路径。
-- Safari/iOS 至少做一次手工安装与离线重开验证，并将结论写入 spec evidence 或 implementation notes。
+- Safari/iOS 的安装与离线重开仍需手工补验；在补验前，以上述 Web Clip 无法强制迁移的限制作为明确平台边界，不把重新安装作为常规更新机制。
 
 ## Visual Evidence
 
@@ -282,6 +317,7 @@
 - `95768005+` Relay Mesh registration-paused 品牌入口：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-registration-paused.png`
 - `95768005+` Relay Mesh docs-site 品牌入口：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `95768005+` Relay Mesh PWA/icon 导出预览：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png`
+- 当前 PWA install icon 交付修复：使用上述批准预览与构建后 public light/admin dark PNG 输出做 mock-only artifact comparison；确认 artwork 一致，仅文件名、manifest 引用与缓存策略发生变化。
 - `2026-06-27` 品牌静态资源 `/assets` 路由校准后的 admin 壳验证：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-admin-shell-assets-route-fixed.png`
 - `2026-07-15` PWA 更新提示 ready 状态（Storybook canvas，静默更新完成后通知 + 具体版本号 + “立即刷新”按钮）：
 
@@ -304,9 +340,13 @@
 
   ![管理员登录页更新提示移动端布局](./assets/update-banner-login-header-mobile.png)
 
+## Related ADRs
+
+- None
+
 ## 风险 / 假设
 
 - 假设：本轮“不要让非管理员缓存 admin Web App”的定义聚焦于 PWA/service worker 长期缓存与安装身份，而不是普通 HTTP 层的瞬时下载。
-- 风险：Safari 对多 identity 安装入口与 scope 的表现比 Chromium 更保守，因此需要明确手工结论。
+- 风险：Safari/iOS 对多 identity 安装入口、scope 与既有 Web Clip 元数据更新的表现比 Chromium 更保守；网站不能强制迁移既有系统图标，因此保持该平台限制并等待手工验证。
 - 风险：管理员后台已有大量模块化加载状态，离线时若错误语义分散，必须通过共享错误规范避免出现局部空白。
 - 假设：产品命名继续保持 `Tavily Hikari` / `Tavily Hikari Proxy`，`Relay Mesh` 仅作为视觉资产方向，不构成对外 rename。

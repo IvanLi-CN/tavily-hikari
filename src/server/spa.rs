@@ -10,6 +10,43 @@ fn response_content_type(file_name: &str) -> String {
     }
 }
 
+fn is_content_hashed_pwa_asset(file_name: &str) -> bool {
+    let Some(file_name) = file_name.strip_prefix("pwa/") else {
+        return false;
+    };
+    if file_name.contains('/') {
+        return false;
+    }
+    let Some((stem, digest_with_extension)) = file_name.rsplit_once('-') else {
+        return false;
+    };
+    let Some(digest) = digest_with_extension.strip_suffix(".png") else {
+        return false;
+    };
+    (stem.starts_with("public-") || stem.starts_with("admin-"))
+        && digest.len() == 12
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn response_cache_control(file_name: &str) -> Option<&'static str> {
+    if file_name.ends_with(".html")
+        || matches!(
+            file_name,
+            "version.json"
+                | "manifest.webmanifest"
+                | "manifest-admin.webmanifest"
+                | "sw-public.js"
+                | "sw-admin.js"
+        )
+    {
+        return Some("no-cache, must-revalidate");
+    }
+    if is_content_hashed_pwa_asset(file_name) {
+        return Some("public, max-age=31536000, immutable");
+    }
+    None
+}
+
 fn embedded_static_bytes(file_name: &str) -> Option<Bytes> {
     tavily_hikari::web_assets::embedded_bytes(file_name).map(Bytes::from_static)
 }
@@ -36,9 +73,13 @@ async fn load_spa_response(state: &AppState, file_name: &str) -> Result<Response
     let Some(bytes) = read_static_bytes(state, file_name).await else {
         return Err(StatusCode::NOT_FOUND);
     };
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, response_content_type(file_name))
+        .header(CONTENT_TYPE, response_content_type(file_name));
+    if let Some(cache_control) = response_cache_control(file_name) {
+        response = response.header(CACHE_CONTROL, cache_control);
+    }
+    response
         .body(Body::from(bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -126,6 +167,40 @@ async fn serve_pwa_asset(
 
     let file_name = format!("pwa/{asset_path}");
     load_spa_response(state.as_ref(), &file_name).await
+}
+
+#[cfg(test)]
+mod pwa_cache_tests {
+    use super::*;
+
+    #[test]
+    fn pwa_metadata_revalidates_and_hashed_icons_are_immutable() {
+        for file_name in [
+            "index.html",
+            "manifest.webmanifest",
+            "manifest-admin.webmanifest",
+            "sw-public.js",
+            "sw-admin.js",
+            "version.json",
+        ] {
+            assert_eq!(
+                response_cache_control(file_name),
+                Some("no-cache, must-revalidate"),
+                "metadata should be revalidated: {file_name}"
+            );
+        }
+        assert_eq!(
+            response_cache_control("pwa/admin-1024-0123456789ab.png"),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(
+            response_cache_control("pwa/admin-touch-icon-0123456789ab.png"),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(response_cache_control("pwa/admin-1024.png"), None);
+        assert_eq!(response_cache_control("pwa/admin-1024-0123456789abc.png"), None);
+        assert_eq!(response_cache_control("assets/admin-1024-0123456789ab.png"), None);
+    }
 }
 
 async fn serve_index(

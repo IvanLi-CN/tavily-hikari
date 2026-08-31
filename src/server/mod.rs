@@ -14,7 +14,7 @@ use argon2::{
 use async_compression::tokio::{bufread::ZstdDecoder, write::ZstdEncoder};
 use async_stream::stream;
 use axum::http::header::{
-    CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE, TRANSFER_ENCODING,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE, TRANSFER_ENCODING,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{AppendHeaders, IntoResponse};

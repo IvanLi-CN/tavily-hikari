@@ -87,6 +87,20 @@ async fn branded_assets_are_served_from_assets_contract_and_favicon_remains_avai
         .await
         .expect("create proxy");
     let static_dir = temp_static_dir("branded-assets-contract");
+    std::fs::create_dir_all(static_dir.join("pwa")).expect("create temp pwa dir");
+    std::fs::write(static_dir.join("manifest.webmanifest"), b"{}")
+        .expect("write public manifest");
+    std::fs::write(static_dir.join("manifest-admin.webmanifest"), b"{}")
+        .expect("write admin manifest");
+    std::fs::write(static_dir.join("sw-public.js"), b"// public")
+        .expect("write public service worker");
+    std::fs::write(static_dir.join("sw-admin.js"), b"// admin")
+        .expect("write admin service worker");
+    std::fs::write(
+        static_dir.join("pwa/admin-1024-0123456789ab.png"),
+        b"not-a-real-png",
+    )
+    .expect("write hashed pwa asset");
     let state = Arc::new(AppState {
         proxy,
         static_dir: Some(static_dir),
@@ -107,6 +121,12 @@ async fn branded_assets_are_served_from_assets_contract_and_favicon_remains_avai
     let app = Router::new()
         .route("/assets/*path", get(serve_asset))
         .route("/favicon.svg", get(serve_favicon))
+        .route("/index.html", get(serve_public_index_shell))
+        .route("/manifest.webmanifest", get(serve_public_manifest))
+        .route("/manifest-admin.webmanifest", get(serve_admin_manifest))
+        .route("/sw-public.js", get(serve_public_sw))
+        .route("/sw-admin.js", get(serve_admin_sw))
+        .route("/pwa/*path", get(serve_pwa_asset))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -143,6 +163,33 @@ async fn branded_assets_are_served_from_assets_contract_and_favicon_remains_avai
         .expect("favicon request");
     let favicon_body = favicon.text().await.expect("favicon body");
     assert!(favicon_body.contains("assets/relay-mesh-mark-light.png"));
+
+    for (path, expected_cache_control) in [
+        ("/index.html", "no-cache, must-revalidate"),
+        ("/manifest.webmanifest", "no-cache, must-revalidate"),
+        ("/manifest-admin.webmanifest", "no-cache, must-revalidate"),
+        ("/sw-public.js", "no-cache, must-revalidate"),
+        ("/sw-admin.js", "no-cache, must-revalidate"),
+        (
+            "/pwa/admin-1024-0123456789ab.png",
+            "public, max-age=31536000, immutable",
+        ),
+    ] {
+        let response = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|_| panic!("cache-control request succeeds for {path}"));
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "status for {path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_cache_control),
+            "cache-control for {path}"
+        );
+    }
 
     let _ = std::fs::remove_file(db_path);
 }

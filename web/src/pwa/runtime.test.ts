@@ -52,6 +52,7 @@ function installImmediateTimeout(): { run: () => void; restore: () => void } {
 
 class MockServiceWorkerContainer extends EventTarget {
   controller: MockServiceWorker | null = new MockServiceWorker()
+  registerCalls: Array<{ scriptURL: string; options: RegistrationOptions }> = []
 
   constructor(private readonly registration: MockRegistration) {
     super()
@@ -61,7 +62,8 @@ class MockServiceWorkerContainer extends EventTarget {
     return Promise.resolve(this.registration)
   }
 
-  async register(): Promise<MockRegistration> {
+  async register(scriptURL: string, options: RegistrationOptions): Promise<MockRegistration> {
+    this.registerCalls.push({ scriptURL, options })
     return this.registration
   }
 }
@@ -85,6 +87,28 @@ async function loadRuntimeWithMock(registration: MockRegistration, pathname = '/
 }
 
 describe('PWA runtime update lifecycle', () => {
+  it('registers each identity with its own scope and bypasses the HTTP cache for worker updates', async () => {
+    const publicRegistration = new MockRegistration()
+    const { runtime: publicRuntime, container: publicContainer } = await loadRuntimeWithMock(publicRegistration)
+
+    await publicRuntime.registerPwaServiceWorker('public')
+
+    expect(publicContainer.registerCalls).toEqual([{
+      scriptURL: '/sw-public.js',
+      options: { scope: '/', updateViaCache: 'none' },
+    }])
+
+    const adminRegistration = new MockRegistration()
+    const { runtime: adminRuntime, container: adminContainer } = await loadRuntimeWithMock(adminRegistration, '/admin/')
+
+    await adminRuntime.registerPwaServiceWorker('admin')
+
+    expect(adminContainer.registerCalls).toEqual([{
+      scriptURL: '/sw-admin.js',
+      options: { scope: '/admin/', updateViaCache: 'none' },
+    }])
+  })
+
   it('publishes installing and ready only after the update worker finishes installation', async () => {
     const registration = new MockRegistration()
     const { runtime } = await loadRuntimeWithMock(registration)

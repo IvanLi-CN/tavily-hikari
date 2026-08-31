@@ -2,13 +2,15 @@
 
 ## 当前实现状态
 
-- 状态：已完成（含 Relay Mesh 品牌接入与可恢复 PWA 更新提示；待 Safari / iOS 手工补验）
-- 分支：`th/fix-pwa-update-activation-stall`
+- 状态：已完成（含 Relay Mesh 品牌接入、可恢复 PWA 更新提示与安装图标更新交付修复；待 Safari / iOS 手工补验）
+- 分支：`th/fix-pwa-admin-icon-update`
 
 ## 实现决策
 
 - 采用现有 Vite multipage 构建，新增 build manifest 输出与 post-build 脚本。
 - 通过生成脚本构造 public/admin 两套 asset graph、manifest、service worker 与图标，不引入单 manifest 注入式 PWA 插件。
+- manifest 继续作为支持平台的安装元数据来源：public/admin 分别固定 `id=/` 与 `id=/admin/`，HTML 只声明匹配 manifest，移除会在 WebKit 中优先覆盖 manifest 的 `apple-touch-icon` link。
+- PWA PNG 以最终字节的 12 位 SHA-256 摘要命名；manifest 与对应 worker 只引用自己的当前 URL。metadata 资源要求重新验证，哈希图标使用 immutable 缓存；worker precache 使用 `cache: 'reload'`，页面注册使用 `updateViaCache: 'none'`。
 - 品牌资产采用单一矢量 lockup 母版：Roboto Condensed weight 400 的预实例化静态字体固定为 reviewed tagline outline 的来源；完整 SVG 保存该不可变 outline，并以两组路径哈希防止不同主机的字体栅格化或意外编辑改写母版。完整版保持既有 `1000 × 310` 横向轮廓，右侧主字标与副标语作为两行文字块共享 Relay Mesh mark 的光学中轴；`KEY POOL · BALANCE. ROUTE.` 保留字间点并使用一条连续渐变，而非分段色块或竖线。Web 与 docs-site 的完整/compact SVG 与 PNG 均从母版稳定导出，favicon、launcher icon 与 PWA identity 保持既有合同。
 - `BrandLockup` 以 `full | compact | responsive` 三态统一公共首页、用户控制台、后台、登录、暂停注册和 404；`responsive` 以 `260px` 的实际容器宽度为门槛选择完整或 compact。Rspress `Layout.navTitle` 复用同一主题与容器查询合同，但作为导航 utility 位固定为 `180px`，因此稳定选择 compact 版本。
 - 品牌导出链现在显式产出 lockup / mark / launcher icon 的 light、dark、mono 变体，并保留默认亮色别名文件给现有入口复用。
@@ -29,6 +31,7 @@
 - 首次安装与版本升级以当前 registration 自身是否已有 active worker 区分；public 根作用域 controller 不再让 admin 首装误报更新，admin waiting worker 会静默激活并在下一次 admin 导航接管。
 - public/admin worker 不接管 `/api/*`、`/mcp`、SSE、认证与写请求等 network-only 流量，避免长连接 FetchEvent 阻塞旧 worker 退场；未预缓存的普通同源运行时资源仍在网络拒绝时返回 `503 Service Unavailable`。
 - worker activate 事件只清理旧 cache，不调用 `clients.claim()`；首次安装在下一次同 scope 导航接管，版本更新则由 runtime 在目标 worker 到达 `activated` 后 reload。
+- Android Chrome/WebAPK 与 Chromium desktop 按稳定 manifest `id` 处理同一安装的后续 metadata 更新；既有 iOS/iPadOS Web Clip 和不支持 manifest metadata 同步的浏览器无法由网站强制迁移图标，该限制不以“重新安装”作为常规用户流程解决。
 
 ## 待完成项
 
@@ -86,8 +89,8 @@
   - `manifest-admin.webmanifest`
   - `sw-public.js`
   - `sw-admin.js`
-  - `pwa/public-*.png`
-  - `pwa/admin-*.png`
+  - `pwa/public-*-<content-hash>.png`
+  - `pwa/admin-*-<content-hash>.png`
   - `pwa/asset-graphs.json`
 - 公共入口 `/`、`/console`、`/login`、`/registration-paused` 现在注册 public service worker。
 - 管理员入口 `/admin/**` 现在只注册 admin service worker，并在运行时将 `/admin` 归一到 `/admin/`。
@@ -107,6 +110,7 @@
 - Relay Mesh 品牌接入包括：
   - `web/scripts/generate_relay_mesh_brand_assets.py` 基于批准稿导出透明底 `lockup / mark / icon` 资产，以及 light/dark/mono 变体与 favicon/touch icon
   - `web/scripts/generate_pwa_assets.py` 从 `relay-mesh-icon-light.png` / `relay-mesh-icon-dark.png` 导出 public/admin 两套全尺寸 PWA PNG、maskable 图标、touch icon 与 manifest 主题字段
+  - `web/scripts/generate_pwa_assets.py` 将每个图标的最终 PNG 内容摘要写入 URL，并将相应 manifest 纳入对应 service worker precache；public/admin 产物不互相引用
   - `BrandLockup` 组件统一 public home、console header、admin shell、login、registration-paused 与 404 fallback 的显式品牌位，并按主题切换 lockup 亮/暗版
   - `docs-site/rspress.config.ts` 与 `docs-site/docs/public/*` 接入同一套文档站品牌入口，并补上主题感知 favicon
   - 2026-06-27 follow-up 将 public/docs-site 品牌导出物迁到各自 `public/assets/` 目录，HTML shell、组件引用与 Rust 静态合同统一改为 `/assets/*`
@@ -146,6 +150,7 @@
 - 2026-06-27: 品牌公开路径从根路径裸文件收敛到 `/assets/*`，并补齐 `/assets/* + /favicon.svg` 的服务合同测试。
 - 2026-07-08: 将更新检测从 PublicHome 局部版本比较升级为共享 PWA update runtime；新 worker precache 完成后进入 waiting，用户确认时才激活并 reload。
 - 2026-07-31: 管理员登录页更新提示移至全局页头下方，采用页头级宽度并修正移动端按钮同行、信息层级和横向溢出。
+- 2026-09-01: 修复安装图标更新交付链：manifest 增加稳定 identity `id`，PNG URL 使用内容哈希，HTML 移除 legacy `apple-touch-icon` 覆盖，metadata/图标缓存策略分离，并让对应 service worker 重新验证自己的 manifest 与图标。
 
 ## 已知未完成验证
 
@@ -155,7 +160,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-06-24
-- Last: 2026-08-01
+- Last: 2026-09-01
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -164,3 +169,4 @@
 - [x] M3: public/admin cache 边界与 navigation fallback 落地
 - [x] M4: 公共页、控制台、后台离线错误态收口
 - [x] M5: Storybook、测试、浏览器离线验证、Relay Mesh 品牌接入与视觉证据完成
+- [x] M6: 稳定 manifest identity、哈希安装图标、metadata 缓存与双 worker 更新交付链落地

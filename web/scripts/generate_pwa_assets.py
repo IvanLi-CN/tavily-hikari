@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -68,6 +69,16 @@ def ensure_not_empty(name: str, values: list[str]) -> None:
         raise RuntimeError(f"PWA asset graph '{name}' is empty")
 
 
+def write_hashed_png(stem: str, image: Any) -> str:
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    content = output.getvalue()
+    digest = hashlib.sha256(content).hexdigest()[:12]
+    relative_path = f"pwa/{stem}-{digest}.png"
+    (DIST_DIR / relative_path).write_bytes(content)
+    return relative_path
+
+
 def draw_icon(prefix: str, source_file: Path) -> dict[str, dict[str, str] | str]:
     base = Image.open(source_file).convert("RGBA")
     output_any: dict[str, str] = {}
@@ -75,15 +86,21 @@ def draw_icon(prefix: str, source_file: Path) -> dict[str, dict[str, str] | str]
     pwa_dir = DIST_DIR / "pwa"
     pwa_dir.mkdir(parents=True, exist_ok=True)
     for size in ICON_SIZES:
-        rel = f"pwa/{prefix}-{size}.png"
-        base.resize((size, size), Image.Resampling.LANCZOS).save(DIST_DIR / rel)
+        rel = write_hashed_png(
+            f"{prefix}-{size}",
+            base.resize((size, size), Image.Resampling.LANCZOS),
+        )
         output_any[str(size)] = rel
     for size in MASKABLE_SIZES:
-        rel = f"pwa/{prefix}-maskable-{size}.png"
-        base.resize((size, size), Image.Resampling.LANCZOS).save(DIST_DIR / rel)
+        rel = write_hashed_png(
+            f"{prefix}-maskable-{size}",
+            base.resize((size, size), Image.Resampling.LANCZOS),
+        )
         output_maskable[str(size)] = rel
-    touch_rel = f"pwa/{prefix}-touch-icon.png"
-    base.resize((180, 180), Image.Resampling.LANCZOS).save(DIST_DIR / touch_rel)
+    touch_rel = write_hashed_png(
+        f"{prefix}-touch-icon",
+        base.resize((180, 180), Image.Resampling.LANCZOS),
+    )
     return {
         "any": output_any,
         "maskable": output_maskable,
@@ -118,6 +135,7 @@ def collect_icon_files(icons: dict[str, dict[str, str] | str]) -> list[str]:
 
 
 def make_manifest(
+    identity_id: str,
     name: str,
     short_name: str,
     start_url: str,
@@ -151,6 +169,7 @@ def make_manifest(
             }
         )
     return {
+        "id": identity_id,
         "name": name,
         "short_name": short_name,
         "start_url": start_url,
@@ -179,7 +198,7 @@ const ACTIVATE_UPDATE_MESSAGE = 'TAVILY_HIKARI_ACTIVATE_UPDATE';
 self.addEventListener('install', (event) => {{
   event.waitUntil((async () => {{
     const cache = await caches.open(CACHE_NAME);
-    await cache.addAll(PRECACHE_URLS);
+    await cache.addAll(PRECACHE_URLS.map((url) => new Request(new URL(url, self.location.origin), {{ cache: 'reload' }})));
   }})());
 }});
 
@@ -303,33 +322,34 @@ def main() -> None:
     admin_icons = draw_icon(prefix="admin", source_file=admin_source_icon)
     public_icon_files = collect_icon_files(public_icons)
     admin_icon_files = collect_icon_files(admin_icons)
-    public_precache_files = normalize(public_files + public_icon_files)
-    admin_precache_files = normalize(admin_files + admin_icon_files)
+    public_manifest_path = "manifest.webmanifest"
+    admin_manifest_path = "manifest-admin.webmanifest"
+    public_precache_files = normalize(public_files + [public_manifest_path] + public_icon_files)
+    admin_precache_files = normalize(admin_files + [admin_manifest_path] + admin_icon_files)
 
-    write_json(
-        "manifest.webmanifest",
-        make_manifest(
-            name="Tavily Hikari",
-            short_name="Hikari",
-            start_url="/",
-            scope="/",
-            theme_color="#7c3aed",
-            background_color="#f4f1fa",
-            icons=public_icons,
-        ),
+    public_manifest = make_manifest(
+        identity_id="/",
+        name="Tavily Hikari",
+        short_name="Hikari",
+        start_url="/",
+        scope="/",
+        theme_color="#7c3aed",
+        background_color="#f4f1fa",
+        icons=public_icons,
     )
-    write_json(
-        "manifest-admin.webmanifest",
-        make_manifest(
-            name="Tavily Hikari Admin",
-            short_name="Hikari Admin",
-            start_url="/admin/",
-            scope="/admin/",
-            theme_color="#0ea5e9",
-            background_color="#eef1fa",
-            icons=admin_icons,
-        ),
+    admin_manifest = make_manifest(
+        identity_id="/admin/",
+        name="Tavily Hikari Admin",
+        short_name="Hikari Admin",
+        start_url="/admin/",
+        scope="/admin/",
+        theme_color="#0ea5e9",
+        background_color="#eef1fa",
+        icons=admin_icons,
     )
+
+    write_json(public_manifest_path, public_manifest)
+    write_json(admin_manifest_path, admin_manifest)
 
     write_text(
         "sw-public.js",
@@ -362,14 +382,14 @@ def main() -> None:
         {
             "generatedAt": "build-time",
             "public": {
-                "manifest": "manifest.webmanifest",
+                "manifest": public_manifest_path,
                 "serviceWorker": "sw-public.js",
                 "files": public_files,
                 "precacheFiles": public_precache_files,
                 "icons": public_icons,
             },
             "admin": {
-                "manifest": "manifest-admin.webmanifest",
+                "manifest": admin_manifest_path,
                 "serviceWorker": "sw-admin.js",
                 "files": admin_files,
                 "precacheFiles": admin_precache_files,

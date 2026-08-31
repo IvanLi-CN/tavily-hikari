@@ -46,6 +46,15 @@ does not prove that the admin registration is performing an update.
   reaches `activated` so the new navigation selects the new controller.
 - Keep a contained `503` fallback only for ordinary same-origin runtime resources that the worker
   intentionally owns and that are not precached.
+- Keep the manifest as the install metadata authority for supported platforms: give each identity a
+  stable `id`, remove legacy `apple-touch-icon` links that can take precedence in WebKit, and put a
+  content hash in every generated install-icon URL.
+- Serve HTML, manifests, workers, and version metadata with revalidation while serving content-hashed
+  icon files as immutable assets. Precache the matching manifest and icon URLs with cache-reloading
+  requests, and register the worker with `updateViaCache: 'none'`.
+- Treat existing iOS/iPadOS Web Clips and browsers without manifest metadata synchronization as a
+  platform limitation. The site cannot force-migrate their installed icon, and reinstalling is not the
+  normal update mechanism.
 
 ## Guardrails
 

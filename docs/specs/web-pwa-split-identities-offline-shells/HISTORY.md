@@ -15,6 +15,7 @@
 - 2026-08-01: 完整 Relay Mesh lockup 将副标语固定为 `KEY POOL · BALANCE. ROUTE.` 的 weight 400 outline；右侧两行文字块与 Relay Mesh mark 共享光学中轴，字间点和单一连续渐变保留原始品牌语法。完整/compact 的选择改由 `260px` 容器宽度驱动，PWA 图标与 identity 不随文字可读性修复改变。
 - 2026-08-01: 文档站导航被确认为 utility 位而非品牌主视觉；Rspress 的品牌容器固定为 `180px`，按共享容器合同显示 compact lockup，避免将完整两行标志压入导航栏。
 - 2026-08-18: 前端版本身份从 Vite 编译期 define 收敛到 HTML shell meta、`version.json` 与版本化 service worker cache；纯版本发布只改变尾部动态产物，旧 shell 继续支持离线回退。
+- 2026-09-01: 修复安装元数据与图标更新链：为 public/admin manifest 固定身份，移除会覆盖 manifest 的 legacy touch-icon HTML 声明，改用内容哈希图标 URL，并让静态缓存与 service worker 更新遵循可重新验证的 metadata / immutable asset 边界。
 
 ## 变更记录（Change log）
 
@@ -29,6 +30,7 @@
 - 2026-07-11: 更新激活状态机增加 10 秒 watchdog、失败重试、`redundant`/消息异常终态与 activated 单次刷新回退，并按 registration 自身 active worker 区分首次安装与升级。
 - 2026-08-18: 补充版本 A/B 机械门禁，确认稳定 PWA 资产不随纯版本发布变化，且两个 worker 的 cache identity 随版本变化。
 - 2026-08-18: 离线浏览器 E2E 增加 HTML meta 版本来源与旧 release shell 离线可用断言。
+- 2026-09-01: 补齐 manifest identity、图标内容哈希、缓存策略与 service worker 安装预缓存回归；记录 Chromium 可迁移更新路径及既有 iOS/iPadOS Web Clip 无法强制迁移的兼容边界。
 
 ## Legacy Identity
 
