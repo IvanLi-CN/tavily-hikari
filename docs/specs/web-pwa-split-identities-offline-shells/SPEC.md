@@ -286,8 +286,6 @@
 
 - `2026-08-01` 品牌组件容器阈值（Storybook canvas，mock-only，`require_margin`）：
 
-  PR: none
-
   `260px` 容器显示完整 lockup，`220px` 容器切换到紧凑版且在自身容器内居中。
 
   ![260px 容器的完整 lockup](./assets/brand-lockup-storybook-minimum-260.png)
@@ -295,8 +293,6 @@
   ![220px 容器的紧凑 lockup](./assets/brand-lockup-storybook-compact-220.png)
 
 - `2026-08-01` 品牌消费面（ui_demo / Rspress preview，mock-only，`trim_only`）：
-
-  PR: none
 
   公共首页使用桌面完整版本；后台侧栏因实际可用宽度为 `230px` 正确切换为紧凑版本；文档站作为导航 utility 位固定为 `180px`，正确使用紧凑版本。
 
