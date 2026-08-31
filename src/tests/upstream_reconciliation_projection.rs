@@ -214,10 +214,13 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
     .expect("return a typed claimed outcome");
     assert!(matches!(
         outcome,
-        ClaimedResearchDrainOutcome::Completed {
+        ClaimedResearchDrainOutcome::Persisted {
             polled: 1,
+            terminal: 0,
+            pending: 0,
             retries: 1,
-            ..
+            unavailable: 0,
+            credentials_cooling: 0,
         }
     ));
     assert!(research_started.load(Ordering::SeqCst));

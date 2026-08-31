@@ -168,14 +168,10 @@ impl TavilyProxy {
                 if ReconciliationEngine::projection_read_budget_is_deferred(&error)
                     || is_transient_sqlite_write_error(&error) =>
             {
-                return Ok(Self::observe_research_drain_outcome(
-                    now,
-                    ClaimedResearchDrainOutcome::Deferred {
+                return Ok(ClaimedResearchDrainOutcome::Deferred {
                         reason: "research_drain_budget",
                         retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
-                    },
-                    0,
-                ));
+                    });
             }
             Err(error) => return Err(error),
         };
@@ -183,14 +179,10 @@ impl TavilyProxy {
             let retry_at = page
                 .earliest_cooldown_until
                 .unwrap_or_else(|| now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS));
-            return Ok(Self::observe_research_drain_outcome(
-                now,
-                ClaimedResearchDrainOutcome::Deferred {
+            return Ok(ClaimedResearchDrainOutcome::Deferred {
                     reason: "key_cooldown",
                     retry_at,
-                },
-                page.cooled_due_count,
-            ));
+                });
         }
         if page.candidates.is_empty() {
             let minimum_next_at = now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS);
@@ -199,17 +191,13 @@ impl TavilyProxy {
                 .upstream_reconciliation_research_drain_available_at()
                 .await?
                 .map(|available_at| available_at.max(minimum_next_at));
-            return Ok(Self::observe_research_drain_outcome(
-                now,
-                ClaimedResearchDrainOutcome::Completed {
+            return Ok(ClaimedResearchDrainOutcome::Completed {
                     polled: 0,
                     terminal: 0,
                     pending: 0,
                     retries: 0,
                     next_at,
-                },
-                0,
-            ));
+                });
         }
 
         let key_ids = page
@@ -251,15 +239,11 @@ impl TavilyProxy {
             .iter()
             .find(|candidate| !cooldowns.contains_key(&candidate.key_id))
         else {
-            return Ok(Self::observe_research_drain_outcome(
-                now,
-                ClaimedResearchDrainOutcome::Deferred {
+            return Ok(ClaimedResearchDrainOutcome::Deferred {
                     reason: "key_cooldown",
                     retry_at: earliest_cooldown
                         .unwrap_or_else(|| now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS)),
-                },
-                cooldowns.len() as i64,
-            ));
+                });
         };
         let accepted_cursor = page
             .candidate_cursors
@@ -344,20 +328,12 @@ impl TavilyProxy {
             }
             Err((error, _)) if ReconciliationEngine::remote_attempt_is_deferred(&error) => {
                 if ReconciliationEngine::remote_attempt_is_stale(&error) {
-                    return Ok(Self::observe_research_drain_outcome(
-                        now,
-                        ClaimedResearchDrainOutcome::StaleClaim,
-                        0,
-                    ));
+                    return Ok(ClaimedResearchDrainOutcome::StaleClaim);
                 }
-                return Ok(Self::observe_research_drain_outcome(
-                    now,
-                    ClaimedResearchDrainOutcome::Deferred {
+                return Ok(ClaimedResearchDrainOutcome::Deferred {
                         reason: "research_drain_budget",
                         retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
-                    },
-                    0,
-                ));
+                    });
             }
             Err((ProxyError::UsageHttp { status, .. }, retry_after))
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
@@ -440,21 +416,13 @@ impl TavilyProxy {
         match receipt {
             Ok(crate::store::ResearchDrainCommitReceipt::Accepted { .. }) => {}
             Ok(crate::store::ResearchDrainCommitReceipt::Deferred { retry_at }) => {
-                return Ok(Self::observe_research_drain_outcome(
-                    now,
-                    ClaimedResearchDrainOutcome::Deferred {
+                return Ok(ClaimedResearchDrainOutcome::Deferred {
                         reason: "research_drain_budget",
                         retry_at,
-                    },
-                    0,
-                ));
+                    });
             }
             Ok(crate::store::ResearchDrainCommitReceipt::StaleClaim) | Err(ProxyError::StaleClaim { .. }) => {
-                return Ok(Self::observe_research_drain_outcome(
-                    now,
-                    ClaimedResearchDrainOutcome::StaleClaim,
-                    0,
-                ));
+                return Ok(ClaimedResearchDrainOutcome::StaleClaim);
             }
             Err(error) => return Err(error),
         }

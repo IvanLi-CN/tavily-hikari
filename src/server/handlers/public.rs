@@ -1356,7 +1356,7 @@ async fn sse_public(
 async fn build_dashboard_overview_payload(
     state: &Arc<AppState>,
     last_good: Option<&DashboardOverviewSnapshot>,
-    quota_charge_token: Option<[i64; 6]>,
+    quota_charge_token: Option<[i64; 5]>,
 ) -> Result<DashboardOverviewSnapshot, ProxyError> {
     #[cfg(test)]
     {

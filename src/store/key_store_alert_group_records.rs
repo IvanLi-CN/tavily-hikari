@@ -25,6 +25,22 @@ impl KeyStore {
         groups: &[AlertGroupProjectionRow],
         source: AlertReadSource,
     ) -> Result<HashMap<String, AlertEventRecord>, ProxyError> {
+        self.fetch_group_latest_events_for_operation(
+            filters,
+            groups,
+            source,
+            SqliteOperation::AdminAlertsRead,
+        )
+        .await
+    }
+
+    async fn fetch_group_latest_events_for_operation(
+        &self,
+        filters: AlertEventFilters<'_>,
+        groups: &[AlertGroupProjectionRow],
+        source: AlertReadSource,
+        operation: SqliteOperation,
+    ) -> Result<HashMap<String, AlertEventRecord>, ProxyError> {
         if groups.is_empty() {
             return Ok(HashMap::new());
         }
@@ -40,7 +56,41 @@ impl KeyStore {
         }
         query.push(")");
 
-        let rows = self.fetch_alert_query_rows(query, source).await?;
+        let rows = self
+            .fetch_alert_query_rows_for_operation(query, source, operation)
+            .await?;
+        let mut events_by_row_sort_id = HashMap::new();
+        for row in rows {
+            let decoded = Self::decode_alert_event_projection_row(row)?;
+            let row_sort_id = decoded.row_sort_id.clone();
+            if let Some(event) = Self::build_alert_event_from_projection(decoded) {
+                events_by_row_sort_id.insert(row_sort_id, event);
+            }
+        }
+        Ok(events_by_row_sort_id)
+    }
+
+    async fn fetch_projected_group_latest_events_in_admin_session(
+        &self,
+        filters: AlertEventFilters<'_>,
+        groups: &[AlertGroupProjectionRow],
+        session: &mut AdminAlertsReadSession,
+    ) -> Result<HashMap<String, AlertEventRecord>, ProxyError> {
+        if groups.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = QueryBuilder::new("");
+        Self::push_projected_alert_events_cte(&mut query, filters);
+        query.push(" SELECT * FROM alerts WHERE row_sort_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for group in groups {
+                separated.push_bind(group.row_sort_id.as_str());
+            }
+        }
+        query.push(")");
+        let result = query.build().fetch_all(&mut **session).await;
+        let rows = session.query(result).await?;
         let mut events_by_row_sort_id = HashMap::new();
         for row in rows {
             let decoded = Self::decode_alert_event_projection_row(row)?;

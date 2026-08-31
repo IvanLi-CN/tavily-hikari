@@ -6,6 +6,8 @@ use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::pin::Pin;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,6 +39,40 @@ const MAINTENANCE_RUN_SLOTS: u32 = 1_024;
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
 const TRANSACTION_HOLD_BUCKET_UPPER_MS: [u64; 6] = [10, 25, 50, 100, 250, 251];
+
+#[cfg(test)]
+#[derive(Clone)]
+struct OwnedFinishPause {
+    arrived: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static OWNED_FINISH_PAUSE: OnceLock<Mutex<Option<OwnedFinishPause>>> = OnceLock::new();
+
+#[cfg(test)]
+fn install_owned_finish_pause_for_test() -> OwnedFinishPause {
+    let pause = OwnedFinishPause {
+        arrived: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    *OWNED_FINISH_PAUSE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("owned finish pause mutex") = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
+async fn wait_for_owned_finish_pause_for_test() {
+    let pause = OWNED_FINISH_PAUSE
+        .get()
+        .and_then(|slot| slot.lock().expect("owned finish pause mutex").take());
+    if let Some(pause) = pause {
+        pause.arrived.notify_one();
+        pause.release.notified().await;
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SqliteAdmissionDeferReason {
@@ -2209,23 +2245,76 @@ impl ReconciliationReadSession {
 }
 
 impl AdminAlertsReadSession {
-    pub(crate) async fn complete_query_or_defer<T>(
-        mut self,
+    /// Runs one statement inside the session's single read snapshot. The
+    /// progress handler remains installed until `finish`, so every statement
+    /// shares the same 250ms end-to-end budget and SQLite view.
+    pub(crate) async fn query<T>(
+        &mut self,
         query_result: Result<T, sqlx::Error>,
     ) -> Result<T, ProxyError> {
+        let deadline_exceeded = self
+            .snapshot
+            .as_ref()
+            .expect("SQLite admin Alerts read snapshot")
+            .cooperative_run_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        match query_result {
+            Ok(value) => {
+                if deadline_exceeded {
+                    self.defer_read_budget().await
+                } else {
+                    Ok(value)
+                }
+            }
+            Err(_) if deadline_exceeded => self.defer_read_budget().await,
+            Err(error) => {
+                let error = ProxyError::Database(error);
+                match self
+                    .snapshot
+                    .take()
+                    .expect("SQLite admin Alerts read snapshot")
+                    .close_after_query(Some(&error))
+                    .await
+                {
+                    Ok(()) => Err(error),
+                    Err(close_error) => Err(close_error),
+                }
+            }
+        }
+    }
+
+    async fn defer_read_budget<T>(&mut self) -> Result<T, ProxyError> {
+        self.defer("read_budget").await
+    }
+
+    /// End an intentionally incomplete Admin Alerts read without returning a
+    /// snapshot whose SQLite state has not been restored. Coverage failures
+    /// use the same close path as the native read deadline.
+    pub(crate) async fn defer<T>(&mut self, reason: impl Into<String>) -> Result<T, ProxyError> {
+        let error = ProxyError::Deferred {
+            operation: "admin_alerts_read",
+            reason: reason.into(),
+        };
         match self
             .snapshot
             .take()
             .expect("SQLite admin Alerts read snapshot")
-            .complete_admin_alerts_read(query_result)
-            .await?
+            .close_after_query(Some(&error))
+            .await
         {
-            SqliteCooperativeQueryOutcome::Completed(value) => Ok(value),
-            SqliteCooperativeQueryOutcome::DeadlineExceeded => Err(ProxyError::Deferred {
-                operation: "admin_alerts_read",
-                reason: "read_budget".to_string(),
-            }),
+            Ok(()) => Err(error),
+            Err(close_error) => Err(close_error),
         }
+    }
+
+    pub(crate) async fn finish(mut self) -> Result<(), ProxyError> {
+        let Some(snapshot) = self.snapshot.take() else {
+            // `query` has already closed the snapshot on a deadline or
+            // SQLite error. Callers can unconditionally finish their scoped
+            // session while preserving the original query result.
+            return Ok(());
+        };
+        snapshot.close().await
     }
 }
 
@@ -2465,132 +2554,172 @@ impl SqliteImmediateTransaction {
             .transaction
             .take()
             .expect("SQLite immediate transaction");
-        match transaction.rollback_connection().await {
-            Ok(mut conn) => {
-                record_connection_cache_write_delta(
-                    &self.runtime,
-                    self.operation,
-                    self.cache_write_pages_start,
-                    &mut conn,
-                )
-                .await;
-                if let Err(err) =
-                    restore_operation_connection(conn, self.restore_busy_timeout).await
-                {
-                    let err = ProxyError::Database(err);
-                    self.runtime.record_error(
-                        self.operation,
-                        self.pool_wait,
-                        self.begin_wait,
-                        &err,
-                    );
-                    return Err(err);
-                }
-                self.runtime.record_success(
-                    self.operation,
-                    self.pool_wait,
-                    self.begin_wait,
-                    self.started_at.elapsed(),
-                    0,
-                );
-                Ok(())
-            }
-            Err(err) => {
-                self.runtime
-                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
-                Err(err)
-            }
-        }
+        let runtime = self.runtime.clone();
+        let operation = self.operation;
+        let pool_wait = self.pool_wait;
+        let begin_wait = self.begin_wait;
+        let started_at = self.started_at;
+        let restore_busy_timeout = self.restore_busy_timeout;
+        let cache_write_pages_start = self.cache_write_pages_start;
+        tokio::spawn(async move {
+            complete_immediate_transaction_rollback(
+                transaction,
+                runtime,
+                operation,
+                pool_wait,
+                begin_wait,
+                started_at,
+                restore_busy_timeout,
+                cache_write_pages_start,
+                None,
+            )
+            .await
+        })
+        .await
+        .map_err(|error| ProxyError::Other(format!("owned SQLite rollback task failed: {error}")))?
     }
 
     pub(crate) async fn finish(
         &mut self,
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
-        match write_result {
-            Ok(()) => {
-                let total_changes = sqlx::query_scalar::<_, i64>("SELECT total_changes()")
-                    .fetch_one(&mut **self)
+        let rows_affected = if write_result.is_ok() {
+            let total_changes = sqlx::query_scalar::<_, i64>("SELECT total_changes()")
+                .fetch_one(&mut **self)
+                .await
+                .unwrap_or_default()
+                .max(0) as u64;
+            total_changes.saturating_sub(self.start_total_changes)
+        } else {
+            0
+        };
+        let transaction = self
+            .transaction
+            .take()
+            .expect("SQLite immediate transaction");
+        let runtime = self.runtime.clone();
+        let operation = self.operation;
+        let pool_wait = self.pool_wait;
+        let begin_wait = self.begin_wait;
+        let started_at = self.started_at;
+        let restore_busy_timeout = self.restore_busy_timeout;
+        let cache_write_pages_start = self.cache_write_pages_start;
+        tokio::spawn(async move {
+            match write_result {
+                Ok(()) => {
+                    complete_immediate_transaction_commit(
+                        transaction,
+                        runtime,
+                        operation,
+                        pool_wait,
+                        begin_wait,
+                        started_at,
+                        restore_busy_timeout,
+                        cache_write_pages_start,
+                        rows_affected,
+                    )
                     .await
-                    .unwrap_or_default()
-                    .max(0) as u64;
-                let rows_affected = total_changes.saturating_sub(self.start_total_changes);
-                let transaction = self
-                    .transaction
-                    .take()
-                    .expect("SQLite immediate transaction");
-                let mut conn = match transaction.commit_connection().await {
-                    Ok(conn) => conn,
-                    Err(err) => {
-                        self.runtime.record_error(
-                            self.operation,
-                            self.pool_wait,
-                            self.begin_wait,
-                            &err,
-                        );
-                        return Err(err);
-                    }
-                };
-                record_connection_cache_write_delta(
-                    &self.runtime,
-                    self.operation,
-                    self.cache_write_pages_start,
-                    &mut conn,
-                )
-                .await;
-                if let Err(err) =
-                    restore_operation_connection(conn, self.restore_busy_timeout).await
-                {
-                    let err = ProxyError::Database(err);
-                    self.runtime.record_error(
-                        self.operation,
-                        self.pool_wait,
-                        self.begin_wait,
-                        &err,
-                    );
-                    return Err(err);
                 }
-                self.runtime.record_success(
-                    self.operation,
-                    self.pool_wait,
-                    self.begin_wait,
-                    self.started_at.elapsed(),
-                    rows_affected,
-                );
+                Err(error) => {
+                    complete_immediate_transaction_rollback(
+                        transaction,
+                        runtime,
+                        operation,
+                        pool_wait,
+                        begin_wait,
+                        started_at,
+                        restore_busy_timeout,
+                        cache_write_pages_start,
+                        Some(error),
+                    )
+                    .await
+                }
+            }
+        })
+        .await
+        .map_err(|error| ProxyError::Other(format!("owned SQLite finish task failed: {error}")))?
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_immediate_transaction_commit(
+    transaction: ImmediateSqliteTransaction,
+    runtime: SqliteRuntime,
+    operation: SqliteOperation,
+    pool_wait: Duration,
+    begin_wait: Duration,
+    started_at: Instant,
+    restore_busy_timeout: bool,
+    cache_write_pages_start: Option<u64>,
+    rows_affected: u64,
+) -> Result<(), ProxyError> {
+    #[cfg(test)]
+    wait_for_owned_finish_pause_for_test().await;
+    let mut conn = match transaction.commit_connection().await {
+        Ok(conn) => conn,
+        Err(error) => {
+            runtime.record_error(operation, pool_wait, begin_wait, &error);
+            return Err(error);
+        }
+    };
+    record_connection_cache_write_delta(&runtime, operation, cache_write_pages_start, &mut conn)
+        .await;
+    if let Err(error) = restore_operation_connection(conn, restore_busy_timeout).await {
+        let error = ProxyError::Database(error);
+        runtime.record_error(operation, pool_wait, begin_wait, &error);
+        return Err(error);
+    }
+    runtime.record_success(
+        operation,
+        pool_wait,
+        begin_wait,
+        started_at.elapsed(),
+        rows_affected,
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_immediate_transaction_rollback(
+    transaction: ImmediateSqliteTransaction,
+    runtime: SqliteRuntime,
+    operation: SqliteOperation,
+    pool_wait: Duration,
+    begin_wait: Duration,
+    started_at: Instant,
+    restore_busy_timeout: bool,
+    cache_write_pages_start: Option<u64>,
+    original_error: Option<ProxyError>,
+) -> Result<(), ProxyError> {
+    match transaction.rollback_connection().await {
+        Ok(mut conn) => {
+            record_connection_cache_write_delta(
+                &runtime,
+                operation,
+                cache_write_pages_start,
+                &mut conn,
+            )
+            .await;
+            if let Err(error) = restore_operation_connection(conn, restore_busy_timeout).await {
+                let error = ProxyError::Database(error);
+                runtime.record_error(operation, pool_wait, begin_wait, &error);
+                return Err(error);
+            }
+            if let Some(error) = original_error {
+                runtime.record_error(operation, pool_wait, begin_wait, &error);
+                Err(error)
+            } else {
+                runtime.record_success(operation, pool_wait, begin_wait, started_at.elapsed(), 0);
                 Ok(())
             }
-            Err(err) => {
-                let transaction = self
-                    .transaction
-                    .take()
-                    .expect("SQLite immediate transaction");
-                match transaction.rollback_connection().await {
-                    Ok(conn) => {
-                        if let Err(restore_err) =
-                            restore_operation_connection(conn, self.restore_busy_timeout).await
-                        {
-                            let restore_err = ProxyError::Database(restore_err);
-                            self.runtime.record_error(
-                                self.operation,
-                                self.pool_wait,
-                                self.begin_wait,
-                                &restore_err,
-                            );
-                            return Err(restore_err);
-                        }
-                    }
-                    Err(rollback_err) => {
-                        self.runtime.record_error(
-                            self.operation,
-                            self.pool_wait,
-                            self.begin_wait,
-                            &rollback_err,
-                        );
-                    }
-                }
-                self.runtime
-                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
-                Err(err)
+        }
+        Err(error) => {
+            runtime.record_error(operation, pool_wait, begin_wait, &error);
+            if let Some(original_error) = original_error {
+                runtime.record_error(operation, pool_wait, begin_wait, &original_error);
+                Err(original_error)
+            } else {
+                Err(error)
             }
         }
     }
@@ -3050,6 +3179,42 @@ mod tests {
         .expect("owned rollback should return the pooled connection")
         .expect("next immediate transaction");
         next.rollback().await.expect("rollback");
+    }
+
+    #[tokio::test]
+    async fn cancelled_finish_keeps_the_owned_commit_boundary_alive() {
+        let runtime = single_connection_runtime().await;
+        let pause = install_owned_finish_pause_for_test();
+        let task_runtime = runtime.clone();
+        let task = tokio::spawn(async move {
+            let mut transaction = task_runtime
+                .begin_immediate(SqliteOperation::DashboardIntegrityWrite)
+                .await
+                .expect("immediate transaction");
+            sqlx::query("CREATE TABLE owned_finish_probe (id INTEGER PRIMARY KEY)")
+                .execute(&mut *transaction)
+                .await
+                .expect("write inside transaction");
+            transaction.finish(Ok(())).await
+        });
+        pause.arrived.notified().await;
+        task.abort();
+        let _ = task.await;
+        pause.release.notify_one();
+
+        let next = tokio::time::timeout(
+            Duration::from_secs(1),
+            runtime.begin_immediate(SqliteOperation::DashboardIntegrityWrite),
+        )
+        .await
+        .expect("owned commit should return the pooled connection")
+        .expect("next immediate transaction");
+        next.rollback().await.expect("rollback");
+        assert_eq!(
+            runtime.discarded_connections_for_test(SqliteOperation::DashboardIntegrityWrite),
+            0,
+            "caller cancellation during commit must not detach the connection"
+        );
     }
 
     #[tokio::test]

@@ -129,8 +129,8 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
-        self.acquire_admin_alert_read().await?;
-        self.alert_events_page(
+        self.key_store
+            .fetch_admin_alert_events_page(
             alert_type,
             since,
             until,
@@ -185,8 +185,8 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
-        self.acquire_admin_alert_read().await?;
-        self.alert_groups_page(
+        self.key_store
+            .fetch_admin_alert_groups_page(
             alert_type,
             since,
             until,
@@ -205,25 +205,7 @@ impl TavilyProxy {
     }
 
     pub async fn admin_alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
-        self.acquire_admin_alert_read().await?;
-        self.alert_catalog().await
-    }
-
-    async fn acquire_admin_alert_read(&self) -> Result<(), ProxyError> {
-        let status = self.key_store.alert_projection_status().await?;
-        // Administrator events/groups/catalog must never fall back to the raw
-        // cross-table alert CTE while the durable sidecar is incomplete. The
-        // handler can still serve an exact-key last-good snapshot during this
-        // bounded catch-up window, or return a truthful cold 503.
-        if status.coverage == "ok" && status.stale_reason.is_none() {
-            return Ok(());
-        }
-        Err(ProxyError::Deferred {
-            operation: "admin_alerts_read",
-            reason: status
-                .stale_reason
-                .unwrap_or_else(|| format!("coverage_{}", status.coverage)),
-        })
+        self.key_store.fetch_admin_alert_catalog().await
     }
 
     pub async fn recent_alerts_summary(

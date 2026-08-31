@@ -1566,6 +1566,10 @@ async fn dashboard_overview_snapshot_does_not_reuse_recent_cache_after_freshness
 
     reset_dashboard_overview_build_count(&state).await;
 
+    // The safety probe must not rebuild merely because its bounded read now
+    // has a later end-of-day timestamp. No quota sample changed here.
+    expire_dashboard_overview_freshness_probe(&state).await;
+
     sqlx::query(
         "UPDATE api_keys SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?",
     )

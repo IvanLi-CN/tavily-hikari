@@ -336,7 +336,7 @@ struct CachedSummaryWindows {
 
 #[derive(Clone, Debug)]
 struct CachedDashboardQuotaChargeSnapshot {
-    token: [i64; 6],
+    token: [i64; 5],
     value: DashboardQuotaChargeSnapshot,
 }
 

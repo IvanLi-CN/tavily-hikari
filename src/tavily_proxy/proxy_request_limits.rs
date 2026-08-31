@@ -23,7 +23,7 @@ impl TavilyProxy {
         &self,
         bounds: SummaryWindowBounds,
         stale_key_count: i64,
-    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 6]), ProxyError> {
+    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 5]), ProxyError> {
         let token = self
             .key_store
             .fetch_dashboard_quota_charge_token(
@@ -42,8 +42,8 @@ impl TavilyProxy {
     async fn dashboard_quota_charge_snapshot_for_token(
         &self,
         bounds: SummaryWindowBounds,
-        token: [i64; 6],
-    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 6]), ProxyError> {
+        token: [i64; 5],
+    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 5]), ProxyError> {
         let stale_key_count = token[3];
 
         loop {
@@ -191,7 +191,7 @@ impl TavilyProxy {
         stale_key_count: i64,
         month_quota_charge_start: i64,
         today_end: i64,
-    ) -> Result<[i64; 6], ProxyError> {
+    ) -> Result<[i64; 5], ProxyError> {
         self.key_store
             .fetch_dashboard_quota_charge_token(
                 stale_key_count,
@@ -1220,7 +1220,7 @@ impl TavilyProxy {
             [i64; 19],
             [i64; 10],
             i64,
-            [i64; 6],
+            [i64; 5],
         ),
         ProxyError,
     > {
@@ -1232,7 +1232,7 @@ impl TavilyProxy {
     pub async fn dashboard_overview_read_components_with_quota_token_at(
         &self,
         now: chrono::DateTime<Local>,
-        quota_token: Option<[i64; 6]>,
+        quota_token: Option<[i64; 5]>,
     ) -> Result<
         (
             SummaryWindows,
@@ -1241,7 +1241,7 @@ impl TavilyProxy {
             [i64; 19],
             [i64; 10],
             i64,
-            [i64; 6],
+            [i64; 5],
         ),
         ProxyError,
     > {
@@ -1257,9 +1257,10 @@ impl TavilyProxy {
         let month_quota_charge_start = quota_token
             .map(|token| token[4])
             .unwrap_or_else(|| start_of_month(now.with_timezone(&Utc)).timestamp());
-        let today_end = quota_token
-            .map(|token| token[5])
-            .unwrap_or_else(|| now.with_timezone(&Utc).timestamp().saturating_add(1));
+        // The token intentionally excludes the moving end of today's window.
+        // A 60-second probe with no new sample must retain last-good instead
+        // of rebuilding solely because wall clock time advanced.
+        let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
         let today_period_end = next_local_day_start_utc_ts(today_start);
         let today_elapsed = today_end.saturating_sub(today_start);
         let yesterday_end = yesterday_start.saturating_add(today_elapsed);

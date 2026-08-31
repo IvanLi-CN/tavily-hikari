@@ -162,7 +162,18 @@ impl TavilyProxy {
     pub async fn run_dashboard_rollup_integrity_slice(
         &self,
     ) -> Result<DashboardRollupIntegrityRun, ProxyError> {
-        let result = self.key_store.run_dashboard_rollup_integrity_slice().await?;
+        // The integrity slice owns short SQLite writes. Keep the complete
+        // slice in a runtime-owned task so a scheduler timeout or caller
+        // cancellation cannot drop an in-flight write before its controlled
+        // commit/rollback boundary.
+        let key_store = Arc::clone(&self.key_store);
+        let result = tokio::spawn(async move { key_store.run_dashboard_rollup_integrity_slice().await })
+            .await
+            .map_err(|error| {
+                ProxyError::Other(format!(
+                    "dashboard rollup integrity task failed before completion: {error}"
+                ))
+            })??;
         let (state, next_delay_secs) = match result {
             crate::store::DashboardRollupIntegritySlice::Verified { next_delay_secs } => {
                 ("verified", next_delay_secs)

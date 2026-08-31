@@ -124,7 +124,12 @@ impl TavilyProxy {
                         event = "rebalance_audit_flush_failed",
                         error_kind = "sqlite_write",
                     );
-                    return;
+                    // The batch was atomically returned before this branch.
+                    // Keep the worker alive so a later healthy write can
+                    // drain it; returning here would leave the running flag
+                    // set forever and make every later enqueue inert.
+                    tokio::time::sleep(delay).await;
+                    continue;
                 }
             };
             for (entry, (_request_log_id, created_at)) in batch.into_iter().zip(receipts) {

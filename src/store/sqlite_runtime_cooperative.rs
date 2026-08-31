@@ -7,14 +7,6 @@ pub(crate) enum SqliteCooperativeQueryOutcome<T> {
 }
 
 impl SqliteReadSnapshot {
-    pub(crate) async fn complete_admin_alerts_read<T>(
-        self,
-        query_result: Result<T, sqlx::Error>,
-    ) -> Result<SqliteCooperativeQueryOutcome<T>, ProxyError> {
-        self.complete_cooperative_query_inner(None, query_result)
-            .await
-    }
-
     pub(crate) async fn complete_reconciliation_read<T>(
         self,
         kind: ReconciliationReadKind,

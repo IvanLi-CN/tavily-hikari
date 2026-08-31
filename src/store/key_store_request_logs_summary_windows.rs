@@ -4,7 +4,7 @@ impl KeyStore {
         stale_key_count: i64,
         month_quota_charge_start: i64,
         today_end: i64,
-    ) -> Result<[i64; 6], ProxyError> {
+    ) -> Result<[i64; 5], ProxyError> {
         let latest_sync_at = self
             .fetch_latest_dashboard_quota_sync_sample_at()
             .await?
@@ -32,7 +32,6 @@ impl KeyStore {
             row.try_get("latest_window_captured_at")?,
             stale_key_count,
             month_quota_charge_start,
-            today_end,
         ])
     }
 

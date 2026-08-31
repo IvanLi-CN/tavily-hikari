@@ -70,7 +70,7 @@ impl KeyStore {
     ) -> Result<Option<AlertProjectionSourceState>, ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
         let query = match lane {
             AlertProjectionLane::RecentTail => {
@@ -145,7 +145,10 @@ impl KeyStore {
                     fence_occurred_at, fence_row_sort_id, generation, phase \
                FROM {table} WHERE source_kind = ?"
         );
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .await?;
         let result = sqlx::query_as::<_, (
             String,
             i64,
@@ -156,9 +159,9 @@ impl KeyStore {
             String,
         )>(&query)
         .bind(source_kind)
-        .fetch_optional(&mut *session)
+        .fetch_optional(&mut *conn)
         .await;
-        let row = session.complete_query_or_defer(result).await?;
+        let row = conn.complete_query(result).await?;
         Ok(row.map(
             |(
                 source_kind,
@@ -185,7 +188,10 @@ impl KeyStore {
         &self,
         source_kind: &str,
     ) -> Result<Option<(i64, String)>, ProxyError> {
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .await?;
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
@@ -195,7 +201,7 @@ impl KeyStore {
                     ORDER BY created_at DESC, id DESC
                     LIMIT 1"#,
             )
-            .fetch_optional(&mut *session)
+            .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("atl:{id:020}")))),
             ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD => sqlx::query_as::<_, (i64, String)>(
@@ -214,7 +220,7 @@ impl KeyStore {
                     ORDER BY occurred_at DESC, source_id DESC
                     LIMIT 1"#,
             )
-            .fetch_optional(&mut *session)
+            .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, source_id)| (occurred_at, format!("maint:{source_id}")))),
             ALERT_SOURCE_SCHEDULED_JOB => sqlx::query_as::<_, (i64, i64)>(
@@ -224,14 +230,14 @@ impl KeyStore {
                     ORDER BY COALESCE(finished_at, started_at, queued_at) DESC, id DESC
                     LIMIT 1"#,
             )
-            .fetch_optional(&mut *session)
+            .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("job:{id:020}")))),
             other => Err(sqlx::Error::Protocol(format!(
                 "unknown alert projection source: {other}"
             ))),
         };
-        session.complete_query_or_defer(result).await
+        conn.complete_query(result).await
     }
 
     fn alert_projection_source_cursor_id(source_kind: &str, row_sort_id: &str) -> String {
@@ -262,7 +268,10 @@ impl KeyStore {
     ) -> Result<Vec<AlertProjectionSourceKey>, ProxyError> {
         let cursor_id = Self::alert_projection_source_cursor_id(source_kind, cursor.1);
         let fence_id = Self::alert_projection_source_cursor_id(source_kind, fence.1);
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .await?;
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
@@ -281,7 +290,7 @@ impl KeyStore {
             .bind(fence.0)
             .bind(fence_id.parse::<i64>().unwrap_or_default())
             .bind(ALERT_PROJECTION_BATCH_ROWS)
-            .fetch_all(&mut *session)
+            .fetch_all(&mut *conn)
             .await
             .map(|rows| {
                 rows.into_iter()
@@ -317,7 +326,7 @@ impl KeyStore {
             .bind(fence.0)
             .bind(fence_id)
             .bind(ALERT_PROJECTION_BATCH_ROWS)
-            .fetch_all(&mut *session)
+            .fetch_all(&mut *conn)
             .await
             .map(|rows| {
                 rows.into_iter()
@@ -346,7 +355,7 @@ impl KeyStore {
             .bind(fence.0)
             .bind(fence_id.parse::<i64>().unwrap_or_default())
             .bind(ALERT_PROJECTION_BATCH_ROWS)
-            .fetch_all(&mut *session)
+            .fetch_all(&mut *conn)
             .await
             .map(|rows| {
                 rows.into_iter()
@@ -361,7 +370,7 @@ impl KeyStore {
                 "unknown alert projection source: {other}"
             ))),
         };
-        session.complete_query_or_defer(result).await
+        conn.complete_query(result).await
     }
 
     async fn alert_projection_hydrate_source_keys(
@@ -393,9 +402,12 @@ impl KeyStore {
             &source_ids,
         );
         query.push(" SELECT * FROM alerts ORDER BY occurred_at ASC, row_sort_id ASC");
-        let mut session = self.begin_admin_alerts_read_session().await?;
-        let result = query.build().fetch_all(&mut *session).await;
-        let rows = session.complete_query_or_defer(result).await?;
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .await?;
+        let result = query.build().fetch_all(&mut *conn).await;
+        let rows = conn.complete_query(result).await?;
         rows.into_iter()
             .map(Self::decode_alert_event_projection_row)
             .collect::<Result<Vec<_>, _>>()
@@ -426,6 +438,19 @@ impl KeyStore {
         };
         match self.advance_admitted_alert_projection_slice().await {
             Ok(outcome) => Ok(outcome),
+            Err(ProxyError::Deferred { .. }) => {
+                // The bounded source read owns an SQLite-native deadline.
+                // Its cursor has not committed, so report the result as a
+                // normal slice defer instead of escalating it to scheduler
+                // failure logging.
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::AlertProjection,
+                    SqliteAdmissionDeferReason::QueryDeadline,
+                );
+                Ok(AlertProjectionSliceOutcome::Deferred {
+                    reason: SqliteAdmissionDeferReason::QueryDeadline,
+                })
+            }
             Err(err) if crate::is_transient_sqlite_write_error(&err) => {
                 // No cursor update has committed, so a later scheduler wake
                 // can replay this exact fenced page. Treat all bounded slice
@@ -720,7 +745,10 @@ impl KeyStore {
 
     pub(crate) async fn alert_projection_status(&self) -> Result<AlertProjectionStatus, ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .await?;
         let result = sqlx::query_as::<_, (i64, Option<i64>, i64, i64, Option<String>, i64, i64)>(
             r#"SELECT COUNT(tail.source_kind), MIN(tail.observed_at),
                       SUM(CASE WHEN tail.phase = 'idle' THEN 1 ELSE 0 END),
@@ -733,7 +761,7 @@ impl KeyStore {
                    ON history.source_kind = tail.source_kind"#,
         )
         .bind(now.saturating_sub(ALERT_PROJECTION_STALE_SECS))
-        .fetch_one(&mut *session)
+            .fetch_one(&mut *conn)
         .await;
         let (
             sources,
@@ -744,7 +772,7 @@ impl KeyStore {
             history_sources,
             idle_history_sources,
         ) =
-            session.complete_query_or_defer(result).await?;
+            conn.complete_query(result).await?;
         let observations_expired = sources == ALERT_PROJECTION_SOURCES.len() as i64
             && idle_sources == sources
             && fresh_sources != sources;
@@ -766,7 +794,7 @@ impl KeyStore {
         if recent_coverage == "projecting" && stale_reason.is_none() {
             let mut conn = self
                 .sqlite_runtime
-                .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
+                .acquire_operation_connection(SqliteOperation::AlertProjection)
                 .await?;
             let result = sqlx::query_scalar::<_, String>(
                 r#"SELECT source_kind
@@ -1030,7 +1058,12 @@ impl KeyStore {
             request_kinds: &[],
         };
         let (top_groups, grouped_count) = self
-            .fetch_projected_alert_group_page(filters, 1, 10)
+            .fetch_projected_alert_group_page_for_operation(
+                filters,
+                1,
+                10,
+                SqliteOperation::AlertProjection,
+            )
             .await?;
         let mut grouped_count_windows = Vec::with_capacity(3);
         for window_hours in [1_i64, 24, 24 * 7] {
@@ -1047,7 +1080,11 @@ impl KeyStore {
             let grouped_count = if window_hours == clamped_window_hours {
                 grouped_count
             } else {
-                self.fetch_projected_alert_group_count(grouped_filters).await?
+                self.fetch_projected_alert_group_count_for_operation(
+                    grouped_filters,
+                    SqliteOperation::AlertProjection,
+                )
+                .await?
             };
             grouped_count_windows.push(RecentAlertsGroupedWindowCount {
                 window_hours,

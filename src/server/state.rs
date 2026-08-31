@@ -27,7 +27,7 @@ struct DashboardOverviewFreshness {
     dashboard_api_key_lifecycle_signature: [i64; 3],
     dashboard_quarantine_lifecycle_signature: [i64; 3],
     dashboard_exhausted_lifecycle_signature: [i64; 3],
-    dashboard_quota_charge_token: [i64; 6],
+    dashboard_quota_charge_token: [i64; 5],
     dashboard_stale_key_count: i64,
     forward_proxy: Option<(i64, i64)>,
     exhausted_keys: Vec<String>,
