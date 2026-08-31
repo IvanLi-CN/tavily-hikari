@@ -194,6 +194,11 @@
 - Administrator Alerts use an exact normalized query key for a five-minute last-good entry. Under
   SQLite pressure the handler returns only that key's stale result with coverage metadata; without
   a matching entry it returns `503 Retry-After: 1` instead of beginning a raw alert CTE.
+- Admin Alerts acquires its bounded read session directly from `SqliteRuntime`: acquire is capped
+  at `100ms`, every SQLite statement has a native `250ms` deadline, and coverage plus projected
+  catalog/events/groups reads never borrow a bulk permit or raw pool connection. Canonical
+  catalog, events page `1/20`, and groups page `1/20` are prewarmed when projection coverage is
+  readable.
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。
