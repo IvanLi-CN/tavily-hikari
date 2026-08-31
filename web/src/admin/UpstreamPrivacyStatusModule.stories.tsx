@@ -714,6 +714,15 @@ export const ResearchUnavailable: Story = {
   },
 }
 
+export const EvidenceResearchUnavailable: Story = {
+  render: () => renderEvidenceSurface(renderWithStatus(unavailableResearchStatus)),
+}
+
+export const EvidenceResearchUnavailableMobile393x852: Story = {
+  parameters: mobileViewport,
+  render: EvidenceResearchUnavailable.render,
+}
+
 export const ResearchCredentialsCooldown: Story = {
   args: { status: credentialsCooldownResearchStatus },
   play: async ({ canvasElement }) => {
@@ -721,6 +730,15 @@ export const ResearchCredentialsCooldown: Story = {
     await expect(canvas.getByText('Research 凭据冷却中')).toBeInTheDocument()
     await expect(canvas.getByText('credentials')).toBeInTheDocument()
   },
+}
+
+export const EvidenceResearchCredentialsCooldown: Story = {
+  render: () => renderEvidenceSurface(renderWithStatus(credentialsCooldownResearchStatus)),
+}
+
+export const EvidenceResearchCredentialsCooldownMobile393x852: Story = {
+  parameters: mobileViewport,
+  render: EvidenceResearchCredentialsCooldown.render,
 }
 
 export const EmptyState: Story = {
