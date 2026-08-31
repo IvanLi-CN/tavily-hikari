@@ -501,6 +501,11 @@ impl TavilyProxy {
                             now,
                         })
                         .await?;
+                    cooling_keys.insert(candidate.key_id.clone());
+                    earliest_cooldown_until = Some(
+                        earliest_cooldown_until
+                            .map_or(cooldown_until, |current| current.min(cooldown_until)),
+                    );
                     self.key_store
                         .record_upstream_reconciliation_research_poll(
                             &candidate.request_id,
