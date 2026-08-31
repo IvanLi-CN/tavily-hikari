@@ -1180,6 +1180,19 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         })
         .await
         .expect("cool the first key");
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(crate::store::ApiKeyTransientBackoffArm {
+            key_id: &cooling_key,
+            scope: "reconciliation_research_credentials",
+            cooldown_until: now + 1_200,
+            retry_after_secs: 1_200,
+            reason_code: Some("credentials"),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("add a longer credential cooldown for the same key");
 
     let hits = Arc::new(AtomicUsize::new(0));
     let route_hits = Arc::clone(&hits);
@@ -1313,14 +1326,14 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         ClaimedResearchDrainOutcome::Deferred {
             reason: "key_cooldown",
             retry_at,
-        } if retry_at == now + 600
+        } if retry_at == now + 1_200
     ));
     assert_eq!(
         hits.load(Ordering::SeqCst),
         1,
         "cooldown defer sends no HTTP"
     );
-    clock.set_now_ts(now + 601);
+    clock.set_now_ts(now + 1_201);
     let reopened = proxy
         .key_store
         .next_upstream_reconciliation_research_candidates(80)
@@ -1368,7 +1381,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
             .await
             .expect("accept the forced-sweep cursor")
     );
-    clock.set_now_ts(now + 602);
+    clock.set_now_ts(now + 1_202);
     let after_forced_wrap = proxy
         .key_store
         .next_upstream_reconciliation_research_candidates(80)

@@ -294,25 +294,29 @@ impl KeyStore {
         };
         let cooled_due_result = if raw_rows.is_empty() {
             Some(sqlx::query_as::<_, (Option<i64>, i64)>(
-                "SELECT MIN(b.cooldown_until), COUNT(DISTINCT b.key_id)
-                   FROM api_key_transient_backoffs b
-                  WHERE b.scope IN ('period_reconciliation', 'reconciliation_research_credentials')
-                    AND b.cooldown_until > ?
-                    AND EXISTS (
-                        SELECT 1 FROM upstream_reconciliation_research r
-                         WHERE r.key_id = b.key_id AND r.terminal_at IS NULL AND r.poll_resolution = 'pollable'
-                           AND r.next_poll_at <= ?
-                           AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
-                                       INDEXED BY idx_upstream_reconciliation_usage_window_mode
-                                       WHERE eligible_u.token_id = r.token_id
-                                         AND eligible_u.period_code = r.period_code
-                                         AND eligible_u.period_end <= ?)
-                           AND NOT EXISTS (SELECT 1 FROM upstream_reconciliation_usage future_u
-                                           INDEXED BY idx_upstream_reconciliation_usage_window_mode
-                                           WHERE future_u.token_id = r.token_id
-                                             AND future_u.period_code = r.period_code
-                                             AND future_u.period_end > ?)
-                         LIMIT 1)
+                "SELECT MIN(c.key_cooldown_until), COUNT(*)
+                   FROM (
+                       SELECT b.key_id, MAX(b.cooldown_until) AS key_cooldown_until
+                         FROM api_key_transient_backoffs b
+                        WHERE b.scope IN ('period_reconciliation', 'reconciliation_research_credentials')
+                          AND b.cooldown_until > ?
+                        GROUP BY b.key_id
+                   ) c
+                  WHERE EXISTS (
+                      SELECT 1 FROM upstream_reconciliation_research r
+                       WHERE r.key_id = c.key_id AND r.terminal_at IS NULL AND r.poll_resolution = 'pollable'
+                         AND r.next_poll_at <= ?
+                         AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
+                                     INDEXED BY idx_upstream_reconciliation_usage_window_mode
+                                     WHERE eligible_u.token_id = r.token_id
+                                       AND eligible_u.period_code = r.period_code
+                                       AND eligible_u.period_end <= ?)
+                         AND NOT EXISTS (SELECT 1 FROM upstream_reconciliation_usage future_u
+                                         INDEXED BY idx_upstream_reconciliation_usage_window_mode
+                                         WHERE future_u.token_id = r.token_id
+                                           AND future_u.period_code = r.period_code
+                                           AND future_u.period_end > ?)
+                       LIMIT 1)
                   ",
             )
                 .bind(now)
