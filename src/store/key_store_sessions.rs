@@ -218,6 +218,29 @@ impl KeyStore {
         Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
     }
 
+    pub(crate) async fn clear_api_key_transient_backoff_scope(
+        &self,
+        key_id: &str,
+        scope: &str,
+        now: i64,
+    ) -> Result<i64, ProxyError> {
+        let mut connection = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let result = sqlx::query(
+            "DELETE FROM api_key_transient_backoffs
+             WHERE key_id = ? AND scope = ? AND cooldown_until > ?",
+        )
+        .bind(key_id)
+        .bind(scope)
+        .bind(now)
+        .execute(&mut *connection)
+        .await?;
+        connection.close().await?;
+        Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
+    }
+
     pub(crate) async fn link_latest_transient_backoff_clear_record(
         &self,
         key_id: &str,

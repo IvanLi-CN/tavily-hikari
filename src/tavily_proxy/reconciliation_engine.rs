@@ -1066,37 +1066,6 @@ impl TavilyProxy {
         })
     }
 
-    /// Compatibility wrapper for the historical in-process sweep.  The
-    /// durable drain calls `fetch_upstream_research_poll` directly so it can
-    /// persist unavailable and credential outcomes without guessing from an
-    /// error string.
-    async fn fetch_upstream_research_terminal(
-        &self,
-        key_id: &str,
-        usage_base: &str,
-        request_id: &str,
-        remote_attempt: ReconciliationRemoteAttemptContext<'_>,
-    ) -> Result<bool, (ProxyError, Option<i64>)> {
-        match self
-            .fetch_upstream_research_poll(key_id, usage_base, request_id, remote_attempt)
-            .await?
-        {
-            ResearchPollOutcome::Terminal => Ok(true),
-            ResearchPollOutcome::Pending => Ok(false),
-            ResearchPollOutcome::Unavailable => Err((
-                ProxyError::Other("research request unavailable".to_string()),
-                None,
-            )),
-            ResearchPollOutcome::Credentials => Err((
-                ProxyError::Other("research credentials rejected".to_string()),
-                None,
-            )),
-            ResearchPollOutcome::MissingLocalSecret => Err((
-                ProxyError::Database(sqlx::Error::RowNotFound),
-                None,
-            )),
-        }
-    }
 }
 
 async fn await_reconciliation_post_process<T>(

@@ -310,7 +310,7 @@ impl TavilyProxy {
                 break;
             }
             let research_result = self
-                .fetch_upstream_research_terminal(
+                .fetch_upstream_research_poll(
                     &candidate.key_id,
                     usage_base,
                     &candidate.request_id,
@@ -382,11 +382,20 @@ impl TavilyProxy {
                     budget_exhausted = true;
                     break;
                 }
-                Ok(true) => {
+                Ok(ResearchPollOutcome::Terminal) => {
                     let remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
                         budget_exhausted = true;
                         break;
+                    }
+                    if claimed_job.is_none() {
+                        self.key_store
+                            .clear_api_key_transient_backoff_scope(
+                                &candidate.key_id,
+                                Self::RESEARCH_CREDENTIALS_BACKOFF_SCOPE,
+                                now,
+                            )
+                            .await?;
                     }
                     match claimed_job {
                         Some((job_id, claim_generation)) => {
@@ -415,11 +424,20 @@ impl TavilyProxy {
                         period_code = %candidate.period_code,
                     );
                 }
-                Ok(false) => {
+                Ok(ResearchPollOutcome::Pending) => {
                     let remaining = request_deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
                         budget_exhausted = true;
                         break;
+                    }
+                    if claimed_job.is_none() {
+                        self.key_store
+                            .clear_api_key_transient_backoff_scope(
+                                &candidate.key_id,
+                                Self::RESEARCH_CREDENTIALS_BACKOFF_SCOPE,
+                                now,
+                            )
+                            .await?;
                     }
                     match claimed_job {
                         Some((job_id, claim_generation)) => {
@@ -446,6 +464,52 @@ impl TavilyProxy {
                         }
                     }
                     pending += 1;
+                }
+                Ok(ResearchPollOutcome::Unavailable) => {
+                    if claimed_job.is_some() {
+                        return Err(ProxyError::Other(
+                            "durable Research drain must handle unavailable polls".to_string(),
+                        ));
+                    }
+                    self.key_store
+                        .mark_upstream_reconciliation_research_unavailable(
+                            &candidate.request_id,
+                            "not_found",
+                        )
+                        .await?;
+                }
+                Ok(outcome @ (ResearchPollOutcome::Credentials | ResearchPollOutcome::MissingLocalSecret)) => {
+                    if claimed_job.is_some() {
+                        return Err(ProxyError::Other(
+                            "durable Research drain must handle credential polls".to_string(),
+                        ));
+                    }
+                    let error_kind = if matches!(outcome, ResearchPollOutcome::MissingLocalSecret) {
+                        "missing_local_secret"
+                    } else {
+                        "credentials"
+                    };
+                    let cooldown_until = now.saturating_add(Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS);
+                    self.key_store
+                        .arm_api_key_transient_backoff(crate::store::ApiKeyTransientBackoffArm {
+                            key_id: &candidate.key_id,
+                            scope: Self::RESEARCH_CREDENTIALS_BACKOFF_SCOPE,
+                            cooldown_until,
+                            retry_after_secs: Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS,
+                            reason_code: Some(error_kind),
+                            source_request_log_id: None,
+                            now,
+                        })
+                        .await?;
+                    self.key_store
+                        .record_upstream_reconciliation_research_poll(
+                            &candidate.request_id,
+                            cooldown_until,
+                            "retry",
+                            Some(error_kind),
+                        )
+                        .await?;
+                    retries += 1;
                 }
                 Err((err, retry_after)) => {
                     let reason = if matches!(
