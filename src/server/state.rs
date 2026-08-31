@@ -86,6 +86,7 @@ struct DashboardOverviewCacheState {
     notify: Arc<tokio::sync::Notify>,
     admin_alerts: AdminAlertsReadCache,
     admin_alerts_prewarm_in_flight: bool,
+    admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -111,6 +112,7 @@ impl Default for DashboardOverviewCacheState {
             notify: Arc::new(tokio::sync::Notify::new()),
             admin_alerts: AdminAlertsReadCache::default(),
             admin_alerts_prewarm_in_flight: false,
+            admin_alerts_prewarm_not_before: None,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -124,6 +126,27 @@ impl Default for DashboardOverviewCacheState {
 
 const ADMIN_ALERTS_CACHE_CAPACITY: usize = 64;
 const ADMIN_ALERTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl DashboardOverviewCacheState {
+    fn try_start_admin_alerts_prewarm(&mut self, now: tokio::time::Instant) -> bool {
+        if self.admin_alerts_prewarm_in_flight
+            || self
+                .admin_alerts_prewarm_not_before
+                .is_some_and(|not_before| now < not_before)
+        {
+            return false;
+        }
+
+        self.admin_alerts_prewarm_in_flight = true;
+        self.admin_alerts_prewarm_not_before = Some(now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL);
+        true
+    }
+
+    fn finish_admin_alerts_prewarm(&mut self) {
+        self.admin_alerts_prewarm_in_flight = false;
+    }
+}
 
 #[derive(Debug, Clone)]
 enum AdminAlertsReadCacheValue {
@@ -240,10 +263,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
     {
         let mut cache = cache.lock().await;
-        if cache.admin_alerts_prewarm_in_flight {
+        if !cache.try_start_admin_alerts_prewarm(tokio::time::Instant::now()) {
             return;
         }
-        cache.admin_alerts_prewarm_in_flight = true;
     }
     tokio::spawn(async move {
         if let Ok(catalog) = state.proxy.admin_alert_catalog().await {
@@ -281,7 +303,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         dashboard_overview_cache_for_state(state.as_ref())
             .lock()
             .await
-            .admin_alerts_prewarm_in_flight = false;
+            .finish_admin_alerts_prewarm();
     });
 }
 
@@ -593,6 +615,32 @@ pub(crate) async fn wait_for_admin_privacy_status_last_good(state: &AppState) {
 pub(crate) async fn prime_admin_privacy_status_for_test(state: Arc<AppState>) {
     prewarm_admin_privacy_status(state.clone()).await;
     wait_for_admin_privacy_status_last_good(state.as_ref()).await;
+}
+
+#[cfg(test)]
+mod admin_alerts_prewarm_tests {
+    use super::{ADMIN_ALERTS_PREWARM_MIN_INTERVAL, DashboardOverviewCacheState};
+
+    #[test]
+    fn admin_alerts_prewarm_coalesces_projection_updates_for_one_minute() {
+        let mut cache = DashboardOverviewCacheState::default();
+        let now = tokio::time::Instant::now();
+
+        assert!(cache.try_start_admin_alerts_prewarm(now));
+        assert!(
+            !cache.try_start_admin_alerts_prewarm(now),
+            "an in-flight prewarm must remain singleflight"
+        );
+
+        cache.finish_admin_alerts_prewarm();
+        assert!(
+            !cache.try_start_admin_alerts_prewarm(
+                now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL - std::time::Duration::from_secs(1)
+            ),
+            "a busy projection must not restart the full admin cache warmup every slice"
+        );
+        assert!(cache.try_start_admin_alerts_prewarm(now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL));
+    }
 }
 
 #[cfg(test)]

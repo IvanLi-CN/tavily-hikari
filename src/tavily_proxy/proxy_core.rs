@@ -975,7 +975,56 @@ impl TavilyProxy {
         }
     }
 
+    async fn record_server_pressure_event_from_deferred_audit(
+        &self,
+        created_at: i64,
+        result_status: &str,
+    ) -> Result<(), ProxyError> {
+        loop {
+            let generation = {
+                let _transition = self.server_pressure_rebuild_transition_gate.read().await;
+                let generation = self
+                    .server_pressure_rebuild_generation
+                    .load(Ordering::SeqCst);
+                if self.server_pressure_rebuild_phase.load(Ordering::SeqCst)
+                    != Self::SERVER_PRESSURE_REBUILD_BUFFERING
+                    || self
+                        .server_pressure_rebuild_generation
+                        .load(Ordering::SeqCst)
+                        != generation
+                {
+                    self.enqueue_server_pressure_event_without_schedule(false, created_at, result_status)
+                        .await;
+                    return Ok(());
+                }
+                generation
+            };
+
+            let mut buffered = self.server_pressure_rebuild_buffered_events.lock().await;
+            if self.server_pressure_source_rebuild_is_active(generation) {
+                buffered.push(ServerPressureBufferedEvent {
+                    generation,
+                    request_log_id: None,
+                    created_at,
+                    result_status: result_status.to_string(),
+                });
+                return Ok(());
+            }
+        }
+    }
+
     async fn enqueue_server_pressure_event(
+        &self,
+        source_backed: bool,
+        created_at: i64,
+        result_status: &str,
+    ) {
+        self.enqueue_server_pressure_event_without_schedule(source_backed, created_at, result_status)
+            .await;
+        self.schedule_observability_deferred_writer().await;
+    }
+
+    async fn enqueue_server_pressure_event_without_schedule(
         &self,
         source_backed: bool,
         created_at: i64,
@@ -999,7 +1048,7 @@ impl TavilyProxy {
             },
         ];
         let now = self.backend_time.now_ts();
-        let (spawn_flush, rebuild) = {
+        let rebuild = {
             let mut writer = self.observability_deferred_writer.lock().await;
             let mut rebuild = false;
             for key in entries {
@@ -1016,23 +1065,16 @@ impl TavilyProxy {
                 let counts = writer.pressure_deltas.entry(key).or_default();
                 counts.record(success, failure, source_backed);
             }
-            let spawn_flush = !writer.pressure_flush_running && !writer.pressure_deltas.is_empty();
-            if spawn_flush {
-                writer.pressure_flush_running = true;
-            }
-            (
-                spawn_flush,
-                rebuild
-                    && (writer.pressure_rebuild_requested
-                        || writer.pressure_stale_since.is_some_and(|since| {
-                            now.saturating_sub(since)
-                                >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
-                        }))
-                    && writer.last_pressure_rebuild_started_at.is_none_or(|started| {
-                        now.saturating_sub(started)
+            rebuild
+                && (writer.pressure_rebuild_requested
+                    || writer.pressure_stale_since.is_some_and(|since| {
+                        now.saturating_sub(since)
                             >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
-                    }),
-            )
+                    }))
+                && writer.last_pressure_rebuild_started_at.is_none_or(|started| {
+                    now.saturating_sub(started)
+                        >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
+                })
         };
         if rebuild && self.spawn_server_pressure_buckets_rebuild_once() {
             let mut writer = self.observability_deferred_writer.lock().await;
@@ -1040,94 +1082,120 @@ impl TavilyProxy {
             writer.pressure_rebuild_requested = false;
             writer.pressure_stale_since = None;
         }
-        if spawn_flush {
+    }
+
+    pub(crate) async fn schedule_observability_deferred_writer(&self) {
+        let spawn_worker = {
+            let mut writer = self.observability_deferred_writer.lock().await;
+            if writer.flush_running {
+                false
+            } else {
+                writer.flush_running = true;
+                #[cfg(test)]
+                {
+                    writer.worker_starts = writer.worker_starts.saturating_add(1);
+                }
+                true
+            }
+        };
+        if spawn_worker {
             let proxy = self.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Self::OBSERVABILITY_WRITER_DEBOUNCE).await;
-                proxy.flush_server_pressure_deferred_writer().await;
+                proxy.flush_observability_deferred_writer().await;
             });
         }
     }
 
-    async fn flush_server_pressure_deferred_writer(&self) {
+    async fn flush_observability_deferred_writer(&self) {
         loop {
-            let batch = {
-                let mut writer = self.observability_deferred_writer.lock().await;
-                let keys: Vec<_> = writer.pressure_deltas.keys().take(25).cloned().collect();
-                if keys.is_empty() {
-                    writer.pressure_flush_running = false;
-                    #[cfg(test)]
-                    writer.pressure_flush_completed.notify_waiters();
-                    return;
-                }
-                keys.into_iter()
-                    .filter_map(|key| writer.pressure_deltas.remove(&key).map(|counts| (key, counts)))
-                    .collect::<Vec<_>>()
+            let Some(batch) = self.take_next_observability_deferred_batch().await else {
+                return;
             };
-
-            let transition = self.server_pressure_rebuild_transition_gate.read().await;
-            if self.server_pressure_rebuild_phase.load(Ordering::SeqCst)
-                != Self::SERVER_PRESSURE_REBUILD_INACTIVE
-            {
-                drop(transition);
-                self.requeue_server_pressure_deltas(batch, false).await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+            let result = match batch {
+                ObservabilityDeferredBatch::Pressure(batch) => {
+                    self.flush_server_pressure_batch(batch).await
+                }
+                ObservabilityDeferredBatch::RebalanceAudit(batch) => {
+                    self.flush_rebalance_audit_batch(batch).await
+                }
+            };
+            if let Err(delay) = result {
+                tokio::time::sleep(delay).await;
             }
+        }
+    }
 
-            let deltas = Self::server_pressure_bucket_deltas(&batch);
+    async fn take_next_observability_deferred_batch(&self) -> Option<ObservabilityDeferredBatch> {
+        let mut writer = self.observability_deferred_writer.lock().await;
+        writer.take_next_batch()
+    }
 
-            let permit = match self.key_store.try_admit_observability_deferred_write() {
-                Ok(permit) => permit,
-                Err(reason) => {
-                    drop(transition);
-                    let delay = self.requeue_server_pressure_deltas(batch, true).await;
+    async fn reset_observability_deferred_backoff(&self) {
+        let mut writer = self.observability_deferred_writer.lock().await;
+        writer.consecutive_defers = 0;
+    }
+
+    async fn flush_server_pressure_batch(
+        &self,
+        batch: Vec<(ServerPressureBucketKey, ServerPressureBucketCounts)>,
+    ) -> Result<(), Duration> {
+        let transition = self.server_pressure_rebuild_transition_gate.read().await;
+        if self.server_pressure_rebuild_phase.load(Ordering::SeqCst)
+            != Self::SERVER_PRESSURE_REBUILD_INACTIVE
+        {
+            drop(transition);
+            return Err(self.requeue_server_pressure_deltas(batch, false).await);
+        }
+
+        let deltas = Self::server_pressure_bucket_deltas(&batch);
+        let permit = match self.key_store.try_admit_observability_deferred_write() {
+            Ok(permit) => permit,
+            Err(reason) => {
+                drop(transition);
+                let delay = self.requeue_server_pressure_deltas(batch, true).await;
+                tracing::debug!(
+                    component = "observability",
+                    event = "server_pressure_flush_deferred",
+                    defer_reason = reason.as_str(),
+                );
+                return Err(delay);
+            }
+        };
+        let result = self
+            .key_store
+            .upsert_server_pressure_bucket_deltas(&deltas)
+            .await;
+        drop(permit);
+        drop(transition);
+        match result {
+            Ok(()) => {
+                let mut writer = self.observability_deferred_writer.lock().await;
+                writer.consecutive_defers = 0;
+                if writer.pressure_deltas.is_empty() && !writer.pressure_unrecoverable_overflow {
+                    writer.pressure_stale = false;
+                    writer.pressure_stale_since = None;
+                    writer.pressure_rebuild_requested = false;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let transient = crate::store::is_transient_sqlite_write_error(&error);
+                let delay = self.requeue_server_pressure_deltas(batch, true).await;
+                if transient {
                     tracing::debug!(
                         component = "observability",
                         event = "server_pressure_flush_deferred",
-                        defer_reason = reason.as_str(),
+                        defer_reason = "sqlite_contention",
                     );
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-            };
-            let result = self
-                .key_store
-                .upsert_server_pressure_bucket_deltas(&deltas)
-                .await;
-            drop(permit);
-            drop(transition);
-            match result {
-                Ok(()) => {
-                    let mut writer = self.observability_deferred_writer.lock().await;
-                    writer.consecutive_pressure_defers = 0;
-                    if writer.pressure_deltas.is_empty() && !writer.pressure_unrecoverable_overflow {
-                        writer.pressure_stale = false;
-                        writer.pressure_stale_since = None;
-                        writer.pressure_rebuild_requested = false;
-                    }
-                }
-                Err(error) => {
-                    let transient = crate::store::is_transient_sqlite_write_error(&error);
-                    let delay = self.requeue_server_pressure_deltas(batch, true).await;
-                    if transient {
-                        tracing::debug!(
-                            component = "observability",
-                            event = "server_pressure_flush_deferred",
-                            defer_reason = "sqlite_contention",
-                        );
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
+                } else {
                     tracing::warn!(
                         component = "observability",
                         event = "server_pressure_flush_failed",
                         error_kind = "sqlite_write",
                     );
-                    let mut writer = self.observability_deferred_writer.lock().await;
-                    writer.pressure_flush_running = false;
-                    return;
                 }
+                Err(delay)
             }
         }
     }
@@ -1156,7 +1224,7 @@ impl TavilyProxy {
                 counts.merge(delta);
             }
             if mark_stale {
-                writer.consecutive_pressure_defers = writer.consecutive_pressure_defers.saturating_add(1);
+                writer.consecutive_defers = writer.consecutive_defers.saturating_add(1);
                 writer.pressure_stale = true;
                 writer.pressure_stale_since.get_or_insert(now);
             }
@@ -1170,7 +1238,7 @@ impl TavilyProxy {
                         >= Self::SERVER_PRESSURE_REBUILD_MIN_INTERVAL.as_secs() as i64
                 });
             let delay = if mark_stale {
-                Self::observability_defer_delay(writer.consecutive_pressure_defers)
+                Self::observability_defer_delay(writer.consecutive_defers)
             } else {
                 Duration::from_secs(1)
             };
@@ -1208,7 +1276,7 @@ impl TavilyProxy {
             counts.discard_source_backed();
             !counts.is_empty()
         });
-        writer.consecutive_pressure_defers = 0;
+        writer.consecutive_defers = 0;
         writer.pressure_stale = writer.pressure_unrecoverable_overflow;
         writer.pressure_stale_since = None;
         writer.pressure_rebuild_requested = false;
@@ -1230,7 +1298,7 @@ impl TavilyProxy {
         self.observability_deferred_writer
             .lock()
             .await
-            .pressure_flush_completed
+            .flush_completed
             .clone()
     }
 
@@ -1246,6 +1314,14 @@ impl TavilyProxy {
             writer.rebalance_audit_payload_bytes,
             writer.rebalance_audit_stale,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn observability_deferred_worker_starts_for_test(&self) -> usize {
+        self.observability_deferred_writer
+            .lock()
+            .await
+            .worker_starts
     }
 
     async fn requeue_server_pressure_buffered_events(

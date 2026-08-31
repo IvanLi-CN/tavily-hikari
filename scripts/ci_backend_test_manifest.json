@@ -94,6 +94,7 @@
         "store::sqlite_runtime::tests::",
         "store::sqlite_runtime::metrics_tests::",
         "store::tests::",
+        "tavily_proxy::observability_deferred_writer_tests::",
         "tavily_proxy::privacy_status_phase_budget_tests::",
         "tavily_proxy::tests::",
         "tests::request_kind_and_core::parse_",
@@ -654,6 +655,7 @@
       "filtered_process_workers": 2,
       "filtered_test_threads": 2,
       "include_prefixes": [
+        "server::admin_alerts_prewarm_tests::",
         "server::tests::admin_logs_and_summary::admin_",
         "server::tests::dashboard_overview_snapshot::admin_",
         "server::tests::log_catalog_and_dashboard_sse::admin_",

@@ -16,7 +16,7 @@ pub struct RebalanceAuditEntry {
 }
 
 impl RebalanceAuditEntry {
-    fn payload_len(&self) -> usize {
+    pub(crate) fn payload_len(&self) -> usize {
         self.path.len()
             .saturating_add(self.request_body.len())
             .saturating_add(self.response_body.len())
@@ -33,7 +33,7 @@ impl TavilyProxy {
         const MAX_AUDITS: usize = 64;
         const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
         let entry_size = entry.payload_len();
-        let spawn_flush = {
+        {
             let mut writer = self.observability_deferred_writer.lock().await;
             if entry_size > MAX_PAYLOAD_BYTES
                 || writer.rebalance_audits.len() >= MAX_AUDITS
@@ -49,109 +49,71 @@ impl TavilyProxy {
                 .rebalance_audit_payload_bytes
                 .saturating_add(entry_size);
             writer.rebalance_audits.push_back(entry);
-            let spawn_flush = !writer.rebalance_audit_flush_running;
-            if spawn_flush {
-                writer.rebalance_audit_flush_running = true;
-            }
-            spawn_flush
-        };
-        if spawn_flush {
-            let proxy = self.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Self::OBSERVABILITY_WRITER_DEBOUNCE).await;
-                proxy.flush_rebalance_audits().await;
-            });
         }
+        self.schedule_observability_deferred_writer().await;
         true
     }
 
-    async fn flush_rebalance_audits(&self) {
-        loop {
-            let batch = {
-                let mut writer = self.observability_deferred_writer.lock().await;
-                let mut batch = Vec::new();
-                while batch.len() < 10 {
-                    let Some(entry) = writer.rebalance_audits.pop_front() else {
-                        break;
-                    };
-                    writer.rebalance_audit_payload_bytes = writer
-                        .rebalance_audit_payload_bytes
-                        .saturating_sub(entry.payload_len());
-                    batch.push(entry);
-                }
-                if batch.is_empty() {
-                    writer.rebalance_audit_flush_running = false;
-                }
-                batch
-            };
-            if batch.is_empty() {
-                return;
+    pub(crate) async fn flush_rebalance_audit_batch(
+        &self,
+        batch: Vec<RebalanceAuditEntry>,
+    ) -> Result<(), Duration> {
+        let permit = match self.key_store.try_admit_observability_deferred_write() {
+            Ok(permit) => permit,
+            Err(reason) => {
+                let delay = self.requeue_rebalance_audits(batch, true).await;
+                tracing::debug!(
+                    component = "observability",
+                    event = "rebalance_audit_deferred",
+                    defer_reason = reason.as_str(),
+                );
+                return Err(delay);
             }
-            let permit = match self.key_store.try_admit_observability_deferred_write() {
-                Ok(permit) => permit,
-                Err(reason) => {
-                    let delay = self.requeue_rebalance_audits(batch, true).await;
+        };
+        let committed = self.key_store.log_rebalance_audit_entries(batch.clone()).await;
+        drop(permit);
+        let receipts = match committed {
+            Ok(receipts) => receipts,
+            Err(error) => {
+                let transient = crate::store::is_transient_sqlite_write_error(&error);
+                let mut writer = self.observability_deferred_writer.lock().await;
+                writer.rebalance_audit_stale = true;
+                drop(writer);
+                let delay = self.requeue_rebalance_audits(batch, true).await;
+                if transient {
                     tracing::debug!(
                         component = "observability",
-                        event = "rebalance_audit_deferred",
-                        defer_reason = reason.as_str(),
+                        event = "rebalance_audit_flush_deferred",
+                        defer_reason = "sqlite_contention",
                     );
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-            };
-            let committed = self.key_store.log_rebalance_audit_entries(batch.clone()).await;
-            drop(permit);
-            let receipts = match committed {
-                Ok(receipts) => receipts,
-                Err(error) => {
-                    let transient = crate::store::is_transient_sqlite_write_error(&error);
-                    let mut writer = self.observability_deferred_writer.lock().await;
-                    writer.rebalance_audit_stale = true;
-                    drop(writer);
-                    let delay = self.requeue_rebalance_audits(batch, true).await;
-                    if transient {
-                        tracing::debug!(
-                            component = "observability",
-                            event = "rebalance_audit_flush_deferred",
-                            defer_reason = "sqlite_contention",
-                        );
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
+                } else {
                     tracing::warn!(
                         component = "observability",
                         event = "rebalance_audit_flush_failed",
                         error_kind = "sqlite_write",
                     );
-                    // The batch was atomically returned before this branch.
-                    // Keep the worker alive so a later healthy write can
-                    // drain it; returning here would leave the running flag
-                    // set forever and make every later enqueue inert.
-                    tokio::time::sleep(delay).await;
-                    continue;
                 }
-            };
-            for (entry, (_request_log_id, created_at)) in batch.into_iter().zip(receipts) {
-                if self
-                    .record_server_pressure_event(
-                        // Rebalance audit rows intentionally do not carry the
-                        // request-log fields used as rebuild source facts. Keep
-                        // their derived delta through a source-fenced rebuild.
-                        None,
-                        created_at,
-                        &entry.result_status,
-                    )
-                    .await
-                    .is_err()
-                {
-                    let mut writer = self.observability_deferred_writer.lock().await;
-                    writer.pressure_stale = true;
-                }
+                return Err(delay);
             }
-            let mut writer = self.observability_deferred_writer.lock().await;
-            writer.consecutive_rebalance_audit_defers = 0;
+        };
+        for (entry, (_request_log_id, created_at)) in batch.into_iter().zip(receipts) {
+            if self
+                .record_server_pressure_event_from_deferred_audit(
+                    // Rebalance audit rows intentionally do not carry the
+                    // request-log fields used as rebuild source facts. Keep
+                    // their derived delta through a source-fenced rebuild.
+                    created_at,
+                    &entry.result_status,
+                )
+                .await
+                .is_err()
+            {
+                let mut writer = self.observability_deferred_writer.lock().await;
+                writer.pressure_stale = true;
+            }
         }
+        self.reset_observability_deferred_backoff().await;
+        Ok(())
     }
 
     #[cfg(debug_assertions)]
@@ -160,7 +122,7 @@ impl TavilyProxy {
         loop {
             let idle = {
                 let writer = self.observability_deferred_writer.lock().await;
-                writer.rebalance_audits.is_empty() && !writer.rebalance_audit_flush_running
+                writer.rebalance_audits.is_empty() && !writer.flush_running
             };
             if idle {
                 return;
@@ -169,7 +131,7 @@ impl TavilyProxy {
         }
     }
 
-    async fn requeue_rebalance_audits(
+    pub(crate) async fn requeue_rebalance_audits(
         &self,
         mut entries: Vec<RebalanceAuditEntry>,
         deferred: bool,
@@ -209,11 +171,9 @@ impl TavilyProxy {
             writer.rebalance_audits.push_front(entry);
         }
         if deferred {
-            writer.consecutive_rebalance_audit_defers = writer
-                .consecutive_rebalance_audit_defers
-                .saturating_add(1);
+            writer.consecutive_defers = writer.consecutive_defers.saturating_add(1);
         }
-        Self::observability_defer_delay(writer.consecutive_rebalance_audit_defers)
+        Self::observability_defer_delay(writer.consecutive_defers)
     }
 
     /// Record a token usage log. Intended for /mcp proxy handler.

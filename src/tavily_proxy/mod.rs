@@ -156,20 +156,102 @@ impl ServerPressureBucketCounts {
 #[derive(Debug, Default)]
 struct ObservabilityDeferredWriter {
     pressure_deltas: BTreeMap<ServerPressureBucketKey, ServerPressureBucketCounts>,
-    pressure_flush_running: bool,
+    flush_running: bool,
+    prefer_rebalance_audit: bool,
     #[cfg(test)]
-    pressure_flush_completed: std::sync::Arc<tokio::sync::Notify>,
+    flush_completed: std::sync::Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    worker_starts: usize,
     pressure_stale: bool,
     pressure_stale_since: Option<i64>,
     pressure_unrecoverable_overflow: bool,
     pressure_rebuild_requested: bool,
     last_pressure_rebuild_started_at: Option<i64>,
-    consecutive_pressure_defers: u8,
+    consecutive_defers: u8,
     rebalance_audits: VecDeque<RebalanceAuditEntry>,
     rebalance_audit_payload_bytes: usize,
-    rebalance_audit_flush_running: bool,
     rebalance_audit_stale: bool,
-    consecutive_rebalance_audit_defers: u8,
+}
+
+enum ObservabilityDeferredBatch {
+    Pressure(Vec<(ServerPressureBucketKey, ServerPressureBucketCounts)>),
+    RebalanceAudit(Vec<RebalanceAuditEntry>),
+}
+
+impl ObservabilityDeferredWriter {
+    fn take_next_batch(&mut self) -> Option<ObservabilityDeferredBatch> {
+        let take_audit = self.prefer_rebalance_audit && !self.rebalance_audits.is_empty()
+            || self.pressure_deltas.is_empty() && !self.rebalance_audits.is_empty();
+        if take_audit {
+            let mut batch = Vec::new();
+            while batch.len() < 10 {
+                let Some(entry) = self.rebalance_audits.pop_front() else {
+                    break;
+                };
+                self.rebalance_audit_payload_bytes = self
+                    .rebalance_audit_payload_bytes
+                    .saturating_sub(entry.payload_len());
+                batch.push(entry);
+            }
+            self.prefer_rebalance_audit = false;
+            return (!batch.is_empty())
+                .then_some(ObservabilityDeferredBatch::RebalanceAudit(batch));
+        }
+
+        let keys: Vec<_> = self.pressure_deltas.keys().take(25).cloned().collect();
+        if keys.is_empty() {
+            // Clearing this flag while still holding the queue lock makes the
+            // idle transition linearizable with the next enqueue. A new
+            // producer either becomes this worker's next batch or sees false
+            // and schedules the only replacement worker.
+            self.flush_running = false;
+            #[cfg(test)]
+            self.flush_completed.notify_waiters();
+            return None;
+        }
+        let batch = keys
+            .into_iter()
+            .filter_map(|key| {
+                self.pressure_deltas
+                    .remove(&key)
+                    .map(|counts| (key, counts))
+            })
+            .collect::<Vec<_>>();
+        self.prefer_rebalance_audit = true;
+        Some(ObservabilityDeferredBatch::Pressure(batch))
+    }
+}
+
+#[cfg(test)]
+mod observability_deferred_writer_tests {
+    use super::{ObservabilityDeferredWriter, ServerPressureBucketCounts, ServerPressureBucketKey};
+
+    #[test]
+    fn idle_transition_releases_the_worker_flag_before_the_next_enqueue() {
+        let mut writer = ObservabilityDeferredWriter {
+            flush_running: true,
+            ..Default::default()
+        };
+
+        assert!(writer.take_next_batch().is_none());
+        assert!(
+            !writer.flush_running,
+            "the empty dequeue must release ownership while the queue lock is still held"
+        );
+
+        writer.pressure_deltas.insert(
+            ServerPressureBucketKey {
+                bucket_kind: "five_minute",
+                bucket_start: 0,
+                bucket_secs: 300,
+            },
+            ServerPressureBucketCounts::default(),
+        );
+        assert!(
+            !writer.flush_running,
+            "a producer arriving after the atomic idle transition can schedule a replacement"
+        );
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

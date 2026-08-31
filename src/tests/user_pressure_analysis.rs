@@ -1349,6 +1349,66 @@ async fn rebalance_audit_writer_is_best_effort_and_payload_bounded() {
 }
 
 #[tokio::test]
+async fn observability_deferred_writer_uses_one_worker_for_mixed_audit_and_pressure() {
+    let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_500_000);
+    let db_path = temp_db_path("observability-deferred-writer-mixed-owner");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let now = manual_clock.now_ts();
+
+    proxy
+        .record_server_pressure_event(None, now, OUTCOME_SUCCESS)
+        .await
+        .expect("enqueue pressure without waiting for SQLite");
+    assert!(
+        proxy
+            .enqueue_rebalance_audit(RebalanceAuditEntry {
+                auth_token_id: None,
+                method: Method::POST,
+                path: "/mcp".to_string(),
+                request_body: br#"{\"jsonrpc\":\"2.0\"}"#.to_vec(),
+                response_status: StatusCode::OK,
+                tavily_status_code: Some(200),
+                response_body: br#"{\"result\":{}}"#.to_vec(),
+                result_status: OUTCOME_SUCCESS.to_string(),
+                failure_kind: None,
+                proxy_session_id: Some("mixed-observability-owner".to_string()),
+                routing_subject_hash: None,
+                fallback_reason: Some("affinity_rebalanced".to_string()),
+            })
+            .await
+    );
+    assert_eq!(
+        proxy.observability_deferred_worker_starts_for_test().await,
+        1,
+        "mixed queues share the same debounced worker before either write starts"
+    );
+
+    tokio::time::timeout(
+        Duration::from_secs(4),
+        proxy.wait_for_rebalance_audits_idle_for_test(),
+    )
+    .await
+    .expect("shared worker drains the audit batch");
+    wait_for_server_pressure_totals(&proxy, 2, 0).await;
+    assert_eq!(
+        proxy.observability_deferred_worker_starts_for_test().await,
+        1,
+        "the audit-derived pressure delta stays with the active worker"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_450_000);
     let db_path = temp_db_path("analysis-pressure-background-success-reschedule");
