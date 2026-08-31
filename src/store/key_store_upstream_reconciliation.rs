@@ -734,10 +734,12 @@ impl KeyStore {
             .await?;
         let available_at = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT MIN(MAX(CASE WHEN r.next_poll_at > 0 THEN r.next_poll_at ELSE ? END, \
-             COALESCE((SELECT b.cooldown_until FROM api_key_transient_backoffs b \
-             WHERE b.key_id = r.key_id AND b.scope = 'period_reconciliation' \
-             AND b.cooldown_until > ? LIMIT 1), 0))) \
+             COALESCE((SELECT MAX(b.cooldown_until) FROM api_key_transient_backoffs b \
+             WHERE b.key_id = r.key_id \
+             AND b.scope IN ('period_reconciliation', 'reconciliation_research_credentials') \
+             AND b.cooldown_until > ?), 0))) \
              FROM upstream_reconciliation_research r WHERE r.terminal_at IS NULL \
+             AND r.poll_resolution = 'pollable' \
              AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage u \
              WHERE u.token_id = r.token_id AND u.period_code = r.period_code \
              AND u.period_end <= ?)",
@@ -2737,13 +2739,15 @@ impl KeyStore {
             .bind(day_window.end)
             .fetch_one(&self.pool)
             .await?;
-        let (research_total, research_terminal, research_pending) =
-            sqlx::query_as::<_, (i64, i64, i64)>(
+        let (research_total, research_terminal, research_pending, research_unavailable, research_pollable_pending) =
+            sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
                 r#"
                 SELECT
                     COUNT(DISTINCT r.request_id),
                     COUNT(DISTINCT CASE WHEN r.terminal_at IS NOT NULL THEN r.request_id END),
-                    COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL THEN r.request_id END)
+                    COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL THEN r.request_id END),
+                    COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL AND r.poll_resolution = 'unavailable' THEN r.request_id END),
+                    COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL AND r.poll_resolution = 'pollable' THEN r.request_id END)
                 FROM upstream_reconciliation_research r
                 JOIN upstream_reconciliation_usage u
                   ON u.token_id = r.token_id AND u.period_code = r.period_code
@@ -2787,7 +2791,9 @@ impl KeyStore {
             r#"
             SELECT key_id, cooldown_until, reason_code
             FROM api_key_transient_backoffs
-            WHERE scope = 'period_reconciliation' AND cooldown_until > ?
+            WHERE scope IN ('period_reconciliation', 'reconciliation_research_credentials')
+              AND cooldown_until > ?
+            ORDER BY cooldown_until DESC
             "#,
         )
         .bind(now)
@@ -2809,6 +2815,8 @@ impl KeyStore {
             research_total,
             research_terminal,
             research_pending,
+            research_unavailable,
+            research_pollable_pending,
         };
         let by_key = key_rows
             .into_iter()

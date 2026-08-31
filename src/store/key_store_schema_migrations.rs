@@ -93,6 +93,10 @@ const RECONCILIATION_OBSERVATION_METRICS_NAME: &str =
     "reconciliation-key-observation-metrics-v1";
 const RECONCILIATION_OBSERVATION_METRICS_CHECKSUM: &str =
     "sha256:2f7c6b8d9e0a1b2c3d4e5f60718293a4";
+const RECONCILIATION_POLL_RESOLUTION_VERSION: i64 = 24;
+const RECONCILIATION_POLL_RESOLUTION_NAME: &str = "reconciliation-research-poll-resolution-v1";
+const RECONCILIATION_POLL_RESOLUTION_CHECKSUM: &str =
+    "sha256:7f8e9d0c1b2a3948576e5d4c3b2a1908";
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
@@ -805,6 +809,11 @@ impl KeyStore {
                 RECONCILIATION_OBSERVATION_METRICS_NAME,
                 RECONCILIATION_OBSERVATION_METRICS_CHECKSUM,
             ),
+            (
+                RECONCILIATION_POLL_RESOLUTION_VERSION,
+                RECONCILIATION_POLL_RESOLUTION_NAME,
+                RECONCILIATION_POLL_RESOLUTION_CHECKSUM,
+            ),
         ];
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
@@ -1010,6 +1019,24 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 23".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(RECONCILIATION_POLL_RESOLUTION_VERSION)
+            .await?
+            && (!self
+                .table_column_exists("upstream_reconciliation_research", "poll_resolution")
+                .await?
+                || !self
+                    .schema_named_object_exists(
+                        "main",
+                        "index",
+                        "idx_upstream_reconciliation_research_poll_resolution_due",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 24".to_string(),
             ));
         }
         if self
@@ -1773,6 +1800,48 @@ impl KeyStore {
         .await
     }
 
+    async fn apply_reconciliation_poll_resolution_migration(&self) -> Result<(), ProxyError> {
+        if !self
+            .table_column_exists("upstream_reconciliation_research", "poll_resolution")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE upstream_reconciliation_research ADD COLUMN poll_resolution TEXT NOT NULL DEFAULT 'pollable'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        for (column, definition) in [
+            ("baseline_unavailable_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_window_unavailable_delta", "INTEGER NOT NULL DEFAULT 0"),
+            ("baseline_pollable_pending_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_window_pollable_pending_delta", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !self
+                .table_column_exists("upstream_reconciliation_research_progress_window", column)
+                .await?
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE upstream_reconciliation_research_progress_window ADD COLUMN {column} {definition}"
+                ))
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_upstream_reconciliation_research_poll_resolution_due
+             ON upstream_reconciliation_research(poll_resolution, terminal_at, next_poll_at, key_id, request_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            RECONCILIATION_POLL_RESOLUTION_VERSION,
+            RECONCILIATION_POLL_RESOLUTION_NAME,
+            RECONCILIATION_POLL_RESOLUTION_CHECKSUM,
+        )
+        .await
+    }
+
     async fn apply_reconciliation_key_observation_migration(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_key_observations (
@@ -2290,6 +2359,12 @@ impl KeyStore {
             self.apply_reconciliation_observation_metrics_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(RECONCILIATION_POLL_RESOLUTION_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_poll_resolution_migration().await?;
+        }
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -2348,6 +2423,7 @@ impl KeyStore {
         self.apply_reconciliation_key_observation_migration().await?;
         self.apply_reconciliation_observation_metrics_migration()
             .await?;
+        self.apply_reconciliation_poll_resolution_migration().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -2355,7 +2431,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 23_i64,
+            migration_count = 24_i64,
         );
         Ok(())
     }

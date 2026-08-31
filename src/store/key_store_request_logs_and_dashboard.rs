@@ -2026,7 +2026,7 @@ impl KeyStore {
                 .fetch_optional(&self.pool)
                 .await?;
 
-        Ok(secret)
+        Ok(secret.filter(|value| !value.trim().is_empty()))
     }
 
     pub(crate) async fn fetch_api_key_id_by_secret(

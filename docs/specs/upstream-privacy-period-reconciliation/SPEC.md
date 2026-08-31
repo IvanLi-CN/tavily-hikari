@@ -69,6 +69,11 @@
 - 无 Research 在窗口结束 10 分钟后结算；有 Research 在全部终态后 10 分钟结算，最长等待 24 小时后 degraded 结算。
 - 独立 `upstream_reconciliation_research_drain` 轮询已关闭窗口中未终态的 Research；每次最多
   一个实际请求、正常间隔至少 5 秒，并沿用 v21 的 80 行索引页、每 Key 4 条和 20 条选择边界。
+- Research drain 为每行保存 `poll_resolution`。默认 `pollable` 行才进入索引页；404 写入
+  `unavailable`、保留 `terminal_at=NULL` 并停止该请求的后续轮询，不解除 24 小时 degraded
+  保护，也不产生 billing 结果。401/403 或空本地 secret 只建立对应 Key 的六小时
+  `reconciliation_research_credentials` cooldown；它与 `period_reconciliation` 的 429
+  cooldown 独立，健康 Key 仍可推进。
 - `429` 只对 `period_reconciliation` scope 中的对应 Key 建立持久化冷却，使用 `Retry-After` 或 `5/10/20/30` 分钟退避；不得批量把同 Key 的其他窗口写为 rate-limited，也不得影响正常 API/MCP 流量。
 - 候选观测必须使用有界索引页：`queueEstimate` 可为空且最多统计 64 个候选，`hasEligible` 与最老候选年龄必须单独表达，首次观测前 coverage 为 `unknown`，不得以零伪装未观测状态。历史 degraded 状态必须由独立的索引化 `EXISTS` 探测保留，不能用当天计数替代。
 - 连续三轮存在候选、未产生远端尝试且本地预算耗尽时，持久化独立的本地短退避；它不得改变任何 Key 的 429 冷却。真实远端 429 只对触发它的 `period_reconciliation` Key 按 `5/10/20/30` 分钟阶梯冷却，并以更晚的 `Retry-After` 为准；所有可选 Key 都在冷却时，使用最早到期时间保留一个 delayed representative job，非冷却 Key 不受影响。
@@ -279,6 +284,11 @@
   evaluated, Then use a fixed ten-minute observation window: terminal rate must become positive and
   pending work must not grow. Treat the `upstream429` retry bucket as a separate metric, never as
   Research backlog or terminal progress.
+- Given a Research poll returns 404, When the drain commits the response, Then the row is marked
+  `unavailable` without `terminal_at`, is excluded from future drain polls, and remains visible in
+  the additive progress diagnostics; main reconciliation keeps its pre-existing 24-hour degraded
+  gate. Given a 401/403 or missing local secret, Then only that Key enters the six-hour credentials
+  cooldown and another healthy Key remains selectable.
 - The additive `reconciliationResearchProgressWindow` diagnostic reports the most recently completed
   ten-minute window, including terminal and pending deltas. An incomplete window is explicitly not
   healthy; a completed window is healthy only when `terminalRatePositive` and `pendingNonGrowing`

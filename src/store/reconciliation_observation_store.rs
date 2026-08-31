@@ -137,9 +137,12 @@ impl KeyStore {
             active_started_at,
             baseline_terminal_count,
             baseline_pending_count,
-        ) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            baseline_unavailable_count,
+            baseline_pollable_pending_count,
+        ) = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64)>(
             r#"SELECT active_period_start, active_started_at,
-                       baseline_terminal_count, baseline_pending_count
+                       baseline_terminal_count, baseline_pending_count,
+                       baseline_unavailable_count, baseline_pollable_pending_count
                   FROM upstream_reconciliation_research_progress_window
                  WHERE id = 'local'"#,
         )
@@ -154,12 +157,18 @@ impl KeyStore {
         } else {
             now
         };
-        let (terminal_count, pending_count) = sqlx::query_as::<_, (i64, i64)>(
+        let (terminal_count, pending_count, unavailable_count, pollable_pending_count) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"SELECT COUNT(DISTINCT CASE
                             WHEN r.terminal_at IS NOT NULL AND r.terminal_at <= ? THEN r.request_id
                         END),
                        COUNT(DISTINCT CASE
                             WHEN r.terminal_at IS NULL OR r.terminal_at > ? THEN r.request_id
+                        END),
+                       COUNT(DISTINCT CASE
+                            WHEN r.terminal_at IS NULL AND r.poll_resolution = 'unavailable' THEN r.request_id
+                        END),
+                       COUNT(DISTINCT CASE
+                            WHEN r.terminal_at IS NULL AND r.poll_resolution = 'pollable' THEN r.request_id
                         END)
                   FROM upstream_reconciliation_research r
                   JOIN upstream_reconciliation_usage u
@@ -180,14 +189,18 @@ impl KeyStore {
                 r#"UPDATE upstream_reconciliation_research_progress_window
                        SET active_period_start = ?, active_started_at = ?,
                            baseline_terminal_count = ?, baseline_pending_count = ?,
+                           baseline_unavailable_count = ?, baseline_pollable_pending_count = ?,
                            last_window_started_at = NULL, last_window_ended_at = NULL,
-                           last_window_terminal_delta = 0, last_window_pending_delta = 0
+                           last_window_terminal_delta = 0, last_window_pending_delta = 0,
+                           last_window_unavailable_delta = 0, last_window_pollable_pending_delta = 0
                      WHERE id = 'local'"#,
             )
             .bind(day_window.start)
             .bind(now)
             .bind(terminal_count)
             .bind(pending_count)
+            .bind(unavailable_count)
+            .bind(pollable_pending_count)
             .execute(&mut **transaction)
             .await?;
         } else if now >= window_end {
@@ -195,17 +208,23 @@ impl KeyStore {
                 r#"UPDATE upstream_reconciliation_research_progress_window
                        SET last_window_started_at = ?, last_window_ended_at = ?,
                            last_window_terminal_delta = ?, last_window_pending_delta = ?,
+                           last_window_unavailable_delta = ?, last_window_pollable_pending_delta = ?,
                            active_started_at = ?, baseline_terminal_count = ?,
-                           baseline_pending_count = ?
+                           baseline_pending_count = ?, baseline_unavailable_count = ?,
+                           baseline_pollable_pending_count = ?
                      WHERE id = 'local'"#,
             )
             .bind(active_started_at)
             .bind(window_end)
             .bind(terminal_count.saturating_sub(baseline_terminal_count))
             .bind(pending_count.saturating_sub(baseline_pending_count))
+            .bind(unavailable_count.saturating_sub(baseline_unavailable_count))
+            .bind(pollable_pending_count.saturating_sub(baseline_pollable_pending_count))
             .bind(window_end)
             .bind(terminal_count)
             .bind(pending_count)
+            .bind(unavailable_count)
+            .bind(pollable_pending_count)
             .execute(&mut **transaction)
             .await?;
         }

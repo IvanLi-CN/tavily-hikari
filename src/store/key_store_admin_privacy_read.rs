@@ -413,10 +413,12 @@ impl KeyStore {
             .fetch_one(&mut **snapshot)
             .await?;
         snapshot.ensure_cooperative_run_budget()?;
-        let (research_total, research_terminal, research_pending) = sqlx::query_as::<_, (i64, i64, i64)>(
+        let (research_total, research_terminal, research_pending, research_unavailable, research_pollable_pending) = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
             r#"SELECT COUNT(DISTINCT r.request_id),
                        COUNT(DISTINCT CASE WHEN r.terminal_at IS NOT NULL THEN r.request_id END),
-                       COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL THEN r.request_id END)
+                       COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL THEN r.request_id END),
+                       COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL AND r.poll_resolution = 'unavailable' THEN r.request_id END),
+                       COUNT(DISTINCT CASE WHEN r.terminal_at IS NULL AND r.poll_resolution = 'pollable' THEN r.request_id END)
                   FROM upstream_reconciliation_research r
                   JOIN upstream_reconciliation_usage u
                     ON u.token_id = r.token_id AND u.period_code = r.period_code
@@ -426,6 +428,28 @@ impl KeyStore {
         .bind(day_window.end)
         .fetch_one(&mut **snapshot)
         .await?;
+        snapshot.ensure_cooperative_run_budget()?;
+        let (credentials_cooling_keys, earliest_credentials_retry_at) =
+            sqlx::query_as::<_, (i64, Option<i64>)>(
+                r#"SELECT COUNT(DISTINCT key_id), MIN(cooldown_until)
+                     FROM api_key_transient_backoffs
+                    WHERE scope = 'reconciliation_research_credentials'
+                      AND cooldown_until > ?"#,
+            )
+            .bind(now)
+            .fetch_one(&mut **snapshot)
+            .await?;
+        snapshot.ensure_cooperative_run_budget()?;
+        let (last_poll_outcome, last_poll_observed_at) = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+            r#"SELECT last_poll_outcome, COALESCE(last_polled_at, updated_at)
+                 FROM upstream_reconciliation_research
+                WHERE last_poll_outcome IS NOT NULL
+                ORDER BY COALESCE(last_polled_at, updated_at) DESC, request_id DESC
+                LIMIT 1"#,
+        )
+        .fetch_optional(&mut **snapshot)
+        .await?
+        .unwrap_or((None, None));
         snapshot.ensure_cooperative_run_budget()?;
         let key_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
             r#"SELECT u.key_id,
@@ -453,7 +477,9 @@ impl KeyStore {
         let backoff_rows = sqlx::query_as::<_, (String, i64, Option<String>)>(
             r#"SELECT key_id, cooldown_until, reason_code
                  FROM api_key_transient_backoffs
-                WHERE scope = 'period_reconciliation' AND cooldown_until > ?"#,
+                WHERE scope IN ('period_reconciliation', 'reconciliation_research_credentials')
+                  AND cooldown_until > ?
+                ORDER BY cooldown_until DESC"#,
         )
         .bind(now)
         .fetch_all(&mut **snapshot)
@@ -474,6 +500,8 @@ impl KeyStore {
             research_total,
             research_terminal,
             research_pending,
+            research_unavailable,
+            research_pollable_pending,
         };
         let (
             active_started_at,
@@ -481,11 +509,14 @@ impl KeyStore {
             last_window_ended_at,
             last_window_terminal_delta,
             last_window_pending_delta,
+            last_window_unavailable_delta,
+            last_window_pollable_pending_delta,
         ) = {
             snapshot.ensure_cooperative_run_budget()?;
-            sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, i64, i64)>(
+            sqlx::query_as::<_, (i64, Option<i64>, Option<i64>, i64, i64, i64, i64)>(
             r#"SELECT active_started_at, last_window_started_at, last_window_ended_at,
-                       last_window_terminal_delta, last_window_pending_delta
+                       last_window_terminal_delta, last_window_pending_delta,
+                       last_window_unavailable_delta, last_window_pollable_pending_delta
                   FROM upstream_reconciliation_research_progress_window
                  WHERE id = 'local'"#,
         )
@@ -517,8 +548,16 @@ impl KeyStore {
             pending_delta: complete_research_window
                 .map(|_| last_window_pending_delta)
                 .unwrap_or(0),
+            unavailable_delta: complete_research_window
+                .map(|_| last_window_unavailable_delta)
+                .unwrap_or(0),
+            pollable_pending_delta: complete_research_window
+                .map(|_| last_window_pollable_pending_delta)
+                .unwrap_or(0),
             terminal_rate_positive: complete_research_window.is_some()
                 && last_window_terminal_delta > 0,
+            poll_resolution_rate_positive: complete_research_window.is_some()
+                && (last_window_terminal_delta > 0 || last_window_unavailable_delta > 0),
             pending_non_growing: complete_research_window.is_some()
                 && last_window_pending_delta <= 0,
             complete: complete_research_window.is_some(),
@@ -739,6 +778,14 @@ impl KeyStore {
             },
             reconciliation_run_observation,
             reconciliation_research_progress_window,
+            reconciliation_research_poll_diagnostics: ReconciliationResearchPollDiagnostics {
+                unavailable: research_unavailable,
+                pollable_pending: research_pollable_pending,
+                credentials_cooling_keys,
+                earliest_credentials_retry_at,
+                last_poll_outcome,
+                last_poll_observed_at,
+            },
             reconciliation_controller: ReconciliationControllerStatus {
                 mode: controller_mode.as_str().to_string(),
                 activation_period_code,

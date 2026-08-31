@@ -69,6 +69,8 @@ export interface DailyReconciliationProgress {
   researchTotal: number
   researchTerminal: number
   researchPending: number
+  researchUnavailable?: number
+  researchPollablePending?: number
 }
 
 export interface DailyReconciliationKeyProgress {
@@ -128,6 +130,29 @@ export interface ReconciliationRunObservation {
   observedAt: number | null
 }
 
+export interface ReconciliationResearchProgressWindow {
+  windowStartedAt: number | null
+  windowEndedAt: number | null
+  windowSeconds: number
+  terminalDelta: number
+  pendingDelta: number
+  unavailableDelta?: number
+  pollablePendingDelta?: number
+  terminalRatePositive: boolean
+  pollResolutionRatePositive?: boolean
+  pendingNonGrowing: boolean
+  complete: boolean
+}
+
+export interface ReconciliationResearchPollDiagnostics {
+  unavailable: number
+  pollablePending: number
+  credentialsCoolingKeys: number
+  earliestCredentialsRetryAt: number | null
+  lastPollOutcome: string | null
+  lastPollObservedAt: number | null
+}
+
 export interface ReconciliationControllerStatus {
   mode: 'compare' | 'active' | 'active_paused' | string
   activationPeriodCode: string | null
@@ -181,6 +206,8 @@ export interface UpstreamPrivacyStatus {
   reconciliationObservation: ReconciliationObservation
   reconciliationLocalBackoff: ReconciliationLocalBackoff
   reconciliationRunObservation?: ReconciliationRunObservation
+  reconciliationResearchProgressWindow?: ReconciliationResearchProgressWindow
+  reconciliationResearchPollDiagnostics?: ReconciliationResearchPollDiagnostics
   reconciliationController?: ReconciliationControllerStatus
   dashboardAlertProjection?: DashboardAlertProjectionStatus
   coverage?: string

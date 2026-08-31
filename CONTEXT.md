@@ -105,6 +105,15 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   seconds, commits the poll result, per-Key cooldown, exact cursor, and claim fence atomically, and
   never consumes the main reconciliation run's two-request budget. Main settlement and the drain
   share only the instance-wide request-scoped remote lease.
+- `Research poll resolution`: a durable classification of a nonterminal Research row. `pollable`
+  means the row may be selected by the drain; `unavailable` records a confirmed 404 and suppresses
+  repeated polling while leaving `terminal_at` unset, preserving the existing 24-hour degraded
+  protection for main reconciliation. A poll resolution is not a billing result and never changes
+  actual billing truth.
+- `Research credentials cooldown`: a six-hour cooldown in the
+  `reconciliation_research_credentials` scope for one upstream Key after a 401/403 or an empty
+  local secret. It is independent from the `period_reconciliation` 429 cooldown; healthy Keys keep
+  progressing, and a successful 202 or terminal poll clears only the credentials scope.
 
 ## Observability Boundaries
 

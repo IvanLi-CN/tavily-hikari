@@ -63,6 +63,14 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   eligible, and an all-Key cooldown schedules the claim-fenced representative at the earliest
   expiry. Legacy global-backoff metadata remains readable for rolling compatibility but is not a
   reconciliation gate or representative wake source.
+- Research polling stores a separate `poll_resolution` alongside its nonterminal row. A confirmed
+  404 becomes `unavailable` with `terminal_at` still unset and `next_poll_at=0`; the drain excludes
+  that row while the main reconciliation path retains its existing 24-hour degraded protection.
+  This lifecycle marker is replicated as runtime state but is not a terminal billing outcome.
+- Research 401/403 responses and empty local secrets arm a six-hour
+  `reconciliation_research_credentials` cooldown for only the affected Key. The selector excludes
+  both this scope and `period_reconciliation` 429 cooldowns, and a successful poll clears only the
+  credentials scope. No credentials or raw upstream error text is persisted in observations.
 
 ## Consequences
 

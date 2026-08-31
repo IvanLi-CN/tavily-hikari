@@ -30,6 +30,10 @@
   terminal poll。eligibility 在 80 行 limit 前完成；只接受实际处理候选的精确 cursor，并以
   5 分钟强制回绕重新发现 cursor 后方新近闭合的记录。poll outcome、逐 Key cooldown、cursor、
   sweep clock 与 claim fence 原子提交。
+- Research drain 现将 404 持久化为 `poll_resolution=unavailable`，保留 `terminal_at=NULL` 并
+  从后续轮询中排除，避免任务不存在时的重复请求；401/403 与空本地 secret 使用独立的
+  `reconciliation_research_credentials` 六小时 Key cooldown。成功的 202 或 terminal poll
+  只清除凭据 scope，不覆盖 `period_reconciliation` 429 状态。
 - 对账限流已改用 `period_reconciliation` 独立 Key cooldown：429 不再扇出写入同 Key 的全部窗口，其他 Key 可继续结算；状态 API/页面提供今日账号与账期覆盖、Research 收敛和 per-Key cooldown 进度。
 - `/api/users` compare-only 项新增 observed/standard-settled/degraded period count，用户列表和用量页在 hybrid 值旁展示标准对账覆盖及降级数。
 - reconciliation keeps a one-at-a-time remote attempt lease only while an outbound HTTP request is

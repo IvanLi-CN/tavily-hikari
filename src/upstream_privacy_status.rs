@@ -32,6 +32,10 @@ pub struct DailyReconciliationProgress {
     pub research_total: i64,
     pub research_terminal: i64,
     pub research_pending: i64,
+    #[serde(default)]
+    pub research_unavailable: i64,
+    #[serde(default)]
+    pub research_pollable_pending: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,9 +120,26 @@ pub struct ReconciliationResearchProgressWindow {
     pub window_seconds: i64,
     pub terminal_delta: i64,
     pub pending_delta: i64,
+    #[serde(default)]
+    pub unavailable_delta: i64,
+    #[serde(default)]
+    pub pollable_pending_delta: i64,
     pub terminal_rate_positive: bool,
+    #[serde(default)]
+    pub poll_resolution_rate_positive: bool,
     pub pending_non_growing: bool,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReconciliationResearchPollDiagnostics {
+    pub unavailable: i64,
+    pub pollable_pending: i64,
+    pub credentials_cooling_keys: i64,
+    pub earliest_credentials_retry_at: Option<i64>,
+    pub last_poll_outcome: Option<String>,
+    pub last_poll_observed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +210,8 @@ pub struct UpstreamPrivacyStatus {
     pub reconciliation_run_observation: ReconciliationRunObservation,
     #[serde(default)]
     pub reconciliation_research_progress_window: ReconciliationResearchProgressWindow,
+    #[serde(default)]
+    pub reconciliation_research_poll_diagnostics: ReconciliationResearchPollDiagnostics,
     #[serde(default)]
     pub reconciliation_controller: ReconciliationControllerStatus,
     #[serde(default)]

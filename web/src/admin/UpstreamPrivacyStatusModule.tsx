@@ -265,6 +265,24 @@ export default function UpstreamPrivacyStatusModule({
       })
     }
 
+    const pollDiagnostics = status.reconciliationResearchPollDiagnostics
+    if (pollDiagnostics?.unavailable && pollDiagnostics.unavailable > 0) {
+      issues.push({
+        key: 'researchUnavailable',
+        title: language === 'zh' ? 'Research 任务不存在，已停止轮询' : 'Research task unavailable; polling stopped',
+        detail: numberFormatter.format(pollDiagnostics.unavailable),
+        tone: 'info',
+      })
+    }
+    if (pollDiagnostics?.credentialsCoolingKeys && pollDiagnostics.credentialsCoolingKeys > 0) {
+      issues.push({
+        key: 'researchCredentialsCooldown',
+        title: language === 'zh' ? 'Research 凭据冷却中' : 'Research credentials cooling down',
+        detail: formatOptionalTimestamp(pollDiagnostics.earliestCredentialsRetryAt, timestampFormatter, strings.statusMissing),
+        tone: 'warning',
+      })
+    }
+
     if (status.queuedSettlements != null && status.queuedSettlements > 0) {
       issues.push({
         key: 'queuedSettlements',
@@ -328,6 +346,12 @@ export default function UpstreamPrivacyStatusModule({
               : []),
             ...(status.pendingResearch != null && status.pendingResearch > 0
               ? [{ label: strings.counterPendingResearch, value: numberFormatter.format(status.pendingResearch) }]
+              : []),
+            ...(status.reconciliationResearchPollDiagnostics?.unavailable
+              ? [{
+                  label: language === 'zh' ? '已停止轮询' : 'Polling stopped',
+                  value: numberFormatter.format(status.reconciliationResearchPollDiagnostics.unavailable),
+                }]
               : []),
             ...(status.queuedSettlements != null && status.queuedSettlements > 0
               ? [{ label: strings.counterQueuedSettlements, value: numberFormatter.format(status.queuedSettlements) }]
@@ -733,6 +757,14 @@ export default function UpstreamPrivacyStatusModule({
                   label={diagnosticsLabels.lastResearchTerminal}
                   value={formatOptionalTimestamp(status.lastResearchTerminalAt, timestampFormatter, strings.statusMissing)}
                 />
+                <PrivacyStat
+                  label={language === 'zh' ? '最近 Research 轮询结果' : 'Latest Research poll outcome'}
+                  value={status.reconciliationResearchPollDiagnostics?.lastPollOutcome ?? strings.statusMissing}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? 'Research 凭据冷却 Key' : 'Research credential cooldown keys'}
+                  value={numberFormatter.format(status.reconciliationResearchPollDiagnostics?.credentialsCoolingKeys ?? 0)}
+                />
               </div>
             </section>
 
@@ -761,7 +793,7 @@ export default function UpstreamPrivacyStatusModule({
                   label={diagnosticsLabels.researchCoverage}
                   completed={status.dailyReconciliationProgress.researchTerminal}
                   total={status.dailyReconciliationProgress.researchTotal}
-                  supportingText={`${diagnosticsLabels.pendingResearch} ${numberFormatter.format(status.dailyReconciliationProgress.researchPending)}`}
+                  supportingText={`${diagnosticsLabels.pendingResearch} ${numberFormatter.format(status.dailyReconciliationProgress.researchPending)} · ${language === 'zh' ? '不可用' : 'Unavailable'} ${numberFormatter.format(status.dailyReconciliationProgress.researchUnavailable ?? status.reconciliationResearchPollDiagnostics?.unavailable ?? 0)}`}
                   numberFormatter={numberFormatter}
                 />
               </div>

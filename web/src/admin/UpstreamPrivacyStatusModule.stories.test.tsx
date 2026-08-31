@@ -32,6 +32,8 @@ describe('SystemStatusModule Storybook proofs', () => {
     expect(systemStatusStories.LoadingState).toMatchObject({})
     expect(systemStatusStories.Mobile393x852).toMatchObject({})
     expect(systemStatusStories.TransportFailureMobile393x852).toMatchObject({})
+    expect(systemStatusStories.ResearchUnavailable).toMatchObject({})
+    expect(systemStatusStories.ResearchCredentialsCooldown).toMatchObject({})
     expect(systemStatusStories.EvidenceLocalBackoffMobile393x852).toMatchObject({})
     expect(systemStatusStories.MobileStateGallery).toMatchObject({})
     expect(systemStatusStories.Mobile).toMatchObject({})
@@ -105,5 +107,18 @@ describe('SystemStatusModule Storybook proofs', () => {
 
     expect(markup).toContain('无需调整')
     expect(markup).toContain('6 / 6 / 6 / 0')
+  })
+
+  it('distinguishes unavailable Research from credential cooldown', () => {
+    const unavailableArgs = { ...meta.args, ...systemStatusStories.ResearchUnavailable.args }
+    const credentialArgs = { ...meta.args, ...systemStatusStories.ResearchCredentialsCooldown.args }
+    const unavailableMarkup = renderToStaticMarkup(createElement(UpstreamPrivacyStatusModule, unavailableArgs))
+    const credentialMarkup = renderToStaticMarkup(createElement(UpstreamPrivacyStatusModule, credentialArgs))
+
+    expect(unavailableMarkup).toContain('Research 任务不存在，已停止轮询')
+    expect(unavailableMarkup).toContain('unavailable')
+    expect(credentialMarkup).toContain('Research 凭据冷却中')
+    expect(credentialMarkup).toContain('credentials')
+    expect(credentialMarkup).not.toContain('任务不存在，已停止轮询')
   })
 })

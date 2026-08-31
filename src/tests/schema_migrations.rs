@@ -31,7 +31,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
         ]
     );
     let transport_observation_column: i64 = sqlx::query_scalar(
@@ -125,6 +125,20 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read research scan index");
     assert_eq!(research_scan_index, 1);
+    let poll_resolution_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_research') WHERE name = 'poll_resolution'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read Research poll resolution column");
+    assert_eq!(poll_resolution_column, 1);
+    let poll_resolution_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_upstream_reconciliation_research_poll_resolution_due'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read Research poll resolution index");
+    assert_eq!(poll_resolution_index, 1);
     let full_history_cursor_sources: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.dashboard_alert_projection_history_state \
          WHERE cursor_occurred_at = 0 AND cursor_row_sort_id = '' AND phase = 'catching_up'",
@@ -956,7 +970,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
         ]
     );
 

@@ -39,6 +39,9 @@ impl UpstreamReconciliationResearchCandidatePage {
 
 pub(crate) enum UpstreamReconciliationResearchDrainPoll<'a> {
     Terminal,
+    Unavailable {
+        error_kind: &'a str,
+    },
     Pending {
         next_poll_at: i64,
         outcome: &'a str,
@@ -53,6 +56,7 @@ pub(crate) struct UpstreamReconciliationResearchDrainCommit<'a> {
     pub(crate) wrapped: bool,
     pub(crate) poll: UpstreamReconciliationResearchDrainPoll<'a>,
     pub(crate) key_backoff: Option<ApiKeyTransientBackoffArm<'a>>,
+    pub(crate) clear_key_backoff_scope: Option<&'a str>,
     pub(crate) job_id: i64,
     pub(crate) claim_generation: i64,
 }
@@ -128,6 +132,7 @@ impl KeyStore {
                        r.next_poll_at, r.poll_attempt_count
                  FROM upstream_reconciliation_research r
                  WHERE r.terminal_at IS NULL
+                   AND r.poll_resolution = 'pollable'
                    AND r.next_poll_at <= ?
                    AND EXISTS (
                        SELECT 1 FROM upstream_reconciliation_usage eligible_u
@@ -146,7 +151,7 @@ impl KeyStore {
                    AND NOT EXISTS (
                        SELECT 1 FROM api_key_transient_backoffs b
                         WHERE b.key_id = r.key_id
-                          AND b.scope = 'period_reconciliation'
+                          AND b.scope IN ('period_reconciliation', 'reconciliation_research_credentials')
                           AND b.cooldown_until > ?
                    )
                    AND (
@@ -203,7 +208,7 @@ impl KeyStore {
                       JOIN upstream_reconciliation_usage u
                         INDEXED BY idx_upstream_reconciliation_usage_window_mode
                         ON u.token_id = r.token_id AND u.period_code = r.period_code
-                     WHERE r.terminal_at IS NULL AND r.request_id IN ("#,
+                  WHERE r.terminal_at IS NULL AND r.poll_resolution = 'pollable' AND r.request_id IN ("#,
             );
             {
                 let mut separated = query.separated(", ");
@@ -263,12 +268,13 @@ impl KeyStore {
         };
         let cooled_due_result = if raw_rows.is_empty() {
             Some(sqlx::query_as::<_, (Option<i64>, i64)>(
-                "SELECT b.cooldown_until, 1
+                "SELECT MIN(b.cooldown_until), COUNT(DISTINCT b.key_id)
                    FROM api_key_transient_backoffs b
-                  WHERE b.scope = 'period_reconciliation' AND b.cooldown_until > ?
+                  WHERE b.scope IN ('period_reconciliation', 'reconciliation_research_credentials')
+                    AND b.cooldown_until > ?
                     AND EXISTS (
                         SELECT 1 FROM upstream_reconciliation_research r
-                         WHERE r.key_id = b.key_id AND r.terminal_at IS NULL
+                         WHERE r.key_id = b.key_id AND r.terminal_at IS NULL AND r.poll_resolution = 'pollable'
                            AND r.next_poll_at <= ?
                            AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
                                        INDEXED BY idx_upstream_reconciliation_usage_window_mode
@@ -281,20 +287,19 @@ impl KeyStore {
                                              AND future_u.period_code = r.period_code
                                              AND future_u.period_end > ?)
                          LIMIT 1)
-                  ORDER BY b.cooldown_until LIMIT 1",
+                  ",
             )
                 .bind(now)
                 .bind(now)
                 .bind(now)
                 .bind(now)
-                .fetch_optional(&mut *session)
+                .fetch_one(&mut *session)
                 .await)
         } else {
             None
         };
         let (earliest_cooldown_until, cooled_due_count) = match cooled_due_result {
-            Some(Ok(Some(value))) => value,
-            Some(Ok(None)) => (None, 0),
+            Some(Ok(value)) => value,
             Some(Err(error)) => {
                 return session
                     .complete_query_or_defer::<i64>(Err(error))
@@ -414,7 +419,7 @@ impl KeyStore {
                     "UPDATE upstream_reconciliation_research SET terminal_at = ?, \
                      last_polled_at = ?, next_poll_at = 0, \
                      poll_attempt_count = poll_attempt_count + 1, \
-                     last_poll_outcome = 'terminal', last_poll_error_kind = NULL, updated_at = ? \
+                     poll_resolution = 'pollable', last_poll_outcome = 'terminal', last_poll_error_kind = NULL, updated_at = ? \
                      WHERE request_id = ? AND terminal_at IS NULL",
                 )
                 .bind(now)
@@ -443,12 +448,27 @@ impl KeyStore {
                 sqlx::query(
                     "UPDATE upstream_reconciliation_research SET last_polled_at = ?, \
                      next_poll_at = ?, poll_attempt_count = poll_attempt_count + 1, \
-                     last_poll_outcome = ?, last_poll_error_kind = ?, updated_at = ? \
+                     poll_resolution = 'pollable', last_poll_outcome = ?, last_poll_error_kind = ?, updated_at = ? \
                      WHERE request_id = ? AND terminal_at IS NULL",
                 )
                 .bind(now)
                 .bind(next_poll_at)
                 .bind(outcome)
+                .bind(error_kind)
+                .bind(now)
+                .bind(commit.request_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            UpstreamReconciliationResearchDrainPoll::Unavailable { error_kind } => {
+                sqlx::query(
+                    "UPDATE upstream_reconciliation_research SET last_polled_at = ?, \
+                     next_poll_at = 0, poll_attempt_count = poll_attempt_count + 1, \
+                     poll_resolution = 'unavailable', last_poll_outcome = 'unavailable', \
+                     last_poll_error_kind = ?, updated_at = ? \
+                     WHERE request_id = ? AND terminal_at IS NULL",
+                )
+                .bind(now)
                 .bind(error_kind)
                 .bind(now)
                 .bind(commit.request_id)
@@ -477,6 +497,15 @@ impl KeyStore {
             .bind(arm.source_request_log_id)
             .bind(arm.now)
             .bind(arm.now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        if let Some(scope) = commit.clear_key_backoff_scope {
+            sqlx::query(
+                "DELETE FROM api_key_transient_backoffs WHERE key_id = (SELECT key_id FROM upstream_reconciliation_research WHERE request_id = ?) AND scope = ?",
+            )
+            .bind(commit.request_id)
+            .bind(scope)
             .execute(&mut *transaction)
             .await?;
         }
@@ -584,8 +613,9 @@ impl KeyStore {
         let due_result = sqlx::query_scalar::<_, i64>(r#"
             SELECT EXISTS(
                 SELECT 1
-                  FROM upstream_reconciliation_research r
+                 FROM upstream_reconciliation_research r
                  WHERE r.terminal_at IS NULL
+                   AND r.poll_resolution = 'pollable'
                    AND r.next_poll_at <= ?
                    AND EXISTS (
                        SELECT 1

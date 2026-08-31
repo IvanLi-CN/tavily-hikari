@@ -149,6 +149,27 @@ function createUpstreamPrivacyStatus(diagnostics: ActivityDiagnostics): Upstream
       nextRetryAt: null,
       observedAt: 1_783_958_320,
     },
+    reconciliationResearchProgressWindow: {
+      windowStartedAt: 1_783_957_720,
+      windowEndedAt: 1_783_958_320,
+      windowSeconds: 600,
+      terminalDelta: 2,
+      pendingDelta: -1,
+      unavailableDelta: 0,
+      pollablePendingDelta: -1,
+      terminalRatePositive: true,
+      pollResolutionRatePositive: true,
+      pendingNonGrowing: true,
+      complete: true,
+    },
+    reconciliationResearchPollDiagnostics: {
+      unavailable: 0,
+      pollablePending: 11,
+      credentialsCoolingKeys: 0,
+      earliestCredentialsRetryAt: null,
+      lastPollOutcome: 'pending',
+      lastPollObservedAt: 1_783_958_320,
+    },
     ...diagnostics,
     recentAdjustments: [
       {

@@ -224,6 +224,18 @@ pub(crate) enum TransportFailureKind {
     Unknown,
 }
 
+/// The outcome of one Research status poll.  This is deliberately narrower
+/// than `ProxyError`: callers must persist the safe, retryable decision rather
+/// than infer it from an error string or response body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResearchPollOutcome {
+    Terminal,
+    Pending,
+    Unavailable,
+    Credentials,
+    MissingLocalSecret,
+}
+
 impl TransportFailureKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -948,19 +960,21 @@ impl TavilyProxy {
             })
     }
 
-    async fn fetch_upstream_research_terminal(
+    async fn fetch_upstream_research_poll(
         &self,
         key_id: &str,
         usage_base: &str,
         request_id: &str,
         remote_attempt: ReconciliationRemoteAttemptContext<'_>,
-    ) -> Result<bool, (ProxyError, Option<i64>)> {
-        let secret = self
+    ) -> Result<ResearchPollOutcome, (ProxyError, Option<i64>)> {
+        let Some(secret) = self
             .key_store
             .fetch_api_key_secret(key_id)
             .await
             .map_err(|err| (err, None))?
-            .ok_or_else(|| (ProxyError::Database(sqlx::Error::RowNotFound), None))?;
+        else {
+            return Ok(ResearchPollOutcome::MissingLocalSecret);
+        };
         let base = Url::parse(usage_base).map_err(|source| {
             (
                 ProxyError::InvalidEndpoint {
@@ -1030,6 +1044,12 @@ impl TavilyProxy {
             .await
             .map_err(|err| (ProxyError::Http(err), retry_after))?;
         drop(remote_attempt);
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(ResearchPollOutcome::Unavailable);
+        }
+        if matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) {
+            return Ok(ResearchPollOutcome::Credentials);
+        }
         if !status.is_success() {
             return Err((
                 ProxyError::UsageHttp {
@@ -1039,7 +1059,43 @@ impl TavilyProxy {
                 retry_after,
             ));
         }
-        Ok(research_response_is_terminal(&body))
+        Ok(if research_response_is_terminal(&body) {
+            ResearchPollOutcome::Terminal
+        } else {
+            ResearchPollOutcome::Pending
+        })
+    }
+
+    /// Compatibility wrapper for the historical in-process sweep.  The
+    /// durable drain calls `fetch_upstream_research_poll` directly so it can
+    /// persist unavailable and credential outcomes without guessing from an
+    /// error string.
+    async fn fetch_upstream_research_terminal(
+        &self,
+        key_id: &str,
+        usage_base: &str,
+        request_id: &str,
+        remote_attempt: ReconciliationRemoteAttemptContext<'_>,
+    ) -> Result<bool, (ProxyError, Option<i64>)> {
+        match self
+            .fetch_upstream_research_poll(key_id, usage_base, request_id, remote_attempt)
+            .await?
+        {
+            ResearchPollOutcome::Terminal => Ok(true),
+            ResearchPollOutcome::Pending => Ok(false),
+            ResearchPollOutcome::Unavailable => Err((
+                ProxyError::Other("research request unavailable".to_string()),
+                None,
+            )),
+            ResearchPollOutcome::Credentials => Err((
+                ProxyError::Other("research credentials rejected".to_string()),
+                None,
+            )),
+            ResearchPollOutcome::MissingLocalSecret => Err((
+                ProxyError::Database(sqlx::Error::RowNotFound),
+                None,
+            )),
+        }
     }
 }
 

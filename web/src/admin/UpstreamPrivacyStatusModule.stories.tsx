@@ -425,6 +425,40 @@ const observedStatus: UpstreamPrivacyStatus = {
   },
 }
 
+const unavailableResearchStatus: UpstreamPrivacyStatus = {
+  ...compareStatus,
+  reconciliationResearchPollDiagnostics: {
+    unavailable: 3,
+    pollablePending: 7,
+    credentialsCoolingKeys: 0,
+    earliestCredentialsRetryAt: null,
+    lastPollOutcome: 'unavailable',
+    lastPollObservedAt: 1_783_959_000,
+  },
+  dailyReconciliationProgress: {
+    ...compareStatus.dailyReconciliationProgress,
+    researchUnavailable: 3,
+    researchPollablePending: 7,
+  },
+}
+
+const credentialsCooldownResearchStatus: UpstreamPrivacyStatus = {
+  ...compareStatus,
+  reconciliationResearchPollDiagnostics: {
+    unavailable: 0,
+    pollablePending: 8,
+    credentialsCoolingKeys: 1,
+    earliestCredentialsRetryAt: 1_783_980_600,
+    lastPollOutcome: 'credentials',
+    lastPollObservedAt: 1_783_959_000,
+  },
+  dailyReconciliationProgress: {
+    ...compareStatus.dailyReconciliationProgress,
+    researchUnavailable: 0,
+    researchPollablePending: 8,
+  },
+}
+
 const meta = {
   title: 'Admin/Modules/SystemStatusModule',
   component: UpstreamPrivacyStatusModule,
@@ -669,6 +703,24 @@ export const MissingEligibleUpstreamKey: Story = {
 
 export const Recovered: Story = {
   args: { status: observedStatus },
+}
+
+export const ResearchUnavailable: Story = {
+  args: { status: unavailableResearchStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('Research 任务不存在，已停止轮询')).toBeInTheDocument()
+    await expect(canvas.getByText('unavailable')).toBeInTheDocument()
+  },
+}
+
+export const ResearchCredentialsCooldown: Story = {
+  args: { status: credentialsCooldownResearchStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('Research 凭据冷却中')).toBeInTheDocument()
+    await expect(canvas.getByText('credentials')).toBeInTheDocument()
+  },
 }
 
 export const EmptyState: Story = {

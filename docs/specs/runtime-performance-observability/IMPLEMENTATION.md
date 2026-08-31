@@ -168,6 +168,10 @@
 - Main settlement and Research now use separate durable jobs. The Research drain aggregates one
   poll at a time, while its outcome and exact cursor share one claim-fenced write. HA metadata carries local pressure across
   takeover without increasing normal log volume.
+- Research drain observations now separate `pollable` pending rows from `unavailable` 404 rows and
+  expose credential-cooling Key counts with the earliest retry in the existing bounded status
+  projection. Credential cooldown is independent of per-Key 429 cooldown; raw request identifiers,
+  keys, URLs, bodies, and secrets remain excluded.
 
 ## Visual Evidence
 

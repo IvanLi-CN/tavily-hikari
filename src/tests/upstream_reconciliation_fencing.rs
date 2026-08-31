@@ -1,5 +1,6 @@
 use super::upstream_reconciliation::{local_ts, reconciliation_test_db_path};
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn reconciliation_rejects_reclaimed_claim_before_research_writes() {
@@ -194,6 +195,7 @@ async fn reconciliation_research_drain_stale_claim_does_not_commit_cursor_or_res
                 wrapped: false,
                 poll: crate::store::UpstreamReconciliationResearchDrainPoll::Terminal,
                 key_backoff: None,
+                clear_key_backoff_scope: None,
                 job_id: claim.id,
                 claim_generation: claim.claim_generation,
             },
@@ -540,5 +542,305 @@ async fn startup_resume_schedules_pending_research_with_default_poll_time() {
     .expect("read resumed representative job");
     assert_eq!(representative, (1, now));
 
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_research_not_found_is_unavailable_without_repoll_wake() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 2, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-research-not-found"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-research-not-found")
+        .await
+        .expect("create research key");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, \
+         project_id, billing_subject, period_start, period_end, request_count, first_used_at, \
+         last_used_at, updated_at, settlement_mode) VALUES (?, ?, '2026-08-02/R1', ?, ?, \
+         ?, ?, 1, ?, ?, ?, 'shadow')",
+    )
+    .bind("research-not-found-token")
+    .bind(&key_id)
+    .bind("research-not-found-project")
+    .bind("token:research-not-found-token")
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed research usage");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, \
+         period_code, created_at, terminal_at, updated_at) VALUES (?, ?, ?, '2026-08-02/R1', ?, NULL, ?)",
+    )
+    .bind("research-not-found-request")
+    .bind("research-not-found-token")
+    .bind(&key_id)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due research");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let route_hits: Arc<AtomicUsize> = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/research/research-not-found-request",
+        get(move || {
+            let route_hits = Arc::clone(&route_hits);
+            async move {
+                route_hits.fetch_add(1, Ordering::SeqCst);
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let address = listener.local_addr().expect("read upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve not-found upstream");
+    });
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, now)
+        .await
+        .expect("enqueue Research drain");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    let outcome = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            &format!("http://{address}"),
+            claim.id,
+            claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
+        )
+        .await
+        .expect("persist unavailable Research outcome");
+    assert!(matches!(
+        outcome,
+        ClaimedResearchDrainOutcome::Completed {
+            polled: 1,
+            terminal: 0,
+            pending: 0,
+            retries: 0,
+            next_at: None,
+        }
+    ));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let row: (Option<i64>, i64, String, String, String) = sqlx::query_as(
+        "SELECT terminal_at, next_poll_at, poll_resolution, last_poll_outcome, last_poll_error_kind \
+         FROM upstream_reconciliation_research WHERE request_id = 'research-not-found-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unavailable Research outcome");
+    assert_eq!(
+        row,
+        (
+            None,
+            0,
+            "unavailable".to_string(),
+            "unavailable".to_string(),
+            "not_found".to_string()
+        )
+    );
+    assert_eq!(
+        proxy
+            .key_store
+            .upstream_reconciliation_research_drain_available_at()
+            .await
+            .expect("read unavailable drain wake"),
+        None,
+        "unavailable rows must not be scheduled for another poll"
+    );
+    assert!(
+        !proxy
+            .key_store
+            .has_due_upstream_reconciliation_research()
+            .await
+            .expect("read unavailable Research due state")
+    );
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_research_missing_secret_uses_key_scoped_cooldown_without_http() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 3, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-research-credentials"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    let key_id = "missing-research-secret-key";
+    let key_id = proxy
+        .add_or_undelete_key(key_id)
+        .await
+        .expect("create key with missing secret");
+    sqlx::query("UPDATE api_keys SET api_key = '' WHERE id = ?")
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear local secret for test");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, \
+         project_id, billing_subject, period_start, period_end, request_count, first_used_at, \
+         last_used_at, updated_at, settlement_mode) VALUES (?, ?, '2026-08-03/R1', ?, ?, \
+         ?, ?, 1, ?, ?, ?, 'shadow')",
+    )
+    .bind("research-missing-secret-token")
+    .bind(&key_id)
+    .bind("research-missing-secret-project")
+    .bind("token:research-missing-secret-token")
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed missing-secret usage");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, \
+         period_code, created_at, terminal_at, updated_at) VALUES (?, ?, ?, '2026-08-03/R1', ?, NULL, ?)",
+    )
+    .bind("research-missing-secret-request")
+    .bind("research-missing-secret-token")
+    .bind(&key_id)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed missing-secret research");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let route_hits: Arc<AtomicUsize> = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/research/research-missing-secret-request",
+        get(move || {
+            let route_hits = Arc::clone(&route_hits);
+            async move {
+                route_hits.fetch_add(1, Ordering::SeqCst);
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let address = listener.local_addr().expect("read upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("serve credentials upstream");
+    });
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, now)
+        .await
+        .expect("enqueue Research drain");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    let outcome = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            &format!("http://{address}"),
+            claim.id,
+            claim.claim_generation,
+            Arc::new(RemoteAttemptAdmissionController::default()),
+        )
+        .await
+        .expect("persist missing-secret cooldown");
+    assert!(matches!(
+        outcome,
+        ClaimedResearchDrainOutcome::Completed {
+            polled: 1,
+            terminal: 0,
+            pending: 0,
+            retries: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "missing secret must not send HTTP"
+    );
+    let row: (Option<i64>, i64, String, String, String) = sqlx::query_as(
+        "SELECT terminal_at, next_poll_at, poll_resolution, last_poll_outcome, last_poll_error_kind \
+         FROM upstream_reconciliation_research WHERE request_id = 'research-missing-secret-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read missing-secret Research outcome");
+    assert_eq!(
+        row,
+        (
+            None,
+            now + 6 * 60 * 60,
+            "pollable".to_string(),
+            "retry".to_string(),
+            "missing_local_secret".to_string(),
+        )
+    );
+    let backoff: (String, i64) = sqlx::query_as(
+        "SELECT scope, cooldown_until FROM api_key_transient_backoffs WHERE key_id = ?",
+    )
+    .bind(&key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read credentials cooldown");
+    assert_eq!(
+        backoff,
+        (
+            "reconciliation_research_credentials".to_string(),
+            now + 6 * 60 * 60
+        )
+    );
+    drop(proxy);
     let _ = std::fs::remove_file(db_path);
 }

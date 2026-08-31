@@ -35,6 +35,14 @@ records that became eligible behind the cursor, and refresh that sweep clock in 
 commit. When all eligible due Keys are cooling, determine the globally earliest eligible cooldown
 independently of the cursor page.
 
+Research poll outcomes are separate from billing terminal state. A confirmed 404 records
+`poll_resolution=unavailable`, leaves `terminal_at` unset, and removes that request from future drain
+polls without clearing the main period's 24-hour degraded protection. A 401/403 or an empty local
+secret records a fixed credential error and arms only the affected Key's six-hour
+`reconciliation_research_credentials` cooldown. A successful 202 or terminal response clears that
+scope only; the existing `period_reconciliation` 429 cooldown remains independent. All of these
+transitions are claim-fenced and keep raw upstream details out of durable observations.
+
 For a period that maps to more than one eligible upstream key, persist each successful key observation
 by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
 write `remote_attempt_budget` and schedule one durable 30-second continuation; do not write a semantic
