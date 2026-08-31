@@ -160,7 +160,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         )
         upstream = reconciliation_shards["lib-upstream-reconciliation"]
         self.assertEqual(RUNNER.shard_resource_limits(upstream, 4, 2), (4, 1))
-        self.assertEqual(len(upstream["include_prefixes"]), 28)
+        self.assertEqual(len(upstream["include_prefixes"]), 29)
         self.assertEqual(len(upstream["include_prefixes"]), len(set(upstream["include_prefixes"])))
         self.assertTrue(
             all(
@@ -322,6 +322,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "server::tests::admin_logs_and_summary::api_",
                 "server::tests::api_keys_and_registration::api_",
                 "server::tests::branded_assets_contract::",
+                "server::pwa_cache_tests::",
                 "server::tests::linuxdo_oauth_and_admin_keys::api_",
                 "server::tests::log_catalog_and_dashboard_sse::api_",
                 "server::admin_resources_tests::",
