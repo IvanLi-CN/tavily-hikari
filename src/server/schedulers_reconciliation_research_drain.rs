@@ -68,6 +68,7 @@ async fn persist_claimed_research_drain(
     run_result: Result<ClaimedResearchDrainOutcome, ProxyError>,
 ) -> bool {
     match run_result {
+        Ok(ClaimedResearchDrainOutcome::Persisted { .. }) => true,
         Ok(ClaimedResearchDrainOutcome::Completed {
             polled,
             terminal,

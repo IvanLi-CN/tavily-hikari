@@ -30,6 +30,9 @@ stable cursor, so tying its liveness to the main run is unnecessary.
   cooldown expiry rather than the earliest value in the current cursor page.
 - Startup, the stale-job watchdog, and a safely completed main run ensure the unique drain
   representative. Research no longer contributes to the main representative's continuation time.
+- The accepted drain transaction also writes its ten-minute progress window and finishes or
+  enqueues the unique next representative. Logs and runtime counters are emitted only from that
+  accepted receipt, so a stale claim or failed transaction cannot create false convergence evidence.
 
 ## Consequences
 

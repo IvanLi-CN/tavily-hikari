@@ -788,7 +788,7 @@ impl KeyStore {
             AlertReadSource::Raw => {
                 let mut conn = self
                     .sqlite_runtime
-                    .acquire_operation_connection(SqliteOperation::AlertProjection)
+                    .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
                     .await?;
                 let result = query.build().fetch_all(&mut *conn).await;
                 Ok(conn.complete_query(result).await?)
@@ -796,7 +796,7 @@ impl KeyStore {
             AlertReadSource::Projected => {
                 let mut conn = self
                     .sqlite_runtime
-                    .acquire_operation_connection(SqliteOperation::AlertProjection)
+                    .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
                     .await?;
                 let result = query.build().fetch_all(&mut *conn).await;
                 Ok(conn.complete_query(result).await?)
@@ -825,7 +825,7 @@ impl KeyStore {
         );
         let mut count_conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let count_result = count_query.build_query_scalar().fetch_one(&mut *count_conn).await;
         let total = count_conn.complete_query(count_result).await?;
@@ -844,7 +844,7 @@ impl KeyStore {
         query.push_bind(offset);
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let result = query.build().fetch_all(&mut *conn).await;
         let rows = conn.complete_query(result).await?;
@@ -897,7 +897,7 @@ impl KeyStore {
         );
         let mut count_conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let count_result = count_query.build_query_scalar().fetch_one(&mut *count_conn).await;
         let total = count_conn.complete_query(count_result).await?;
@@ -917,7 +917,7 @@ impl KeyStore {
 
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let query_result = query.build().fetch_all(&mut *conn).await;
         let rows = conn.complete_query(query_result).await?;
@@ -1418,7 +1418,7 @@ impl KeyStore {
         count_query.push(" SELECT COUNT(*) FROM grouped_alerts");
         let mut count_conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let count_result = count_query.build_query_scalar().fetch_one(&mut *count_conn).await;
         let total = count_conn.complete_query(count_result).await?;
@@ -1435,7 +1435,7 @@ impl KeyStore {
 
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let query_result = query.build().fetch_all(&mut *conn).await;
         let rows = conn.complete_query(query_result).await?;
@@ -1481,7 +1481,7 @@ impl KeyStore {
         count_query.push(" SELECT COUNT(*) FROM grouped_alerts");
         let mut count_conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let count_result = count_query.build_query_scalar().fetch_one(&mut *count_conn).await;
         let total = count_conn.complete_query(count_result).await?;
@@ -1497,7 +1497,7 @@ impl KeyStore {
         query.push_bind(offset);
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let result = query.build().fetch_all(&mut *conn).await;
         let rows = conn.complete_query(result).await?;
@@ -1535,7 +1535,7 @@ impl KeyStore {
         query.push(" SELECT COUNT(*) FROM grouped_alerts");
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_operation_connection(SqliteOperation::AdminAlertsRead)
             .await?;
         let result = query.build_query_scalar().fetch_one(&mut *conn).await;
         conn.complete_query(result).await

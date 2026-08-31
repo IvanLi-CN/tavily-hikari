@@ -1356,6 +1356,7 @@ async fn sse_public(
 async fn build_dashboard_overview_payload(
     state: &Arc<AppState>,
     last_good: Option<&DashboardOverviewSnapshot>,
+    quota_charge_token: Option<[i64; 6]>,
 ) -> Result<DashboardOverviewSnapshot, ProxyError> {
     #[cfg(test)]
     {
@@ -1374,7 +1375,10 @@ async fn build_dashboard_overview_payload(
         pending_dashboard_rollup_signature,
         dashboard_stale_key_count,
         dashboard_quota_charge_token,
-    ) = state.proxy.dashboard_overview_read_components_at(now_local).await?;
+    ) = state
+        .proxy
+        .dashboard_overview_read_components_with_quota_token_at(now_local, quota_charge_token)
+        .await?;
     let rollup_integrity = state.proxy.dashboard_rollup_integrity_status().await?;
     let month_series = state.proxy.dashboard_month_series(&summary_windows).await?;
     let dashboard_api_key_lifecycle_signature = state
@@ -1855,11 +1859,20 @@ async fn load_dashboard_overview_snapshot(
                     cache.loading_generation = cache.loading_generation.wrapping_add(1);
                     cache.loading_started_at = Some(tokio::time::Instant::now());
                     cache.last_refresh_requested_at = Some(tokio::time::Instant::now());
-                    DashboardOverviewLoadAction::Refresh {
-                        generation: cache.loading_generation,
-                        request_stats_generation,
-                        alert_projection_generation: cache.alert_projection_generation,
-                        last_good,
+                DashboardOverviewLoadAction::Refresh {
+                    generation: cache.loading_generation,
+                    request_stats_generation,
+                    alert_projection_generation: cache.alert_projection_generation,
+                    reason: if !has_cached {
+                        DashboardBuildReason::Cold
+                    } else if generation_dirty {
+                        DashboardBuildReason::RequestStatsDirty
+                    } else if alert_projection_dirty {
+                        DashboardBuildReason::AlertProjectionDirty
+                    } else {
+                        DashboardBuildReason::SafetyProbeChanged
+                    },
+                    last_good,
                         cold_waiter: Some(cache.notify.clone().notified_owned()),
                     }
                 }
@@ -1886,20 +1899,22 @@ async fn load_dashboard_overview_snapshot(
         }
         DashboardOverviewLoadAction::Refresh {
             generation,
-            request_stats_generation,
-            alert_projection_generation,
-            last_good,
+        request_stats_generation,
+        alert_projection_generation,
+        reason,
+        last_good,
             cold_waiter,
         } => {
             if let Some(last_good) = last_good {
                 let refresh_state = state.clone();
                 tokio::spawn(async move {
-                    let _ = refresh_dashboard_overview_snapshot(
+                    let _ = refresh_dashboard_overview_snapshot_with_reason(
                         &refresh_state,
                         cache_handle,
                         generation,
                         request_stats_generation,
                         alert_projection_generation,
+                        reason,
                     )
                     .await;
                 });
@@ -1908,12 +1923,13 @@ async fn load_dashboard_overview_snapshot(
                 let refresh_state = state.clone();
                 let refresh_cache = cache_handle.clone();
                 tokio::spawn(async move {
-                    let _ = refresh_dashboard_overview_snapshot(
+                    let _ = refresh_dashboard_overview_snapshot_with_reason(
                         &refresh_state,
                         refresh_cache,
                         generation,
                         request_stats_generation,
                         alert_projection_generation,
+                        reason,
                     )
                     .await;
                 });
@@ -1971,6 +1987,7 @@ enum DashboardOverviewLoadAction {
         generation: u64,
         request_stats_generation: Option<u64>,
         alert_projection_generation: u64,
+        reason: DashboardBuildReason,
         last_good: Option<Arc<DashboardOverviewSnapshot>>,
         cold_waiter: Option<tokio::sync::futures::OwnedNotified>,
     },
@@ -1995,6 +2012,7 @@ async fn wait_for_dashboard_overview_cold_snapshot(
     Err(ProxyError::Other(message.to_string()))
 }
 
+#[cfg(test)]
 async fn refresh_dashboard_overview_snapshot(
     state: &Arc<AppState>,
     cache_handle: Arc<Mutex<DashboardOverviewCacheState>>,
@@ -2002,8 +2020,33 @@ async fn refresh_dashboard_overview_snapshot(
     expected_request_stats_generation: Option<u64>,
     expected_alert_projection_generation: u64,
 ) -> Result<Arc<DashboardOverviewSnapshot>, ProxyError> {
+    refresh_dashboard_overview_snapshot_with_reason(
+        state,
+        cache_handle,
+        load_generation,
+        expected_request_stats_generation,
+        expected_alert_projection_generation,
+        DashboardBuildReason::SafetyProbeChanged,
+    )
+    .await
+}
+
+async fn refresh_dashboard_overview_snapshot_with_reason(
+    state: &Arc<AppState>,
+    cache_handle: Arc<Mutex<DashboardOverviewCacheState>>,
+    load_generation: u64,
+    expected_request_stats_generation: Option<u64>,
+    expected_alert_projection_generation: u64,
+    build_reason: DashboardBuildReason,
+) -> Result<Arc<DashboardOverviewSnapshot>, ProxyError> {
     let perf = tavily_hikari::RuntimePerfScope::start();
     let mut load_guard = DashboardOverviewLoadGuard::new(cache_handle.clone(), load_generation);
+    tracing::debug!(
+        component = "dashboard",
+        event = "dashboard_build_started",
+        build_reason = build_reason.as_str(),
+        "starting a bounded Dashboard build"
+    );
     // A cold process has no last-good snapshot to compare against. Build that
     // snapshot once, instead of paying for a full freshness probe followed by
     // the same domain reads again. Warm refreshes retain the cheap-token fast
@@ -2012,6 +2055,7 @@ async fn refresh_dashboard_overview_snapshot(
         let cache = cache_handle.lock().await;
         cache.cached.is_some()
     };
+    let mut quota_charge_token_for_build = None;
     if has_cached_snapshot {
         let freshness_started = Instant::now();
         let freshness = match compute_dashboard_overview_freshness(state).await {
@@ -2088,6 +2132,7 @@ async fn refresh_dashboard_overview_snapshot(
                 );
                 return Ok(snapshot);
             }
+            quota_charge_token_for_build = Some(freshness.dashboard_quota_charge_token);
         }
     }
 
@@ -2096,9 +2141,13 @@ async fn refresh_dashboard_overview_snapshot(
         let cache = cache_handle.lock().await;
         cache.cached.as_ref().map(|cached| cached.snapshot.clone())
     };
-    let result = build_dashboard_overview_payload(state, last_good_alerts.as_deref())
-        .await
-        .map(Arc::new);
+    let result = build_dashboard_overview_payload(
+        state,
+        last_good_alerts.as_deref(),
+        quota_charge_token_for_build,
+    )
+    .await
+    .map(Arc::new);
     tavily_hikari::emit_sampled_perf_log(
         tavily_hikari::DbLogStatus::Info,
         "admin_read",
@@ -2113,6 +2162,7 @@ async fn refresh_dashboard_overview_snapshot(
         },
     );
     let mut cache = cache_handle.lock().await;
+    cache.last_build_reason = Some(build_reason);
     if cache.loading_generation != load_generation {
         tracing::warn!(
             component = "admin_read",

@@ -1094,7 +1094,9 @@ async fn observability_deferred_writer_requeues_pressure_deltas_after_writer_con
     .expect("create proxy");
     let now = manual_clock.now_ts();
     let lock_handle =
-        hold_sqlite_write_lock_for_test_for(&proxy.key_store.pool, Duration::from_millis(350))
+        // The writer intentionally debounces one second before its first
+        // flush. Keep the lock across that boundary to exercise requeue.
+        hold_sqlite_write_lock_for_test_for(&proxy.key_store.pool, Duration::from_millis(1_500))
             .await;
 
     let received_at = std::time::Instant::now();
@@ -1107,7 +1109,7 @@ async fn observability_deferred_writer_requeues_pressure_deltas_after_writer_con
         "request-path pressure observation must not wait for SQLite writer"
     );
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let (queued, stale, _, _, _) = proxy
                 .observability_deferred_writer_snapshot_for_test()

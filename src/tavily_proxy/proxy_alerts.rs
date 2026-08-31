@@ -14,13 +14,15 @@ impl TavilyProxy {
 
     #[doc(hidden)]
     pub fn admin_alert_read_defer_reason(&self) -> Option<&'static str> {
-        match self.key_store.try_admit_admin_alert_read() {
-            Ok(permit) => {
-                drop(permit);
-                None
-            }
-            Err(reason) => Some(reason.as_str()),
-        }
+        None
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn force_next_admin_alert_read_deadline_for_test(&self) {
+        self.key_store
+            .sqlite_runtime
+            .force_next_cooperative_query_deadline_for_test();
     }
 
     async fn advance_dashboard_alert_projection_slice_outcome(
@@ -127,7 +129,7 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
-        let _permit = self.acquire_admin_alert_read().await?;
+        self.acquire_admin_alert_read().await?;
         self.alert_events_page(
             alert_type,
             since,
@@ -183,7 +185,7 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
-        let _permit = self.acquire_admin_alert_read().await?;
+        self.acquire_admin_alert_read().await?;
         self.alert_groups_page(
             alert_type,
             since,
@@ -203,27 +205,19 @@ impl TavilyProxy {
     }
 
     pub async fn admin_alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
-        let _permit = self.acquire_admin_alert_read().await?;
+        self.acquire_admin_alert_read().await?;
         self.alert_catalog().await
     }
 
-    async fn acquire_admin_alert_read(&self) -> Result<SqliteMaintenanceBulkPermit, ProxyError> {
-        let permit = self
-            .key_store
-            .try_admit_admin_alert_read()
-            .map_err(|reason| ProxyError::Deferred {
-                operation: "admin_alerts_read",
-                reason: reason.as_str().to_string(),
-            })?;
+    async fn acquire_admin_alert_read(&self) -> Result<(), ProxyError> {
         let status = self.key_store.alert_projection_status().await?;
         // Administrator events/groups/catalog must never fall back to the raw
         // cross-table alert CTE while the durable sidecar is incomplete. The
         // handler can still serve an exact-key last-good snapshot during this
         // bounded catch-up window, or return a truthful cold 503.
         if status.coverage == "ok" && status.stale_reason.is_none() {
-            return Ok(permit);
+            return Ok(());
         }
-        drop(permit);
         Err(ProxyError::Deferred {
             operation: "admin_alerts_read",
             reason: status

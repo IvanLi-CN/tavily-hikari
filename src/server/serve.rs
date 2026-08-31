@@ -2053,7 +2053,8 @@ async fn shutdown_signal() {
 }
 
 async fn prewarm_owner_read_models_after_ready(state: Arc<AppState>) {
-    prewarm_admin_privacy_status(state).await;
+    prewarm_admin_privacy_status(state.clone()).await;
+    prewarm_admin_alerts(state).await;
 }
 
 const BODY_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB 默认限制

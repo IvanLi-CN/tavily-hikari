@@ -61,6 +61,14 @@ pub(crate) struct UpstreamReconciliationResearchDrainCommit<'a> {
     pub(crate) claim_generation: i64,
 }
 
+/// The drain publishes observations only after its durable state and scheduler handoff commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResearchDrainCommitReceipt {
+    Accepted { next_at: i64 },
+    Deferred { retry_at: i64 },
+    StaleClaim,
+}
+
 impl KeyStore {
     pub(crate) async fn mark_upstream_reconciliation_research_unavailable(
         &self,
@@ -417,16 +425,13 @@ impl KeyStore {
     pub(crate) async fn commit_upstream_reconciliation_research_drain(
         &self,
         commit: UpstreamReconciliationResearchDrainCommit<'_>,
-    ) -> Result<bool, ProxyError> {
+    ) -> Result<ResearchDrainCommitReceipt, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut transaction = self.begin_reconciliation_control().await?;
         let claimed_job = Some((commit.job_id, commit.claim_generation));
         if !Self::reconciliation_claim_is_current_locked(&mut transaction, claimed_job).await? {
             transaction.rollback().await?;
-            return Err(ProxyError::StaleClaim {
-                job_id: commit.job_id,
-                claim_generation: commit.claim_generation,
-            });
+            return Ok(ResearchDrainCommitReceipt::StaleClaim);
         }
         let cursor_matches: i64 = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM upstream_reconciliation_research_scan_state \
@@ -439,11 +444,22 @@ impl KeyStore {
         .fetch_one(&mut *transaction)
         .await?;
         if cursor_matches == 0 {
-            transaction.rollback().await?;
-            return Ok(false);
+            Self::finish_research_drain_claim_locked(
+                &mut transaction,
+                commit.job_id,
+                commit.claim_generation,
+                "deferred=research_drain_budget",
+                now.saturating_add(30),
+                now,
+            )
+            .await?;
+            transaction.finish(Ok(())).await?;
+            return Ok(ResearchDrainCommitReceipt::Deferred {
+                retry_at: now.saturating_add(30),
+            });
         }
 
-        match commit.poll {
+        let changed = match commit.poll {
             UpstreamReconciliationResearchDrainPoll::Terminal => {
                 let changed = sqlx::query(
                     "UPDATE upstream_reconciliation_research SET terminal_at = ?, \
@@ -467,8 +483,9 @@ impl KeyStore {
                     .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_RESEARCH_TERMINAL_AT_V1)
                     .bind(now.to_string())
                     .execute(&mut *transaction)
-                    .await?;
+                        .await?;
                 }
+                changed
             }
             UpstreamReconciliationResearchDrainPoll::Pending {
                 next_poll_at,
@@ -488,7 +505,8 @@ impl KeyStore {
                 .bind(now)
                 .bind(commit.request_id)
                 .execute(&mut *transaction)
-                .await?;
+                .await?
+                .rows_affected()
             }
             UpstreamReconciliationResearchDrainPoll::Unavailable { error_kind } => {
                 sqlx::query(
@@ -503,8 +521,26 @@ impl KeyStore {
                 .bind(now)
                 .bind(commit.request_id)
                 .execute(&mut *transaction)
-                .await?;
+                .await?
+                .rows_affected()
             }
+        };
+        if changed == 0 {
+            // The selected row resolved between the read session and this claim-fenced
+            // transaction. Do not advance the cursor; let the next drain retry selection.
+            Self::finish_research_drain_claim_locked(
+                &mut transaction,
+                commit.job_id,
+                commit.claim_generation,
+                "deferred=research_drain_budget",
+                now.saturating_add(30),
+                now,
+            )
+            .await?;
+            transaction.finish(Ok(())).await?;
+            return Ok(ResearchDrainCommitReceipt::Deferred {
+                retry_at: now.saturating_add(30),
+            });
         }
 
         if let Some(arm) = commit.key_backoff {
@@ -571,8 +607,78 @@ impl KeyStore {
         .bind(now.to_string())
         .execute(&mut *transaction)
         .await?;
+        self.record_reconciliation_research_progress_window_locked(&mut transaction, now)
+            .await?;
+        let next_at = now.saturating_add(5);
+        Self::finish_research_drain_claim_locked(
+            &mut transaction,
+            commit.job_id,
+            commit.claim_generation,
+            "poll_persisted",
+            next_at,
+            now,
+        )
+        .await?;
         transaction.finish(Ok(())).await?;
-        Ok(true)
+        Ok(ResearchDrainCommitReceipt::Accepted { next_at })
+    }
+
+    async fn finish_research_drain_claim_locked(
+        transaction: &mut sqlx::SqliteConnection,
+        job_id: i64,
+        claim_generation: i64,
+        message: &str,
+        available_at: i64,
+        now: i64,
+    ) -> Result<(), ProxyError> {
+        let updated = sqlx::query(
+            r#"UPDATE scheduled_jobs
+                   SET status = 'success', message = ?, finished_at = ?
+                 WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
+        )
+        .bind(message)
+        .bind(now)
+        .bind(job_id)
+        .bind(claim_generation)
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(ProxyError::StaleClaim {
+                job_id,
+                claim_generation,
+            });
+        }
+
+        if let Some((continuation_id, status, _)) = Self::scheduled_job_lookup_active_locked(
+            transaction,
+            "upstream_reconciliation_research_drain",
+            None,
+        )
+        .await?
+        {
+            if status == "queued" {
+                sqlx::query(
+                    "UPDATE scheduled_jobs SET available_at = MIN(available_at, ?) WHERE id = ?",
+                )
+                .bind(available_at)
+                .bind(continuation_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"INSERT INTO scheduled_jobs (
+                    job_type, trigger_source, key_id, status, attempt, queued_at,
+                    available_at, started_at, finished_at
+                ) VALUES ('upstream_reconciliation_research_drain', 'auto', NULL, 'queued', 1, ?, ?, NULL, NULL)"#,
+        )
+        .bind(now)
+        .bind(available_at)
+        .execute(&mut *transaction)
+        .await?;
+        Ok(())
     }
 
     #[cfg(test)]

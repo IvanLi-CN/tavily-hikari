@@ -169,6 +169,7 @@ struct ObservabilityDeferredWriter {
     rebalance_audit_payload_bytes: usize,
     rebalance_audit_flush_running: bool,
     rebalance_audit_stale: bool,
+    consecutive_rebalance_audit_defers: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

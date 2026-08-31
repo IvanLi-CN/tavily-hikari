@@ -71,6 +71,13 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   `reconciliation_research_credentials` cooldown for only the affected Key. The selector excludes
   both this scope and `period_reconciliation` 429 cooldowns, and a successful poll clears only the
   credentials scope. No credentials or raw upstream error text is persisted in observations.
+- A Research drain result is observable only after `ResearchDrainCommitReceipt::Accepted`. Its
+  poll resolution, Key state, exact cursor, ten-minute progress window, claimed-job finish, and
+  unique next representative are one claim-fenced transaction. Deferred and stale receipts never
+  advance the cursor or add outcome counters.
+- Short maintenance writes use a runtime-owned transaction task. Caller cancellation can no longer
+  return an open transaction to the pool: the owner commits or rolls back before restoration.
+  Physical detach remains reserved for panic, shutdown, or an unverifiable connection state.
 
 ## Consequences
 
@@ -83,3 +90,6 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - Partial key observations are node-local rebuildable state. Usage, work generation, settlement, and
   billing adjustments remain the reconciliation truth shared through the existing ledger and HA
   paths; a stale generation or claim cannot consume observations from another run.
+- Admin Alerts reads use their own bounded read session: a 100ms acquire and a 250ms native SQLite
+  deadline over one snapshot. Exact-key last-good data may be served stale; a cold key returns
+  `503 Retry-After: 1` and never falls back to the raw CTE path.

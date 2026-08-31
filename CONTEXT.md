@@ -104,7 +104,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   owns terminal Research polling and the v21 scan cursor. It performs at most one request every five
   seconds, commits the poll result, per-Key cooldown, exact cursor, and claim fence atomically, and
   never consumes the main reconciliation run's two-request budget. Main settlement and the drain
-  share only the instance-wide request-scoped remote lease.
+  share only the instance-wide request-scoped remote lease. Outcome counters are emitted only after
+  one accepted receipt has atomically recorded the row result, Key state, cursor, progress window,
+  claim finish, and next representative.
 - `Research poll resolution`: a durable classification of a nonterminal Research row. `pollable`
   means the row may be selected by the drain; `unavailable` records a confirmed 404 and suppresses
   repeated polling while leaving `terminal_at` unset, preserving the existing 24-hour degraded
@@ -124,7 +126,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   SQLite admission rather than holding a foreground request on the writer.
 - `best-effort audit`: rebalance audit records are capped in memory and may report stale coverage
   when contention or capacity prevents persistence. A missing audit record never changes MCP
-  response semantics, billing truth, or durable business work.
+  response semantics, billing truth, or durable business work. The instance-owned writer debounces
+  one second, commits at most ten audit rows in one transaction, atomically requeues an uncommitted
+  batch, and backs off only sustained defers.
 - `connection-scoped SQLite pages`: SQLite `CACHE_WRITE` page deltas sampled at operation-connection
   boundaries. They may attribute an operation's SQLite cache writes. Process and cgroup write-byte
   counters remain aggregate pressure labels and must not be presented as one query's writes.
@@ -141,7 +145,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `DashboardReadModel`: the single AppState-owned immutable last-good overview snapshot. A dirty
   generation may request one shared rebuild every ten seconds; a sixty-second bounded safety probe
   catches missed invalidations. Requests under SQLite pressure return last-good coverage rather
-  than starting an independent rebuild.
+  than starting an independent rebuild. Quota sample freshness uses append-only primary-key/time
+  watermarks and a payload build reuses the watermark already read by its triggering probe.
 - `AlertProjection`: an observability-sidecar projection with separate stable cursor/fence lanes:
   the recent tail serves Dashboard and the historical lane serves administrator Events and Groups.
   Dashboard accepts a recent summary only at `recent_coverage=ok`; otherwise the read model retains

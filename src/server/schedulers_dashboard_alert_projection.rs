@@ -24,6 +24,7 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
             {
                 Ok((true, _)) => {
                     mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+                    prewarm_admin_alerts(state.clone()).await;
                     if last_error.take().is_some() {
                         tracing::info!(
                             component = "dashboard_alert_projection",

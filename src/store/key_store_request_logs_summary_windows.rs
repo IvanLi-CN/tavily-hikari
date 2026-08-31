@@ -12,10 +12,11 @@ impl KeyStore {
         let row = sqlx::query(
             r#"
             SELECT
-                COALESCE(COUNT(*), 0) AS sample_count,
-                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
-                COALESCE(SUM(quota_remaining), 0) AS quota_remaining_sum,
-                COALESCE(COUNT(DISTINCT key_id), 0) AS sampled_key_count
+                -- Samples are append-only. A primary-key watermark catches
+                -- in-window backfill without re-aggregating the month, while
+                -- the time watermark keeps the read on the captured-at index.
+                COALESCE(MAX(id), 0) AS latest_window_sample_id,
+                COALESCE(MAX(captured_at), 0) AS latest_window_captured_at
             FROM api_key_quota_sync_samples
             WHERE captured_at >= ?
               AND captured_at < ?
@@ -27,11 +28,11 @@ impl KeyStore {
         .await?;
         Ok([
             latest_sync_at,
-            row.try_get("sample_count")?,
-            row.try_get("captured_at_sum")?,
-            row.try_get("quota_remaining_sum")?,
-            row.try_get("sampled_key_count")?,
+            row.try_get("latest_window_sample_id")?,
+            row.try_get("latest_window_captured_at")?,
             stale_key_count,
+            month_quota_charge_start,
+            today_end,
         ])
     }
 

@@ -267,6 +267,14 @@ reads:
 - Production stop-the-bleed actions such as single-container restart are live changes and require
   explicit owner approval.
 
+## Exact-key admin reads
+
+An administrator list endpoint under SQLite pressure needs its own bounded read session, not a bulk
+permit followed by a raw-pool query. Acquire in 100ms, use a connection-local 250ms SQLite deadline
+over one read snapshot, and then choose the exact query key's last-good result. A warm key returns
+stale coverage; a cold key returns `503 Retry-After: 1`. Do not escape this boundary through a raw
+CTE fallback or an outer async timeout that can leave the native statement alive.
+
 ## Bounded reconciliation and memory observations
 
 - Candidate selection for reconciliation should fetch an indexed, bounded page before grouping or

@@ -23,6 +23,9 @@
 - 管理员 Events、Groups 与 Catalog 在 projection 不完整或 SQLite 压力下只返回同一规范查询键
   的 last-good 结果，并标记 `coverage`、`observedAt`、`staleReason`；没有可复用快照时返回
   `503 Retry-After: 1`，不得在读取路径启动原始告警 CTE。
+- Alerts 读取使用独立的 SQLite read session：获取连接最多 `100ms`，同一只读 snapshot 内的
+  coverage 与 projection 读取由 `250ms` 原生 deadline 约束。它不是 bulk admission，也不允许
+  handler 外层 timeout 或 raw-pool fallback 重新引入无界等待。
 
 ## Non-goals
 

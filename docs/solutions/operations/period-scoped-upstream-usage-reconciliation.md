@@ -277,3 +277,11 @@ Research health is separate from settlement retries. For a current-period starva
 observe a fixed ten-minute window: terminal rate must become positive and pending Research must not
 grow. An `upstream429` bucket measures settlement retry pressure only; it is neither backlog size
 nor proof of terminal progress.
+
+## Accepted drain receipts
+
+Treat a Research poll as operationally visible only after one claim-fenced transaction accepts its
+row resolution, affected Key backoff, exact scan cursor, progress-window delta, claimed job finish,
+and next unique representative. A zero-row update is either a previously resolved row or a stale
+claim; it must not advance the cursor. Deferred and stale receipts add no progress counters. This
+prevents the dashboard from reporting convergence that a rollback or stale owner never persisted.

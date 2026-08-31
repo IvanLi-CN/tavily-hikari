@@ -722,12 +722,10 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .expect("warm alerts catalog");
     assert_eq!(warm.status(), reqwest::StatusCode::OK);
 
-    let held = match state.proxy.admit_dashboard_rollup_integrity() {
-        SqliteAdmissionOutcome::Admitted(permit) => permit,
-        SqliteAdmissionOutcome::Deferred { reason } => {
-            panic!("test must hold the shared bulk permit, got {reason}")
-        }
-    };
+    // Alerts no longer depend on a maintenance-bulk permit. The native,
+    // connection-local read deadline is the pressure boundary that selects
+    // an exact-key last-good response.
+    state.proxy.force_next_admin_alert_read_deadline_for_test();
     let stale = client
         .get(format!("http://{admin_addr}/api/alerts/catalog"))
         .header(reqwest::header::COOKIE, &cookie)
@@ -742,6 +740,7 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         Some("sqlite_pressure")
     );
 
+    state.proxy.force_next_admin_alert_read_deadline_for_test();
     let cold = client
         .get(format!("http://{admin_addr}/api/alerts/events?page=2"))
         .header(reqwest::header::COOKIE, &cookie)
@@ -750,8 +749,6 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .expect("cold alerts page");
     assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(cold.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("1"));
-    drop(held);
-
     let _ = std::fs::remove_file(db_path);
 }
 

@@ -46,6 +46,25 @@ struct DashboardOverviewFreshness {
     retention_since: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardBuildReason {
+    Cold,
+    RequestStatsDirty,
+    AlertProjectionDirty,
+    SafetyProbeChanged,
+}
+
+impl DashboardBuildReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::RequestStatsDirty => "request_stats_dirty",
+            Self::AlertProjectionDirty => "alert_projection_dirty",
+            Self::SafetyProbeChanged => "safety_probe_changed",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CachedDashboardOverviewSnapshot {
     snapshot: Arc<DashboardOverviewSnapshot>,
@@ -63,8 +82,10 @@ struct DashboardOverviewCacheState {
     built_alert_projection_generation: Option<u64>,
     last_refresh_requested_at: Option<tokio::time::Instant>,
     last_freshness_probe_at: Option<tokio::time::Instant>,
+    last_build_reason: Option<DashboardBuildReason>,
     notify: Arc<tokio::sync::Notify>,
     admin_alerts: AdminAlertsReadCache,
+    admin_alerts_prewarm_in_flight: bool,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -86,8 +107,10 @@ impl Default for DashboardOverviewCacheState {
             built_alert_projection_generation: None,
             last_refresh_requested_at: None,
             last_freshness_probe_at: None,
+            last_build_reason: None,
             notify: Arc::new(tokio::sync::Notify::new()),
             admin_alerts: AdminAlertsReadCache::default(),
+            admin_alerts_prewarm_in_flight: false,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -195,6 +218,71 @@ async fn record_admin_alerts_last_good(
         .admin_alerts
         .entries
         .truncate(ADMIN_ALERTS_CACHE_CAPACITY);
+}
+
+fn default_admin_alert_cache_key(kind: &str) -> String {
+    serde_json::to_string(&(
+        kind,
+        Option::<&str>::None,
+        Option::<i64>::None,
+        Option::<i64>::None,
+        Option::<&str>::None,
+        Option::<&str>::None,
+        Option::<&str>::None,
+        Vec::<String>::new(),
+        1_i64,
+        20_i64,
+    ))
+    .expect("default admin Alerts cache key fields are serializable")
+}
+
+pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
+    let cache = dashboard_overview_cache_for_state(state.as_ref());
+    {
+        let mut cache = cache.lock().await;
+        if cache.admin_alerts_prewarm_in_flight {
+            return;
+        }
+        cache.admin_alerts_prewarm_in_flight = true;
+    }
+    tokio::spawn(async move {
+        if let Ok(catalog) = state.proxy.admin_alert_catalog().await {
+            record_admin_alerts_last_good(
+                state.as_ref(),
+                "catalog".to_string(),
+                AdminAlertsReadCacheValue::Catalog(catalog),
+            )
+            .await;
+        }
+        if let Ok(events) = state
+            .proxy
+            .admin_alert_events_page(None, None, None, None, None, None, &[], 1, 20)
+            .await
+        {
+            record_admin_alerts_last_good(
+                state.as_ref(),
+                default_admin_alert_cache_key("events"),
+                AdminAlertsReadCacheValue::Events(events),
+            )
+            .await;
+        }
+        if let Ok(groups) = state
+            .proxy
+            .admin_alert_groups_page(None, None, None, None, None, None, &[], 1, 20)
+            .await
+        {
+            record_admin_alerts_last_good(
+                state.as_ref(),
+                default_admin_alert_cache_key("groups"),
+                AdminAlertsReadCacheValue::Groups(groups),
+            )
+            .await;
+        }
+        dashboard_overview_cache_for_state(state.as_ref())
+            .lock()
+            .await
+            .admin_alerts_prewarm_in_flight = false;
+    });
 }
 
 #[cfg(test)]

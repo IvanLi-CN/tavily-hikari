@@ -201,7 +201,10 @@ async fn reconciliation_research_drain_stale_claim_does_not_commit_cursor_or_res
             },
         )
         .await;
-    assert!(matches!(accepted, Err(ProxyError::StaleClaim { .. })));
+    assert!(matches!(
+        accepted,
+        Ok(crate::store::ResearchDrainCommitReceipt::StaleClaim)
+    ));
     let row: (Option<i64>, i64) = sqlx::query_as(
         "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research \
          WHERE request_id = 'stale-drain-request'",

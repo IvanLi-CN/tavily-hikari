@@ -152,6 +152,9 @@
   - 不得在 cache-hit freshness probe 上执行 quota sample window/baseline CTE
   - 不得在 cache-hit freshness probe 上执行 alerts grouped CTE
 - `summaryWindows.quota_charge` 必须保持原有返回 shape，但其重型 sample delta 计算要从 shared snapshot critical path 中拆出到独立 quota cache；cheap freshness 仅由 sample token、窗口边界与 stale-key 计数驱动。
+- quota sample token 使用 append-only sample 的主键与时间 watermark；一次 freshness probe 触发的
+  payload build 必须复用该 token，不能再次查询 token。60 秒 safety probe 仅在 token 或其他
+  bounded revision 改变时重建，dirty build 仍由 10 秒 singleflight 合并。
 - `recentAlerts` 必须保留在 overview payload 内，但要使用独立 recent-alerts cache；core overview 不得因为 alerts grouped query 慢或临时错误而阻塞整包重建，必要时返回上一份 last-good 聚合结果。
 - `/api/alerts/events` 与 `/api/alerts/groups` 必须优先以 `auth_token_logs` 为数据面，只在字段缺失且存在 `request_log_id` 时按需回退 `observability.request_logs`，避免再依赖 request body JSON 提取来完成 request-kind 分组与过滤。
 

@@ -614,3 +614,11 @@ the observed symptoms like this:
 - Treat ACK lag as peer-relative data. A full-master export/baseline has no peer watermark and must
   report `null`, while an admin peer/channel health view can derive healthy/catching-up/baseline/
   expired-backlog state from the watermark, retention threshold, and indexed `EXISTS` checks.
+
+## Owned short transactions and derived writes
+
+The runtime, rather than the awaiting handler, owns a started short SQLite transaction. Cancellation
+therefore resolves a rollback before returning the physical connection; detach is a protective path
+only when the connection state cannot be proven. For derived pressure and audit data, batch under
+one short transaction, requeue the whole uncommitted batch, debounce healthy writes, and reserve
+rebuilds for overflow, coverage loss, or sustained stale state rather than ordinary contention.

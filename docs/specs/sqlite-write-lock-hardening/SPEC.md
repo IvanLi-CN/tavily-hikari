@@ -286,9 +286,9 @@ source when a usable persisted runtime already exists.
 ### Cancellation-safe maintenance transactions
 
 - Production code that uses raw `BEGIN IMMEDIATE` must own the pooled physical connection through a
-  guard. Successful work commits explicitly; handled failures roll back explicitly; cancellation or
-  guard drop detaches and closes the physical connection so an open transaction cannot return to the
-  pool.
+  runtime guard. Successful work commits explicitly; handled failures roll back explicitly; caller
+  cancellation transfers an already-started transaction to the runtime owner, which resolves it
+  before returning the connection. Detach is reserved for panic, shutdown, or an unverifiable state.
 - HA baseline/events read sessions and generic audit snapshots must use the same cancellation-safe
   ownership rule. Dashboard integrity's temporary busy timeout is restored only after commit; any
   cancellation, rollback failure, or unfinished transaction closes the physical connection.

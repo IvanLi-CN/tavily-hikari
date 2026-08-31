@@ -484,120 +484,167 @@ impl KeyStore {
         Ok(request_log_id)
     }
 
-    pub(crate) async fn log_rebalance_audit_entry(
+    pub(crate) async fn log_rebalance_audit_entries(
         &self,
-        entry: &RebalanceAuditEntry,
-    ) -> Result<(i64, i64), ProxyError> {
-        let created_at = self.backend_time.now_ts();
-        let status_code = Some(entry.response_status.as_u16() as i64);
-        let request_kind = normalize_request_kind_for_response_context(
-            classify_token_request_kind(&entry.path, Some(&entry.request_body)),
-            ResponseRequestKindContext {
-                method: entry.method.as_str(),
-                path: &entry.path,
-                http_status: status_code,
-                tavily_status: entry.tavily_status_code,
-                failure_kind: entry.failure_kind.as_deref(),
-                error_message: None,
-                response_body: &entry.response_body,
-            },
-        );
-        let request_user_id = if let Some(token_id) = entry.auth_token_id.as_deref() {
-            self.resolve_request_rollup_user_id(token_id, None).await?
-        } else {
-            None
-        };
-        let counts_business_quota =
-            request_log_counts_business_quota(&request_kind.key, Some(&entry.request_body));
-        let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
-            &request_kind.key,
-            Some(&entry.request_body),
-            &entry.result_status,
-            entry.failure_kind.as_deref(),
-            0,
-            counts_business_quota,
-        );
-        let request_log_catalog_key = (entry.result_status != OUTCOME_UNKNOWN
-            && request_kind.key.trim() != "api:unknown-path")
-            .then(|| {
-                Self::request_log_catalog_rollup_key_for_request(
-                    created_at,
-                    &request_kind.key,
-                    &request_kind.label,
-                    counts_business_quota,
-                    &entry.result_status,
-                    entry.failure_kind.as_deref(),
-                    KEY_EFFECT_NONE,
-                    KEY_EFFECT_NONE,
-                    KEY_EFFECT_NONE,
-                    entry.auth_token_id.as_deref(),
-                    None,
-                )
-            });
-        let source_mutation = self
-            .request_stats_coalescer
-            .begin_dashboard_rollup_source_mutation(created_at);
-        let mut tx = self
-            .sqlite_runtime
-            .begin_immediate(SqliteOperation::ObservabilityDeferredWrite)
-            .await?;
-        let request_log_id: i64 = sqlx::query_scalar(
-            r#"
-            INSERT INTO observability.request_logs (
-                auth_token_id, request_user_id, method, path, status_code, tavily_status_code,
-                result_status, request_kind_key, request_kind_label, request_kind_detail,
-                counts_business_quota, business_credits, failure_kind,
-                key_effect_code, binding_effect_code, selection_effect_code,
-                gateway_mode, experiment_variant,
-                proxy_session_id, routing_subject_hash, upstream_operation,
-                fallback_reason, request_body, response_body, request_body_bytes,
-                response_body_bytes, forwarded_headers, dropped_headers, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
-            RETURNING id
-            "#,
-        )
-        .bind(entry.auth_token_id.as_deref())
-        .bind(request_user_id.as_deref())
-        .bind(entry.method.as_str())
-        .bind(&entry.path)
-        .bind(status_code)
-        .bind(entry.tavily_status_code)
-        .bind(&entry.result_status)
-        .bind(&request_kind.key)
-        .bind(&request_kind.label)
-        .bind(request_kind.detail.as_deref())
-        .bind(i64::from(counts_business_quota))
-        .bind(None::<i64>)
-        .bind(entry.failure_kind.as_deref())
-        .bind(KEY_EFFECT_NONE)
-        .bind(KEY_EFFECT_NONE)
-        .bind(KEY_EFFECT_NONE)
-        .bind(MCP_GATEWAY_MODE_REBALANCE)
-        .bind(MCP_EXPERIMENT_VARIANT_REBALANCE)
-        .bind(entry.proxy_session_id.as_deref())
-        .bind(entry.routing_subject_hash.as_deref())
-        .bind(entry.fallback_reason.as_deref())
-        .bind(&entry.request_body)
-        .bind(&entry.response_body)
-        .bind(entry.request_body.len() as i64)
-        .bind(entry.response_body.len() as i64)
-        .bind(created_at)
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.finish(Ok(())).await?;
-        self.request_stats_coalescer
-            .enqueue_request_log_rollups(RequestLogRollupInput {
-                api_key_id: None,
-                auth_token_id: entry.auth_token_id.as_deref().unwrap_or_default(),
-                request_user_id: request_user_id.as_deref(),
-                request_log_id: Some(request_log_id),
+        entries: Vec<RebalanceAuditEntry>,
+    ) -> Result<Vec<(i64, i64)>, ProxyError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut prepared = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let created_at = self.backend_time.now_ts();
+            let status_code = Some(entry.response_status.as_u16() as i64);
+            let request_kind = normalize_request_kind_for_response_context(
+                classify_token_request_kind(&entry.path, Some(&entry.request_body)),
+                ResponseRequestKindContext {
+                    method: entry.method.as_str(),
+                    path: &entry.path,
+                    http_status: status_code,
+                    tavily_status: entry.tavily_status_code,
+                    failure_kind: entry.failure_kind.as_deref(),
+                    error_message: None,
+                    response_body: &entry.response_body,
+                },
+            );
+            let request_user_id = if let Some(token_id) = entry.auth_token_id.as_deref() {
+                self.resolve_request_rollup_user_id(token_id, None).await?
+            } else {
+                None
+            };
+            let counts_business_quota =
+                request_log_counts_business_quota(&request_kind.key, Some(&entry.request_body));
+            let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
+                &request_kind.key,
+                Some(&entry.request_body),
+                &entry.result_status,
+                entry.failure_kind.as_deref(),
+                0,
+                counts_business_quota,
+            );
+            let request_log_catalog_key = (entry.result_status != OUTCOME_UNKNOWN
+                && request_kind.key.trim() != "api:unknown-path")
+                .then(|| {
+                    Self::request_log_catalog_rollup_key_for_request(
+                        created_at,
+                        &request_kind.key,
+                        &request_kind.label,
+                        counts_business_quota,
+                        &entry.result_status,
+                        entry.failure_kind.as_deref(),
+                        KEY_EFFECT_NONE,
+                        KEY_EFFECT_NONE,
+                        KEY_EFFECT_NONE,
+                        entry.auth_token_id.as_deref(),
+                        None,
+                    )
+                });
+            prepared.push((
+                entry,
                 created_at,
-                dashboard_counts: dashboard_rollup_counts,
+                status_code,
+                request_user_id,
+                request_kind,
+                counts_business_quota,
+                dashboard_rollup_counts,
                 request_log_catalog_key,
+            ));
+        }
+
+        let source_mutations = prepared
+            .iter()
+            .map(|(_, created_at, ..)| {
+                self.request_stats_coalescer
+                    .begin_dashboard_rollup_source_mutation(*created_at)
             })
-            .await;
-        source_mutation.commit().await;
-        Ok((request_log_id, created_at))
+            .collect::<Vec<_>>();
+        let prepared_for_write = prepared.clone();
+        let receipts = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::ObservabilityDeferredWrite, move |tx| {
+                Box::pin(async move {
+                    let mut receipts = Vec::with_capacity(prepared_for_write.len());
+                    for (
+                        entry,
+                        created_at,
+                        status_code,
+                        request_user_id,
+                        request_kind,
+                        counts_business_quota,
+                        _,
+                        _,
+                    ) in prepared_for_write
+                    {
+                        let request_log_id: i64 = sqlx::query_scalar(
+                            r#"
+                            INSERT INTO observability.request_logs (
+                                auth_token_id, request_user_id, method, path, status_code, tavily_status_code,
+                                result_status, request_kind_key, request_kind_label, request_kind_detail,
+                                counts_business_quota, business_credits, failure_kind,
+                                key_effect_code, binding_effect_code, selection_effect_code,
+                                gateway_mode, experiment_variant,
+                                proxy_session_id, routing_subject_hash, upstream_operation,
+                                fallback_reason, request_body, response_body, request_body_bytes,
+                                response_body_bytes, forwarded_headers, dropped_headers, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
+                            RETURNING id
+                            "#,
+                        )
+                        .bind(entry.auth_token_id.as_deref())
+                        .bind(request_user_id.as_deref())
+                        .bind(entry.method.as_str())
+                        .bind(&entry.path)
+                        .bind(status_code)
+                        .bind(entry.tavily_status_code)
+                        .bind(&entry.result_status)
+                        .bind(&request_kind.key)
+                        .bind(&request_kind.label)
+                        .bind(request_kind.detail.as_deref())
+                        .bind(i64::from(counts_business_quota))
+                        .bind(None::<i64>)
+                        .bind(entry.failure_kind.as_deref())
+                        .bind(KEY_EFFECT_NONE)
+                        .bind(KEY_EFFECT_NONE)
+                        .bind(KEY_EFFECT_NONE)
+                        .bind(MCP_GATEWAY_MODE_REBALANCE)
+                        .bind(MCP_EXPERIMENT_VARIANT_REBALANCE)
+                        .bind(entry.proxy_session_id.as_deref())
+                        .bind(entry.routing_subject_hash.as_deref())
+                        .bind(entry.fallback_reason.as_deref())
+                        .bind(&entry.request_body)
+                        .bind(&entry.response_body)
+                        .bind(entry.request_body.len() as i64)
+                        .bind(entry.response_body.len() as i64)
+                        .bind(created_at)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        receipts.push((request_log_id, created_at));
+                    }
+                    Ok(receipts)
+                })
+            })
+            .await?;
+
+        for ((entry, created_at, _, request_user_id, _, _, dashboard_rollup_counts, request_log_catalog_key), (request_log_id, _)) in
+            prepared.into_iter().zip(receipts.iter().copied())
+        {
+            self.request_stats_coalescer
+                .enqueue_request_log_rollups(RequestLogRollupInput {
+                    api_key_id: None,
+                    auth_token_id: entry.auth_token_id.as_deref().unwrap_or_default(),
+                    request_user_id: request_user_id.as_deref(),
+                    request_log_id: Some(request_log_id),
+                    created_at,
+                    dashboard_counts: dashboard_rollup_counts,
+                    request_log_catalog_key,
+                })
+                .await;
+        }
+        for source_mutation in source_mutations {
+            source_mutation.commit().await;
+        }
+        Ok(receipts)
     }
 
     pub(crate) fn api_key_metrics_from_clause() -> &'static str {

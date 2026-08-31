@@ -447,6 +447,9 @@ PR: include
   persistence and the candidate retry marker are each bounded by the remaining tail. If either
   write cannot complete within that budget, the run returns an explicit persistence error instead
   of reporting a successful reconciliation without durable retry state.
+- Research diagnostics are emitted only after a claim-fenced commit receipt accepts its row
+  resolution, Key state, exact cursor, ten-minute progress delta, job finish, and next unique
+  representative. A deferred or stale receipt changes none of those facts.
 
 ## Related ADRs
 

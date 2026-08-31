@@ -121,7 +121,7 @@ impl KeyStore {
         Ok((streak, level, until))
     }
 
-    async fn record_reconciliation_research_progress_window_locked<T>(
+    pub(crate) async fn record_reconciliation_research_progress_window_locked<T>(
         &self,
         transaction: &mut T,
         now: i64,

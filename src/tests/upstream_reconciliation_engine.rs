@@ -1235,7 +1235,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         .expect("run eligible Research drain page");
     assert!(matches!(
         outcome,
-        ClaimedResearchDrainOutcome::Completed {
+        ClaimedResearchDrainOutcome::Persisted {
             polled: 1,
             terminal: 1,
             ..
@@ -1293,7 +1293,19 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         .candidate_cursors
         .get(&continued_candidate.request_id)
         .expect("later candidate cursor");
-    assert!(
+    let continued_job_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation_research_drain' \
+         AND status = 'queued' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("accepted drain result schedules one continuation");
+    let continued_claim = proxy
+        .scheduled_job_mark_running(continued_job_id)
+        .await
+        .expect("claim continuation drain")
+        .expect("continuation drain becomes running");
+    assert!(matches!(
         proxy
             .key_store
             .commit_upstream_reconciliation_research_drain(
@@ -1305,18 +1317,32 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
                     poll: crate::store::UpstreamReconciliationResearchDrainPoll::Terminal,
                     key_backoff: None,
                     clear_key_backoff_scope: None,
-                    job_id: claim.id,
-                    claim_generation: claim.claim_generation,
+                    job_id: continued_claim.id,
+                    claim_generation: continued_claim.claim_generation,
                 },
             )
             .await
-            .expect("accept the continued Research cursor")
-    );
+            .expect("accept the continued Research cursor"),
+        crate::store::ResearchDrainCommitReceipt::Accepted { .. }
+    ));
+    let all_cooled_job_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation_research_drain' \
+         AND status = 'queued' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("continued acceptance schedules one following drain");
+    clock.set_now_ts(now + 304);
+    let all_cooled_claim = proxy
+        .scheduled_job_mark_running(all_cooled_job_id)
+        .await
+        .expect("claim all-cooled drain")
+        .expect("all-cooled drain becomes running");
     let all_cooled = proxy
         .run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{address}"),
-            claim.id,
-            claim.claim_generation,
+            all_cooled_claim.id,
+            all_cooled_claim.claim_generation,
             Arc::new(RemoteAttemptAdmissionController::default()),
         )
         .await
@@ -1358,7 +1384,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         .candidate_cursors
         .get(&reopened_candidate.request_id)
         .expect("forced-sweep candidate cursor");
-    assert!(
+    assert!(matches!(
         proxy
             .key_store
             .commit_upstream_reconciliation_research_drain(
@@ -1374,13 +1400,14 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
                     },
                     key_backoff: None,
                     clear_key_backoff_scope: None,
-                    job_id: claim.id,
-                    claim_generation: claim.claim_generation,
+                    job_id: all_cooled_claim.id,
+                    claim_generation: all_cooled_claim.claim_generation,
                 },
             )
             .await
-            .expect("accept the forced-sweep cursor")
-    );
+            .expect("accept the forced-sweep cursor"),
+        crate::store::ResearchDrainCommitReceipt::Accepted { .. }
+    ));
     clock.set_now_ts(now + 1_202);
     let after_forced_wrap = proxy
         .key_store
