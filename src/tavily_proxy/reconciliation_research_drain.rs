@@ -90,6 +90,46 @@ impl TavilyProxy {
         outcome
     }
 
+    async fn record_one_shot_research_credentials(
+        &self,
+        candidate: &crate::models::UpstreamReconciliationResearchCandidate,
+        outcome: ResearchPollOutcome,
+        now: i64,
+        cooling_keys: &mut std::collections::HashSet<String>,
+        earliest_cooldown_until: &mut Option<i64>,
+    ) -> Result<(), ProxyError> {
+        let error_kind = if matches!(outcome, ResearchPollOutcome::MissingLocalSecret) {
+            "missing_local_secret"
+        } else {
+            "credentials"
+        };
+        let cooldown_until = now.saturating_add(Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS);
+        self.key_store
+            .arm_api_key_transient_backoff(crate::store::ApiKeyTransientBackoffArm {
+                key_id: &candidate.key_id,
+                scope: Self::RESEARCH_CREDENTIALS_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs: Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS,
+                reason_code: Some(error_kind),
+                source_request_log_id: None,
+                now,
+            })
+            .await?;
+        cooling_keys.insert(candidate.key_id.clone());
+        *earliest_cooldown_until = Some(
+            earliest_cooldown_until
+                .map_or(cooldown_until, |current| current.min(cooldown_until)),
+        );
+        self.key_store
+            .record_upstream_reconciliation_research_poll(
+                &candidate.request_id,
+                cooldown_until,
+                "retry",
+                Some(error_kind),
+            )
+            .await
+    }
+
     pub async fn run_upstream_reconciliation_research_drain_claimed(
         &self,
         usage_base: &str,

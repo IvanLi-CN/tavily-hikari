@@ -51,8 +51,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/tavily_proxy/proxy_quota_sync_and_jobs.rs",
-        3200,
-        "Reconciliation execution and quota synchronization remain together while per-key cooldown and request-scoped admission converge; extracting the remaining run phases is a separate behavior-preserving change.",
+        3250,
+        "Reconciliation execution and quota synchronization remain together while per-key cooldown, request-scoped admission, and typed Research poll outcomes converge; extracting the remaining run phases is a separate behavior-preserving change.",
     ),
     (
         "src/tests/upstream_reconciliation.rs",

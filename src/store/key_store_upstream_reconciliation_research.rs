@@ -62,6 +62,32 @@ pub(crate) struct UpstreamReconciliationResearchDrainCommit<'a> {
 }
 
 impl KeyStore {
+    pub(crate) async fn mark_upstream_reconciliation_research_unavailable(
+        &self,
+        request_id: &str,
+        error_kind: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        let mut transaction = self.begin_reconciliation_control().await?;
+        sqlx::query(
+            r#"
+            UPDATE upstream_reconciliation_research
+            SET last_polled_at = ?, next_poll_at = 0,
+                poll_attempt_count = poll_attempt_count + 1,
+                poll_resolution = 'unavailable', last_poll_outcome = 'unavailable',
+                last_poll_error_kind = ?, updated_at = ?
+            WHERE request_id = ? AND terminal_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(error_kind)
+        .bind(now)
+        .bind(request_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.finish(Ok(())).await
+    }
+
     pub(crate) async fn next_upstream_reconciliation_research_candidates(
         &self,
         limit: i64,

@@ -484,36 +484,14 @@ impl TavilyProxy {
                             "durable Research drain must handle credential polls".to_string(),
                         ));
                     }
-                    let error_kind = if matches!(outcome, ResearchPollOutcome::MissingLocalSecret) {
-                        "missing_local_secret"
-                    } else {
-                        "credentials"
-                    };
-                    let cooldown_until = now.saturating_add(Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS);
-                    self.key_store
-                        .arm_api_key_transient_backoff(crate::store::ApiKeyTransientBackoffArm {
-                            key_id: &candidate.key_id,
-                            scope: Self::RESEARCH_CREDENTIALS_BACKOFF_SCOPE,
-                            cooldown_until,
-                            retry_after_secs: Self::RESEARCH_CREDENTIALS_COOLDOWN_SECS,
-                            reason_code: Some(error_kind),
-                            source_request_log_id: None,
-                            now,
-                        })
-                        .await?;
-                    cooling_keys.insert(candidate.key_id.clone());
-                    earliest_cooldown_until = Some(
-                        earliest_cooldown_until
-                            .map_or(cooldown_until, |current| current.min(cooldown_until)),
-                    );
-                    self.key_store
-                        .record_upstream_reconciliation_research_poll(
-                            &candidate.request_id,
-                            cooldown_until,
-                            "retry",
-                            Some(error_kind),
-                        )
-                        .await?;
+                    self.record_one_shot_research_credentials(
+                        &candidate,
+                        outcome,
+                        now,
+                        &mut cooling_keys,
+                        &mut earliest_cooldown_until,
+                    )
+                    .await?;
                     retries += 1;
                 }
                 Err((err, retry_after)) => {
