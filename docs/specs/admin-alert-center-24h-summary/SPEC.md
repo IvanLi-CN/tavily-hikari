@@ -34,6 +34,10 @@
 - 不为告警新增独立写侧持久化表，也不做历史重放修复工具。
 - 不对现有 requests 模块做大规模架构改造。
 
+## Related ADRs
+
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
+
 ## 告警分类规则
 
 ### `upstream_rate_limited_429`

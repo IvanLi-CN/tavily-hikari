@@ -23,6 +23,10 @@
 - 不修改 `/api/dashboard/overview`、admin SSE `snapshot` 的外部返回 shape。
 - 不改变 `summary_windows` 的业务口径；仅将数据来源从原始 `request_logs` 扫描切到 dashboard 专用 rollup。
 
+## Related ADRs
+
+- [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
+
 ## 接口与数据契约
 
 ### `GET /api/dashboard/overview`
