@@ -1317,6 +1317,18 @@ impl TavilyProxy {
     }
 
     #[cfg(test)]
+    pub(crate) async fn observability_deferred_writer_diagnostics_for_test(
+        &self,
+    ) -> (usize, bool, u8) {
+        let writer = self.observability_deferred_writer.lock().await;
+        (
+            writer.pressure_deltas.len(),
+            writer.flush_running,
+            writer.consecutive_defers,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) async fn observability_deferred_worker_starts_for_test(&self) -> usize {
         self.observability_deferred_writer
             .lock()

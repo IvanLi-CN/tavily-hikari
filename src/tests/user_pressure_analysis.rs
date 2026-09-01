@@ -8,7 +8,10 @@ async fn wait_for_server_pressure_totals(
     expected_success: i64,
     expected_failure: i64,
 ) {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    // A healthy flush starts after the one-second debounce. Each of the first
+    // two bounded SQLite defers waits five seconds before retrying; leave a
+    // small scheduler margin for that supported recovery path.
+    let result = tokio::time::timeout(Duration::from_secs(13), async {
         loop {
             let (success_count, failure_count): (i64, i64) = sqlx::query_as(
                 r#"
@@ -26,8 +29,13 @@ async fn wait_for_server_pressure_totals(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("deferred pressure buckets should converge within the test budget");
+    .await;
+    if result.is_err() {
+        let diagnostics = proxy
+            .observability_deferred_writer_diagnostics_for_test()
+            .await;
+        panic!("deferred pressure buckets should converge within the test budget: {diagnostics:?}");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -405,11 +413,6 @@ async fn analysis_pressure_snapshot_live_local_mcp_logs_update_server_buckets() 
     let now = manual_clock.now_ts();
     manual_clock.set_now_ts(now);
     let headers: [String; 0] = [];
-    let pressure_flush_complete = proxy
-        .server_pressure_flush_completed_notifier_for_test()
-        .await
-        .notified_owned();
-
     let request_log_id = proxy
         .record_local_request_log_without_key_with_diagnostics(
             Some(&token.id),
@@ -434,10 +437,7 @@ async fn analysis_pressure_snapshot_live_local_mcp_logs_update_server_buckets() 
         )
         .await
         .expect("record local mcp request log");
-
-    tokio::time::timeout(Duration::from_secs(3), pressure_flush_complete)
-        .await
-        .expect("deferred pressure writer should drain the live local mcp log");
+    wait_for_server_pressure_totals(&proxy, 1, 0).await;
 
     let canonical_rows: i64 = sqlx::query_scalar(
         r#"

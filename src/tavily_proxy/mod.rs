@@ -206,7 +206,11 @@ impl ObservabilityDeferredWriter {
             // and schedules the only replacement worker.
             self.flush_running = false;
             #[cfg(test)]
-            self.flush_completed.notify_waiters();
+            // Tests obtain the notification handle before producing work, but
+            // the waiter future is not registered until it is polled. Keep
+            // one completion permit so a fast healthy flush is observable
+            // instead of appearing to time out solely due to that race.
+            self.flush_completed.notify_one();
             return None;
         }
         let batch = keys

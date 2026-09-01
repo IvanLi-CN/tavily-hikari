@@ -294,11 +294,11 @@ impl TavilyProxy {
         &self,
         request_log_id: i64,
     ) -> Result<(), ProxyError> {
-        if let Some(event) = self
+        let event = self
             .key_store
             .fetch_server_pressure_event_for_request_log(request_log_id)
-            .await?
-        {
+            .await?;
+        if let Some(event) = event {
             let outcome = if event.result_status == OUTCOME_SUCCESS {
                 UserBusinessCallOutcome::Success
             } else {
