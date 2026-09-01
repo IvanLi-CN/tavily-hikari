@@ -1695,30 +1695,6 @@ async fn reconciliation_global_backoff_counts_only_attempted_candidates() {
         .add_or_undelete_key("tvly-reconciliation-shared-429")
         .await
         .expect("create upstream key");
-    for candidate in 0..3 {
-        sqlx::query(
-            r#"
-            INSERT INTO upstream_reconciliation_usage (
-                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
-                request_count, first_used_at, last_used_at, updated_at, settlement_mode
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
-            "#,
-        )
-        .bind(format!("shared-429-token-{candidate}"))
-        .bind(&key_id)
-        .bind("2026-07-15/S1")
-        .bind(format!("shared-429-project-{candidate}"))
-        .bind(format!("account:shared-429-{candidate}"))
-        .bind(now - 4_000)
-        .bind(now - 900)
-        .bind(now - 1_000)
-        .bind(now - 900)
-        .bind(now - 900)
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("insert reconciliation candidate");
-    }
-
     let upstream_hits = Arc::new(AtomicUsize::new(0));
     let app_hits = Arc::clone(&upstream_hits);
     let app = Router::new().route(
@@ -1742,13 +1718,38 @@ async fn reconciliation_global_backoff_counts_only_attempted_candidates() {
             .expect("serve reconciliation usage upstream");
     });
 
-    for timestamp in [now, now + 301, now + 902] {
+    for (candidate, timestamp) in [now, now + 301, now + 902].into_iter().enumerate() {
+        // Expose one candidate per elapsed key cooldown. The one-shot API is a
+        // compatibility helper, so it must not be asked to spin through other
+        // durable candidates that correctly remain key-cooldown deferred.
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(format!("shared-429-token-{candidate}"))
+        .bind(&key_id)
+        .bind("2026-07-15/S1")
+        .bind(format!("shared-429-project-{candidate}"))
+        .bind(format!("account:shared-429-{candidate}"))
+        .bind(now - 4_000)
+        .bind(now - 900)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert reconciliation candidate");
         clock.set_now_ts(timestamp);
         let settled = proxy
             .run_upstream_reconciliation_once(&format!("http://{addr}"))
             .await
             .expect("run shared-key reconciliation");
         assert_eq!(settled, 0);
+        assert_eq!(upstream_hits.load(Ordering::SeqCst), candidate + 1);
     }
 
     assert_eq!(upstream_hits.load(Ordering::SeqCst), 3);
