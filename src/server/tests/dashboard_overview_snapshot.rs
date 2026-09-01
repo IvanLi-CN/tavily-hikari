@@ -258,7 +258,11 @@ async fn dashboard_overview_snapshot_keeps_summary_totals_in_sync_with_flushed_w
             {
                 break;
             }
-            tokio::task::yield_now().await;
+            // Poll the durable result without repeatedly reacquiring the
+            // three-connection SQLite pool. A tight raw-read loop can become
+            // the contention that prevents the background bulk flush this
+            // test is meant to observe.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
