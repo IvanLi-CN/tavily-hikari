@@ -1126,22 +1126,7 @@ async fn observability_deferred_writer_requeues_pressure_deltas_after_writer_con
         .await
         .expect("held SQLite writer lock releases cleanly");
 
-    tokio::time::timeout(Duration::from_secs(8), async {
-        loop {
-            let bucket_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM observability.server_pressure_buckets WHERE bucket_kind IN ('five_minute', 'hour')",
-            )
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("count asynchronously flushed pressure buckets");
-            if bucket_count == 2 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("requeued deltas flush after the writer becomes available");
+    wait_for_server_pressure_totals(&proxy, 1, 0).await;
 
     let _ = std::fs::remove_file(db_path);
 }
