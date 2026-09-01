@@ -11,6 +11,7 @@
 - 通过生成脚本构造 public/admin 两套 asset graph、manifest、service worker 与图标，不引入单 manifest 注入式 PWA 插件。
 - manifest 继续作为支持平台的安装元数据来源：public/admin 分别固定 `id=/` 与 `id=/admin/`，HTML 只声明匹配 manifest，移除会在 WebKit 中优先覆盖 manifest 的 `apple-touch-icon` link。
 - PWA PNG 以最终字节的 12 位 SHA-256 摘要命名；manifest 与对应 worker 只引用自己的当前 URL。metadata 资源要求重新验证，哈希图标使用 immutable 缓存；worker precache 使用 `cache: 'reload'`，页面注册使用 `updateViaCache: 'none'`。
+- 品牌导出器按 mark 的可见 alpha 边界放置方形 launcher、maskable 与 mono 图标，避免批准稿透明画布 padding 造成前景偏移；CI 逐一检查 Web 与 docs-site 导出物的可见边界中心。
 - 品牌资产采用单一矢量 lockup 母版：Roboto Condensed weight 400 的预实例化静态字体固定为 reviewed tagline outline 的来源；完整 SVG 保存该不可变 outline，并以两组路径哈希防止不同主机的字体栅格化或意外编辑改写母版。完整版保持既有 `1000 × 310` 横向轮廓，右侧主字标与副标语作为两行文字块共享 Relay Mesh mark 的光学中轴；`KEY POOL · BALANCE. ROUTE.` 保留字间点并使用一条连续渐变，而非分段色块或竖线。Web 与 docs-site 的完整/compact SVG 与 PNG 均从母版稳定导出，favicon、launcher icon 与 PWA identity 保持既有合同。
 - `BrandLockup` 以 `full | compact | responsive` 三态统一公共首页、用户控制台、后台、登录、暂停注册和 404；`responsive` 以 `260px` 的实际容器宽度为门槛选择完整或 compact。Rspress `Layout.navTitle` 复用同一主题与容器查询合同，但作为导航 utility 位固定为 `180px`，因此稳定选择 compact 版本。
 - 品牌导出链现在显式产出 lockup / mark / launcher icon 的 light、dark、mono 变体，并保留默认亮色别名文件给现有入口复用。

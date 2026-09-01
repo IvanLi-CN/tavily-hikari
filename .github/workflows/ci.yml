@@ -122,6 +122,7 @@ jobs:
           python3 web/scripts/vectorize_relay_mesh_lockups.py
           python3 web/scripts/generate_relay_mesh_brand_assets.py
           python3 web/scripts/verify_relay_mesh_lockup_geometry.py
+          python3 web/scripts/verify_relay_mesh_icon_geometry.py
           git diff --exit-code
 
   lint:

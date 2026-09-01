@@ -49,6 +49,9 @@ does not prove that the admin registration is performing an update.
 - Keep the manifest as the install metadata authority for supported platforms: give each identity a
   stable `id`, remove legacy `apple-touch-icon` links that can take precedence in WebKit, and put a
   content hash in every generated install-icon URL.
+- Center square launcher, maskable, and monochrome exports by the visible alpha bounds of the
+  approved mark, not by the transparent source canvas; otherwise source padding shifts the
+  installed artwork even when the artwork itself has not changed.
 - Serve HTML, manifests, workers, and version metadata with revalidation while serving content-hashed
   icon files as immutable assets. Precache the matching manifest and icon URLs with cache-reloading
   requests, and register the worker with `updateViaCache: 'none'`.

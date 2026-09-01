@@ -320,6 +320,20 @@ def remove_if_exists(path: Path) -> None:
         path.unlink()
 
 
+def resize_mark_for_square(mark: Image.Image, target_height: int) -> tuple[Image.Image, tuple[int, int]]:
+    target_width = int(round(mark.width * target_height / mark.height))
+    placed_mark = mark.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    visible_bbox = placed_mark.getchannel("A").getbbox()
+    if visible_bbox is None:
+        raise RuntimeError("brand mark contains no visible artwork")
+    left, top, right, bottom = visible_bbox
+    offset = (
+        int(round((ICON_MASTER_SIZE - left - right) / 2)),
+        int(round((ICON_MASTER_SIZE - top - bottom) / 2)),
+    )
+    return placed_mark, offset
+
+
 def make_launcher_icon(
     mark: Image.Image,
     *,
@@ -338,26 +352,14 @@ def make_launcher_icon(
     draw.rounded_rectangle(box, radius=ICON_RADIUS, fill=(*plate_color, 255))
     draw.rounded_rectangle(box, radius=ICON_RADIUS, outline=(*border_color, 255), width=ICON_BORDER_WIDTH)
 
-    mark_target_height = 650
-    mark_target_width = int(round(mark.width * mark_target_height / mark.height))
-    placed_mark = mark.resize((mark_target_width, mark_target_height), Image.Resampling.LANCZOS)
-    offset = (
-        (ICON_MASTER_SIZE - mark_target_width) // 2,
-        (ICON_MASTER_SIZE - mark_target_height) // 2,
-    )
+    placed_mark, offset = resize_mark_for_square(mark, 650)
     canvas.alpha_composite(placed_mark, offset)
     return canvas
 
 
 def make_mono_square_icon(mark: Image.Image) -> Image.Image:
     canvas = Image.new("RGBA", (ICON_MASTER_SIZE, ICON_MASTER_SIZE), (0, 0, 0, 0))
-    mark_target_height = 760
-    mark_target_width = int(round(mark.width * mark_target_height / mark.height))
-    placed_mark = mark.resize((mark_target_width, mark_target_height), Image.Resampling.LANCZOS)
-    offset = (
-        (ICON_MASTER_SIZE - mark_target_width) // 2,
-        (ICON_MASTER_SIZE - mark_target_height) // 2,
-    )
+    placed_mark, offset = resize_mark_for_square(mark, 760)
     canvas.alpha_composite(placed_mark, offset)
     return canvas
 

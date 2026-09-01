@@ -95,6 +95,7 @@
 - `id`、`scope` 与 `start_url` 是稳定的 identity 合同：public 固定为 `/`，admin 固定为 `/admin/`；`/admin` 仍由入口路由归一到 `/admin/`。
 - 各 HTML shell 只声明自身对应的 manifest，不声明 `rel="apple-touch-icon"`。在 WebKit 中 legacy `apple-touch-icon` 会优先于 manifest 图标，因此不能让它成为未重新验证的第二套安装元数据来源。
 - PWA PNG 必须以最终 PNG 字节的短 SHA-256 摘要命名，例如 `pwa/admin-1024-<content-hash>.png` 与 `pwa/admin-touch-icon-<content-hash>.png`；manifest 只能引用当前导出的 URL。图标 artwork 继续使用已批准的 Relay Mesh light/dark icon，不在本轮重新设计。
+- 方形 launcher、maskable 与 mono 图标必须按可见前景边界居中；批准稿透明画布中的 padding 不得把 mark 推离图标画布中心。
 - HTML shell、两个 manifest、两个 service worker 与 `version.json` 必须使用 `no-cache, must-revalidate`；带内容哈希的 `pwa/*.png` 使用 `public, max-age=31536000, immutable`。
 - 每个 identity 的 service worker 必须 precache 自己的 manifest 与自己引用的图标，并使用绕过 HTTP cache 的请求完成安装；public/admin 不得互相 precache manifest 或图标。页面注册 worker 时使用 `updateViaCache: 'none'`。
 
@@ -313,7 +314,7 @@
 - `95768005+` Relay Mesh registration-paused 品牌入口：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-registration-paused.png`
 - `95768005+` Relay Mesh docs-site 品牌入口：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-docs-site.png`
 - `95768005+` Relay Mesh PWA/icon 导出预览：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-pwa-icons.png`
-- 当前 PWA install icon 交付修复：使用上述批准预览与构建后 public light/admin dark PNG 输出做 mock-only artifact comparison；确认 artwork 一致，仅文件名、manifest 引用与缓存策略发生变化。
+- 当前 PWA install icon 交付修复：使用上述批准预览与构建后 public light/admin dark PNG 输出做 mock-only artifact comparison；确认批准 mark artwork 未重绘，最终方形图标按可见前景边界居中，同时更新文件名、manifest 引用与缓存策略。
 - `2026-06-27` 品牌静态资源 `/assets` 路由校准后的 admin 壳验证：`docs/specs/web-pwa-split-identities-offline-shells/assets/relay-mesh-admin-shell-assets-route-fixed.png`
 - `2026-07-15` PWA 更新提示 ready 状态（Storybook canvas，静默更新完成后通知 + 具体版本号 + “立即刷新”按钮）：
 
