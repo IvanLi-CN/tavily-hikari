@@ -271,8 +271,10 @@ UPDATE scheduled_jobs
 -- malformed legacy periods. Keep it for projection coverage, but inject one
 -- deterministic current-shape shadow work item so both variants prove a
 -- terminal compare outcome against the isolated stub (which returns usage=0).
--- It has its own test-only key: foreground load can create newer work while
--- the comparison runs and must not consume this fixture's two requests.
+-- It has its own test-only key. Mark it low-quota-depleted in the cloned
+-- month so API rebalance excludes it from foreground selection.
+-- Reconciliation fetches its persisted secret directly and remains able to exercise both
+-- fixture requests.
 -- This is clone-only test data and never reaches the source snapshot.
 INSERT OR IGNORE INTO api_keys (
   id, api_key, status, created_at, status_changed_at, last_used_at, deleted_at
@@ -283,6 +285,16 @@ INSERT OR IGNORE INTO api_keys (
 UPDATE api_keys
    SET status = 'active', deleted_at = NULL, status_changed_at = unixepoch()
  WHERE api_key = 'tvly-reconciliation-fixture-key';
+INSERT INTO api_key_low_quota_depletions (
+  key_id, month_start, threshold, quota_remaining, created_at
+) VALUES (
+  (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key'),
+  unixepoch('now', 'start of month'), 1, 0, unixepoch()
+)
+ON CONFLICT(key_id, month_start) DO UPDATE SET
+  threshold = excluded.threshold,
+  quota_remaining = excluded.quota_remaining,
+  created_at = excluded.created_at;
 INSERT INTO meta (key, value) VALUES
   ('upstream_project_id_mode_v1', 'accessToken'),
   ('api_rebalance_enabled_v1', '1'),
@@ -421,6 +433,10 @@ SQL
       SELECT 1 FROM api_key_transient_backoffs
        WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
          AND scope = 'period_reconciliation'
+    ) AND EXISTS (
+      SELECT 1 FROM api_key_low_quota_depletions
+       WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
+         AND month_start = unixepoch('now', 'start of month')
     )
       THEN 1 ELSE 0 END;
   ")"
