@@ -271,16 +271,18 @@ UPDATE scheduled_jobs
 -- malformed legacy periods. Keep it for projection coverage, but inject one
 -- deterministic current-shape shadow work item so both variants prove a
 -- terminal compare outcome against the isolated stub (which returns usage=0).
+-- It has its own test-only key: foreground load can create newer work while
+-- the comparison runs and must not consume this fixture's two requests.
 -- This is clone-only test data and never reaches the source snapshot.
 INSERT OR IGNORE INTO api_keys (
   id, api_key, status, created_at, status_changed_at, last_used_at, deleted_at
 ) VALUES (
-  'testbox-reconciliation-shadow-key', 'tvly-load-key', 'active',
+  'testbox-reconciliation-shadow-key', 'tvly-reconciliation-fixture-key', 'active',
   unixepoch(), unixepoch(), 0, NULL
 );
 UPDATE api_keys
    SET status = 'active', deleted_at = NULL, status_changed_at = unixepoch()
- WHERE api_key = 'tvly-load-key';
+ WHERE api_key = 'tvly-reconciliation-fixture-key';
 INSERT INTO meta (key, value) VALUES
   ('upstream_project_id_mode_v1', 'accessToken'),
   ('api_rebalance_enabled_v1', '1'),
@@ -292,7 +294,7 @@ INSERT INTO upstream_reconciliation_usage (
   period_start, period_end, request_count, first_used_at, last_used_at, updated_at
 ) VALUES (
   'testbox-reconciliation-shadow-token',
-  (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key'),
+  (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key'),
   'testbox-reconciliation-shadow-period',
   'testbox-reconciliation-shadow-project',
   'token:testbox-reconciliation-shadow-token', 'shadow',
@@ -314,7 +316,7 @@ INSERT INTO upstream_reconciliation_usage (
   period_start, period_end, request_count, first_used_at, last_used_at, updated_at
 ) VALUES (
   'testbox-reconciliation-research-token',
-  (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key'),
+  (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key'),
   'testbox-reconciliation-research-period',
   'testbox-reconciliation-research-project',
   'token:testbox-reconciliation-research-token', 'shadow',
@@ -338,7 +340,7 @@ INSERT INTO upstream_reconciliation_research (
 ) VALUES (
   'testbox-reconciliation-research-request',
   'testbox-reconciliation-research-token',
-  (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key'),
+  (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key'),
   'testbox-reconciliation-research-period', unixepoch() - 601, NULL,
   NULL, -1, 0, NULL, NULL, unixepoch() - 601
 )
@@ -355,7 +357,7 @@ ON CONFLICT(request_id) DO UPDATE SET
   last_poll_error_kind = NULL,
   updated_at = excluded.updated_at;
 DELETE FROM api_key_transient_backoffs
- WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
+ WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
    AND scope = 'period_reconciliation';
 UPDATE upstream_reconciliation_research_scan_state
    SET cursor_next_poll_at = -1,
@@ -408,7 +410,7 @@ SQL
          AND work.period_code = usage.period_code
        WHERE usage.token_id = 'testbox-reconciliation-shadow-token'
          AND usage.period_code = 'testbox-reconciliation-shadow-period'
-         AND usage.key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
+         AND usage.key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
          AND usage.settlement_mode = 'shadow'
          AND work.completed_generation < work.work_generation
     ) AND EXISTS (
@@ -417,7 +419,7 @@ SQL
          AND terminal_at IS NULL AND next_poll_at = -1
     ) AND NOT EXISTS (
       SELECT 1 FROM api_key_transient_backoffs
-       WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-load-key')
+       WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
          AND scope = 'period_reconciliation'
     )
       THEN 1 ELSE 0 END;
@@ -467,7 +469,7 @@ services:
       context: $repo
       dockerfile: tests/ha/Dockerfile.performance-recovery.app
     environment:
-      TAVILY_API_KEYS: tvly-load-key
+      TAVILY_API_KEYS: tvly-load-key,tvly-reconciliation-fixture-key
       TAVILY_UPSTREAM: http://upstream:9001
       TAVILY_USAGE_BASE: http://upstream:9001
       PROXY_DB_PATH: /srv/app/data/tavily_proxy.db
