@@ -78,6 +78,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - Short maintenance writes use a runtime-owned transaction task. Caller cancellation can no longer
   return an open transaction to the pool: the owner commits or rolls back before restoration.
   Physical detach remains reserved for panic, shutdown, or an unverifiable connection state.
+- A request-stats flush applies its short retry budget before a new transaction starts and before a
+  later chunk begins. Once `BEGIN IMMEDIATE` succeeds, the runtime-owned finish reaches commit or
+  rollback before the coalescer classifies the drained batch; it must never requeue a batch merely
+  because the caller's wall-clock budget elapsed while commit was in flight.
 
 ## Consequences
 

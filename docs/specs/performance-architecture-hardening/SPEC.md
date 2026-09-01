@@ -70,7 +70,8 @@
   five-minute continuation 让步，不得在同一 slice 重复扫描或删除派生 rollup。Dashboard 仅在有
   last-good 时因 admission、busy 或 refresh 超时直接返回该快照；
   request-stats background wake 每秒最多提交四个自适应 `25..250` logical-key transaction，并受同一
-  `50ms` 预算约束后原子回灌尾部；只有 shutdown drain 可以连续处理。冷启动只允许
+  `50ms` 启动/下一 chunk 预算约束后原子回灌未开始尾部；一旦事务已开始，runtime 必须先完成 commit
+  或 rollback，不能因预算到期将该批回灌。只有 shutdown drain 可以连续处理。冷启动只允许
   一个 shared singleflight loader，server 在开始监听前可给同一 loader 一次一秒 head start；每个读取
   请求最多等待一秒。超时只结束该读取请求，不得取消仍在运行的 loader，后续读取在其完成后复用同一快照。
 - 普通 Dashboard、summary、hourly window 与 rankings 读取只消费 durable request stats，不得触发

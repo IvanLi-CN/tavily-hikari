@@ -217,6 +217,10 @@ source when a usable persisted runtime already exists.
   background windows. Dashboard, summary, hourly-window, and rankings reads must serve durable data
   without acquiring a write connection or synchronously flushing; pending/flushing state may affect
   internal freshness while the existing HTTP response shape remains unchanged.
+- A request-stats flush may use its 50ms retry budget to reject pool acquisition, `BEGIN IMMEDIATE`,
+  or a later chunk. Once a transaction has started, its runtime-owned finish must commit or roll
+  back before the coalescer requeues anything; elapsed wall-clock budget alone must not requeue a
+  batch whose commit is still in flight.
 - The three-connection application pool reserves two actual or immediately allocatable slots for
   foreground work. Bulk maintenance takes one instance-local permit only when foreground arrival
   rate is at most `5 rps` and the preceding five seconds contain no pool-timeout or SQLite busy

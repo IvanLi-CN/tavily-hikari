@@ -194,6 +194,10 @@ month-tail public metrics scan.
 - A deferred derived-write batch must atomically return its entire uncommitted logical delta to its
   in-memory coalescer before releasing admission. Report this as a typed defer and retry on the
   next admitted cadence; do not emit an exhaustion warning for every pressure cycle.
+- Never apply that defer by timing out a future that is awaiting an already-started owned
+  transaction. The coalescer may requeue only after runtime-owned rollback or failure before
+  `BEGIN IMMEDIATE`; an in-flight owned commit must settle first, otherwise the same delta can be
+  durably applied and then scheduled again.
 - A request-stats coalescer may probe a released writer at its next nominal wake with one permit
   and a short transaction budget. Its exact delta restore makes this safe; it does not relax the
   contention cooldown for GC, rebuild, or reconciliation projection.

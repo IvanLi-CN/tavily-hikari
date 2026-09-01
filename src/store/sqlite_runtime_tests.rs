@@ -229,10 +229,10 @@ async fn cancelled_finish_keeps_the_owned_commit_boundary_alive() {
             .expect("write inside transaction");
         transaction.finish(Ok(())).await
     });
-    pause.arrived.notified().await;
+    pause.wait_until_arrived().await;
     task.abort();
     let _ = task.await;
-    pause.release.notify_one();
+    pause.release();
 
     let next = tokio::time::timeout(
         Duration::from_secs(1),

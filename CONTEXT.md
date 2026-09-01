@@ -21,8 +21,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   five requests per second, and there was no recent SQLite contention. Request-stats flush is the
   bounded recovery exception: each nominal wake owns at
   most four adaptive `25..250` logical-key transactions within one 50ms retry budget, atomically
-  restoring every uncommitted delta before yielding. That budget includes pool acquisition,
-  `BEGIN IMMEDIATE`, writes, and commit, not only statement retries after a transaction starts.
+  restoring every uncommitted delta before yielding. The budget decides whether to acquire a
+  connection and start another `BEGIN IMMEDIATE`; once a transaction starts, its runtime-owned
+  commit or rollback resolves before the batch is classified. A timeout must never requeue a batch
+  whose commit is still in flight.
 - `recovery debt`: retained work that is safely eligible for automatic catch-up, including expired
   HA outbox events. It progresses through bounded work slices and never receives a special writer
   bypass.

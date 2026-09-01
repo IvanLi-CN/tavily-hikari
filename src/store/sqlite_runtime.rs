@@ -46,16 +46,27 @@ const TRANSACTION_HOLD_BUCKET_UPPER_MS: [u64; 6] = [10, 25, 50, 100, 250, 251];
 
 #[cfg(test)]
 #[derive(Clone)]
-struct OwnedFinishPause {
+pub(crate) struct OwnedFinishPause {
     arrived: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl OwnedFinishPause {
+    pub(crate) async fn wait_until_arrived(&self) {
+        self.arrived.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
 }
 
 #[cfg(test)]
 static OWNED_FINISH_PAUSE: OnceLock<Mutex<Option<OwnedFinishPause>>> = OnceLock::new();
 
 #[cfg(test)]
-fn install_owned_finish_pause_for_test() -> OwnedFinishPause {
+pub(crate) fn install_owned_finish_pause_for_test() -> OwnedFinishPause {
     let pause = OwnedFinishPause {
         arrived: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),

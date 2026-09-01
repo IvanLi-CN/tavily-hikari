@@ -525,26 +525,18 @@ impl KeyStore {
             );
             return Err(ProxyError::Database(sqlx::Error::PoolTimedOut));
         }
-        match tokio::time::timeout(
-            remaining,
-            Self::flush_request_stats_writes_once_within_deadline(
-                sqlite_runtime,
-                backend_time,
-                retry_deadline,
-                chunk,
-            ),
+        // `begin_immediate_before` applies the remaining retry budget to pool
+        // acquisition and `BEGIN IMMEDIATE`. Once it succeeds, `finish` owns
+        // the commit or rollback boundary. Cancelling that wait after `BEGIN`
+        // would let the coalescer requeue a batch that the owned commit can
+        // still persist.
+        Self::flush_request_stats_writes_once_within_deadline(
+            sqlite_runtime,
+            backend_time,
+            retry_deadline,
+            chunk,
         )
         .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                sqlite_runtime.record_deferred(
-                    SqliteOperation::RequestStatsFlush,
-                    SqliteAdmissionDeferReason::RecentContention,
-                );
-                Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
-            }
-        }
     }
 
     async fn flush_request_stats_writes_once_within_deadline(

@@ -38,11 +38,11 @@
   returns `503` instead of claiming acceptance with a synthetic job id; the self-scheduling HA
   controller and worker wake provide the bounded recovery path without inventing a durable row.
 - The short admission budgets are explicit runtime deadlines, not connection-level `PRAGMA busy_timeout` rewrites. A background request-stats admission commits at most four adaptive
-  `25..250` logical-key transactions under one 50ms retry budget, then atomically returns its
-  complete tail to the coalescer and reports `deferred` when needed. The deadline covers pool
-  acquisition, `BEGIN IMMEDIATE`, writes, and commit; manual HA GC wakes reuse an
-  existing durable representative rather than
-  competing for a locked writer merely to promote queue metadata.
+  `25..250` logical-key transactions under one 50ms transaction-start/next-chunk budget, then
+  atomically returns its complete unstarted tail to the coalescer and reports `deferred` when
+  needed. Once `BEGIN IMMEDIATE` succeeds, the runtime-owned finish commits or rolls back before
+  the coalescer classifies that chunk; manual HA GC wakes reuse an existing durable representative
+  rather than competing for a locked writer merely to promote queue metadata.
 - Dashboard snapshot reads preserve a last-good value under admission or SQLite pressure. A cold
   shared loader is bounded per caller to one second without cancelling its in-flight build; startup
   gives that same loader a one-second head start before accepting external connections.

@@ -9,10 +9,11 @@
   seconds.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
-  background admission commits at most four chunks within one 50ms retry budget, returns the
-  remaining tail to the coalescer exactly once, and waits for the next nominal second before its
-  next slice. Explicit shutdown drain paths may continue through further chunks within their own
-  bounded deadline.
+  background admission commits at most four chunks within one 50ms transaction-start/next-chunk
+  budget, returns the remaining unstarted tail to the coalescer exactly once, and waits for the
+  next nominal second before its next slice. A started transaction reaches its runtime-owned commit
+  or rollback boundary before the batch is requeued. Explicit shutdown drain paths may continue
+  through further chunks within their own bounded deadline.
 - Dashboard integrity and pressure rebuild use the same bulk boundary. Claim, finish,
   continuation, and stale recovery are short control transactions and do not wait on the bulk
   permit or run a background retry loop. Runtime transaction deadlines implement their short

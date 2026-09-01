@@ -1019,6 +1019,88 @@ async fn request_stats_background_flush_defers_before_pool_acquire_and_preserves
 }
 
 #[tokio::test]
+async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget() {
+    let db_path = temp_db_path("request-stats-owned-finish-boundary");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-owned-finish-boundary").await;
+    proxy
+        .key_store
+        .flush_request_stats_writes()
+        .await
+        .expect("drain setup coalescer state");
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop background worker before controlling the flush");
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    proxy
+        .key_store
+        .enqueue_request_stats_rollup_for_test(
+            Some(&key_id),
+            proxy.backend_time().now_ts().saturating_sub(1),
+            OUTCOME_SUCCESS,
+        )
+        .await;
+
+    let pause = crate::store::install_owned_finish_pause_for_test();
+    let store = proxy.key_store.clone();
+    let flush = tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
+
+    tokio::time::timeout(Duration::from_secs(1), pause.wait_until_arrived())
+        .await
+        .expect("flush reaches the owned commit boundary");
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    pause.release();
+    let outcome = tokio::time::timeout(Duration::from_secs(1), flush)
+        .await
+        .expect("flush completes after the owned commit is released")
+        .expect("flush task joins")
+        .expect("background admission decision must remain typed");
+    assert_eq!(
+        outcome,
+        RequestStatsBackgroundFlushOutcome::Flushed,
+        "a started transaction must not be requeued when its commit crosses the retry budget"
+    );
+
+    let summary = proxy
+        .summary_without_flush()
+        .await
+        .expect("durable summary after the owned commit");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.success_count, 1);
+    let pending = proxy.key_store.request_stats_coalescer.state.lock().await;
+    assert_eq!(
+        RequestStatsCoalescer::pending_key_count(&pending),
+        0,
+        "a committed delta must not remain queued for a second flush"
+    );
+    drop(pending);
+
+    let next = tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy
+            .key_store
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::RequestStatsFlush),
+    )
+    .await
+    .expect("owned commit must return a reusable connection")
+    .expect("next transaction begins");
+    next.rollback().await.expect("rollback next transaction");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn request_stats_background_flush_defers_on_writer_lock_and_requeues_exact_delta() {
     let db_path = temp_db_path("request-stats-background-writer-lock");
     let db_str = db_path.to_string_lossy().to_string();

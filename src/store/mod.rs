@@ -19,6 +19,8 @@ use tracing::{error, info, warn};
 mod immediate_transaction;
 mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
+#[cfg(test)]
+pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
     SqliteMaintenanceBulkPermit, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,

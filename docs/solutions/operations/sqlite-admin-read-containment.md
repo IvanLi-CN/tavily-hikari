@@ -104,7 +104,9 @@ reads:
   data rather than inheriting the failed write path.
 - Keep the request-stats cadence bounded without allowing its in-memory tail to become a second
   pressure source: one nominal wake may commit at most four adaptive `25..250` logical-key
-  transactions under one 50ms budget, then returns the remaining tail atomically. During a cold
+  transactions under one 50ms transaction-start/next-chunk budget, then returns the remaining
+  unstarted tail atomically. A transaction already past `BEGIN IMMEDIATE` reaches its owned commit
+  or rollback boundary before any delta is requeued. During a cold
   dashboard singleflight, SSE clients emit degraded frames instead of independently starting
   freshness reads against the small shared pool.
 - When dashboard overview depends on coalesced request-stat rollups, split “probe freshness” from
