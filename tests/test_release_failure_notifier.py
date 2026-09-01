@@ -170,6 +170,29 @@ class ReleaseFailureNotifierTests(unittest.TestCase):
         self.assertIn("automatic failed-jobs rerun", details)
         self.assertIn("attempt", details)
 
+    def test_notification_summary_contains_caller_owned_failure_metadata(self):
+        summary = MODULE.compose_notification_summary(
+            repository="test/repo",
+            workflow_name="Release",
+            outcome="failure",
+            target_sha="0123456789abcdef0123456789abcdef01234567",
+            run_url="https://github.test/test/repo/actions/runs/42",
+            ref_label="branch: main",
+            run_attempt=2,
+            actor="koha",
+            event_name="push",
+            extra_details="automatic failed-jobs rerun was already consumed",
+        )
+
+        self.assertTrue(summary.startswith("\U0001f6a8 Release Failed"))
+        self.assertIn("project: test/repo", summary)
+        self.assertIn("status: failure", summary)
+        self.assertIn("result: failure", summary)
+        self.assertIn("failure_title: \U0001f6a8 Release Failed", summary)
+        self.assertIn("target_sha: 0123456789abcdef0123456789abcdef01234567", summary)
+        self.assertIn("run_url: https://github.test/test/repo/actions/runs/42", summary)
+        self.assertIn("automatic failed-jobs rerun was already consumed", summary)
+
     def test_main_triggers_rerun_and_suppresses_first_transient_attempt(self):
         fake_api = self.FakeApi(
             jobs_by_path={
@@ -197,6 +220,7 @@ class ReleaseFailureNotifierTests(unittest.TestCase):
                 "RUN_EVENT": "push",
                 "HEAD_BRANCH": "main",
                 "HEAD_SHA": "fedcba9876543210fedcba9876543210fedcba98",
+                "RUN_URL": "https://example.test/test/repo/actions/runs/42",
                 "TRIGGERING_ACTOR": "koha",
                 "GITHUB_OUTPUT": str(output_path),
                 "GITHUB_STEP_SUMMARY": str(summary_path),
@@ -212,6 +236,10 @@ class ReleaseFailureNotifierTests(unittest.TestCase):
         self.assertEqual(outputs["rerun_eligible"], "true")
         self.assertEqual(outputs["rerun_triggered"], "true")
         self.assertEqual(outputs["alert_suppressed"], "true")
+        self.assertIn("project: test/repo", outputs["summary"])
+        self.assertIn("status: failure", outputs["summary"])
+        self.assertIn("target_sha: 0123456789abcdef0123456789abcdef01234567", outputs["summary"])
+        self.assertIn("run_url: https://example.test/test/repo/actions/runs/42", outputs["summary"])
         self.assertIn("automatic failed-jobs rerun triggered once", outputs["extra_details"])
         self.assertIn(("/repos/test/repo/actions/runs/42/rerun-failed-jobs", {"enable_debug_logging": False}), fake_api.rerun_calls)
 

@@ -25,6 +25,7 @@ jobs:
       head_sha: ${{ steps.resolve.outputs.head_sha }}
       actor: ${{ steps.resolve.outputs.actor }}
       extra_details: ${{ steps.resolve.outputs.extra_details }}
+      summary: ${{ steps.resolve.outputs.summary }}
       alert_suppressed: ${{ steps.resolve.outputs.alert_suppressed }}
       rerun_triggered: ${{ steps.resolve.outputs.rerun_triggered }}
     steps:
@@ -42,6 +43,7 @@ jobs:
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
           TRIGGERING_ACTOR: ${{ github.event.workflow_run.triggering_actor.login || github.event.workflow_run.actor.login || github.actor }}
         shell: bash
         run: |
@@ -56,35 +58,31 @@ jobs:
       }}
     needs:
       - resolve_release_context
-    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    permissions:
+      id-token: write
+    uses: IvanLi-CN/oidrune/.github/workflows/notify.yml@e48822f99c6402a753ed86557ea029754cbab20b
     with:
-      repository: ${{ github.repository }}
-      workflow_name: ${{ github.event.workflow_run.name }}
-      conclusion: ${{ github.event.workflow_run.conclusion }}
-      run_url: ${{ github.event.workflow_run.html_url }}
-      ref_label: ${{ needs.resolve_release_context.outputs.ref_label }}
-      head_sha: ${{ needs.resolve_release_context.outputs.head_sha }}
-      run_attempt: ${{ github.event.workflow_run.run_attempt }}
-      actor: ${{ needs.resolve_release_context.outputs.actor }}
-      event_name: ${{ github.event.workflow_run.event }}
-      extra_details: ${{ needs.resolve_release_context.outputs.extra_details }}
-    secrets:
-      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}
+      outcome: ${{ github.event.workflow_run.conclusion }}
+      summary: ${{ needs.resolve_release_context.outputs.summary }}
 
   smoke_test:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    permissions:
+      id-token: write
+    uses: IvanLi-CN/oidrune/.github/workflows/notify.yml@e48822f99c6402a753ed86557ea029754cbab20b
     with:
-      alert_kind: "release-alert-smoke"
-      repository: ${{ github.repository }}
-      workflow_name: "Notify failed release"
-      conclusion: "failure"
-      run_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-      ref_label: "${{ format('branch: {0}', github.ref_name) }}"
-      head_sha: ${{ github.sha }}
-      run_attempt: ${{ github.run_attempt }}
-      actor: ${{ github.actor }}
-      event_name: "workflow_dispatch"
-      extra_details: "manual notifier smoke test"
-    secrets:
-      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}
+      outcome: failure
+      summary: |-
+        🧪 Smoke Test · ${{ github.repository }}
+        project: ${{ github.repository }}
+        status: smoke test
+        result: failure
+        smoke_title: 🧪 Smoke Test
+        target_sha: ${{ github.sha }}
+        run_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        workflow: Notify failed release
+        ref: ${{ format('branch: {0}', github.ref_name) }}
+        attempt: ${{ github.run_attempt }}
+        actor: ${{ github.actor }}
+        event: workflow_dispatch
+        note: manual notifier smoke test

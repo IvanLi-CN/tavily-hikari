@@ -401,6 +401,45 @@ def compose_ci_pipeline_extra_details(
     return join_details(*details)
 
 
+def notification_title(workflow_name: str) -> str:
+    if workflow_name == RELEASE_WORKFLOW_NAME:
+        return "\U0001f6a8 Release Failed"
+    return "\u26a0\ufe0f Workflow Failed"
+
+
+def compose_notification_summary(
+    *,
+    repository: str,
+    workflow_name: str,
+    outcome: str,
+    target_sha: str,
+    run_url: str,
+    ref_label: str,
+    run_attempt: int,
+    actor: str,
+    event_name: str,
+    extra_details: str,
+) -> str:
+    title = notification_title(workflow_name)
+    lines = [
+        f"{title} \u00b7 {repository}",
+        f"project: {repository}",
+        "status: failure",
+        f"result: {outcome or 'failure'}",
+        f"failure_title: {title}",
+        f"target_sha: {target_sha or 'unknown'}",
+        f"run_url: {run_url or 'unavailable'}",
+        f"workflow: {workflow_name or RELEASE_WORKFLOW_NAME}",
+        f"ref: {ref_label or 'ref: unavailable'}",
+        f"attempt: {run_attempt}",
+        f"actor: {actor or 'unknown'}",
+        f"event: {event_name or 'unknown'}",
+    ]
+    if extra_details:
+        lines.append(f"note: {extra_details}")
+    return "\n".join(lines)
+
+
 def list_jobs(api: GitHubApi, repository: str, run_id: str, run_attempt: int | None = None) -> list[dict]:
     paths: list[str] = []
     if run_attempt:
@@ -518,6 +557,7 @@ def main() -> int:
     run_event = os.environ.get("RUN_EVENT", "").strip()
     head_branch = os.environ.get("HEAD_BRANCH", "").strip()
     fallback_head_sha = os.environ.get("HEAD_SHA", "").strip()
+    run_url = os.environ.get("RUN_URL", "").strip()
     actor = os.environ.get("TRIGGERING_ACTOR", "").strip()
     output_path = os.environ["GITHUB_OUTPUT"]
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
@@ -621,15 +661,31 @@ def main() -> int:
         )
         alert_suppressed = rerun_triggered
 
-    write_output("ref_label", pick_ref_label(run_event, head_branch), output_path)
+    ref_label = pick_ref_label(run_event, head_branch)
+    workflow_name = workflow_name or RELEASE_WORKFLOW_NAME
+    notification_summary = compose_notification_summary(
+        repository=repository,
+        workflow_name=workflow_name,
+        outcome="failure",
+        target_sha=resolved_sha or fallback_head_sha,
+        run_url=run_url,
+        ref_label=ref_label,
+        run_attempt=run_attempt,
+        actor=actor,
+        event_name=run_event,
+        extra_details=extra_details,
+    )
+
+    write_output("ref_label", ref_label, output_path)
     write_output("head_sha", resolved_sha or fallback_head_sha, output_path)
     write_output("actor", actor, output_path)
-    write_output("workflow_name", workflow_name or RELEASE_WORKFLOW_NAME, output_path)
+    write_output("workflow_name", workflow_name, output_path)
     write_output("release_intent_label", release_intent.release_intent_label, output_path)
     write_output("release_channel", release_intent.release_channel, output_path)
     write_output("pr_number", release_intent.pr_number, output_path)
     write_multiline_output("pr_url", release_intent.pr_url, output_path)
     write_multiline_output("extra_details", extra_details, output_path)
+    write_multiline_output("summary", notification_summary, output_path)
     write_output("transient_docker_failure", str(current_classification.transient_docker_failure).lower(), output_path)
     write_output("rerun_eligible", str(rerun_eligible).lower(), output_path)
     write_output("rerun_triggered", str(rerun_triggered).lower(), output_path)
@@ -640,6 +696,9 @@ def main() -> int:
 
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as handle:
+            handle.write("### Notification summary\n")
+            handle.write(notification_summary)
+            handle.write("\n\n")
             handle.write("### Release failure triage\n")
             handle.write(f"- workflow_name: {workflow_name or RELEASE_WORKFLOW_NAME}\n")
             handle.write(f"- run_attempt: {run_attempt}\n")
