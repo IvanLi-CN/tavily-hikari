@@ -422,6 +422,37 @@
 
 ![Missing eligible upstream key diagnostic comparison](./assets/current/reconciliation-retry-difference-89fd4b3e-desktop.jpg)
 
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- story_id_or_title: `Admin/Modules/SystemStatusModule/EvidenceResearchLivenessPressure`
+- scenario: aged Research turn and defer-reason diagnostics under sustained foreground pressure
+- requested_viewport: `desktop`
+- viewport_strategy: `storybook-viewport`
+- capture_scope: `browser-viewport`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- evidence_note: Current `f2e67f9b` source adds the longest eligible Research wait and separates
+  foreground, remote-lease, read-budget, and control defers. The fixture shows a 6m wait with
+  `12/3/1/0` defer counts; no key, token, request ID, SQL, or upstream body is rendered.
+- submission_gate: `approved`
+
+![Research liveness diagnostics on desktop](./assets/research-drain-liveness-desktop.png)
+
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- story_id_or_title: `Admin/Modules/SystemStatusModule/EvidenceResearchLivenessPressureMobile393x852`
+- scenario: responsive aged Research liveness diagnostics
+- requested_viewport: `393x852`
+- viewport_strategy: `storybook-viewport`
+- capture_scope: `browser-viewport`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- evidence_note: Current `f2e67f9b` source keeps the liveness counters readable at the required
+  mobile viewport while preserving the existing administrator status structure.
+- submission_gate: `approved`
+
+![Research liveness diagnostics on mobile](./assets/research-drain-liveness-mobile-393x852.png)
+
 ## Related PRs
 
 - None
