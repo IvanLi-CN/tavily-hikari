@@ -832,6 +832,7 @@ impl SqliteRuntime {
             .map(|permit| SqliteMaintenanceRunLease { _permit: permit })
     }
 
+    #[cfg(test)]
     pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) {
         if self.has_foreground_pool_capacity()
             || self.inner.pool.size() >= self.inner.maximum_connections
@@ -871,6 +872,7 @@ impl SqliteRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn prewarm_reconciliation_projection_capacity(&self) {
         self.prewarm_maintenance_bulk_capacity().await;
     }
@@ -950,8 +952,7 @@ impl SqliteRuntime {
             Some(SqliteAdmissionDeferReason::ForegroundPressure.as_str())
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention.as_str())
-        } else if self.inner.pool.num_idle()
-            < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
+        } else if self.inner.pool.num_idle() == 0
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
         {
             Some(SqliteAdmissionDeferReason::PoolPressure.as_str())

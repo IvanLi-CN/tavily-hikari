@@ -771,6 +771,9 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .await
         .expect("warm alerts catalog");
     assert_eq!(warm.status(), reqwest::StatusCode::OK);
+    let warm_body: serde_json::Value = warm.json().await.expect("warm alerts json");
+    assert_eq!(warm_body.get("coverage"), None);
+    assert_eq!(warm_body.get("staleReason"), None);
 
     // Alerts no longer depend on a maintenance-bulk permit. The native,
     // connection-local read deadline is the pressure boundary that selects

@@ -417,13 +417,6 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
-        // A lazy three-connection pool can transiently have one checked-out
-        // connection and one idle connection without foreground pressure.
-        // Grow the unopened final slot within the runtime's short budget
-        // before deciding whether a projection slice must defer.
-        self.sqlite_runtime
-            .prewarm_maintenance_bulk_capacity()
-            .await;
         let _admission = match self.try_admit_alert_projection() {
             Ok(permit) => permit,
             Err(reason) => {
@@ -867,9 +860,6 @@ impl KeyStore {
     }
 
     pub(crate) async fn refresh_dashboard_alert_projection_summary(&self) -> Result<bool, ProxyError> {
-        self.sqlite_runtime
-            .prewarm_maintenance_bulk_capacity()
-            .await;
         let Ok(_permit) = self.try_admit_alert_projection() else {
             return Ok(false);
         };
