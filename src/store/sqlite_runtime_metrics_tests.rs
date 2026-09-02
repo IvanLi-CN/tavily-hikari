@@ -26,6 +26,50 @@ async fn workload_window_records_typed_admission_defers_without_statement_text()
 }
 
 #[tokio::test]
+async fn deferred_read_close_is_not_reported_as_a_database_error() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    let error = ProxyError::Deferred {
+        operation: "admin_alerts_read",
+        reason: "read_budget".to_string(),
+    };
+    runtime.record_deferred_error(SqliteOperation::AdminAlertsCacheWarm, &error);
+
+    let window = runtime.inner.workload.lock().unwrap();
+    let metrics = &window.operations[&SqliteOperation::AdminAlertsCacheWarm];
+    assert_eq!(metrics.errors, 0);
+    assert_eq!(metrics.deferred, 1);
+    assert_eq!(
+        metrics
+            .deferred_by_reason
+            .get(&SqliteAdmissionDeferReason::QueryDeadline),
+        Some(&1)
+    );
+}
+
+#[tokio::test]
+async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_fields() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    runtime.record_admin_alerts_warm_slice();
+    runtime.record_admin_alerts_warm_publish();
+    runtime.record_admin_alerts_warm_generation_discard();
+    runtime.record_admin_alerts_warm_defer();
+    runtime.record_admin_alerts_warm_cold_miss();
+
+    let window = runtime
+        .inner
+        .workload
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let formatted = format_admin_alerts_warm_window(window.admin_alerts_warm);
+    assert_eq!(
+        formatted,
+        "slices=1,publishes=1,generation_discards=1,defers=1,cold_misses=1"
+    );
+    assert!(!formatted.contains("SELECT"));
+    assert!(!formatted.contains("token"));
+}
+
+#[tokio::test]
 async fn sqlite_workload_window_reports_scoped_reconciliation_metrics() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
     runtime.record_connection_cache_write_pages(SqliteOperation::ReconciliationProjection, Some(7));

@@ -26,6 +26,14 @@
 - Alerts 读取使用独立的 SQLite read session：获取连接最多 `100ms`，同一只读 snapshot 内的
   coverage 与 projection 读取由 `250ms` 原生 deadline 约束。它不是 bulk admission，也不允许
   handler 外层 timeout 或 raw-pool fallback 重新引入无界等待。
+- 默认 catalog、events `1/20` 与 groups `1/20` 是 canonical keys，由 `AppState` 唯一拥有的
+  background warm controller 以 `AdminAlertsCacheWarm` 短读片构建。三项必须来自同一完整
+  projection generation 才能一起发布；任一 defer、取消或 generation 变化都丢弃 staged
+  值并保留 last-good。warm admission 要求两个连接已 idle、前台速率不超过 `5 rps` 且最近
+  `5s` 无 SQLite contention，失败按 `5s/5s/30s` 退避。冷启动且没有连接等待者时允许第一条
+  bounded read 惰性建立连接；HTTP 对 canonical key 只读 exact-key
+  cache：同 generation 为 fresh，generation 落后但未过期为 stale，cold/过期为
+  `503 Retry-After: 1`，绝不触发重建。
 
 ## Non-goals
 

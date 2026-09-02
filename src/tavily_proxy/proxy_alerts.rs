@@ -17,6 +17,41 @@ impl TavilyProxy {
         None
     }
 
+    #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_defer_reason(&self) -> Option<&'static str> {
+        self.key_store.admin_alerts_cache_warm_defer_reason()
+    }
+
+    #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
+        self.key_store.admin_alerts_cache_warm_pressure_reason()
+    }
+
+    #[doc(hidden)]
+    pub fn record_admin_alerts_warm_slice(&self) {
+        self.key_store.record_admin_alerts_warm_slice();
+    }
+
+    #[doc(hidden)]
+    pub fn record_admin_alerts_warm_publish(&self) {
+        self.key_store.record_admin_alerts_warm_publish();
+    }
+
+    #[doc(hidden)]
+    pub fn record_admin_alerts_warm_generation_discard(&self) {
+        self.key_store.record_admin_alerts_warm_generation_discard();
+    }
+
+    #[doc(hidden)]
+    pub fn record_admin_alerts_warm_defer(&self) {
+        self.key_store.record_admin_alerts_warm_defer();
+    }
+
+    #[doc(hidden)]
+    pub fn record_admin_alerts_warm_cold_miss(&self) {
+        self.key_store.record_admin_alerts_warm_cold_miss();
+    }
+
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn force_next_admin_alert_read_deadline_for_test(&self) {
@@ -144,6 +179,28 @@ impl TavilyProxy {
         .await
     }
 
+    #[doc(hidden)]
+    pub async fn admin_alert_events_page_for_cache_warm(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedAlertEvents, ProxyError> {
+        self.key_store
+            .fetch_admin_alert_events_page_for_operation(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                page,
+                per_page,
+                crate::store::SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn alert_groups_page(
         &self,
@@ -200,12 +257,45 @@ impl TavilyProxy {
         .await
     }
 
+    #[doc(hidden)]
+    pub async fn admin_alert_groups_page_for_cache_warm(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedAlertGroups, ProxyError> {
+        self.key_store
+            .fetch_admin_alert_groups_page_for_operation(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                page,
+                per_page,
+                crate::store::SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await
+    }
+
     pub async fn alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
         self.key_store.fetch_alert_catalog().await
     }
 
     pub async fn admin_alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
         self.key_store.fetch_admin_alert_catalog().await
+    }
+
+    #[doc(hidden)]
+    pub async fn admin_alert_catalog_for_cache_warm(
+        &self,
+    ) -> Result<AlertCatalog, ProxyError> {
+        self.key_store
+            .fetch_admin_alert_catalog_for_operation(
+                crate::store::SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await
     }
 
     pub async fn recent_alerts_summary(

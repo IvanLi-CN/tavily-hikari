@@ -124,6 +124,7 @@ pub(crate) struct SqliteMaintenanceRunLease {
 pub(crate) enum SqliteOperation {
     AdminMutation,
     AdminAlertsRead,
+    AdminAlertsCacheWarm,
     AdminPrivacyRead,
     AdminRead,
     AlertProjection,
@@ -180,6 +181,7 @@ impl SqliteOperation {
         match self {
             Self::AdminMutation => "admin_mutation",
             Self::AdminAlertsRead => "admin_alerts_read",
+            Self::AdminAlertsCacheWarm => "admin_alerts_cache_warm",
             Self::AdminPrivacyRead => "admin_privacy_read",
             Self::AdminRead => "admin_read",
             Self::AlertProjection => "alert_projection",
@@ -203,6 +205,7 @@ impl SqliteOperation {
         match self {
             Self::AdminMutation | Self::ForegroundJobTrigger => "foreground_work",
             Self::AdminAlertsRead
+            | Self::AdminAlertsCacheWarm
             | Self::AdminPrivacyRead
             | Self::BillingLedgerAuditRead
             | Self::HaBaselineRead
@@ -224,6 +227,7 @@ impl SqliteOperation {
         match self {
             Self::AdminMutation => Duration::from_millis(100),
             Self::AdminAlertsRead
+            | Self::AdminAlertsCacheWarm
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AlertProjection
@@ -245,6 +249,7 @@ impl SqliteOperation {
         match self {
             Self::AdminMutation => Duration::from_millis(100),
             Self::AdminAlertsRead
+            | Self::AdminAlertsCacheWarm
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AlertProjection
@@ -269,6 +274,7 @@ impl SqliteOperation {
             // returns writer contention as a typed defer without cancelling
             // a future that still owns the physical connection.
             Self::AdminAlertsRead
+            | Self::AdminAlertsCacheWarm
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AdminMutation
@@ -346,6 +352,15 @@ struct ReconciliationReadWindow {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+struct AdminAlertsWarmWindow {
+    slices: u64,
+    publishes: u64,
+    generation_discards: u64,
+    defers: u64,
+    cold_misses: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SqliteOperationTelemetry {
     pub(crate) connection_cache_write_pages: u64,
     pub(crate) connection_cache_write_sampled: bool,
@@ -387,6 +402,7 @@ struct WorkloadWindow {
     started_at: Instant,
     operations: BTreeMap<SqliteOperation, OperationWindow>,
     reconciliation_reads: BTreeMap<ReconciliationReadKind, ReconciliationReadWindow>,
+    admin_alerts_warm: AdminAlertsWarmWindow,
     last_process_write_bytes: Option<u64>,
     last_cgroup_write_bytes: Option<u64>,
     minimum_idle_connections: Option<u32>,
@@ -406,6 +422,7 @@ impl Default for WorkloadWindow {
             started_at: Instant::now(),
             operations: BTreeMap::new(),
             reconciliation_reads: BTreeMap::new(),
+            admin_alerts_warm: AdminAlertsWarmWindow::default(),
             last_process_write_bytes: None,
             last_cgroup_write_bytes: None,
             minimum_idle_connections: None,
@@ -826,12 +843,22 @@ impl SqliteRuntime {
         let deadline = Instant::now() + Duration::from_millis(100);
         let mut held = Vec::new();
         while self.inner.pool.size() < self.inner.maximum_connections {
+            if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS
+                || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+            {
+                break;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
             match tokio::time::timeout(remaining, self.inner.pool.acquire()).await {
-                Ok(Ok(conn)) => held.push(conn),
+                Ok(Ok(conn)) => {
+                    held.push(conn);
+                    if self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
+                        break;
+                    }
+                }
                 _ => break,
             }
         }
@@ -888,6 +915,46 @@ impl SqliteRuntime {
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
         {
             Some(SqliteAdmissionDeferReason::PoolPressure)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn admin_alerts_cache_warm_defer_reason(
+        &self,
+    ) -> Option<SqliteAdmissionDeferReason> {
+        // Canonical Alerts warmup is deliberately lower priority than both
+        // foreground work and ordinary admin reads. Require two already-idle
+        // connections once the lazy pool has been established. A cold pool
+        // (or its first single idle connection) may bootstrap through the
+        // bounded warm read itself, as long as no foreground waiter exists.
+        let idle = self.inner.pool.num_idle();
+        let pool_size = self.inner.pool.size();
+        let cold_bootstrap = pool_size <= 1 && idle == pool_size as usize;
+        if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+            Some(SqliteAdmissionDeferReason::ForegroundPressure)
+        } else if self.recent_contention_active() {
+            Some(SqliteAdmissionDeferReason::RecentContention)
+        } else if (!cold_bootstrap
+            && idle < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize)
+            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+        {
+            Some(SqliteAdmissionDeferReason::PoolPressure)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
+        if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+            Some(SqliteAdmissionDeferReason::ForegroundPressure.as_str())
+        } else if self.recent_contention_active() {
+            Some(SqliteAdmissionDeferReason::RecentContention.as_str())
+        } else if self.inner.pool.num_idle()
+            < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
+            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+        {
+            Some(SqliteAdmissionDeferReason::PoolPressure.as_str())
         } else {
             None
         }
@@ -1005,7 +1072,10 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
-        let cooperative_run_deadline = if operation == SqliteOperation::AdminAlertsRead {
+        let cooperative_run_deadline = if matches!(
+            operation,
+            SqliteOperation::AdminAlertsRead | SqliteOperation::AdminAlertsCacheWarm
+        ) {
             let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
             let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
             handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
@@ -1060,7 +1130,9 @@ impl SqliteRuntime {
         };
         let begin_result = if matches!(
             operation,
-            SqliteOperation::AdminPrivacyRead | SqliteOperation::AdminAlertsRead
+            SqliteOperation::AdminPrivacyRead
+                | SqliteOperation::AdminAlertsRead
+                | SqliteOperation::AdminAlertsCacheWarm
         ) {
             // Admin privacy refreshes are detached from the HTTP budget. Its
             // connection-local busy timeout is the bounded defer mechanism;
@@ -1112,6 +1184,10 @@ impl SqliteRuntime {
                 ADMIN_PRIVACY_READ_PROGRESS_HANDLER_OPS,
             )),
             SqliteOperation::AdminAlertsRead => Some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            )),
+            SqliteOperation::AdminAlertsCacheWarm => Some((
                 ADMIN_ALERTS_READ_RUN_BUDGET,
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
@@ -1426,6 +1502,45 @@ impl SqliteRuntime {
         }
     }
 
+    pub(crate) fn record_admin_alerts_warm_slice(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.slices = metrics.slices.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_warm_publish(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.publishes = metrics.publishes.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_warm_generation_discard(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.generation_discards = metrics.generation_discards.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_warm_defer(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.defers = metrics.defers.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_warm_cold_miss(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.cold_misses = metrics.cold_misses.saturating_add(1);
+        });
+    }
+
+    fn record_admin_alerts_warm_event(&self, update: impl FnOnce(&mut AdminAlertsWarmWindow)) {
+        let mut window = self
+            .inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        update(&mut window.admin_alerts_warm);
+    }
+
     pub(crate) fn record_deferred(
         &self,
         operation: SqliteOperation,
@@ -1441,6 +1556,23 @@ impl SqliteRuntime {
             false,
             Some(reason),
         );
+    }
+
+    fn record_deferred_error(&self, operation: SqliteOperation, error: &ProxyError) {
+        let ProxyError::Deferred { reason, .. } = error else {
+            self.record_error(operation, Duration::ZERO, Duration::ZERO, error);
+            return;
+        };
+        let reason = match reason.as_str() {
+            "foreground_pressure" => SqliteAdmissionDeferReason::ForegroundPressure,
+            "pool_pressure" => SqliteAdmissionDeferReason::PoolPressure,
+            "recent_contention" => SqliteAdmissionDeferReason::RecentContention,
+            "query_deadline" | "read_budget" => SqliteAdmissionDeferReason::QueryDeadline,
+            // Generation fencing is a normal retry boundary rather than a
+            // database failure; keep it in the typed deadline/defer bucket.
+            _ => SqliteAdmissionDeferReason::QueryDeadline,
+        };
+        self.record_deferred(operation, reason);
     }
 
     fn record_error(
@@ -1619,6 +1751,7 @@ impl SqliteRuntime {
             monotonic_delta(cgroup_write_bytes, window.last_cgroup_write_bytes);
         let top_operations =
             format_operation_window(&window.operations, &window.reconciliation_reads);
+        let admin_alerts_warm = format_admin_alerts_warm_window(window.admin_alerts_warm);
         let sqlite_file_state = self.sqlite_file_state();
         info!(
             component = "db",
@@ -1633,11 +1766,13 @@ impl SqliteRuntime {
             peak_acquire_waiters = window.maximum_acquire_waiters,
             sqlite_file_state = %sqlite_file_state,
             top_operations,
+            admin_alerts_warm,
             "SQLite workload summary"
         );
         window.started_at = now;
         window.operations.clear();
         window.reconciliation_reads.clear();
+        window.admin_alerts_warm = AdminAlertsWarmWindow::default();
         window.last_process_write_bytes = process_write_bytes;
         window.last_cgroup_write_bytes = cgroup_write_bytes;
         window.minimum_idle_connections = None;
@@ -1696,6 +1831,39 @@ impl KeyStore {
         Some(reason.as_str())
     }
 
+    pub(crate) fn admin_alerts_cache_warm_defer_reason(&self) -> Option<&'static str> {
+        let reason = self.sqlite_runtime.admin_alerts_cache_warm_defer_reason()?;
+        self.sqlite_runtime
+            .record_deferred(SqliteOperation::AdminAlertsCacheWarm, reason);
+        Some(reason.as_str())
+    }
+
+    pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
+        self.sqlite_runtime
+            .admin_alerts_cache_warm_pressure_reason()
+    }
+
+    pub(crate) fn record_admin_alerts_warm_slice(&self) {
+        self.sqlite_runtime.record_admin_alerts_warm_slice();
+    }
+
+    pub(crate) fn record_admin_alerts_warm_publish(&self) {
+        self.sqlite_runtime.record_admin_alerts_warm_publish();
+    }
+
+    pub(crate) fn record_admin_alerts_warm_generation_discard(&self) {
+        self.sqlite_runtime
+            .record_admin_alerts_warm_generation_discard();
+    }
+
+    pub(crate) fn record_admin_alerts_warm_defer(&self) {
+        self.sqlite_runtime.record_admin_alerts_warm_defer();
+    }
+
+    pub(crate) fn record_admin_alerts_warm_cold_miss(&self) {
+        self.sqlite_runtime.record_admin_alerts_warm_cold_miss();
+    }
+
     pub(crate) async fn begin_admin_privacy_read_session(
         &self,
     ) -> Result<SqliteReadSnapshot, ProxyError> {
@@ -1704,15 +1872,12 @@ impl KeyStore {
             .await
     }
 
-    pub(crate) async fn begin_admin_alerts_read_session(
+    pub(crate) async fn begin_admin_alerts_read_session_for_operation(
         &self,
+        operation: SqliteOperation,
     ) -> Result<AdminAlertsReadSession, ProxyError> {
         Ok(AdminAlertsReadSession {
-            snapshot: Some(
-                self.sqlite_runtime
-                    .begin_read_snapshot(SqliteOperation::AdminAlertsRead)
-                    .await?,
-            ),
+            snapshot: Some(self.sqlite_runtime.begin_read_snapshot(operation).await?),
         })
     }
 
@@ -2192,12 +2357,16 @@ impl SqliteReadSnapshot {
                     return Err(err);
                 }
                 if let Some(error) = query_error {
-                    self.runtime.record_error(
-                        self.operation,
-                        self.pool_wait,
-                        self.begin_wait,
-                        error,
-                    );
+                    if error.is_deferred() {
+                        self.runtime.record_deferred_error(self.operation, error);
+                    } else {
+                        self.runtime.record_error(
+                            self.operation,
+                            self.pool_wait,
+                            self.begin_wait,
+                            error,
+                        );
+                    }
                 } else {
                     self.runtime.record_success(
                         self.operation,
@@ -2908,6 +3077,17 @@ fn format_operation_window(
         }))
         .collect::<Vec<_>>()
         .join(";")
+}
+
+fn format_admin_alerts_warm_window(metrics: AdminAlertsWarmWindow) -> String {
+    format!(
+        "slices={},publishes={},generation_discards={},defers={},cold_misses={}",
+        metrics.slices,
+        metrics.publishes,
+        metrics.generation_discards,
+        metrics.defers,
+        metrics.cold_misses,
+    )
 }
 
 fn format_sqlite_file_state(paths: &SqliteFileStatePaths) -> String {

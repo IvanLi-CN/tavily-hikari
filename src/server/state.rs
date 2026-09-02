@@ -87,6 +87,7 @@ struct DashboardOverviewCacheState {
     admin_alerts: AdminAlertsReadCache,
     admin_alerts_prewarm_in_flight: bool,
     admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
+    admin_alerts_prewarm_defers: u8,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -113,6 +114,7 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts: AdminAlertsReadCache::default(),
             admin_alerts_prewarm_in_flight: false,
             admin_alerts_prewarm_not_before: None,
+            admin_alerts_prewarm_defers: 0,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -127,6 +129,27 @@ impl Default for DashboardOverviewCacheState {
 const ADMIN_ALERTS_CACHE_CAPACITY: usize = 64;
 const ADMIN_ALERTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn admin_alerts_warm_deferred(reason: &'static str) -> tavily_hikari::ProxyError {
+    tavily_hikari::ProxyError::Deferred {
+        operation: "admin_alerts_warm",
+        reason: reason.to_string(),
+    }
+}
+
+fn admin_alerts_warm_error_reason(error: &tavily_hikari::ProxyError) -> &'static str {
+    let tavily_hikari::ProxyError::Deferred { reason, .. } = error else {
+        return "sqlite_pressure";
+    };
+    match reason.as_str() {
+        "foreground_pressure" => "foreground_pressure",
+        "pool_pressure" => "pool_pressure",
+        "recent_contention" => "recent_contention",
+        "projection_generation_changed" => "projection_generation_changed",
+        "read_budget" => "read_budget",
+        _ => "deferred",
+    }
+}
 
 impl DashboardOverviewCacheState {
     fn try_start_admin_alerts_prewarm(&mut self, now: tokio::time::Instant) -> bool {
@@ -145,6 +168,20 @@ impl DashboardOverviewCacheState {
 
     fn finish_admin_alerts_prewarm(&mut self) {
         self.admin_alerts_prewarm_in_flight = false;
+        self.admin_alerts_prewarm_defers = 0;
+        self.admin_alerts_prewarm_not_before = Some(
+            tokio::time::Instant::now() + ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
+        );
+    }
+
+    fn defer_admin_alerts_prewarm(&mut self, now: tokio::time::Instant) -> std::time::Duration {
+        self.admin_alerts_prewarm_defers = self.admin_alerts_prewarm_defers.saturating_add(1);
+        let delay = match self.admin_alerts_prewarm_defers {
+            1 | 2 => std::time::Duration::from_secs(5),
+            _ => std::time::Duration::from_secs(30),
+        };
+        self.admin_alerts_prewarm_not_before = Some(now + delay);
+        delay
     }
 }
 
@@ -159,6 +196,8 @@ enum AdminAlertsReadCacheValue {
 struct AdminAlertsReadCacheEntry {
     key: String,
     value: AdminAlertsReadCacheValue,
+    generation: u64,
+    canonical: bool,
     observed_at: i64,
     stored_at: tokio::time::Instant,
 }
@@ -223,24 +262,122 @@ async fn admin_alerts_last_good(
     Some((value, observed_at))
 }
 
+async fn admin_alerts_canonical_last_good(
+    state: &AppState,
+    key: &str,
+) -> Option<(AdminAlertsReadCacheValue, i64, u64, u64)> {
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    let position = cache.admin_alerts.entries.iter().position(|entry| {
+        entry.key == key && entry.canonical && entry.stored_at.elapsed() <= ADMIN_ALERTS_CACHE_TTL
+    })?;
+    let entry = cache.admin_alerts.entries.remove(position)?;
+    let result = (entry.value.clone(), entry.observed_at, entry.generation, cache.alert_projection_generation);
+    cache.admin_alerts.entries.push_front(entry);
+    Some(result)
+}
+
 async fn record_admin_alerts_last_good(
     state: &AppState,
     key: String,
     value: AdminAlertsReadCacheValue,
 ) {
+    record_admin_alerts_last_good_at_generation(
+        state,
+        key,
+        value,
+        current_admin_alerts_generation(state).await,
+    )
+    .await;
+}
+
+async fn current_admin_alerts_generation(state: &AppState) -> u64 {
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .alert_projection_generation
+}
+
+async fn record_admin_alerts_last_good_at_generation(
+    state: &AppState,
+    key: String,
+    value: AdminAlertsReadCacheValue,
+    generation: u64,
+) {
     let cache = dashboard_overview_cache_for_state(state);
     let mut cache = cache.lock().await;
+    let canonical = key == "catalog" || key == default_admin_alert_cache_key("events") || key == default_admin_alert_cache_key("groups");
     cache.admin_alerts.entries.retain(|entry| entry.key != key);
     cache.admin_alerts.entries.push_front(AdminAlertsReadCacheEntry {
         key,
         value,
+        generation,
+        canonical,
         observed_at: state.proxy.backend_time().now_ts(),
         stored_at: tokio::time::Instant::now(),
     });
-    cache
-        .admin_alerts
-        .entries
-        .truncate(ADMIN_ALERTS_CACHE_CAPACITY);
+    while cache.admin_alerts.entries.len() > ADMIN_ALERTS_CACHE_CAPACITY {
+        if let Some(index) = cache
+            .admin_alerts
+            .entries
+            .iter()
+            .rposition(|entry| !entry.canonical)
+        {
+            cache.admin_alerts.entries.remove(index);
+        } else {
+            break;
+        }
+    }
+}
+
+async fn publish_admin_alerts_canonical(
+    state: &AppState,
+    generation: u64,
+    catalog: AlertCatalog,
+    events: PaginatedAlertEvents,
+    groups: PaginatedAlertGroups,
+) -> bool {
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    if cache.alert_projection_generation != generation {
+        return false;
+    }
+    let observed_at = state.proxy.backend_time().now_ts();
+    let stored_at = tokio::time::Instant::now();
+    for (key, value) in [
+        ("catalog".to_string(), AdminAlertsReadCacheValue::Catalog(catalog)),
+        (
+            default_admin_alert_cache_key("events"),
+            AdminAlertsReadCacheValue::Events(events),
+        ),
+        (
+            default_admin_alert_cache_key("groups"),
+            AdminAlertsReadCacheValue::Groups(groups),
+        ),
+    ] {
+        cache.admin_alerts.entries.retain(|entry| entry.key != key);
+        cache.admin_alerts.entries.push_front(AdminAlertsReadCacheEntry {
+            key,
+            value,
+            generation,
+            canonical: true,
+            observed_at,
+            stored_at,
+        });
+    }
+    while cache.admin_alerts.entries.len() > ADMIN_ALERTS_CACHE_CAPACITY {
+        if let Some(index) = cache
+            .admin_alerts
+            .entries
+            .iter()
+            .rposition(|entry| !entry.canonical)
+        {
+            cache.admin_alerts.entries.remove(index);
+        } else {
+            break;
+        }
+    }
+    true
 }
 
 fn default_admin_alert_cache_key(kind: &str) -> String {
@@ -268,42 +405,109 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         }
     }
     tokio::spawn(async move {
-        if let Ok(catalog) = state.proxy.admin_alert_catalog().await {
-            record_admin_alerts_last_good(
-                state.as_ref(),
-                "catalog".to_string(),
-                AdminAlertsReadCacheValue::Catalog(catalog),
-            )
+        loop {
+            if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                state.proxy.record_admin_alerts_warm_defer();
+                let delay = dashboard_overview_cache_for_state(state.as_ref())
+                    .lock()
+                    .await
+                    .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                tracing::debug!(
+                    component = "admin_read",
+                    event = "alerts_canonical_warm_deferred",
+                    reason,
+                    retry_after_secs = delay.as_secs(),
+                    "deferred canonical administrator Alerts cache before SQLite admission"
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            let generation = current_admin_alerts_generation(state.as_ref()).await;
+            let result = async {
+                state.proxy.record_admin_alerts_warm_slice();
+                let catalog = state.proxy.admin_alert_catalog_for_cache_warm().await?;
+                if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                    return Err(admin_alerts_warm_deferred(reason));
+                }
+                state.proxy.record_admin_alerts_warm_slice();
+                let events = state
+                    .proxy
+                    .admin_alert_events_page_for_cache_warm(1, 20)
+                    .await?;
+                if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                    return Err(admin_alerts_warm_deferred(reason));
+                }
+                state.proxy.record_admin_alerts_warm_slice();
+                let groups = state
+                    .proxy
+                    .admin_alert_groups_page_for_cache_warm(1, 20)
+                    .await?;
+                if !publish_admin_alerts_canonical(
+                    state.as_ref(),
+                    generation,
+                    catalog,
+                    events,
+                    groups,
+                )
+                .await
+                {
+                    state.proxy.record_admin_alerts_warm_generation_discard();
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "projection_generation_changed".to_string(),
+                    });
+                }
+                Ok::<(), tavily_hikari::ProxyError>(())
+            }
             .await;
+
+            match result {
+                Ok(()) => {
+                    state.proxy.record_admin_alerts_warm_publish();
+                    dashboard_overview_cache_for_state(state.as_ref())
+                        .lock()
+                        .await
+                        .finish_admin_alerts_prewarm();
+                    tracing::debug!(
+                        component = "admin_read",
+                        event = "alerts_canonical_warm_published",
+                        "published canonical administrator Alerts cache"
+                    );
+                    break;
+                }
+                Err(error)
+                    if tavily_hikari::is_transient_sqlite_write_error(&error)
+                        || error.is_deferred() =>
+                {
+                    state.proxy.record_admin_alerts_warm_defer();
+                    let delay = dashboard_overview_cache_for_state(state.as_ref())
+                        .lock()
+                        .await
+                        .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                    tracing::debug!(
+                        component = "admin_read",
+                        event = "alerts_canonical_warm_deferred",
+                        reason = admin_alerts_warm_error_reason(&error),
+                        retry_after_secs = delay.as_secs(),
+                        "deferred canonical administrator Alerts cache"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        component = "admin_read",
+                        event = "alerts_canonical_warm_failed",
+                        error = %error,
+                        "canonical administrator Alerts cache failed"
+                    );
+                    dashboard_overview_cache_for_state(state.as_ref())
+                        .lock()
+                        .await
+                        .finish_admin_alerts_prewarm();
+                    break;
+                }
+            }
         }
-        if let Ok(events) = state
-            .proxy
-            .admin_alert_events_page(None, None, None, None, None, None, &[], 1, 20)
-            .await
-        {
-            record_admin_alerts_last_good(
-                state.as_ref(),
-                default_admin_alert_cache_key("events"),
-                AdminAlertsReadCacheValue::Events(events),
-            )
-            .await;
-        }
-        if let Ok(groups) = state
-            .proxy
-            .admin_alert_groups_page(None, None, None, None, None, None, &[], 1, 20)
-            .await
-        {
-            record_admin_alerts_last_good(
-                state.as_ref(),
-                default_admin_alert_cache_key("groups"),
-                AdminAlertsReadCacheValue::Groups(groups),
-            )
-            .await;
-        }
-        dashboard_overview_cache_for_state(state.as_ref())
-            .lock()
-            .await
-            .finish_admin_alerts_prewarm();
     });
 }
 
@@ -639,7 +843,22 @@ mod admin_alerts_prewarm_tests {
             ),
             "a busy projection must not restart the full admin cache warmup every slice"
         );
-        assert!(cache.try_start_admin_alerts_prewarm(now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL));
+        assert!(cache.try_start_admin_alerts_prewarm(
+            now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL + std::time::Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn admin_alerts_prewarm_backoff_is_bounded_and_recovers() {
+        let mut cache = DashboardOverviewCacheState::default();
+        let now = tokio::time::Instant::now();
+
+        assert_eq!(cache.defer_admin_alerts_prewarm(now), std::time::Duration::from_secs(5));
+        assert_eq!(cache.defer_admin_alerts_prewarm(now), std::time::Duration::from_secs(5));
+        assert_eq!(cache.defer_admin_alerts_prewarm(now), std::time::Duration::from_secs(30));
+
+        cache.finish_admin_alerts_prewarm();
+        assert_eq!(cache.admin_alerts_prewarm_defers, 0);
     }
 }
 

@@ -1082,10 +1082,14 @@ impl From<tavily_hikari::PaginatedAlertEvents> for PaginatedAlertEventsView {
 }
 
 impl PaginatedAlertEventsView {
-    fn stale(mut self, observed_at: i64) -> Self {
+    fn stale(self, observed_at: i64) -> Self {
+        self.stale_with_reason(observed_at, "sqlite_pressure")
+    }
+
+    fn stale_with_reason(mut self, observed_at: i64, reason: &str) -> Self {
         self.coverage = Some("stale".to_string());
         self.observed_at = Some(observed_at);
-        self.stale_reason = Some("sqlite_pressure".to_string());
+        self.stale_reason = Some(reason.to_string());
         self
     }
 }
@@ -1120,10 +1124,14 @@ impl From<tavily_hikari::PaginatedAlertGroups> for PaginatedAlertGroupsView {
 }
 
 impl PaginatedAlertGroupsView {
-    fn stale(mut self, observed_at: i64) -> Self {
+    fn stale(self, observed_at: i64) -> Self {
+        self.stale_with_reason(observed_at, "sqlite_pressure")
+    }
+
+    fn stale_with_reason(mut self, observed_at: i64, reason: &str) -> Self {
         self.coverage = Some("stale".to_string());
         self.observed_at = Some(observed_at);
-        self.stale_reason = Some("sqlite_pressure".to_string());
+        self.stale_reason = Some(reason.to_string());
         self
     }
 }
@@ -1166,10 +1174,10 @@ impl From<tavily_hikari::AlertCatalog> for AlertCatalogView {
 }
 
 impl AlertCatalogView {
-    fn stale(mut self, observed_at: i64) -> Self {
+    fn stale_with_reason(mut self, observed_at: i64, reason: &str) -> Self {
         self.coverage = Some("stale".to_string());
         self.observed_at = Some(observed_at);
-        self.stale_reason = Some("sqlite_pressure".to_string());
+        self.stale_reason = Some(reason.to_string());
         self
     }
 }

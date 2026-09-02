@@ -38,26 +38,44 @@ async fn get_alert_catalog(
     }
 
     let key = "catalog";
-    match state.proxy.admin_alert_catalog().await {
-        Ok(catalog) => {
-            record_admin_alerts_last_good(
-                state.as_ref(),
-                key.to_string(),
-                AdminAlertsReadCacheValue::Catalog(catalog.clone()),
-            )
-            .await;
-            Ok(Json(AlertCatalogView::from(catalog)).into_response())
+    if let Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at, entry_generation, generation)) =
+        admin_alerts_canonical_last_good(state.as_ref(), key).await
+    {
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
+        if entry_generation == generation && pressure_reason.is_none() {
+            tracing::debug!(
+                component = "admin_read",
+                event = "alerts_last_good_served",
+                route = "/api/alerts/catalog",
+                coverage = "fresh",
+                "served canonical Alerts catalog from last-good cache"
+            );
+            return Ok(Json(AlertCatalogView::from(catalog)).into_response());
         }
-        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) || error.is_deferred() => {
-            match admin_alerts_last_good(state.as_ref(), key).await {
-                Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at)) => {
-                    Ok(Json(AlertCatalogView::from(catalog).stale(observed_at)).into_response())
-                }
-                _ => Err(alerts_sqlite_pressure_response()),
-            }
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        tracing::debug!(
+            component = "admin_read",
+            event = "alerts_last_good_served",
+            route = "/api/alerts/catalog",
+            coverage = "stale",
+            stale_reason,
+            "served canonical Alerts catalog from prior projection generation"
+        );
+        return Ok(
+            Json(AlertCatalogView::from(catalog).stale_with_reason(observed_at, stale_reason))
+            .into_response(),
+        );
     }
+    // The canonical catalog is owned by the background warm controller. A
+    // cold or expired key must never make an administrator request rebuild it.
+    state.proxy.record_admin_alerts_warm_cold_miss();
+    tracing::debug!(
+        component = "admin_read",
+        event = "alerts_cold_pressure",
+        route = "/api/alerts/catalog",
+        "canonical Alerts catalog cache is cold"
+    );
+    Err(alerts_sqlite_pressure_response())
 }
 
 fn alerts_sqlite_pressure_response() -> axum::response::Response {
@@ -131,6 +149,44 @@ async fn get_alert_events(
         per_page,
     };
     let cache_key = alert_read_cache_key("events", &cache_query);
+    if let Some((AdminAlertsReadCacheValue::Events(events), observed_at, entry_generation, generation)) =
+        admin_alerts_canonical_last_good(state.as_ref(), &cache_key).await
+    {
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
+        if entry_generation == generation && pressure_reason.is_none() {
+            tracing::debug!(
+                component = "admin_read",
+                event = "alerts_last_good_served",
+                route = "/api/alerts/events",
+                coverage = "fresh",
+                "served canonical Alerts events from last-good cache"
+            );
+            return Ok(Json(PaginatedAlertEventsView::from(events)).into_response());
+        }
+        tracing::debug!(
+            component = "admin_read",
+            event = "alerts_last_good_served",
+            route = "/api/alerts/events",
+            coverage = "stale",
+            stale_reason,
+            "served canonical Alerts events from prior projection generation"
+        );
+        return Ok(
+            Json(PaginatedAlertEventsView::from(events).stale_with_reason(observed_at, stale_reason))
+            .into_response(),
+        );
+    }
+    if cache_key == default_admin_alert_cache_key("events") {
+        state.proxy.record_admin_alerts_warm_cold_miss();
+        tracing::debug!(
+            component = "admin_read",
+            event = "alerts_cold_pressure",
+            route = "/api/alerts/events",
+            "canonical Alerts events cache is cold"
+        );
+        return Err(alerts_sqlite_pressure_response());
+    }
     match state.proxy.admin_alert_events_page(
             alert_type,
             since,
@@ -197,6 +253,44 @@ async fn get_alert_groups(
         per_page,
     };
     let cache_key = alert_read_cache_key("groups", &cache_query);
+    if let Some((AdminAlertsReadCacheValue::Groups(groups), observed_at, entry_generation, generation)) =
+        admin_alerts_canonical_last_good(state.as_ref(), &cache_key).await
+    {
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
+        if entry_generation == generation && pressure_reason.is_none() {
+            tracing::debug!(
+                component = "admin_read",
+                event = "alerts_last_good_served",
+                route = "/api/alerts/groups",
+                coverage = "fresh",
+                "served canonical Alerts groups from last-good cache"
+            );
+            return Ok(Json(PaginatedAlertGroupsView::from(groups)).into_response());
+        }
+        tracing::debug!(
+            component = "admin_read",
+            event = "alerts_last_good_served",
+            route = "/api/alerts/groups",
+            coverage = "stale",
+            stale_reason,
+            "served canonical Alerts groups from prior projection generation"
+        );
+        return Ok(
+            Json(PaginatedAlertGroupsView::from(groups).stale_with_reason(observed_at, stale_reason))
+            .into_response(),
+        );
+    }
+    if cache_key == default_admin_alert_cache_key("groups") {
+        state.proxy.record_admin_alerts_warm_cold_miss();
+        tracing::debug!(
+            component = "admin_read",
+            event = "alerts_cold_pressure",
+            route = "/api/alerts/groups",
+            "canonical Alerts groups cache is cold"
+        );
+        return Err(alerts_sqlite_pressure_response());
+    }
     match state.proxy.admin_alert_groups_page(
             alert_type,
             since,

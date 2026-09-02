@@ -872,6 +872,35 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
+        self.fetch_admin_alert_events_page_for_operation(
+            alert_type,
+            since,
+            until,
+            user_id,
+            token_id,
+            key_id,
+            request_kinds,
+            page,
+            per_page,
+            SqliteOperation::AdminAlertsRead,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn fetch_admin_alert_events_page_for_operation(
+        &self,
+        alert_type: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+        user_id: Option<&str>,
+        token_id: Option<&str>,
+        key_id: Option<&str>,
+        request_kinds: &[String],
+        page: i64,
+        per_page: i64,
+        operation: SqliteOperation,
+    ) -> Result<PaginatedAlertEvents, ProxyError> {
         let filters = AlertEventFilters {
             alert_type,
             since,
@@ -884,7 +913,9 @@ impl KeyStore {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(operation)
+            .await?;
         let result = async {
             self.ensure_admin_alert_projection_coverage(&mut session).await?;
 
@@ -2191,6 +2222,35 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
+        self.fetch_admin_alert_groups_page_for_operation(
+            alert_type,
+            since,
+            until,
+            user_id,
+            token_id,
+            key_id,
+            request_kinds,
+            page,
+            per_page,
+            SqliteOperation::AdminAlertsRead,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn fetch_admin_alert_groups_page_for_operation(
+        &self,
+        alert_type: Option<&str>,
+        since: Option<i64>,
+        until: Option<i64>,
+        user_id: Option<&str>,
+        token_id: Option<&str>,
+        key_id: Option<&str>,
+        request_kinds: &[String],
+        page: i64,
+        per_page: i64,
+        operation: SqliteOperation,
+    ) -> Result<PaginatedAlertGroups, ProxyError> {
         let filters = AlertEventFilters {
             alert_type,
             since,
@@ -2200,7 +2260,9 @@ impl KeyStore {
             key_id,
             request_kinds,
         };
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(operation)
+            .await?;
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -2260,7 +2322,17 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_admin_alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
-        let mut session = self.begin_admin_alerts_read_session().await?;
+        self.fetch_admin_alert_catalog_for_operation(SqliteOperation::AdminAlertsRead)
+            .await
+    }
+
+    pub(crate) async fn fetch_admin_alert_catalog_for_operation(
+        &self,
+        operation: SqliteOperation,
+    ) -> Result<AlertCatalog, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(operation)
+            .await?;
         self.ensure_admin_alert_projection_coverage(&mut session).await?;
         let result = self
             .fetch_alert_catalog_from_source(AlertReadSource::Projected, Some(&mut session))

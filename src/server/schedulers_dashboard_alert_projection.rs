@@ -24,7 +24,6 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
             {
                 Ok((true, _)) => {
                     mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
-                    prewarm_admin_alerts(state.clone()).await;
                     if last_error.take().is_some() {
                         tracing::info!(
                             component = "dashboard_alert_projection",
@@ -76,6 +75,11 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
                     last_error = Some(error);
                 }
             }
+            // Keep the canonical administrator Alerts keys warm even when the
+            // projection has no new source rows. The controller is singleflight
+            // and rate-limited, so an idle tick only re-arms one low-priority
+            // background refresh and never adds work to the HTTP path.
+            prewarm_admin_alerts(state.clone()).await;
             state
                 .proxy
                 .backend_time()

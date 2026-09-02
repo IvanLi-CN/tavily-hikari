@@ -1006,11 +1006,14 @@ async fn expire_dashboard_overview_freshness_probe(state: &Arc<AppState>) {
     );
 }
 
-async fn mark_dashboard_overview_alert_projection_dirty(state: &AppState) {
+pub(crate) async fn mark_dashboard_overview_alert_projection_dirty(state: &AppState) {
     let cache_handle = dashboard_overview_cache_for_state(state);
     let mut cache = cache_handle.lock().await;
     cache.alert_projection_generation = cache.alert_projection_generation.wrapping_add(1);
     cache.last_freshness_probe_at = None;
+    // A completed canonical warm is allowed to rate-limit retries, but a new
+    // projection generation must be eligible for one fresh, fenced publish.
+    cache.admin_alerts_prewarm_not_before = None;
 }
 
 fn acknowledge_dashboard_alert_projection_generation(

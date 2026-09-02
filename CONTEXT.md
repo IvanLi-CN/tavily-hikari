@@ -41,6 +41,15 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   and waits for an active snapshot's explicit close. A deferred startup prewarm retries in the
   background until it publishes last-good or shutdown fences it. A true cold miss returns
   `503 Retry-After: 1` without opening a request-owned SQLite transaction.
+- `admin Alerts canonical warm controller`: the AppState owner of the pinned catalog, events page
+  `1/20`, and groups page `1/20` cache keys. It starts only in a low-pressure window with two
+  already-idle connections once the lazy pool is established, foreground activity at most `5 rps`,
+  and no contention in the previous five seconds. A cold pool with no acquire waiter may bootstrap
+  through its first bounded warm read. Each `AdminAlertsCacheWarm` slice gets the normal `100ms` acquire and `250ms` native
+  read deadline; all three staged values publish only at one unchanged projection generation.
+  Defers retry after `5s`, `5s`, then `30s`, while a generation change re-arms one controller run.
+  Canonical HTTP handlers never trigger or wait for warm work: a current entry is fresh, an older
+  entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
 
 ## Reconciliation Terms
 

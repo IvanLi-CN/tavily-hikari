@@ -168,6 +168,9 @@
   - `component=admin_read event=/api/alerts/events phase=projection_sidecar|alerts_projection`
   - `component=admin_read event=/api/alerts/groups phase=projection_sidecar|alerts_grouping`
 - `component=admin_read event=alerts_last_good_served|alerts_cold_pressure`
+- `component=admin_read event=alerts_canonical_warm_published|alerts_canonical_warm_deferred`
+  Warm diagnostics report only the defer category, retry delay, projection generation outcome, and
+  aggregate slice counts. They never include SQL, filters, users, tokens, keys, or response bodies.
 - `component=startup event=admin_privacy_status_prewarm_started|admin_privacy_status_prewarm_deferred`
   - `component=admin_read event=low_memory_protection_decision`
 - `sqlite_workload_window` aggregates `observability_deferred_write` alongside other operation
