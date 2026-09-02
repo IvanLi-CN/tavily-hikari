@@ -704,6 +704,31 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
 }
 
 #[tokio::test]
+async fn admin_alerts_cache_warm_prewarm_grows_lazy_pool_before_admission() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("SQLite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("lazy three connection pool"),
+        3,
+    );
+    assert_eq!(runtime.inner.pool.size(), 1);
+    assert_eq!(runtime.inner.pool.num_idle(), 1);
+
+    runtime.prewarm_maintenance_bulk_capacity().await;
+
+    assert_eq!(runtime.inner.pool.size(), 3);
+    assert!(runtime.inner.pool.num_idle() >= 2);
+    assert_eq!(runtime.admin_alerts_cache_warm_defer_reason(), None);
+}
+
+#[tokio::test]
 async fn reconciliation_projection_prewarm_does_not_block_foreground_capacity() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()

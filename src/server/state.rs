@@ -406,6 +406,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     }
     tokio::spawn(async move {
         loop {
+            state.proxy.prewarm_admin_alerts_cache_capacity().await;
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())

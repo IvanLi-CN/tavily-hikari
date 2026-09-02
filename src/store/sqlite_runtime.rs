@@ -839,7 +839,7 @@ impl SqliteRuntime {
     }
 
     pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) {
-        if self.has_foreground_pool_capacity()
+        if self.inner.pool.num_idle() >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
             || self.inner.pool.size() >= self.inner.maximum_connections
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
         {
@@ -861,29 +861,20 @@ impl SqliteRuntime {
             if remaining.is_zero() {
                 break;
             }
-            match tokio::time::timeout(
-                remaining,
-                self.acquire_pool_connection(SqliteOperation::MaintenanceCapacityWarm),
-            )
-            .await
+            match self
+                .acquire_pool_connection_with_budget(
+                    SqliteOperation::MaintenanceCapacityWarm,
+                    remaining,
+                )
+                .await
             {
-                Ok(Ok((conn, pool_wait))) => {
+                Ok((conn, pool_wait)) => {
                     held.push((conn, pool_wait));
                     if self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
                         break;
                     }
                 }
-                Ok(Err(_)) | Err(_) => {
-                    if self.inner.pool.num_idle()
-                        < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
-                    {
-                        self.record_deferred(
-                            SqliteOperation::MaintenanceCapacityWarm,
-                            SqliteAdmissionDeferReason::PoolPressure,
-                        );
-                    }
-                    break;
-                }
+                Err(_) => break,
             }
         }
         for (conn, pool_wait) in held {
@@ -957,19 +948,15 @@ impl SqliteRuntime {
         &self,
     ) -> Option<SqliteAdmissionDeferReason> {
         // Canonical Alerts warmup is deliberately lower priority than both
-        // foreground work and ordinary admin reads. Require two already-idle
-        // connections once the lazy pool has been established. A cold pool
-        // (or its first single idle connection) may bootstrap through the
-        // bounded warm read itself, as long as no foreground waiter exists.
+        // foreground work and ordinary admin reads. The worker prewarms the
+        // lazy pool before reaching this gate, so require two returned
+        // connections here rather than treating unopened capacity as idle.
         let idle = self.inner.pool.num_idle();
-        let pool_size = self.inner.pool.size();
-        let cold_bootstrap = pool_size <= 1 && idle == pool_size as usize;
         if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if (!cold_bootstrap
-            && idle < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize)
+        } else if idle < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
         {
             Some(SqliteAdmissionDeferReason::PoolPressure)
@@ -1066,9 +1053,18 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<(sqlx::pool::PoolConnection<Sqlite>, Duration), ProxyError> {
+        self.acquire_pool_connection_with_budget(operation, operation.acquire_budget())
+            .await
+    }
+
+    async fn acquire_pool_connection_with_budget(
+        &self,
+        operation: SqliteOperation,
+        budget: Duration,
+    ) -> Result<(sqlx::pool::PoolConnection<Sqlite>, Duration), ProxyError> {
         let acquire_started = Instant::now();
         let acquire_waiter = self.pool_acquire_waiter();
-        match tokio::time::timeout(operation.acquire_budget(), self.inner.pool.acquire()).await {
+        match tokio::time::timeout(budget, self.inner.pool.acquire()).await {
             Ok(Ok(conn)) => {
                 drop(acquire_waiter);
                 Ok((conn, acquire_started.elapsed()))
@@ -1677,6 +1673,13 @@ impl SqliteRuntime {
                     operation,
                     SqliteOperation::ScheduledJobControl | SqliteOperation::HaOutboxGcWatchdog
                 ));
+        let maintenance_defer_reason = maintenance_transient_defer.then_some(
+            if matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
+                SqliteAdmissionDeferReason::PoolPressure
+            } else {
+                SqliteAdmissionDeferReason::RecentContention
+            },
+        );
         self.record(
             operation,
             pool_wait,
@@ -1685,7 +1688,7 @@ impl SqliteRuntime {
             0,
             !maintenance_transient_defer,
             false,
-            maintenance_transient_defer.then_some(SqliteAdmissionDeferReason::RecentContention),
+            maintenance_defer_reason,
         );
     }
 

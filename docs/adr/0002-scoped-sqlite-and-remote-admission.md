@@ -110,7 +110,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   page `1/20`, and groups page `1/20` keys are owned by an AppState background warm controller;
   it performs one bounded `AdminAlertsCacheWarm` read per slice only when two pool connections are
   already idle, foreground activity is at most five requests per second, and recent contention is
-  clear. It stages all three values behind one projection-generation fence and publishes them
-  together. A deferred warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one
-  warm without allowing HTTP to trigger a rebuild. A cold lazy pool with no foreground waiter may
-  bootstrap through its first bounded warm read; once capacity exists, the two-idle reserve applies.
+  clear. Before this admission check, the controller may ask the runtime to grow a lazy pool within
+  the same bounded budget; failure to establish two idle connections defers the slice. It stages all
+  three values behind one projection-generation fence and publishes them together. A deferred warm
+  retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing HTTP to
+  trigger a rebuild.

@@ -28,6 +28,14 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn prewarm_admin_alerts_cache_capacity(&self) {
+        self.key_store
+            .sqlite_runtime
+            .prewarm_maintenance_bulk_capacity()
+            .await;
+    }
+
+    #[doc(hidden)]
     pub fn record_admin_alerts_warm_slice(&self) {
         self.key_store.record_admin_alerts_warm_slice();
     }

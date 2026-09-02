@@ -70,10 +70,10 @@ reads:
   matching stale result with `coverage`, `observedAt`, and `staleReason`; a cold key returns
   `503 Retry-After: 1` rather than starting a raw alert CTE.
 - Treat the default alert catalog, events page `1/20`, and groups page `1/20` as pinned canonical
-  cache slots. An AppState-owned controller builds them in short `AdminAlertsCacheWarm` read slices
-  only when two connections are already idle, foreground activity is at most `5 rps`, and recent
-  contention is clear; a cold lazy pool with no waiter may bootstrap through its first bounded read.
-  It stages the three values and publishes them atomically at one projection
+  cache slots. An AppState-owned controller asks `SqliteRuntime` to boundedly warm a lazy pool, then
+  builds them in short `AdminAlertsCacheWarm` read slices only when two connections are already
+  idle, foreground activity is at most `5 rps`, and recent contention is clear. If that reserve
+  cannot be established it defers instead of borrowing one idle connection. It stages the three values and publishes them atomically at one projection
   generation; generation changes or partial failures discard the staged set. Retry at `5s/5s/30s`.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
   or falling back to raw CTEs; noncanonical exact-key reads keep the existing bounded-read fallback.
