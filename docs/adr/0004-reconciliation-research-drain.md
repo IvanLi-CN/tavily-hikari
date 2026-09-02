@@ -41,6 +41,10 @@ stable cursor, so tying its liveness to the main run is unnecessary.
   30 seconds above five requests per second; its aged turn may bypass this one heuristic for a
   single poll but cannot bypass SQLite admission, the one-request lease, claim fencing, or the
   short control transaction. Lease contention defers for five seconds without consuming the turn.
+  Once that continuation is accepted, its aged reservation remains assigned to Research until a
+  resumed run actually begins HTTP, so ordinary automatic jobs cannot take the released lease first,
+  although their local preparation may still proceed. The reservation ID, owner kind, and resumable
+  flag form one synchronized lifecycle, so clearing an old turn cannot corrupt a newer reservation.
 
 ## Consequences
 

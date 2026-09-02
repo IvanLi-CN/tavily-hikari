@@ -1049,7 +1049,7 @@ async fn reconciliation_research_read_deadline_defers_only_the_drain() {
         matches!(
             drain_outcome,
             ClaimedResearchDrainOutcome::Deferred {
-                reason: "read_budget",
+                reason: crate::ResearchDrainDeferReason::ReadBudget,
                 retry_at,
             } if retry_at == now + 30
         ),
@@ -1132,7 +1132,7 @@ async fn research_drain_remote_lease_is_request_scoped() {
     assert!(matches!(
         outcome,
         ClaimedResearchDrainOutcome::Deferred {
-            reason: "remote_lease",
+            reason: crate::ResearchDrainDeferReason::RemoteLease,
             retry_at,
         } if retry_at == now + 5
     ));
@@ -1448,7 +1448,7 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
     assert!(matches!(
         all_cooled,
         ClaimedResearchDrainOutcome::Deferred {
-            reason: "key_cooldown",
+            reason: crate::ResearchDrainDeferReason::KeyCooldown,
             retry_at,
         } if retry_at == now + 1_200
     ));

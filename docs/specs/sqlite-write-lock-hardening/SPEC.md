@@ -327,7 +327,9 @@ source when a usable persisted runtime already exists.
   jobs share only the request-scoped single remote lease, not one run deadline or local transaction.
   Aged main and aged Research representatives compete for the next automatic request after 120
   eligible seconds; a Research aged turn bypasses only the foreground-rate heuristic and still uses
-  the bounded read, request lease, and claim-fenced control transaction.
+  the bounded read, request lease, and claim-fenced control transaction. An accepted Research
+  lease-contention defer retains its turn until the resumed request actually begins. Ordinary
+  automatic remote jobs may prepare locally but wait at the request lease.
 - A completed upstream observation with zero signed delta is a `no_adjustment` terminal outcome for
   the matching usage generation. It must not recreate the representative job until a later usage
   write projects new work.

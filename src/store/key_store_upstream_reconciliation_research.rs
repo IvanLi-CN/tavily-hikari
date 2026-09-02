@@ -1,4 +1,4 @@
-use crate::store::sqlite_runtime::ReconciliationReadKind;
+use crate::{ResearchDrainDeferReason, store::sqlite_runtime::ReconciliationReadKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpstreamReconciliationResearchCursor {
@@ -448,7 +448,7 @@ impl KeyStore {
                 &mut transaction,
                 commit.job_id,
                 commit.claim_generation,
-                "deferred=control_defer",
+                ResearchDrainDeferReason::ControlDefer.scheduled_job_message(),
                 now.saturating_add(30),
                 now,
             )
@@ -532,7 +532,7 @@ impl KeyStore {
                 &mut transaction,
                 commit.job_id,
                 commit.claim_generation,
-                "deferred=control_defer",
+                ResearchDrainDeferReason::ControlDefer.scheduled_job_message(),
                 now.saturating_add(30),
                 now,
             )

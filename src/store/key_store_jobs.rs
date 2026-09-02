@@ -759,15 +759,9 @@ impl KeyStore {
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         let finished_at = self.backend_time.now_ts();
         let preserve_research_wait_anchor = job_type == "upstream_reconciliation_research_drain"
-            && message.is_some_and(|value| {
-                matches!(
-                    value,
-                    "deferred=foreground_pressure"
-                        | "deferred=remote_lease"
-                        | "deferred=read_budget"
-                        | "deferred=control_defer"
-                )
-            });
+            && message
+                .and_then(crate::ResearchDrainDeferReason::from_scheduled_job_message)
+                .is_some_and(crate::ResearchDrainDeferReason::preserves_research_wait_anchor);
         let mut conn = self
             .sqlite_runtime
             .begin_scheduled_job_control()

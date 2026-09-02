@@ -55,7 +55,7 @@ pub enum ClaimedResearchDrainOutcome {
         next_at: Option<i64>,
     },
     Deferred {
-        reason: &'static str,
+        reason: crate::ResearchDrainDeferReason,
         retry_at: i64,
     },
     StaleClaim,
@@ -82,23 +82,23 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
-    pub fn observe_research_drain_defer(reason: &str) {
+    pub fn observe_research_drain_defer(reason: crate::ResearchDrainDeferReason) {
         use std::sync::atomic::Ordering;
 
         match reason {
-            "foreground_pressure" => {
+            crate::ResearchDrainDeferReason::ForegroundPressure => {
                 RESEARCH_DRAIN_FOREGROUND_PRESSURE_DEFERS.fetch_add(1, Ordering::Relaxed);
             }
-            "remote_lease" => {
+            crate::ResearchDrainDeferReason::RemoteLease => {
                 RESEARCH_DRAIN_REMOTE_LEASE_DEFERS.fetch_add(1, Ordering::Relaxed);
             }
-            "read_budget" => {
+            crate::ResearchDrainDeferReason::ReadBudget => {
                 RESEARCH_DRAIN_READ_BUDGET_DEFERS.fetch_add(1, Ordering::Relaxed);
             }
-            "control_defer" => {
+            crate::ResearchDrainDeferReason::ControlDefer => {
                 RESEARCH_DRAIN_CONTROL_DEFERS.fetch_add(1, Ordering::Relaxed);
             }
-            _ => {}
+            crate::ResearchDrainDeferReason::KeyCooldown => {}
         }
     }
 
@@ -223,7 +223,7 @@ impl TavilyProxy {
         job_id: i64,
         claim_generation: i64,
         remote_attempt_admission: Arc<RemoteAttemptAdmissionController>,
-        reconciliation_turn: Option<crate::ReconciliationTurn>,
+        reconciliation_turn: Option<&crate::ReconciliationTurn>,
     ) -> Result<ClaimedResearchDrainOutcome, ProxyError> {
         let now = self.backend_time.now_ts();
         let page = match self
@@ -237,7 +237,7 @@ impl TavilyProxy {
                     || is_transient_sqlite_write_error(&error) =>
             {
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "read_budget",
+                        reason: crate::ResearchDrainDeferReason::ReadBudget,
                         retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
                     });
             }
@@ -248,7 +248,7 @@ impl TavilyProxy {
                 .earliest_cooldown_until
                 .unwrap_or_else(|| now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS));
             return Ok(ClaimedResearchDrainOutcome::Deferred {
-                    reason: "key_cooldown",
+                    reason: crate::ResearchDrainDeferReason::KeyCooldown,
                     retry_at,
                 });
         }
@@ -308,7 +308,7 @@ impl TavilyProxy {
             .find(|candidate| !cooldowns.contains_key(&candidate.key_id))
         else {
             return Ok(ClaimedResearchDrainOutcome::Deferred {
-                    reason: "key_cooldown",
+                    reason: crate::ResearchDrainDeferReason::KeyCooldown,
                     retry_at: earliest_cooldown
                         .unwrap_or_else(|| now.saturating_add(Self::RESEARCH_DRAIN_INTERVAL_SECS)),
                 });
@@ -321,7 +321,7 @@ impl TavilyProxy {
             + std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS);
         let remote_context = ReconciliationRemoteAttemptContext {
             remote_attempt_admission: Some(&remote_attempt_admission),
-            reconciliation_turn: reconciliation_turn.as_ref(),
+            reconciliation_turn,
             manual_remote_attempt: false,
             try_remote_attempt: true,
             attempt_deadline: Some(request_deadline),
@@ -401,9 +401,15 @@ impl TavilyProxy {
                 }
                 let (reason, retry_after_secs) = match ReconciliationEngine::remote_attempt_admission_reason(&error) {
                     Some("remote_lease_unavailable") => {
-                        ("remote_lease", Self::RESEARCH_DRAIN_REMOTE_LEASE_DEFER_SECS)
+                        (
+                            crate::ResearchDrainDeferReason::RemoteLease,
+                            Self::RESEARCH_DRAIN_REMOTE_LEASE_DEFER_SECS,
+                        )
                     }
-                    _ => ("control_defer", Self::RESEARCH_DRAIN_DEFER_SECS),
+                    _ => (
+                        crate::ResearchDrainDeferReason::ControlDefer,
+                        Self::RESEARCH_DRAIN_DEFER_SECS,
+                    ),
                 };
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
                         reason,
@@ -492,7 +498,7 @@ impl TavilyProxy {
             Ok(crate::store::ResearchDrainCommitReceipt::Accepted { .. }) => {}
             Ok(crate::store::ResearchDrainCommitReceipt::Deferred { retry_at }) => {
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "control_defer",
+                        reason: crate::ResearchDrainDeferReason::ControlDefer,
                         retry_at,
                     });
             }

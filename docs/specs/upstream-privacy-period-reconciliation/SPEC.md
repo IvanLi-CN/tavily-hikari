@@ -146,7 +146,10 @@
   30-second continuation; `remote_lease` schedules one five-second continuation. They advance no
   cursor or retry streak. Above five instance-local foreground requests per second, only an aged
   Research turn may run one bounded poll; it does not bypass SQLite admission, the request lease,
-  or claim-fenced finalization.
+  or claim-fenced finalization. After an accepted `remote_lease` continuation, that aged reservation
+  remains held until the resumed Research run starts HTTP; ordinary automatic remote work may
+  prepare locally but cannot claim the released lease. The turn identity, owner and resumable state
+  transition together, so an old claim cleanup cannot corrupt a newer aged reservation.
 - Research eligibility must be applied before the 80-row page limit and match hydrate eligibility.
   The cursor advances only for the exact processed candidate. A forced stable-start sweep runs at
   least every five minutes so rows that become eligible behind a busy cursor cannot starve; its

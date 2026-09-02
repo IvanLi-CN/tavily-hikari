@@ -103,7 +103,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   Research bookkeeping. Manual work retains priority; after 120 eligible seconds, automatic main
   reconciliation and the Research drain compete for the next non-manual request turn. Main uses
   its runnable `available_at`; Research uses its durable `queued_at` debt anchor so a defer cannot
-  reset its wait. Main wins an exact tie. A turn is consumed only when HTTP begins.
+  reset its wait. Main wins an exact tie. A turn is consumed only when HTTP begins. After an
+  accepted Research `remote_lease` continuation, its aged turn remains reserved until that resumed
+  request starts; ordinary automatic remote work may prepare locally but cannot acquire its lease.
 - `foreground_rps`: the instance-local recent request-rate heuristic used to protect foreground
   traffic. It is not a CPU, SQLite-pool, cgroup, or host-load metric. A non-aged Research drain
   defers above five requests per second; an aged Research turn bypasses only this heuristic for

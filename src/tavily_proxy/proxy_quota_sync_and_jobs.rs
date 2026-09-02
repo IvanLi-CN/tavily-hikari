@@ -84,17 +84,7 @@ impl TavilyProxy {
             .key_store
             .upstream_privacy_status_from_snapshot(&mut session)
             .await
-            .map(|mut status| {
-                let diagnostics = Self::research_drain_runtime_diagnostics();
-                let poll = &mut status.reconciliation_research_poll_diagnostics;
-                poll.foreground_pressure_defers = diagnostics.foreground_pressure_defers;
-                poll.remote_lease_defers = diagnostics.remote_lease_defers;
-                poll.read_budget_defers = diagnostics.read_budget_defers;
-                poll.control_defers = diagnostics.control_defers;
-                poll.remote_lease_waits = diagnostics.remote_lease_defers;
-                poll.remote_lease_wait_ms = 0;
-                status
-            });
+            .map(Self::with_research_drain_runtime_diagnostics);
         let close = session.close_after_query(result.as_ref().err()).await;
         match (result, close) {
             (Ok(status), Ok(())) => Ok(status),
@@ -113,22 +103,24 @@ impl TavilyProxy {
             .key_store
             .upstream_privacy_status_from_snapshot(&mut session)
             .await
-            .map(|mut status| {
-                let diagnostics = Self::research_drain_runtime_diagnostics();
-                let poll = &mut status.reconciliation_research_poll_diagnostics;
-                poll.foreground_pressure_defers = diagnostics.foreground_pressure_defers;
-                poll.remote_lease_defers = diagnostics.remote_lease_defers;
-                poll.read_budget_defers = diagnostics.read_budget_defers;
-                poll.control_defers = diagnostics.control_defers;
-                poll.remote_lease_waits = diagnostics.remote_lease_defers;
-                poll.remote_lease_wait_ms = 0;
-                status
-            });
+            .map(Self::with_research_drain_runtime_diagnostics);
         let close = session.close_after_query(result.as_ref().err()).await;
         match (result, close) {
             (Ok(status), Ok(())) => Ok(status),
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
+    }
+
+    fn with_research_drain_runtime_diagnostics(mut status: UpstreamPrivacyStatus) -> UpstreamPrivacyStatus {
+        let diagnostics = Self::research_drain_runtime_diagnostics();
+        let poll = &mut status.reconciliation_research_poll_diagnostics;
+        poll.foreground_pressure_defers = diagnostics.foreground_pressure_defers;
+        poll.remote_lease_defers = diagnostics.remote_lease_defers;
+        poll.read_budget_defers = diagnostics.read_budget_defers;
+        poll.control_defers = diagnostics.control_defers;
+        poll.remote_lease_waits = diagnostics.remote_lease_defers;
+        poll.remote_lease_wait_ms = 0;
+        status
     }
 
     #[cfg(debug_assertions)]

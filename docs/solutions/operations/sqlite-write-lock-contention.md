@@ -67,7 +67,10 @@ related_specs:
   lease is busy, persist a five-second `remote_lease` continuation instead of waiting inside the
   remote budget; read and control defers retain their separate 30-second continuations. Preserve
   the Research queue-time fairness anchor across those no-request defers so the 120-second age is
-  not reset by every continuation; accepted polls and Key cooldowns start a new interval.
+  not reset by every continuation; accepted polls and Key cooldowns start a new interval. After the
+  lease defer's continuation is accepted, retain its aged request reservation until Research begins
+  HTTP; otherwise a newly released lease lets ordinary automatic work recreate the starvation loop.
+  Continue to allow their local preparation, but make them wait at the request lease itself.
 - Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
   They upsert only successful responses for the current work generation, while the two-request cap is
   represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal

@@ -356,6 +356,69 @@ async fn remote_attempt_controller_uses_research_wait_anchor_for_aged_fairness()
 }
 
 #[tokio::test]
+async fn research_retained_turn_runs_before_ordinary_automatic_remote_work() {
+    let db_path = temp_db_path("reconciliation-retained-research-turn");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-retained-research-turn".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-retained-research-turn-password",
+    )
+    .await;
+    let now = state.proxy.backend_time().now_ts();
+    let research = state
+        .proxy
+        .scheduled_job_enqueue_at(
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            "auto",
+            None,
+            1,
+            now - 121,
+        )
+        .await
+        .expect("enqueue aged Research drain");
+    state
+        .proxy
+        .scheduled_job_enqueue_at("forward_proxy_geo_refresh", "auto", None, 1, now - 121)
+        .await
+        .expect("enqueue ordinary automatic remote work");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+        .bind(now - 121)
+        .bind(now - 121)
+        .bind(research.job_id)
+        .execute(&pool)
+        .await
+        .expect("age Research representative");
+
+    let controller = remote_attempt_admission_for_state(state.as_ref());
+    let retained = controller
+        .reserve_aged_research_drain_turn()
+        .expect("Research reserves its aged request turn");
+    retained.retain_for_continuation();
+    drop(retained);
+
+    let (selected, turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("select the retained aged turn")
+        .expect("retained Research is dispatchable");
+    assert_eq!(selected.id, research.job_id);
+    assert_eq!(
+        turn.expect("retained Research reclaims its turn").kind(),
+        ReconciliationTurnKind::ResearchDrain
+    );
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn aged_research_bypasses_foreground_heuristic_once() {
     let db_path = temp_db_path("reconciliation-aged-research-foreground");
     let db_str = db_path.to_string_lossy().to_string();

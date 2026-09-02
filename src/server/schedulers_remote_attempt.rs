@@ -1,3 +1,11 @@
+fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
+    REMOTE_IO_SCHEDULED_JOB_TYPES.contains(&job_type)
+}
+
+fn scheduled_job_is_manual_remote(job: &QueuedScheduledJob) -> bool {
+    job.trigger_source == TRIGGER_SOURCE_MANUAL
+}
+
 async fn sync_key_quota_with_db_job_gate(
     state: &AppState,
     key_id: &str,

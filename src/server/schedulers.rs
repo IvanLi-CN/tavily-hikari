@@ -347,22 +347,6 @@ const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 8] = [
     "forward_proxy_geo_refresh",
 ];
 
-fn scheduled_job_uses_remote_io(job_type: &str) -> bool {
-    REMOTE_IO_SCHEDULED_JOB_TYPES.contains(&job_type)
-}
-
-fn scheduled_job_is_manual_remote(job: &QueuedScheduledJob) -> bool {
-    job.trigger_source == TRIGGER_SOURCE_MANUAL
-}
-
-fn reconciliation_turn_eligible_since(job: &QueuedScheduledJob) -> i64 {
-    if job.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE {
-        job.queued_at
-    } else {
-        job.available_at
-    }
-}
-
 async fn dequeue_next_scheduled_job(
     state: &AppState,
 ) -> Result<Option<(JobLog, Option<ReconciliationTurn>)>, ProxyError> {
@@ -404,16 +388,29 @@ async fn dequeue_next_scheduled_job(
                 RECONCILIATION_REMOTE_TURN_WAIT_SECS,
             )
             .await?;
-        let aged = match (aged_main, aged_research) {
-            (Some(main), Some(research))
+        // A claim-fenced `remote_lease` continuation retains its already-won
+        // aged turn. Resume it before running another automatic candidate;
+        // manual work still won the branch above.
+        let resumed_kind = controller.resumable_reconciliation_turn_kind();
+        let aged = match (resumed_kind, aged_main, aged_research) {
+            (Some(ReconciliationTurnKind::ResearchDrain), _, Some(research)) => {
+                Some((research, ReconciliationTurnKind::ResearchDrain))
+            }
+            (Some(ReconciliationTurnKind::Main), Some(main), _) => {
+                Some((main, ReconciliationTurnKind::Main))
+            }
+            (Some(_), _, _) => None,
+            (None, Some(main), Some(research))
                 if reconciliation_turn_eligible_since(&research)
                     < reconciliation_turn_eligible_since(&main) =>
             {
                 Some((research, ReconciliationTurnKind::ResearchDrain))
             }
-            (Some(main), _) => Some((main, ReconciliationTurnKind::Main)),
-            (None, Some(research)) => Some((research, ReconciliationTurnKind::ResearchDrain)),
-            (None, None) => None,
+            (None, Some(main), _) => Some((main, ReconciliationTurnKind::Main)),
+            (None, None, Some(research)) => {
+                Some((research, ReconciliationTurnKind::ResearchDrain))
+            }
+            (None, None, None) => None,
         };
         if let Some((aged_job, kind)) = aged {
             let turn = match kind {
@@ -439,8 +436,7 @@ async fn dequeue_next_scheduled_job(
                 "upstream_reconciliation" | RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
             ) && controller.reconciliation_turn_required()
             {
-                // An aged reconciliation representative already owns the next
-                // fairness turn. Other remote jobs may still prepare locally.
+                // The aged representative owns the next HTTP turn; other work may prepare locally.
                 continue;
             }
             selected = Some(candidate);
@@ -2737,37 +2733,13 @@ async fn run_manual_claimed_job(
         }
         RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE => {
             drop(_job_execution_gate);
-            let foreground_rps = state.proxy.foreground_activity_rps();
-            let aged_research_turn = reconciliation_turn
-                .as_ref()
-                .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::ResearchDrain);
-            if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS
-                && !aged_research_turn
-            {
-                let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
-                return persist_claimed_research_drain(
-                    state,
-                    job_id,
-                    claim_generation,
-                    Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "foreground_pressure",
-                        retry_at,
-                    }),
-                )
-                .await;
-            }
-            let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
-            let run_result = state
-                .proxy
-                .run_upstream_reconciliation_research_drain_claimed_with_turn(
-                    &state.usage_base,
-                    job_id,
-                    claim_generation,
-                    remote_attempt_admission,
-                    reconciliation_turn,
-                )
-                .await;
-            persist_claimed_research_drain(state, job_id, claim_generation, run_result).await
+            run_reconciliation_research_drain_claimed_job(
+                state,
+                job_id,
+                claim_generation,
+                reconciliation_turn,
+            )
+            .await
         }
         "auth_token_logs_gc" => {
             let _maintenance = acquire_db_maintenance_read_gate().await;
