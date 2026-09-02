@@ -114,6 +114,15 @@
 - Main settlement hydrates only its bounded candidate page and referenced key/cooldown state before
   `/usage`. Claimed production runs never poll Research or reserve Research tail time. Startup, the
   stale-job watchdog, and safe main completion ensure the unique Research drain representative.
+- The remote-attempt controller now gives an aged Research drain the same 120-second automatic
+  liveness turn as main reconciliation, ordered by oldest eligibility with main winning an exact
+  tie. The aged exception bypasses only the instance-local `foreground_rps` heuristic for one poll;
+  it retains the native SQLite read deadline, one request-scoped remote lease, and claim fence.
+- Research preserves its durable queue-time fairness anchor through foreground, lease, read-budget,
+  and control defer continuations. An accepted poll or a Key cooldown starts a new interval.
+- Research distinguishes `foreground_pressure`, `remote_lease`, `read_budget`, and `control_defer`.
+  A busy lease returns in five seconds without starting HTTP or consuming remote budget; the other
+  bounded no-request paths retain their 30-second continuation and do not advance durable progress.
 - Local budget exhaustion is persisted separately from the per-key upstream-429 backoff. Only an
   observed upstream 429 advances the cooldown for that `period_reconciliation` key, using the
   existing `5/10/20/30`-minute ladder and `Retry-After`; local pressure uses a short independent

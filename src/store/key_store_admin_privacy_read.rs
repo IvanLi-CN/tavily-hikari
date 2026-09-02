@@ -451,6 +451,19 @@ impl KeyStore {
         .await?
         .unwrap_or((None, None));
         snapshot.ensure_cooperative_run_budget()?;
+        let oldest_eligible_wait_secs: i64 = sqlx::query_scalar(
+            r#"SELECT COALESCE(MAX(? - next_poll_at), 0)
+                  FROM upstream_reconciliation_research
+                 WHERE terminal_at IS NULL
+                   AND poll_resolution = 'pollable'
+                   AND next_poll_at > 0
+                   AND next_poll_at <= ?"#,
+        )
+        .bind(now)
+        .bind(now)
+        .fetch_one(&mut **snapshot)
+        .await?;
+        snapshot.ensure_cooperative_run_budget()?;
         let key_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
             r#"SELECT u.key_id,
                        COUNT(DISTINCT CASE WHEN r.terminal_at IS NOT NULL THEN r.request_id END),
@@ -785,6 +798,13 @@ impl KeyStore {
                 earliest_credentials_retry_at,
                 last_poll_outcome,
                 last_poll_observed_at,
+                foreground_pressure_defers: 0,
+                remote_lease_defers: 0,
+                read_budget_defers: 0,
+                control_defers: 0,
+                remote_lease_waits: 0,
+                remote_lease_wait_ms: 0,
+                longest_eligible_wait_secs: oldest_eligible_wait_secs,
             },
             reconciliation_controller: ReconciliationControllerStatus {
                 mode: controller_mode.as_str().to_string(),

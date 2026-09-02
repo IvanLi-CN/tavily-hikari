@@ -169,6 +169,13 @@ function createUpstreamPrivacyStatus(diagnostics: ActivityDiagnostics): Upstream
       earliestCredentialsRetryAt: null,
       lastPollOutcome: 'pending',
       lastPollObservedAt: 1_783_958_320,
+      foregroundPressureDefers: 0,
+      remoteLeaseDefers: 0,
+      readBudgetDefers: 0,
+      controlDefers: 0,
+      remoteLeaseWaits: 0,
+      remoteLeaseWaitMs: 0,
+      longestEligibleWaitSecs: 0,
     },
     ...diagnostics,
     recentAdjustments: [

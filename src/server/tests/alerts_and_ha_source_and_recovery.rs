@@ -222,6 +222,336 @@ async fn reconciliation_foreground_defer_releases_scheduler_reconciliation_turn(
 }
 
 #[tokio::test]
+async fn remote_attempt_controller_fairly_serves_aged_research_after_main() {
+    let db_path = temp_db_path("reconciliation-aged-research-turn");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-aged-research-turn".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-aged-research-turn-password",
+    )
+    .await;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = state.proxy.backend_time().now_ts();
+    let main = state
+        .proxy
+        .scheduled_job_enqueue_at("upstream_reconciliation", "auto", None, 1, now - 121)
+        .await
+        .expect("enqueue aged main reconciliation");
+    let research = state
+        .proxy
+        .scheduled_job_enqueue_at(
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            "auto",
+            None,
+            1,
+            now - 121,
+        )
+        .await
+        .expect("enqueue aged Research drain");
+    for job_id in [main.job_id, research.job_id] {
+        sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+            .bind(now - 121)
+            .bind(now - 121)
+            .bind(job_id)
+            .execute(&pool)
+            .await
+            .expect("age automatic representative");
+    }
+
+    let (main_job, main_turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("select the oldest aged automatic job")
+        .expect("aged main is runnable");
+    assert_eq!(main_job.id, main.job_id, "main wins an exact-age tie");
+    assert_eq!(
+        main_turn.expect("main reserves the turn").kind(),
+        ReconciliationTurnKind::Main
+    );
+
+    let (research_job, research_turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("select the remaining aged automatic job")
+        .expect("aged Research is runnable");
+    assert_eq!(research_job.id, research.job_id);
+    assert_eq!(
+        research_turn.expect("Research reserves the next turn").kind(),
+        ReconciliationTurnKind::ResearchDrain
+    );
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn aged_research_bypasses_foreground_heuristic_once() {
+    let db_path = temp_db_path("reconciliation-aged-research-foreground");
+    let db_str = db_path.to_string_lossy().to_string();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let route_hits = Arc::clone(&hits);
+    let upstream = Router::new().route(
+        "/research/aged-research-request",
+        get(move || {
+            let route_hits = Arc::clone(&route_hits);
+            async move {
+                route_hits.fetch_add(1, Ordering::SeqCst);
+                Json(serde_json::json!({ "status": "completed" }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Research upstream");
+    let upstream_addr = listener.local_addr().expect("read Research upstream address");
+    tokio::spawn(async move {
+        axum::serve(listener, upstream.into_make_service())
+            .await
+            .expect("serve Research upstream");
+    });
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-aged-research-foreground".to_string()],
+        &format!("http://{upstream_addr}"),
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: format!("http://{upstream_addr}"),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = state.proxy.backend_time().now_ts();
+    let key_id = state
+        .proxy
+        .add_or_undelete_key("tvly-aged-research-foreground")
+        .await
+        .expect("create Research key");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, project_id, \
+         billing_subject, period_start, period_end, request_count, first_used_at, last_used_at, \
+         updated_at, settlement_mode) VALUES ('aged-research-token', ?, 'aged/R1', \
+         'aged-research-project', 'token:aged-research-token', ?, ?, 1, ?, ?, ?, 'shadow')",
+    )
+    .bind(&key_id)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&pool)
+    .await
+    .expect("seed closed-period Research usage");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, period_code, \
+         created_at, terminal_at, updated_at) VALUES ('aged-research-request', \
+         'aged-research-token', ?, 'aged/R1', ?, NULL, ?)",
+    )
+    .bind(&key_id)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&pool)
+    .await
+    .expect("seed due Research poll");
+
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS,
+        "fixture establishes continuous foreground-rate pressure"
+    );
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue(RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE, "auto", None, 1)
+        .await
+        .expect("enqueue Research drain");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    let controller = remote_attempt_admission_for_state(state.as_ref());
+    let turn = controller
+        .reserve_aged_research_drain_turn()
+        .expect("aged Research receives a turn");
+
+    assert!(
+        run_manual_claimed_job(
+            state.clone(),
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE.to_string(),
+            None,
+            ClaimedScheduledJob {
+                job_id: claim.id,
+                claim_generation: claim.claim_generation,
+                _job_execution_gate: None,
+            },
+            Some(turn),
+            false,
+        )
+        .await,
+        "an aged Research turn runs one bounded poll under foreground pressure"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let terminal: Option<i64> = sqlx::query_scalar(
+        "SELECT terminal_at FROM upstream_reconciliation_research WHERE request_id = 'aged-research-request'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read accepted Research result");
+    assert!(terminal.is_some(), "accepted poll commits the terminal outcome");
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn research_foreground_defer_keeps_its_aged_turn_anchor() {
+    let db_path = temp_db_path("research-aged-turn-anchor");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-research-aged-turn-anchor".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let now = proxy.backend_time().now_ts();
+    let queued = proxy
+        .scheduled_job_enqueue(RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE, "auto", None, 1)
+        .await
+        .expect("enqueue Research drain");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ? WHERE id = ?")
+        .bind(now.saturating_sub(RECONCILIATION_REMOTE_TURN_WAIT_SECS + 1))
+        .bind(queued.job_id)
+        .execute(&pool)
+        .await
+        .expect("seed a continuously waiting Research representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+
+    proxy
+        .scheduled_job_finish_and_enqueue_auto_at(
+            claim.id,
+            claim.claim_generation,
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            None,
+            1,
+            Some("deferred=foreground_pressure"),
+            now,
+        )
+        .await
+        .expect("persist foreground defer");
+
+    let aged = proxy
+        .fetch_aged_queued_scheduled_job_by_type(
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            RECONCILIATION_REMOTE_TURN_WAIT_SECS,
+        )
+        .await
+        .expect("query aged Research representative")
+        .expect("foreground defer preserves its fairness anchor");
+    assert!(
+        aged.queued_at <= now.saturating_sub(RECONCILIATION_REMOTE_TURN_WAIT_SECS),
+        "the continuation must retain the wait that makes its single RPS exception live"
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn non_aged_research_defers_for_foreground_pressure() {
+    let db_path = temp_db_path("reconciliation-research-foreground-defer");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-research-foreground-defer".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-research-foreground-defer-password",
+    )
+    .await;
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    let now = state.proxy.backend_time().now_ts();
+    let queued = state
+        .proxy
+        .scheduled_job_enqueue(RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE, "auto", None, now)
+        .await
+        .expect("enqueue Research drain");
+    let claim = state
+        .proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+
+    assert!(
+        run_manual_claimed_job(
+            state.clone(),
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE.to_string(),
+            None,
+            ClaimedScheduledJob {
+                job_id: claim.id,
+                claim_generation: claim.claim_generation,
+                _job_execution_gate: None,
+            },
+            None,
+            false,
+        )
+        .await,
+        "a non-aged Research representative receives a durable defer"
+    );
+    let finished_message: String = sqlx::query_scalar(
+        "SELECT COALESCE(message, '') FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(claim.id)
+    .fetch_one(&connect_sqlite_test_pool(&db_str).await)
+    .await
+    .expect("read deferred Research job");
+    let continuation_at: i64 = sqlx::query_scalar(
+        "SELECT available_at FROM scheduled_jobs \
+         WHERE job_type = 'upstream_reconciliation_research_drain' AND status = 'queued'",
+    )
+    .fetch_one(&connect_sqlite_test_pool(&db_str).await)
+    .await
+    .expect("read Research continuation");
+    assert_eq!(finished_message, "deferred=foreground_pressure");
+    assert_eq!(continuation_at, now + 30);
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn aged_reconciliation_turn_allows_other_remote_local_preparation() {
     let db_path = temp_db_path("reconciliation-turn-does-not-serialize-preparation");
     let db_str = db_path.to_string_lossy().to_string();

@@ -91,7 +91,10 @@
   merge, completing work, or starting remote I/O.
 - Main reconciliation and Research use separate durable representatives. The Research drain owns
   the indexed keyset page and exact cursor, performs at most one poll every five seconds, and keeps
-  read/lease defers independent of main transport, terminal, and billing state.
+  read/lease defers independent of main transport, terminal, and billing state. Its queue-time
+  fairness anchor survives foreground, lease, read-budget, and control defers. After 120 eligible
+  seconds it may take the next non-manual request turn by oldest eligibility against main
+  reconciliation, while preserving manual priority and one actual HTTP request at a time.
 - Multi-key main candidates persist successful per-key observations by current work generation.
   A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
   continuation when the candidate is still incomplete; cross-key summation and terminalization wait
@@ -251,8 +254,6 @@
 - aggregate 不得存在未解决 P0/P1/P2 finding。
 
 ## Visual Evidence
-
-PR: none
 
 ## Related PRs
 

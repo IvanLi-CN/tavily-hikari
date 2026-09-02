@@ -118,9 +118,11 @@
   finalization connection so charges recorded during HTTP are not missed.
 - The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
   projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
-  Manual work keeps priority; an automatic reconciliation representative eligible for 120 seconds
-  owns the next non-manual request turn until it starts one request or ends through a typed
-  no-request boundary.
+  Manual work keeps priority; automatic main reconciliation and Research drain representatives
+  eligible for 120 seconds compete for the next non-manual request turn by oldest eligibility, with
+  main reconciliation winning an exact tie. Research keeps its durable queue-time anchor through
+  foreground, lease, read-budget, and control defers; an accepted poll or Key cooldown starts a
+  new eligibility interval. A turn is consumed only when HTTP starts.
 - Projection SQL shape remains unchanged unless scoped read-deadline and connection-level evidence
   shows this source read still dominates candidate performance. A query/index rewrite requires a
   separate bounded change.
@@ -140,8 +142,11 @@
   spends remote or local tail budget on Research. The drain owns the v21
   `(next_poll_at, key_id, request_id)` cursor, selects from an 80-row indexed page, performs at most
   one request, and atomically accepts its pending/terminal/retry result, exact cursor, Key cooldown,
-  and claim fence. `research_drain_budget` advances no cursor or retry streak and schedules one
-  30-second continuation.
+  and claim fence. `foreground_pressure`, `read_budget`, and `control_defer` schedule one
+  30-second continuation; `remote_lease` schedules one five-second continuation. They advance no
+  cursor or retry streak. Above five instance-local foreground requests per second, only an aged
+  Research turn may run one bounded poll; it does not bypass SQLite admission, the request lease,
+  or claim-fenced finalization.
 - Research eligibility must be applied before the 80-row page limit and match hydrate eligibility.
   The cursor advances only for the exact processed candidate. A forced stable-start sweep runs at
   least every five minutes so rows that become eligible behind a busy cursor cannot starve; its
@@ -382,8 +387,6 @@
   stale coverage, the last successful observation time, and the foreground-write containment reason.
 - submission_gate: `approved`
 
-PR: include
-
 ![Alerts stale last-good state](./assets/current/alerts-stale-0bf773d8-desktop.png)
 
 - source_type: `storybook_canvas`
@@ -399,8 +402,6 @@ PR: include
   semantic, and local-pressure outcomes without exposing an upstream error body.
 - submission_gate: `approved`
 
-PR: include
-
 ![Reconciliation transport failure on mobile](./assets/current/reconciliation-transport-0bf773d8-mobile-393x852.png)
 
 - source_type: `storybook_canvas`
@@ -415,8 +416,6 @@ PR: include
 - evidence_note: Current `89fd4b3e` adds a distinct `missing eligible upstream key` count (`0` to
   `7`) without changing the surrounding retry counters or administrator controls.
 - submission_gate: `approved`
-
-PR: include
 
 ![Missing eligible upstream key diagnostic comparison](./assets/current/reconciliation-retry-difference-89fd4b3e-desktop.jpg)
 
@@ -450,6 +449,9 @@ PR: include
 - Research diagnostics are emitted only after a claim-fenced commit receipt accepts its row
   resolution, Key state, exact cursor, ten-minute progress delta, job finish, and next unique
   representative. A deferred or stale receipt changes none of those facts.
+- The additive administrator-only Research diagnostics include sanitized counts for foreground
+  pressure, remote lease, read budget, and control defers; longest eligible wait; and the last
+  accepted poll. `foreground_rps` is a request-rate heuristic, not CPU, SQLite, or cgroup pressure.
 
 ## Related ADRs
 

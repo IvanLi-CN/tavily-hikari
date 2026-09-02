@@ -65,7 +65,13 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   claim-fenced 30-second continuation without changing work, settlement, or billing truth.
   Billed-credit hydrate is the pre-request source-read gate; settlement later reads current ledger
   state through a separately bounded finalization connection so charges written during HTTP remain
-  visible without moving the native source deadline past the remote boundary.
+  visible without moving the native source deadline past the remote boundary. Claim, finish, and
+  continuation remain `maintenance control` rather than part of this session.
+- `reconciliation read-budget defer`: the `projection_read_budget` outcome emitted when a
+  reconciliation read session reaches its SQLite deadline. It preserves work and billing truth,
+  ends local preparation before another source read, projection slice, or remote attempt, records
+  one same-claim delayed continuation for 30 seconds later, and is not a terminal reconciliation
+  result.
 - `terminal outcome`: a current work generation that needs no retry. Active non-zero differences
   are `settled`, zero differences are `no_adjustment`, and compare-mode non-zero differences are
   `observed`.
@@ -94,8 +100,15 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   decision.
 - `remote attempt lease`: the instance-owned one-at-a-time admission around an outbound upstream
   HTTP request only. It excludes local projection, candidate hydration, durable finalization, and
-  Research bookkeeping. Manual work retains priority; automatic reconciliation waiting 120 seconds
-  owns the next non-manual attempt turn.
+  Research bookkeeping. Manual work retains priority; after 120 eligible seconds, automatic main
+  reconciliation and the Research drain compete by oldest eligibility for the next non-manual
+  request turn, with main winning an exact tie. A turn is consumed only when HTTP begins.
+- `foreground_rps`: the instance-local recent request-rate heuristic used to protect foreground
+  traffic. It is not a CPU, SQLite-pool, cgroup, or host-load metric. A non-aged Research drain
+  defers above five requests per second; an aged Research turn bypasses only this heuristic for
+  one bounded poll and still requires SQLite admission, the request lease, and a claim fence.
+  Its durable `scheduled_jobs.queued_at` fairness anchor survives foreground, lease, read-budget,
+  and control defers; an accepted poll or Key cooldown begins a new interval.
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in
   bounded batches with a four-per-key and 20-row sweep cap. Its stable keyset cursor advances only
   after claim-fenced acceptance of an actually processed candidate; read pressure or cancellation
@@ -108,7 +121,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   never consumes the main reconciliation run's two-request budget. Main settlement and the drain
   share only the instance-wide request-scoped remote lease. Outcome counters are emitted only after
   one accepted receipt has atomically recorded the row result, Key state, cursor, progress window,
-  claim finish, and next representative.
+  claim finish, and next representative. Its no-request continuations are explicit:
+  `foreground_pressure` and `read_budget` retry after 30 seconds, `remote_lease` after five
+  seconds, and `control_defer` after 30 seconds; none changes cursor, outcome, Key state, or
+  billing truth.
 - `Research poll resolution`: a durable classification of a nonterminal Research row. `pollable`
   means the row may be selected by the drain; `unavailable` records a confirmed 404 and suppresses
   repeated polling while leaving `terminal_at` unset, preserving the existing 24-hour degraded
@@ -134,9 +150,11 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `connection-scoped SQLite pages`: SQLite `CACHE_WRITE` page deltas sampled at operation-connection
   boundaries. They may attribute an operation's SQLite cache writes. Process and cgroup write-byte
   counters remain aggregate pressure labels and must not be presented as one query's writes.
-- `SQLite file state sample`: low-frequency metadata for only the configured core/observability DB
-  files and their WAL files. It is a size/state label for the workload window, never an inferred
-  per-query write total and never a checkpoint or directory scan.
+- `SQLite write attribution sample`: a low-frequency, non-invasive diagnostic that records
+  connection-scoped page deltas separately from database and WAL file state. It may identify a
+  correlation, but never attributes process or cgroup I/O to one query and never changes SQLite
+  checkpoint, WAL, or pragma behavior. File metadata is limited to the configured core and
+  observability databases and their WAL files; it is never a checkpoint or directory scan.
 - `staged pressure generation`: a source-fenced server-pressure rebuild generation that remains
   invisible until atomic publish. Source scans use 500-row keyset slices, transition events replay
   after publish, and obsolete generations are cleaned in 25-row slices so live-tail correctness

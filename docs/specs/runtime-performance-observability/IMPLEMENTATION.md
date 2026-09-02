@@ -172,6 +172,10 @@
   expose credential-cooling Key counts with the earliest retry in the existing bounded status
   projection. Credential cooldown is independent of per-Key 429 cooldown; raw request identifiers,
   keys, URLs, bodies, and secrets remain excluded.
+- Research runtime diagnostics additionally aggregate accepted-continuation reasons
+  (`foreground_pressure`, `remote_lease`, `read_budget`, and `control_defer`), the bounded lease
+  wait signal, longest eligible wait, and last accepted poll. They do not turn a defer or stale
+  claim into progress, terminal, cursor, or Key-state evidence.
 
 ## Visual Evidence
 

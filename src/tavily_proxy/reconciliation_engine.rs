@@ -208,6 +208,9 @@ struct ReconciliationRemoteAttemptContext<'a> {
     remote_attempt_admission: Option<&'a Arc<RemoteAttemptAdmissionController>>,
     reconciliation_turn: Option<&'a crate::ReconciliationTurn>,
     manual_remote_attempt: bool,
+    /// Research drain turns lease contention into a durable short defer. It
+    /// never spends the whole remote preparation budget waiting locally.
+    try_remote_attempt: bool,
     attempt_deadline: Option<std::time::Instant>,
 }
 
@@ -290,6 +293,13 @@ impl ReconciliationRemoteAttemptContext<'_> {
     }
 
     async fn acquire(self) -> Result<Option<crate::RemoteAttemptLease>, &'static str> {
+        if self.try_remote_attempt {
+            return match (self.reconciliation_turn, self.remote_attempt_admission) {
+                (Some(turn), _) => turn.try_acquire_attempt().map(Some),
+                (None, Some(controller)) => controller.try_acquire_automatic_attempt().map(Some),
+                (None, None) => Ok(None),
+            };
+        }
         let acquire = async {
             match (self.reconciliation_turn, self.remote_attempt_admission) {
                 (Some(turn), _) => turn.acquire_attempt().await.map(Some),

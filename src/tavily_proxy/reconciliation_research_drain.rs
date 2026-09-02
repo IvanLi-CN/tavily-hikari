@@ -20,6 +20,22 @@ static RESEARCH_DRAIN_UNAVAILABLE: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 static RESEARCH_DRAIN_CREDENTIALS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
+static RESEARCH_DRAIN_FOREGROUND_PRESSURE_DEFERS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+static RESEARCH_DRAIN_REMOTE_LEASE_DEFERS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+static RESEARCH_DRAIN_READ_BUDGET_DEFERS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+static RESEARCH_DRAIN_CONTROL_DEFERS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ResearchDrainRuntimeDiagnostics {
+    pub(crate) foreground_pressure_defers: i64,
+    pub(crate) remote_lease_defers: i64,
+    pub(crate) read_budget_defers: i64,
+    pub(crate) control_defers: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimedResearchDrainOutcome {
@@ -48,9 +64,43 @@ pub enum ClaimedResearchDrainOutcome {
 impl TavilyProxy {
     const RESEARCH_DRAIN_INTERVAL_SECS: i64 = 5;
     const RESEARCH_DRAIN_DEFER_SECS: i64 = 30;
+    const RESEARCH_DRAIN_REMOTE_LEASE_DEFER_SECS: i64 = 5;
     const RESEARCH_CREDENTIALS_BACKOFF_SCOPE: &'static str =
         "reconciliation_research_credentials";
     const RESEARCH_CREDENTIALS_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+
+    pub(crate) fn research_drain_runtime_diagnostics() -> ResearchDrainRuntimeDiagnostics {
+        use std::sync::atomic::Ordering;
+
+        ResearchDrainRuntimeDiagnostics {
+            foreground_pressure_defers: RESEARCH_DRAIN_FOREGROUND_PRESSURE_DEFERS
+                .load(Ordering::Relaxed),
+            remote_lease_defers: RESEARCH_DRAIN_REMOTE_LEASE_DEFERS.load(Ordering::Relaxed),
+            read_budget_defers: RESEARCH_DRAIN_READ_BUDGET_DEFERS.load(Ordering::Relaxed),
+            control_defers: RESEARCH_DRAIN_CONTROL_DEFERS.load(Ordering::Relaxed),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn observe_research_drain_defer(reason: &str) {
+        use std::sync::atomic::Ordering;
+
+        match reason {
+            "foreground_pressure" => {
+                RESEARCH_DRAIN_FOREGROUND_PRESSURE_DEFERS.fetch_add(1, Ordering::Relaxed);
+            }
+            "remote_lease" => {
+                RESEARCH_DRAIN_REMOTE_LEASE_DEFERS.fetch_add(1, Ordering::Relaxed);
+            }
+            "read_budget" => {
+                RESEARCH_DRAIN_READ_BUDGET_DEFERS.fetch_add(1, Ordering::Relaxed);
+            }
+            "control_defer" => {
+                RESEARCH_DRAIN_CONTROL_DEFERS.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
 
     fn observe_research_drain_outcome(
         now: i64,
@@ -157,6 +207,24 @@ impl TavilyProxy {
         claim_generation: i64,
         remote_attempt_admission: Arc<RemoteAttemptAdmissionController>,
     ) -> Result<ClaimedResearchDrainOutcome, ProxyError> {
+        self.run_upstream_reconciliation_research_drain_claimed_with_turn(
+            usage_base,
+            job_id,
+            claim_generation,
+            remote_attempt_admission,
+            None,
+        )
+        .await
+    }
+
+    pub async fn run_upstream_reconciliation_research_drain_claimed_with_turn(
+        &self,
+        usage_base: &str,
+        job_id: i64,
+        claim_generation: i64,
+        remote_attempt_admission: Arc<RemoteAttemptAdmissionController>,
+        reconciliation_turn: Option<crate::ReconciliationTurn>,
+    ) -> Result<ClaimedResearchDrainOutcome, ProxyError> {
         let now = self.backend_time.now_ts();
         let page = match self
             .key_store
@@ -169,7 +237,7 @@ impl TavilyProxy {
                     || is_transient_sqlite_write_error(&error) =>
             {
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "research_drain_budget",
+                        reason: "read_budget",
                         retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
                     });
             }
@@ -253,8 +321,9 @@ impl TavilyProxy {
             + std::time::Duration::from_secs(Self::RECONCILIATION_RESEARCH_SWEEP_BUDGET_SECS);
         let remote_context = ReconciliationRemoteAttemptContext {
             remote_attempt_admission: Some(&remote_attempt_admission),
-            reconciliation_turn: None,
+            reconciliation_turn: reconciliation_turn.as_ref(),
             manual_remote_attempt: false,
+            try_remote_attempt: true,
             attempt_deadline: Some(request_deadline),
         };
         let result = self
@@ -330,9 +399,15 @@ impl TavilyProxy {
                 if ReconciliationEngine::remote_attempt_is_stale(&error) {
                     return Ok(ClaimedResearchDrainOutcome::StaleClaim);
                 }
+                let (reason, retry_after_secs) = match ReconciliationEngine::remote_attempt_admission_reason(&error) {
+                    Some("remote_lease_unavailable") => {
+                        ("remote_lease", Self::RESEARCH_DRAIN_REMOTE_LEASE_DEFER_SECS)
+                    }
+                    _ => ("control_defer", Self::RESEARCH_DRAIN_DEFER_SECS),
+                };
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "research_drain_budget",
-                        retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
+                        reason,
+                        retry_at: now.saturating_add(retry_after_secs),
                     });
             }
             Err((ProxyError::UsageHttp { status, .. }, retry_after))
@@ -417,7 +492,7 @@ impl TavilyProxy {
             Ok(crate::store::ResearchDrainCommitReceipt::Accepted { .. }) => {}
             Ok(crate::store::ResearchDrainCommitReceipt::Deferred { retry_at }) => {
                 return Ok(ClaimedResearchDrainOutcome::Deferred {
-                        reason: "research_drain_budget",
+                        reason: "control_defer",
                         retry_at,
                     });
             }

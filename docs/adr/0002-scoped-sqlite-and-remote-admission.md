@@ -24,7 +24,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   `ReconciliationReadSession`. Candidate recent/backlog lanes, candidate and billed-credit hydrate,
   Research candidates, and historical projection pages each use a connection-local SQLite progress
   handler. It checks a fixed 250ms deadline every 1,000 virtual-machine operations and maps its own
-  interrupt to a typed `projection_read_budget` deferred outcome.
+  interrupt to a typed `projection_read_budget` deferred outcome. The complete local preparation
+  session remains subject to its separate run budget.
 - The billed-credit hydrate is a pre-request availability gate. After an observation, settlement
   reads the current ledger through a separately bounded finalization connection so a charge written
   during HTTP is reflected without allowing a post-request source-read deadline to replace durable
@@ -37,9 +38,13 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - `RemoteAttemptAdmissionController` owns one process-local actual-request slot. A lease starts at
   the outbound HTTP boundary and ends after the response or transport error is read; local SQLite
   preparation and durable finalization never hold it.
-- Manual remote work keeps dispatch priority. Once an automatic reconciliation representative has
-  been eligible for 120 seconds, it owns the next non-manual remote turn until it starts one
-  request or exits through a typed no-request terminal/deferred boundary.
+- Manual remote work keeps dispatch priority. Once an automatic main reconciliation representative
+  or Research drain has been eligible for 120 seconds, it competes for the next non-manual remote
+  turn by oldest eligibility; main reconciliation wins an exact tie. The turn is consumed only when
+  HTTP starts, not by local reads, cooldown selection, cancellation, stale claims, or a no-request
+  defer. Research preserves its `scheduled_jobs.queued_at` fairness anchor across foreground,
+  lease, read-budget, and control defers, while an accepted poll or Key cooldown starts a new
+  interval.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read
   calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
   At the same low-frequency window boundary it may sample only configured core/observability DB and
@@ -50,8 +55,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   page, hydrates that bounded page, and accepts its cursor only after a claim-fenced run boundary.
   The primary candidate SQL remains unchanged; any rewrite there still requires separate evidence.
 - Due Research timing is governed by ADR 0004. Its independent durable drain uses the same
-  request-scoped remote admission boundary without extending the lease across local finalization or
-  consuming a main reconciliation fairness turn.
+  request-scoped remote admission boundary without extending the lease across local finalization.
+  Above the foreground-rate heuristic of five requests per second, a non-aged drain defers for 30
+  seconds. Its aged turn bypasses only that heuristic for one bounded poll; lease contention is an
+  immediate five-second `remote_lease` defer rather than budget-consuming local wait.
 - A candidate that references multiple eligible upstream keys stores each successful key response in
   a local, generation-scoped observation table. Each run requests at most two still-missing keys and
   only computes a cross-key total after every current-generation key is present. The v22 ledger

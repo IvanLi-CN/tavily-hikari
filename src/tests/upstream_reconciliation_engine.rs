@@ -1045,13 +1045,111 @@ async fn reconciliation_research_read_deadline_defers_only_the_drain() {
         )
         .await
         .expect("Research read pressure becomes a typed drain defer");
+    assert!(
+        matches!(
+            drain_outcome,
+            ClaimedResearchDrainOutcome::Deferred {
+                reason: "read_budget",
+                retry_at,
+            } if retry_at == now + 30
+        ),
+        "unexpected drain outcome: {drain_outcome:?}"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn research_drain_remote_lease_is_request_scoped() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 9, 2, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-research-lease"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-research-lease")
+        .await
+        .expect("create Research key");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_usage (token_id, key_id, period_code, project_id, \
+         billing_subject, period_start, period_end, request_count, first_used_at, last_used_at, \
+         updated_at, settlement_mode) VALUES ('lease-token', ?, 'lease/R1', 'lease-project', \
+         'token:lease-token', ?, ?, 1, ?, ?, ?, 'shadow')",
+    )
+    .bind(&key_id)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed closed-period usage");
+    sqlx::query(
+        "INSERT INTO upstream_reconciliation_research (request_id, token_id, key_id, period_code, \
+         created_at, terminal_at, updated_at) VALUES ('lease-request', 'lease-token', ?, \
+         'lease/R1', ?, NULL, ?)",
+    )
+    .bind(&key_id)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due Research");
+    let drain = proxy
+        .scheduled_job_enqueue("upstream_reconciliation_research_drain", "auto", None, now)
+        .await
+        .expect("enqueue Research drain");
+    let claim = proxy
+        .scheduled_job_mark_running(drain.job_id)
+        .await
+        .expect("claim Research drain")
+        .expect("Research drain becomes running");
+    let controller = Arc::new(RemoteAttemptAdmissionController::default());
+    let held_lease = controller
+        .acquire_manual_attempt()
+        .await
+        .expect("hold the only remote HTTP lease");
+
+    let outcome = proxy
+        .run_upstream_reconciliation_research_drain_claimed(
+            DEFAULT_UPSTREAM,
+            claim.id,
+            claim.claim_generation,
+            Arc::clone(&controller),
+        )
+        .await
+        .expect("busy lease becomes a typed defer");
     assert!(matches!(
-        drain_outcome,
+        outcome,
         ClaimedResearchDrainOutcome::Deferred {
-            reason: "research_drain_budget",
+            reason: "remote_lease",
             retry_at,
-        } if retry_at == now + 30
+        } if retry_at == now + 5
     ));
+    let research: (Option<i64>, i64) = sqlx::query_as(
+        "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research \
+         WHERE request_id = 'lease-request'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read unchanged Research row");
+    assert_eq!(
+        research,
+        (None, 0),
+        "lease defer must not mutate Research truth"
+    );
+    assert_eq!(controller.metrics().active_attempts, 1);
+    drop(held_lease);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

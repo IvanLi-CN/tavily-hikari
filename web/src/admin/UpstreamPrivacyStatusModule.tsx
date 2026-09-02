@@ -765,6 +765,19 @@ export default function UpstreamPrivacyStatusModule({
                   label={language === 'zh' ? 'Research 凭据冷却 Key' : 'Research credential cooldown keys'}
                   value={numberFormatter.format(status.reconciliationResearchPollDiagnostics?.credentialsCoolingKeys ?? 0)}
                 />
+                <PrivacyStat
+                  label={language === 'zh' ? '最长 Research 等待' : 'Longest eligible Research wait'}
+                  value={formatAge(
+                    status.reconciliationResearchPollDiagnostics?.longestEligibleWaitSecs ?? 0,
+                    language,
+                  )}
+                />
+                <PrivacyStat
+                  label={language === 'zh' ? 'Research 延后' : 'Research defers'}
+                  value={language === 'zh'
+                    ? `前台 ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.foregroundPressureDefers ?? 0)} · lease ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.remoteLeaseDefers ?? 0)} · 读取 ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.readBudgetDefers ?? 0)} · 控制 ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.controlDefers ?? 0)}`
+                    : `Foreground ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.foregroundPressureDefers ?? 0)} · Lease ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.remoteLeaseDefers ?? 0)} · Read ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.readBudgetDefers ?? 0)} · Control ${numberFormatter.format(status.reconciliationResearchPollDiagnostics?.controlDefers ?? 0)}`}
+                />
               </div>
             </section>
 

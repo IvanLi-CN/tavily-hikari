@@ -16,8 +16,12 @@ stable cursor, so tying its liveness to the main run is unnecessary.
 - `upstream_reconciliation_research_drain` is the single production owner of Research polling and
   the v21 scan cursor. The main claimed reconciliation path never sends Research HTTP requests.
 - The drain processes at most one candidate and schedules its next normal run no earlier than five
-  seconds later. It shares the instance-wide single actual-request lease but does not consume the
-  aged main reconciliation turn.
+  seconds later. It shares the instance-wide single actual-request lease. After 120 eligible
+  seconds it receives its own aged turn and competes with aged main reconciliation by oldest
+  eligibility, with main winning an exact tie; manual work remains first.
+- The durable `scheduled_jobs.queued_at` value remains the Research fairness anchor across
+  foreground, lease, read-budget, and control defers. An accepted poll or a Key cooldown starts a
+  new interval, so only continuously requestable work reaches the one-poll foreground exception.
 - A claim-fenced control transaction accepts the Research result, any affected
   `period_reconciliation` Key cooldown, the exact processed cursor, and the drain observation
   together. Cancellation, stale claims, and local pressure advance none of them.
@@ -33,11 +37,18 @@ stable cursor, so tying its liveness to the main run is unnecessary.
 - The accepted drain transaction also writes its ten-minute progress window and finishes or
   enqueues the unique next representative. Logs and runtime counters are emitted only from that
   accepted receipt, so a stale claim or failed transaction cannot create false convergence evidence.
+- `foreground_rps` is only an instance-local recent-request heuristic. A normal drain yields for
+  30 seconds above five requests per second; its aged turn may bypass this one heuristic for a
+  single poll but cannot bypass SQLite admission, the one-request lease, claim fencing, or the
+  short control transaction. Lease contention defers for five seconds without consuming the turn.
 
 ## Consequences
 
 - Main work keeps its complete two-request budget, while due Research has an independent liveness
   path capped at 12 polls per minute with burst one.
+- Research separates `foreground_pressure`, `remote_lease`, `read_budget`, and `control_defer`
+  continuations. None advances the cursor, writes a poll outcome, affects Key cooldowns, or counts
+  as terminal progress.
 - Research outcome and cursor acceptance no longer form two transactions.
 - Existing v21 tables and indexes are sufficient; no schema migration or historical replay is
   required.

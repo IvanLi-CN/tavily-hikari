@@ -46,7 +46,8 @@ pub use ha::*;
 pub use linuxdo_credit_recharge::*;
 pub use models::*;
 pub use remote_attempt_admission::{
-    ReconciliationTurn, RemoteAttemptAdmissionController, RemoteAttemptLease, RemoteAttemptMetrics,
+    ReconciliationTurn, ReconciliationTurnKind, RemoteAttemptAdmissionController,
+    RemoteAttemptLease, RemoteAttemptMetrics,
 };
 pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,

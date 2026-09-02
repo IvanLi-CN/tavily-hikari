@@ -79,9 +79,11 @@
 - Request-log GC admission and an unsealed-day retention guard are DEBUG-level typed outcomes. They
   retain the existing five-minute continuation but must not emit one WARN or repeat one failed
   cleanup batch per scheduler loop.
-- 对账主结算与 Research drain 分别记录；本地预算压力与 upstream 429 必须分开记录。每个
-  Research poll 的远端观察、状态和精确 cursor 在 drain claim 下原子落盘。HA GC 正常进展继续
-  按通道 60 秒聚合，不能恢复逐片 WARN。
+- 对账主结算与 Research drain 分别记录；本地预算压力与 upstream 429 必须分开记录。Research
+  的 `foreground_pressure`、`remote_lease`、`read_budget` 与 `control_defer` 也必须以脱敏聚合
+  区分。每个 Research poll 的远端观察、状态和精确 cursor 仅在 accepted drain claim 下原子落盘；
+  defer 只能记录已接受 continuation，不能伪造 progress 或 terminal。HA GC 正常进展继续按通道
+  60 秒聚合，不能恢复逐片 WARN。
 - Reconciliation 429 state is scoped to the affected `period_reconciliation` Key. Non-cooling Keys
   remain eligible; an all-Key cooldown reports the earliest retry time. Legacy global-backoff meta
   is compatibility data only and cannot gate work or representative wake.
@@ -199,8 +201,6 @@
   path remains sufficient to diagnose deferred recovery without restoring per-slice WARN logs.
 
 ## Visual Evidence
-
-PR: none
 
 - evidence_note: This change only adjusts runtime diagnostics and scheduler recovery. Any future
   UI-affecting change must add current-SHA visual evidence before selecting it for a PR.

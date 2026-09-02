@@ -140,6 +140,20 @@ pub struct ReconciliationResearchPollDiagnostics {
     pub earliest_credentials_retry_at: Option<i64>,
     pub last_poll_outcome: Option<String>,
     pub last_poll_observed_at: Option<i64>,
+    #[serde(default)]
+    pub foreground_pressure_defers: i64,
+    #[serde(default)]
+    pub remote_lease_defers: i64,
+    #[serde(default)]
+    pub read_budget_defers: i64,
+    #[serde(default)]
+    pub control_defers: i64,
+    #[serde(default)]
+    pub remote_lease_waits: i64,
+    #[serde(default)]
+    pub remote_lease_wait_ms: i64,
+    #[serde(default)]
+    pub longest_eligible_wait_secs: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

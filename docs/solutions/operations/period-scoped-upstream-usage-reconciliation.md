@@ -6,7 +6,9 @@ Candidate windows are maintained in an indexed durable work projection. The engi
 and permits at most two serial main settlement requests per run. Terminal Research uses a separate unique
 durable drain that owns the v21 cursor, performs at most one actual poll every five seconds, and shares only the
 request-scoped single remote lease with main settlement. Main runs neither reserve time for nor issue Research
-requests. Research exhaustion is diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
+requests. After 120 eligible seconds, main and Research compete by oldest eligibility for the next non-manual
+request turn, with main winning an exact tie; a Research turn bypasses only the foreground request-rate heuristic.
+Research exhaustion is diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
 per-key upstream-429 cooldown (`5/10/20/30m`); a 429 only cools the affected `period_reconciliation` key,
 and non-429 failures do not reset that key's cooldown. A current claim that reaches a
 low-foreground recovery window clears only its local-pressure state before trying the engine again;
@@ -27,8 +29,9 @@ recovered state; do not log or expose the upstream body, URL, token, or database
 
 Research selection uses the due covering index with an 80-row keyset page and the existing
 four-per-key and 20-row selection bounds. Each drain run polls one candidate. Its pending, terminal,
-retry, or per-Key 429 result commits with the exact selected cursor and claim fence; read or lease
-pressure schedules one `research_drain_budget` continuation without changing the main result.
+retry, or per-Key 429 result commits with the exact selected cursor and claim fence. `foreground_pressure`,
+`read_budget`, and `control_defer` schedule 30-second continuations, while a busy request lease schedules a
+five-second `remote_lease` continuation; none changes the main result, cursor, or Key state.
 Apply closed-period eligibility before the page limit and identically during hydrate. Advance the
 cursor only for the processed candidate, force a stable-start sweep every five minutes to rediscover
 records that became eligible behind the cursor, and refresh that sweep clock in the accepted atomic
@@ -256,7 +259,9 @@ enter, escalation, and recovery.
 Do not make Research liveness depend on main tail budget. Keep a unique drain representative,
 exclude Research from main continuation discovery, and let startup, the watchdog, and safely
 completed main runs ensure the drain. The scheduler gives an aged main reconciliation turn priority
-over the drain, while the drain precedes other automatic remote work.
+over the drain, while the drain precedes other automatic remote work. Preserve the drain's
+queue-time fairness anchor across foreground, lease, read-budget, and control defers; accepted polls
+and Key cooldowns begin a new eligibility interval.
 
 ## Claim-fenced deferred finalization
 

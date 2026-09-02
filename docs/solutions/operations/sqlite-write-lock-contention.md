@@ -60,6 +60,14 @@ related_specs:
   eligibility before the page limit and force a stable-start sweep every five minutes, with the
   accepted wrap and sweep clock committed together, so bounded keyset progress does not strand rows
   that become eligible behind the cursor.
+- Treat `foreground_rps` as an instance-local request-rate heuristic, not evidence of SQLite or
+  host pressure. A normal Research drain yields above the threshold, but after 120 eligible seconds
+  it may take one aged automatic request turn. That exception never skips the native SQLite read
+  deadline, request-scoped single lease, five-second rate limit, or claim-fenced commit. If the
+  lease is busy, persist a five-second `remote_lease` continuation instead of waiting inside the
+  remote budget; read and control defers retain their separate 30-second continuations. Preserve
+  the Research queue-time fairness anchor across those no-request defers so the 120-second age is
+  not reset by every continuation; accepted polls and Key cooldowns start a new interval.
 - Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
   They upsert only successful responses for the current work generation, while the two-request cap is
   represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal

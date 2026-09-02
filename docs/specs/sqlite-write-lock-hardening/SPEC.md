@@ -325,6 +325,9 @@ source when a usable persisted runtime already exists.
 - Reconciliation main settlement and Research polling have separate durable jobs. The drain owns
   Research selection and performs one request at a time no earlier than five seconds apart; both
   jobs share only the request-scoped single remote lease, not one run deadline or local transaction.
+  Aged main and aged Research representatives compete for the next automatic request after 120
+  eligible seconds; a Research aged turn bypasses only the foreground-rate heuristic and still uses
+  the bounded read, request lease, and claim-fenced control transaction.
 - A completed upstream observation with zero signed delta is a `no_adjustment` terminal outcome for
   the matching usage generation. It must not recreate the representative job until a later usage
   write projects new work.
@@ -487,8 +490,6 @@ source when a usable persisted runtime already exists.
 - `docs/solutions/operations/sqlite-write-lock-contention.md`
 
 ## Visual Evidence
-
-PR: none
 
 - evidence_note: This topic change is limited to SQLite scheduling and persistence behavior. Any
   future UI-affecting change must add current-SHA visual evidence before selecting it for a PR.

@@ -448,7 +448,7 @@ impl KeyStore {
                 &mut transaction,
                 commit.job_id,
                 commit.claim_generation,
-                "deferred=research_drain_budget",
+                "deferred=control_defer",
                 now.saturating_add(30),
                 now,
             )
@@ -532,7 +532,7 @@ impl KeyStore {
                 &mut transaction,
                 commit.job_id,
                 commit.claim_generation,
-                "deferred=research_drain_budget",
+                "deferred=control_defer",
                 now.saturating_add(30),
                 now,
             )

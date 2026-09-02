@@ -105,33 +105,45 @@ async fn persist_claimed_research_drain(
                     .is_ok(),
             }
         }
-        Ok(ClaimedResearchDrainOutcome::Deferred { reason, retry_at }) => state
-            .proxy
-            .scheduled_job_finish_and_enqueue_auto_at(
-                job_id,
-                claim_generation,
-                RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
-                None,
-                1,
-                Some(&format!("deferred={reason}")),
-                retry_at,
-            )
-            .await
-            .is_ok(),
+        Ok(ClaimedResearchDrainOutcome::Deferred { reason, retry_at }) => {
+            let accepted = state
+                .proxy
+                .scheduled_job_finish_and_enqueue_auto_at(
+                    job_id,
+                    claim_generation,
+                    RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+                    None,
+                    1,
+                    Some(&format!("deferred={reason}")),
+                    retry_at,
+                )
+                .await
+                .is_ok();
+            if accepted {
+                TavilyProxy::observe_research_drain_defer(reason);
+            }
+            accepted
+        }
         Ok(ClaimedResearchDrainOutcome::StaleClaim) => false,
-        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => state
-            .proxy
-            .scheduled_job_finish_and_enqueue_auto_at(
-                job_id,
-                claim_generation,
-                RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
-                None,
-                1,
-                Some("deferred=research_drain_budget"),
-                state.proxy.backend_time().now_ts().saturating_add(30),
-            )
-            .await
-            .is_ok(),
+        Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
+            let accepted = state
+                .proxy
+                .scheduled_job_finish_and_enqueue_auto_at(
+                    job_id,
+                    claim_generation,
+                    RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+                    None,
+                    1,
+                    Some("deferred=control_defer"),
+                    state.proxy.backend_time().now_ts().saturating_add(30),
+                )
+                .await
+                .is_ok();
+            if accepted {
+                TavilyProxy::observe_research_drain_defer("control_defer");
+            }
+            accepted
+        }
         Err(error) => state
             .proxy
             .scheduled_job_finish_claimed(

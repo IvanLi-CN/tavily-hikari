@@ -459,6 +459,25 @@ const credentialsCooldownResearchStatus: UpstreamPrivacyStatus = {
   },
 }
 
+const researchLivenessPressureStatus: UpstreamPrivacyStatus = {
+  ...compareStatus,
+  reconciliationResearchPollDiagnostics: {
+    unavailable: 0,
+    pollablePending: 11,
+    credentialsCoolingKeys: 0,
+    earliestCredentialsRetryAt: null,
+    lastPollOutcome: 'pending',
+    lastPollObservedAt: 1_783_959_000,
+    foregroundPressureDefers: 12,
+    remoteLeaseDefers: 3,
+    readBudgetDefers: 1,
+    controlDefers: 0,
+    remoteLeaseWaits: 3,
+    remoteLeaseWaitMs: 0,
+    longestEligibleWaitSecs: 370,
+  },
+}
+
 const meta = {
   title: 'Admin/Modules/SystemStatusModule',
   component: UpstreamPrivacyStatusModule,
@@ -739,6 +758,24 @@ export const EvidenceResearchCredentialsCooldown: Story = {
 export const EvidenceResearchCredentialsCooldownMobile393x852: Story = {
   parameters: mobileViewport,
   render: EvidenceResearchCredentialsCooldown.render,
+}
+
+export const ResearchLivenessPressure: Story = {
+  args: { status: researchLivenessPressureStatus },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('最长 Research 等待')).toBeInTheDocument()
+    await expect(canvas.getByText('前台 12 · lease 3 · 读取 1 · 控制 0')).toBeInTheDocument()
+  },
+}
+
+export const EvidenceResearchLivenessPressure: Story = {
+  render: () => renderEvidenceSurface(renderWithStatus(researchLivenessPressureStatus)),
+}
+
+export const EvidenceResearchLivenessPressureMobile393x852: Story = {
+  parameters: mobileViewport,
+  render: EvidenceResearchLivenessPressure.render,
 }
 
 export const EmptyState: Story = {

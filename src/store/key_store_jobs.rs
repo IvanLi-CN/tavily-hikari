@@ -758,11 +758,40 @@ impl KeyStore {
         available_at: i64,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         let finished_at = self.backend_time.now_ts();
+        let preserve_research_wait_anchor = job_type == "upstream_reconciliation_research_drain"
+            && message.is_some_and(|value| {
+                matches!(
+                    value,
+                    "deferred=foreground_pressure"
+                        | "deferred=remote_lease"
+                        | "deferred=read_budget"
+                        | "deferred=control_defer"
+                )
+            });
         let mut conn = self
             .sqlite_runtime
             .begin_scheduled_job_control()
             .await?;
         let result = async {
+            // `queued_at` is the durable fairness anchor for a Research drain
+            // that is otherwise ready but temporarily yields to foreground work
+            // or the request lease. Key cooldowns and accepted polls do not use
+            // this path, so their next eligibility begins a new wait interval.
+            let continuation_queued_at = if preserve_research_wait_anchor {
+                sqlx::query_scalar(
+                    "SELECT queued_at FROM scheduled_jobs WHERE id = ? AND status = 'running' AND claim_generation = ?",
+                )
+                .bind(job_id)
+                .bind(claim_generation)
+                .fetch_optional(&mut *conn)
+                .await?
+                .ok_or(ProxyError::StaleClaim {
+                    job_id,
+                    claim_generation,
+                })?
+            } else {
+                finished_at
+            };
             // A deferred online slice must not turn a short SQLite writer conflict
             // into the scheduler's long retry window.
             let updated = sqlx::query(
@@ -821,7 +850,7 @@ impl KeyStore {
             .bind(job_type)
             .bind(key_id)
             .bind(attempt)
-            .bind(finished_at)
+            .bind(continuation_queued_at)
             .bind(available_at)
             .execute(&mut *conn)
             .await?;
@@ -981,6 +1010,11 @@ impl KeyStore {
             "trigger_source",
             "queued_at",
         );
+        let wait_anchor = if job_type == "upstream_reconciliation_research_drain" {
+            "queued_at"
+        } else {
+            "available_at"
+        };
         let query = format!(
             r#"
             SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
@@ -989,8 +1023,8 @@ impl KeyStore {
             WHERE status = 'queued'
               AND job_type = ?
               AND available_at <= ?
-              AND ? - available_at >= ?
-            ORDER BY available_at ASC, queued_at ASC, id ASC
+              AND ? - {wait_anchor} >= ?
+            ORDER BY {wait_anchor} ASC, queued_at ASC, id ASC
             LIMIT 1
             "#,
         );

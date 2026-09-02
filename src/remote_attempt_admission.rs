@@ -43,6 +43,13 @@ pub struct RemoteAttemptLease {
     started_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum ReconciliationTurnKind {
+    Main,
+    ResearchDrain,
+}
+
 /// Owns an aged reconciliation fairness turn without reserving an outbound
 /// request lease. The generation fence prevents an older claimed run from
 /// clearing a newer turn after it has started its request.
@@ -51,9 +58,15 @@ pub struct RemoteAttemptLease {
 pub struct ReconciliationTurn {
     controller: Arc<RemoteAttemptAdmissionController>,
     turn_id: u64,
+    kind: ReconciliationTurnKind,
 }
 
 impl ReconciliationTurn {
+    #[doc(hidden)]
+    pub fn kind(&self) -> ReconciliationTurnKind {
+        self.kind
+    }
+
     #[doc(hidden)]
     pub async fn acquire_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
         let active_turn_id = self
@@ -69,6 +82,22 @@ impl ReconciliationTurn {
         self.controller
             .acquire_reconciliation_attempt_for_turn(self.turn_id)
             .await
+    }
+
+    #[doc(hidden)]
+    pub fn try_acquire_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
+        let active_turn_id = self
+            .controller
+            .reconciliation_turn_id
+            .load(Ordering::Acquire);
+        if active_turn_id == 0 {
+            return self.controller.try_acquire_automatic_attempt();
+        }
+        if active_turn_id != self.turn_id {
+            return Err("reconciliation_turn_stale");
+        }
+        self.controller
+            .try_acquire_reconciliation_attempt_for_turn(self.turn_id)
     }
 }
 
@@ -89,6 +118,17 @@ impl Default for RemoteAttemptAdmissionController {
 
 impl RemoteAttemptAdmissionController {
     pub fn reserve_aged_reconciliation_turn(self: &Arc<Self>) -> Option<ReconciliationTurn> {
+        self.reserve_aged_turn(ReconciliationTurnKind::Main)
+    }
+
+    pub fn reserve_aged_research_drain_turn(self: &Arc<Self>) -> Option<ReconciliationTurn> {
+        self.reserve_aged_turn(ReconciliationTurnKind::ResearchDrain)
+    }
+
+    fn reserve_aged_turn(
+        self: &Arc<Self>,
+        kind: ReconciliationTurnKind,
+    ) -> Option<ReconciliationTurn> {
         let turn_id = self
             .next_reconciliation_turn_id
             .fetch_add(1, Ordering::AcqRel)
@@ -99,6 +139,7 @@ impl RemoteAttemptAdmissionController {
         Some(ReconciliationTurn {
             controller: self.clone(),
             turn_id,
+            kind,
         })
     }
 
@@ -146,6 +187,18 @@ impl RemoteAttemptAdmissionController {
         self.acquire_attempt().await
     }
 
+    /// Tries an automatic request lease without waiting behind another
+    /// request. Research drain uses this to turn lease contention into a
+    /// durable short defer instead of spending its whole preparation budget.
+    pub fn try_acquire_automatic_attempt(
+        self: &Arc<Self>,
+    ) -> Result<RemoteAttemptLease, &'static str> {
+        if self.reconciliation_turn_required() {
+            return Err("remote_lease_unavailable");
+        }
+        self.try_acquire_attempt_inner()
+    }
+
     async fn acquire_reconciliation_attempt_for_turn(
         self: &Arc<Self>,
         turn_id: u64,
@@ -176,6 +229,42 @@ impl RemoteAttemptAdmissionController {
             _permit: permit,
             started_at: Instant::now(),
         })
+    }
+
+    fn try_acquire_reconciliation_attempt_for_turn(
+        self: &Arc<Self>,
+        turn_id: u64,
+    ) -> Result<RemoteAttemptLease, &'static str> {
+        let permit = self
+            .attempt_slot
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "remote_lease_unavailable")?;
+        self.reconciliation_turn_id
+            .compare_exchange(turn_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "reconciliation_turn_stale")?;
+        self.reconciliation_turn_cleared.notify_waiters();
+        Ok(self.make_lease(permit))
+    }
+
+    fn try_acquire_attempt_inner(self: &Arc<Self>) -> Result<RemoteAttemptLease, &'static str> {
+        let permit = self
+            .attempt_slot
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "remote_lease_unavailable")?;
+        Ok(self.make_lease(permit))
+    }
+
+    fn make_lease(self: &Arc<Self>, permit: OwnedSemaphorePermit) -> RemoteAttemptLease {
+        let active_attempts = self.active_attempts.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak_active_attempts
+            .fetch_max(active_attempts, Ordering::AcqRel);
+        RemoteAttemptLease {
+            controller: self.clone(),
+            _permit: permit,
+            started_at: Instant::now(),
+        }
     }
 
     async fn acquire_attempt_inner(self: &Arc<Self>) -> Result<RemoteAttemptLease, &'static str> {
@@ -304,5 +393,58 @@ mod tests {
             .expect("another remote request starts after response handling");
         assert_eq!(controller.metrics().peak_active_attempts, 1);
         drop(other_request);
+    }
+
+    #[tokio::test]
+    async fn remote_attempt_controller_fairly_serves_aged_research() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_aged_research_drain_turn()
+            .expect("aged Research reserves the next automatic turn");
+        assert_eq!(turn.kind(), ReconciliationTurnKind::ResearchDrain);
+
+        let manual = controller
+            .acquire_manual_attempt()
+            .await
+            .expect("manual work stays ahead of an automatic turn");
+        assert!(
+            controller.acquire_attempt().now_or_never().is_none(),
+            "ordinary automatic work waits for the aged Research turn"
+        );
+        drop(manual);
+
+        let lease = turn
+            .acquire_attempt()
+            .await
+            .expect("aged Research receives the next automatic request");
+        assert_eq!(controller.metrics().peak_active_attempts, 1);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn research_turn_reports_busy_lease_without_consuming_its_turn() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let held = controller
+            .acquire_manual_attempt()
+            .await
+            .expect("manual request occupies the only lease");
+        let turn = controller
+            .reserve_aged_research_drain_turn()
+            .expect("Research owns the next automatic turn");
+
+        assert!(matches!(
+            turn.try_acquire_attempt(),
+            Err("remote_lease_unavailable")
+        ));
+        assert!(
+            controller.reconciliation_turn_required(),
+            "a lease defer must not consume the aged Research turn"
+        );
+        drop(held);
+        let lease = turn
+            .try_acquire_attempt()
+            .expect("the same turn acquires the lease once it is free");
+        assert!(!controller.reconciliation_turn_required());
+        drop(lease);
     }
 }

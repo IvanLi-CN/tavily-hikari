@@ -151,6 +151,13 @@ export interface ReconciliationResearchPollDiagnostics {
   earliestCredentialsRetryAt: number | null
   lastPollOutcome: string | null
   lastPollObservedAt: number | null
+  foregroundPressureDefers?: number
+  remoteLeaseDefers?: number
+  readBudgetDefers?: number
+  controlDefers?: number
+  remoteLeaseWaits?: number
+  remoteLeaseWaitMs?: number
+  longestEligibleWaitSecs?: number
 }
 
 export interface ReconciliationControllerStatus {
