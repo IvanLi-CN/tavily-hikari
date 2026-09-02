@@ -40,9 +40,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   preparation and durable finalization never hold it.
 - Manual remote work keeps dispatch priority. Once an automatic main reconciliation representative
   or Research drain has been eligible for 120 seconds, it competes for the next non-manual remote
-  turn by oldest eligibility; main reconciliation wins an exact tie. The turn is consumed only when
-  HTTP starts, not by local reads, cooldown selection, cancellation, stale claims, or a no-request
-  defer. Research preserves its `scheduled_jobs.queued_at` fairness anchor across foreground,
+  turn. Main reconciliation is ordered by `available_at`; Research is ordered by its durable
+  `queued_at` debt anchor so a defer cannot reset its wait; main wins an exact tie. The turn is
+  consumed only when HTTP starts, not by local reads, cooldown selection, cancellation, stale
+  claims, or a no-request defer. Research preserves its `scheduled_jobs.queued_at` fairness anchor across foreground,
   lease, read-budget, and control defers, while an accepted poll or Key cooldown starts a new
   interval.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read

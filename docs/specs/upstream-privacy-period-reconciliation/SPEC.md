@@ -119,10 +119,10 @@
 - The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
   projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
   Manual work keeps priority; automatic main reconciliation and Research drain representatives
-  eligible for 120 seconds compete for the next non-manual request turn by oldest eligibility, with
-  main reconciliation winning an exact tie. Research keeps its durable queue-time anchor through
-  foreground, lease, read-budget, and control defers; an accepted poll or Key cooldown starts a
-  new eligibility interval. A turn is consumed only when HTTP starts.
+  eligible for 120 seconds compete for the next non-manual request turn. Main reconciliation is
+  ordered by `available_at`; Research is ordered by its durable queue-time `queued_at` anchor, so a
+  defer cannot erase its wait; main wins an exact tie. An accepted poll or Key cooldown starts a
+  new Research interval. A turn is consumed only when HTTP starts.
 - Projection SQL shape remains unchanged unless scoped read-deadline and connection-level evidence
   shows this source read still dominates candidate performance. A query/index rewrite requires a
   separate bounded change.

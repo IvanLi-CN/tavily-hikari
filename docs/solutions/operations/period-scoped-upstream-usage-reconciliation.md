@@ -258,10 +258,11 @@ enter, escalation, and recovery.
 
 Do not make Research liveness depend on main tail budget. Keep a unique drain representative,
 exclude Research from main continuation discovery, and let startup, the watchdog, and safely
-completed main runs ensure the drain. The scheduler gives an aged main reconciliation turn priority
-over the drain, while the drain precedes other automatic remote work. Preserve the drain's
-queue-time fairness anchor across foreground, lease, read-budget, and control defers; accepted polls
-and Key cooldowns begin a new eligibility interval.
+completed main runs ensure the drain. The scheduler compares aged main work by `available_at` and
+the drain by its durable `queued_at` debt anchor, with main winning an exact tie; the drain precedes
+other automatic remote work. Preserve the drain's queue-time fairness anchor across foreground,
+lease, read-budget, and control defers; accepted polls and Key cooldowns begin a new eligibility
+interval.
 
 ## Claim-fenced deferred finalization
 
