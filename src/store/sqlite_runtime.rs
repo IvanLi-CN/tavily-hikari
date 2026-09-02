@@ -141,6 +141,7 @@ pub(crate) enum SqliteOperation {
     ServerPressureRebuild,
     ReconciliationProjection,
     ScheduledJobControl,
+    MaintenanceCapacityWarm,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -198,6 +199,7 @@ impl SqliteOperation {
             Self::ServerPressureRebuild => "server_pressure_rebuild",
             Self::ReconciliationProjection => "reconciliation_projection",
             Self::ScheduledJobControl => "scheduled_job_control",
+            Self::MaintenanceCapacityWarm => "maintenance_capacity_warm",
         }
     }
 
@@ -220,6 +222,7 @@ impl SqliteOperation {
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => "maintenance_bulk",
             Self::ScheduledJobControl | Self::HaOutboxGcWatchdog => "maintenance_control",
+            Self::MaintenanceCapacityWarm => "maintenance_bulk",
         }
     }
 
@@ -241,6 +244,7 @@ impl SqliteOperation {
             | Self::ObservabilityDeferredWrite
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => Duration::from_millis(100),
+            Self::MaintenanceCapacityWarm => Duration::from_millis(100),
             _ => Duration::from_secs(5),
         }
     }
@@ -263,6 +267,7 @@ impl SqliteOperation {
             | Self::ServerPressureRebuild
             | Self::ReconciliationProjection => Duration::from_millis(250),
             Self::ObservabilityDeferredWrite => Duration::from_millis(100),
+            Self::MaintenanceCapacityWarm => Duration::from_millis(100),
             _ => Duration::from_secs(5),
         }
     }
@@ -298,6 +303,7 @@ impl SqliteOperation {
                 | Self::ObservabilityDeferredWrite
                 | Self::ServerPressureRebuild
                 | Self::ReconciliationProjection
+                | Self::MaintenanceCapacityWarm
         )
     }
 
@@ -832,7 +838,6 @@ impl SqliteRuntime {
             .map(|permit| SqliteMaintenanceRunLease { _permit: permit })
     }
 
-    #[cfg(test)]
     pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) {
         if self.has_foreground_pool_capacity()
             || self.inner.pool.size() >= self.inner.maximum_connections
@@ -842,6 +847,9 @@ impl SqliteRuntime {
         }
 
         let deadline = Instant::now() + Duration::from_millis(100);
+        // Capacity growth is runtime-owned: callers never acquire the raw
+        // pool. Each bounded acquire is accounted under its own operation so
+        // pool pressure remains distinguishable from a projection failure.
         let mut held = Vec::new();
         while self.inner.pool.size() < self.inner.maximum_connections {
             if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS
@@ -853,17 +861,41 @@ impl SqliteRuntime {
             if remaining.is_zero() {
                 break;
             }
-            match tokio::time::timeout(remaining, self.inner.pool.acquire()).await {
-                Ok(Ok(conn)) => {
-                    held.push(conn);
+            match tokio::time::timeout(
+                remaining,
+                self.acquire_pool_connection(SqliteOperation::MaintenanceCapacityWarm),
+            )
+            .await
+            {
+                Ok(Ok((conn, pool_wait))) => {
+                    held.push((conn, pool_wait));
                     if self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
                         break;
                     }
                 }
-                _ => break,
+                Ok(Err(_)) | Err(_) => {
+                    if self.inner.pool.num_idle()
+                        < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
+                    {
+                        self.record_deferred(
+                            SqliteOperation::MaintenanceCapacityWarm,
+                            SqliteAdmissionDeferReason::PoolPressure,
+                        );
+                    }
+                    break;
+                }
             }
         }
-        drop(held);
+        for (conn, pool_wait) in held {
+            drop(conn);
+            self.record_success(
+                SqliteOperation::MaintenanceCapacityWarm,
+                pool_wait,
+                Duration::ZERO,
+                Duration::ZERO,
+                0,
+            );
+        }
         while Instant::now() < deadline
             && self.inner.pool.num_idle()
                 < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
@@ -872,7 +904,6 @@ impl SqliteRuntime {
         }
     }
 
-    #[cfg(test)]
     pub(crate) async fn prewarm_reconciliation_projection_capacity(&self) {
         self.prewarm_maintenance_bulk_capacity().await;
     }

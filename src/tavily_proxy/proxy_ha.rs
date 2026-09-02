@@ -465,7 +465,6 @@ impl TavilyProxy {
         }
     }
 
-    #[cfg(test)]
     pub async fn prewarm_upstream_reconciliation_projection_capacity(&self) {
         self.key_store
             .prewarm_upstream_reconciliation_projection_capacity()

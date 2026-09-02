@@ -417,6 +417,13 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        // A lazy pool can have a foreground connection checked out before the
+        // projection worker starts. Let the runtime-owned capacity warm grow
+        // unopened slots within its bounded budget before admission decides
+        // whether the slice can run.
+        self.sqlite_runtime
+            .prewarm_maintenance_bulk_capacity()
+            .await;
         let _admission = match self.try_admit_alert_projection() {
             Ok(permit) => permit,
             Err(reason) => {
@@ -860,6 +867,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn refresh_dashboard_alert_projection_summary(&self) -> Result<bool, ProxyError> {
+        self.sqlite_runtime
+            .prewarm_maintenance_bulk_capacity()
+            .await;
         let Ok(_permit) = self.try_admit_alert_projection() else {
             return Ok(false);
         };

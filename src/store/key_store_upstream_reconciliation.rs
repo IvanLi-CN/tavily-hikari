@@ -117,7 +117,6 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
     }
 
-    #[cfg(test)]
     pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity(&self) {
         self.sqlite_runtime
             .prewarm_reconciliation_projection_capacity()
