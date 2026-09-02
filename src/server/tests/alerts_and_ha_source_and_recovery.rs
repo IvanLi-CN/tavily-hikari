@@ -290,6 +290,72 @@ async fn remote_attempt_controller_fairly_serves_aged_research_after_main() {
 }
 
 #[tokio::test]
+async fn remote_attempt_controller_uses_research_wait_anchor_for_aged_fairness() {
+    let db_path = temp_db_path("reconciliation-aged-research-anchor-order");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-aged-research-anchor-order".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-aged-research-anchor-order-password",
+    )
+    .await;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = state.proxy.backend_time().now_ts();
+    let main = state
+        .proxy
+        .scheduled_job_enqueue_at("upstream_reconciliation", "auto", None, 1, now - 121)
+        .await
+        .expect("enqueue aged main reconciliation");
+    let research = state
+        .proxy
+        .scheduled_job_enqueue_at(
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            "auto",
+            None,
+            1,
+            now,
+        )
+        .await
+        .expect("enqueue aged Research drain");
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+        .bind(now - 121)
+        .bind(now - 121)
+        .bind(main.job_id)
+        .execute(&pool)
+        .await
+        .expect("age main reconciliation");
+    sqlx::query("UPDATE scheduled_jobs SET queued_at = ?, available_at = ? WHERE id = ?")
+        .bind(now - 180)
+        .bind(now)
+        .bind(research.job_id)
+        .execute(&pool)
+        .await
+        .expect("preserve an older Research fairness anchor after a defer");
+
+    let (selected, turn) = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect("select the oldest aged automatic job")
+        .expect("aged Research is runnable");
+    assert_eq!(
+        selected.id, research.job_id,
+        "an older Research wait anchor wins even when its latest defer made available_at newer"
+    );
+    assert_eq!(
+        turn.expect("Research reserves the turn").kind(),
+        ReconciliationTurnKind::ResearchDrain
+    );
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn aged_research_bypasses_foreground_heuristic_once() {
     let db_path = temp_db_path("reconciliation-aged-research-foreground");
     let db_str = db_path.to_string_lossy().to_string();

@@ -355,6 +355,14 @@ fn scheduled_job_is_manual_remote(job: &QueuedScheduledJob) -> bool {
     job.trigger_source == TRIGGER_SOURCE_MANUAL
 }
 
+fn reconciliation_turn_eligible_since(job: &QueuedScheduledJob) -> i64 {
+    if job.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE {
+        job.queued_at
+    } else {
+        job.available_at
+    }
+}
+
 async fn dequeue_next_scheduled_job(
     state: &AppState,
 ) -> Result<Option<(JobLog, Option<ReconciliationTurn>)>, ProxyError> {
@@ -397,7 +405,10 @@ async fn dequeue_next_scheduled_job(
             )
             .await?;
         let aged = match (aged_main, aged_research) {
-            (Some(main), Some(research)) if research.available_at < main.available_at => {
+            (Some(main), Some(research))
+                if reconciliation_turn_eligible_since(&research)
+                    < reconciliation_turn_eligible_since(&main) =>
+            {
                 Some((research, ReconciliationTurnKind::ResearchDrain))
             }
             (Some(main), _) => Some((main, ReconciliationTurnKind::Main)),
