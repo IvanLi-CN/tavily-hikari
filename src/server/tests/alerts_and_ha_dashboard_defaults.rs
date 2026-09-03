@@ -842,8 +842,8 @@ async fn admin_alerts_canonical_read_waits_for_history_projection_coverage() {
     assert!(
         matches!(
             result,
-            Err(tavily_hikari::ProxyError::Deferred { ref operation, ref reason })
-                if *operation == "admin_alerts_read" && reason == "history_projection_catching_up"
+            Err(tavily_hikari::ProxyError::Deferred { operation, ref reason })
+                if operation == "admin_alerts_read" && reason == "history_projection_catching_up"
         ),
         "canonical admin reads must not publish while history is incomplete: {result:?}"
     );
