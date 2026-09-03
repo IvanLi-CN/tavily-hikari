@@ -734,6 +734,19 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .expect("cold alerts catalog");
     assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(cold.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("1"));
+    for route in ["events", "groups"] {
+        let cold = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("cold pinned Alerts page");
+        assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            cold.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+    }
 
     let mut projection_ready = false;
     for _ in 0..64 {
@@ -764,35 +777,60 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         super::super::AdminAlertsReadCacheValue::Catalog(catalog),
     )
     .await;
-    let warm = client
-        .get(format!("http://{admin_addr}/api/alerts/catalog"))
-        .header(reqwest::header::COOKIE, &cookie)
-        .send()
+    let events = state
+        .proxy
+        .admin_alert_events_page(None, None, None, None, None, None, &[], 1, 20)
         .await
-        .expect("warm alerts catalog");
-    assert_eq!(warm.status(), reqwest::StatusCode::OK);
-    let warm_body: serde_json::Value = warm.json().await.expect("warm alerts json");
-    assert_eq!(warm_body.get("coverage"), None);
-    assert_eq!(warm_body.get("staleReason"), None);
+        .expect("build canonical events for the warm-cache fixture");
+    super::super::record_admin_alerts_last_good(
+        state.as_ref(),
+        super::super::default_admin_alert_cache_key("events"),
+        super::super::AdminAlertsReadCacheValue::Events(events),
+    )
+    .await;
+    let groups = state
+        .proxy
+        .admin_alert_groups_page(None, None, None, None, None, None, &[], 1, 20)
+        .await
+        .expect("build canonical groups for the warm-cache fixture");
+    super::super::record_admin_alerts_last_good(
+        state.as_ref(),
+        super::super::default_admin_alert_cache_key("groups"),
+        super::super::AdminAlertsReadCacheValue::Groups(groups),
+    )
+    .await;
+    for route in ["catalog", "events", "groups"] {
+        let warm = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("warm pinned Alerts response");
+        assert_eq!(warm.status(), reqwest::StatusCode::OK);
+        let warm_body: serde_json::Value = warm.json().await.expect("warm Alerts JSON");
+        assert_eq!(warm_body.get("coverage"), None);
+        assert_eq!(warm_body.get("staleReason"), None);
+    }
 
     // Alerts no longer depend on a maintenance-bulk permit. The native,
     // connection-local read deadline is the pressure boundary that selects
     // an exact-key last-good response.
     super::super::mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
-    state.proxy.force_next_admin_alert_read_deadline_for_test();
-    let stale = client
-        .get(format!("http://{admin_addr}/api/alerts/catalog"))
-        .header(reqwest::header::COOKIE, &cookie)
-        .send()
-        .await
-        .expect("stale alerts catalog");
-    assert_eq!(stale.status(), reqwest::StatusCode::OK);
-    let stale_body: serde_json::Value = stale.json().await.expect("stale alerts json");
-    assert_eq!(stale_body.get("coverage").and_then(|v| v.as_str()), Some("stale"));
-    assert_eq!(
-        stale_body.get("staleReason").and_then(|v| v.as_str()),
-        Some("projection_refresh")
-    );
+    for route in ["catalog", "events", "groups"] {
+        let stale = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("stale pinned Alerts response");
+        assert_eq!(stale.status(), reqwest::StatusCode::OK);
+        let stale_body: serde_json::Value = stale.json().await.expect("stale Alerts JSON");
+        assert_eq!(stale_body.get("coverage").and_then(|v| v.as_str()), Some("stale"));
+        assert_eq!(
+            stale_body.get("staleReason").and_then(|v| v.as_str()),
+            Some("projection_refresh")
+        );
+    }
 
     state.proxy.force_next_admin_alert_read_deadline_for_test();
     let cold = client

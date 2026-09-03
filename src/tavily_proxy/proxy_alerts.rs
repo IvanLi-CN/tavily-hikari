@@ -28,6 +28,11 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn prepare_admin_alerts_canonical_warm(&self) -> Result<(), ProxyError> {
+        self.key_store.prepare_admin_alerts_canonical_warm().await
+    }
+
+    #[doc(hidden)]
     pub async fn prewarm_admin_alerts_cache_capacity(&self) -> Result<(), ProxyError> {
         self.key_store
             .sqlite_runtime

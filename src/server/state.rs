@@ -339,11 +339,29 @@ async fn publish_admin_alerts_canonical(
 ) -> bool {
     let cache = dashboard_overview_cache_for_state(state);
     let mut cache = cache.lock().await;
+    publish_admin_alerts_canonical_into_cache(
+        &mut cache,
+        generation,
+        state.proxy.backend_time().now_ts(),
+        tokio::time::Instant::now(),
+        catalog,
+        events,
+        groups,
+    )
+}
+
+fn publish_admin_alerts_canonical_into_cache(
+    cache: &mut DashboardOverviewCacheState,
+    generation: u64,
+    observed_at: i64,
+    stored_at: tokio::time::Instant,
+    catalog: AlertCatalog,
+    events: PaginatedAlertEvents,
+    groups: PaginatedAlertGroups,
+) -> bool {
     if cache.alert_projection_generation != generation {
         return false;
     }
-    let observed_at = state.proxy.backend_time().now_ts();
-    let stored_at = tokio::time::Instant::now();
     for (key, value) in [
         ("catalog".to_string(), AdminAlertsReadCacheValue::Catalog(catalog)),
         (
@@ -424,6 +442,10 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             }
             let generation = current_admin_alerts_generation(state.as_ref()).await;
             let result = async {
+                state.proxy.prepare_admin_alerts_canonical_warm().await?;
+                if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                    return Err(admin_alerts_warm_deferred(reason));
+                }
                 state.proxy.record_admin_alerts_warm_slice();
                 let catalog = state.proxy.admin_alert_catalog_for_cache_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
@@ -823,7 +845,40 @@ pub(crate) async fn prime_admin_privacy_status_for_test(state: Arc<AppState>) {
 
 #[cfg(test)]
 mod admin_alerts_prewarm_tests {
-    use super::{ADMIN_ALERTS_PREWARM_MIN_INTERVAL, DashboardOverviewCacheState};
+    use super::{
+        ADMIN_ALERTS_PREWARM_MIN_INTERVAL, AdminAlertsReadCacheValue, AlertCatalog,
+        DashboardOverviewCacheState, PaginatedAlertEvents, PaginatedAlertGroups,
+        publish_admin_alerts_canonical_into_cache,
+    };
+
+    fn empty_catalog() -> AlertCatalog {
+        AlertCatalog {
+            retention_days: 30,
+            types: Vec::new(),
+            request_kind_options: Vec::new(),
+            users: Vec::new(),
+            tokens: Vec::new(),
+            keys: Vec::new(),
+        }
+    }
+
+    fn empty_events() -> PaginatedAlertEvents {
+        PaginatedAlertEvents {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        }
+    }
+
+    fn empty_groups() -> PaginatedAlertGroups {
+        PaginatedAlertGroups {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        }
+    }
 
     #[test]
     fn admin_alerts_prewarm_coalesces_projection_updates_for_one_minute() {
@@ -859,6 +914,64 @@ mod admin_alerts_prewarm_tests {
 
         cache.finish_admin_alerts_prewarm();
         assert_eq!(cache.admin_alerts_prewarm_defers, 0);
+    }
+
+    #[test]
+    fn initial_admin_alerts_prewarm_defer_keeps_the_worker_retryable() {
+        let mut cache = DashboardOverviewCacheState::default();
+        let now = tokio::time::Instant::now();
+
+        assert!(cache.try_start_admin_alerts_prewarm(now));
+        assert_eq!(
+            cache.defer_admin_alerts_prewarm(now),
+            std::time::Duration::from_secs(5)
+        );
+        assert!(cache.admin_alerts_prewarm_in_flight);
+        assert_eq!(cache.admin_alerts_prewarm_defers, 1);
+        assert!(
+            !cache.try_start_admin_alerts_prewarm(now + std::time::Duration::from_secs(5)),
+            "the original worker owns the first retry instead of losing its staged attempt"
+        );
+    }
+
+    #[test]
+    fn canonical_publish_discards_all_staged_values_after_a_generation_change() {
+        let mut cache = DashboardOverviewCacheState::default();
+        cache.alert_projection_generation = 2;
+
+        assert!(
+            !publish_admin_alerts_canonical_into_cache(
+                &mut cache,
+                1,
+                123,
+                tokio::time::Instant::now(),
+                empty_catalog(),
+                empty_events(),
+                empty_groups(),
+            ),
+            "a fenced generation cannot publish a mixed canonical cache"
+        );
+        assert!(cache.admin_alerts.entries.is_empty());
+
+        assert!(publish_admin_alerts_canonical_into_cache(
+            &mut cache,
+            2,
+            124,
+            tokio::time::Instant::now(),
+            empty_catalog(),
+            empty_events(),
+            empty_groups(),
+        ));
+        assert_eq!(cache.admin_alerts.entries.len(), 3);
+        assert!(cache
+            .admin_alerts
+            .entries
+            .iter()
+            .all(|entry| entry.generation == 2 && entry.canonical));
+        assert!(matches!(
+            cache.admin_alerts.entries[0].value,
+            AdminAlertsReadCacheValue::Groups(_)
+        ));
     }
 }
 

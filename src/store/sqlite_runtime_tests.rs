@@ -555,6 +555,46 @@ async fn admin_privacy_read_run_budget_interrupts_before_discarding_its_session(
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_read_deadline_restores_a_reusable_connection() {
+    let runtime = single_connection_runtime().await;
+    runtime.force_next_cooperative_query_deadline_for_test();
+    let mut snapshot = runtime
+        .begin_read_snapshot(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect("begin bounded canonical Alerts warm read");
+    assert_eq!(
+        snapshot.cooperative_run_budget_for_test(),
+        Some(ADMIN_ALERTS_READ_RUN_BUDGET),
+        "canonical warm reads use the production native 250ms deadline"
+    );
+
+    let query_error = sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE counter(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000) SELECT SUM(value) FROM counter",
+    )
+    .fetch_one(&mut *snapshot)
+    .await
+    .expect_err("the native deadline must interrupt the warm statement");
+    let query_error = ProxyError::Database(query_error);
+    snapshot
+        .close_after_query(Some(&query_error))
+        .await
+        .expect("interrupted warm session closes explicitly");
+
+    assert_eq!(
+        runtime.discarded_connections_for_test(SqliteOperation::AdminAlertsCacheWarm),
+        0,
+        "a native deadline restores the warm connection before it returns to the pool"
+    );
+    runtime
+        .begin_read_snapshot(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect("next canonical warm read is clean")
+        .close()
+        .await
+        .expect("close next canonical warm read");
+}
+
+#[tokio::test]
 async fn reconciliation_read_sessions_interrupt_and_clean_each_read_kind() {
     let runtime = single_connection_runtime().await;
     for kind in ReconciliationReadKind::ALL {
