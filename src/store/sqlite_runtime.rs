@@ -957,17 +957,15 @@ impl SqliteRuntime {
         &self,
     ) -> Option<SqliteAdmissionDeferReason> {
         // Canonical Alerts warmup is deliberately lower priority than both
-        // foreground work and ordinary admin reads. The worker prewarms the
-        // lazy pool before reaching this gate, so require two returned
-        // connections here rather than treating unopened capacity as idle.
+        // foreground work and ordinary admin reads. It uses one bounded read
+        // slot; requiring two already-idle connections starves a lazy pool
+        // under the normal one-connection foreground workload.
         let idle = self.inner.pool.num_idle();
         if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if idle < MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
-            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
-        {
+        } else if idle == 0 || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else {
             None

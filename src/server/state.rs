@@ -406,21 +406,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     }
     tokio::spawn(async move {
         loop {
-            if let Err(error) = state.proxy.prewarm_admin_alerts_cache_capacity().await
-                && !error.is_deferred()
-            {
-                tracing::error!(
-                    component = "admin_read",
-                    event = "alerts_canonical_warm_capacity_failed",
-                    error = %error,
-                    "canonical administrator Alerts cache capacity warm failed"
-                );
-                dashboard_overview_cache_for_state(state.as_ref())
-                    .lock()
-                    .await
-                    .finish_admin_alerts_prewarm();
-                break;
-            }
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())

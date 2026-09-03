@@ -21,8 +21,9 @@
 ## SQLite admission containment
 
 - `SqliteRuntime` is now instance-owned by `KeyStore` and admits a single bulk operation only
-  before pool acquisition. It reserves two actual idle or immediately allocatable pool slots for
-  foreground work, defers bulk work when
+  before pool acquisition. Ordinary bulk work reserves two actual idle or immediately allocatable
+  pool slots for foreground work, while the canonical Alerts warm operation uses one bounded read
+  slot and does not grow or reserve lazy capacity. It defers work when
   foreground arrival, recent busy/timeout signals, or idle capacity violate the runtime contract,
   and aggregates the decision by operation and workload class.
 - HA GC, request-stats persistence, pressure rebuild, reconciliation projection, and Dashboard

@@ -1440,7 +1440,14 @@ impl KeyStore {
                     WHERE r.token_id = w.token_id
                       AND r.period_code = w.period_code
                       AND r.terminal_at IS NULL
-                ) THEN 1 ELSE 0 END AS pending_research
+                ) THEN 1 ELSE 0 END AS pending_research,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM upstream_reconciliation_key_observations o
+                    WHERE o.token_id = w.token_id
+                      AND o.period_code = w.period_code
+                      AND o.work_generation = w.work_generation
+                ), 0) AS observed_key_count
             FROM upstream_reconciliation_work w
             LEFT JOIN upstream_reconciliation_settlements s
               ON s.settlement_key = 'v1:' || w.token_id || ':' || w.period_code
@@ -1507,7 +1514,9 @@ impl KeyStore {
               SELECT eligible.*,
                      ROW_NUMBER() OVER (
                        PARTITION BY scheduling_key_id
-                       ORDER BY period_end "#,
+                       ORDER BY CASE WHEN observed_key_count > 0 THEN 0 ELSE 1 END,
+                                observed_key_count DESC,
+                                period_end "#,
             )
             .push(if newest_first { "DESC" } else { "ASC" })
             .push(

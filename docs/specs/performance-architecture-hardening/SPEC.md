@@ -206,11 +206,12 @@
   at `100ms`, every SQLite statement has a native `250ms` deadline, and coverage plus projected
   catalog/events/groups reads never borrow a bulk permit or raw pool connection. Canonical
   catalog, events page `1/20`, and groups page `1/20` are prewarmed by one AppState-owned
-  low-priority controller. It requires two already-idle connections, foreground activity at most
-  `5 rps`, and no recent contention; it stages the three reads and publishes them only when the
-  projection generation is unchanged. HTTP never starts warm work: canonical misses and expired
-  entries return `503 Retry-After: 1`, while a prior generation remains available as stale until
-  the next complete publish. Warm defers use `5s/5s/30s` backoff and never acquire the bulk permit.
+  low-priority controller. It requires one available bounded read slot, foreground activity at most
+  `5 rps`, and no recent contention; it does not reserve or grow extra pool capacity, stages the
+  three reads, and publishes them only when the projection generation is unchanged. HTTP never
+  starts warm work: canonical misses and expired entries return `503 Retry-After: 1`, while a prior
+  generation remains available as stale until the next complete publish. Warm defers use
+  `5s/5s/30s` backoff and never acquire the bulk permit.
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。

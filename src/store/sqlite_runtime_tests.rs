@@ -707,7 +707,7 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
 }
 
 #[tokio::test]
-async fn admin_alerts_cache_warm_prewarm_grows_lazy_pool_before_admission() {
+async fn admin_alerts_cache_warm_admits_with_one_idle_connection() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
             .min_connections(1)
@@ -723,6 +723,11 @@ async fn admin_alerts_cache_warm_prewarm_grows_lazy_pool_before_admission() {
     );
     assert_eq!(runtime.inner.pool.size(), 1);
     assert_eq!(runtime.inner.pool.num_idle(), 1);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "canonical warm uses one bounded read slot and must not require two idle connections"
+    );
 
     runtime
         .prewarm_maintenance_bulk_capacity()

@@ -64,7 +64,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   immediate five-second `remote_lease` defer rather than budget-consuming local wait.
 - A candidate that references multiple eligible upstream keys stores each successful key response in
   a local, generation-scoped observation table. Each run requests at most two still-missing keys and
-  only computes a cross-key total after every current-generation key is present. The v22 ledger
+  only computes a cross-key total after every current-generation key is present. Candidates with an
+  existing current-generation observation are ranked ahead of fresh candidates sharing the same
+  scheduling Key, so partial results resume before new work can hide them. The v22 ledger
   migration creates this derived table and index without scanning usage or emitting HA events;
   terminal completion removes the rows. Exhausting the request cap is a typed
   `remote_attempt_budget` continuation at 30 seconds, never a semantic failure.
@@ -108,10 +110,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   deadline over one snapshot. Exact-key last-good data may be served stale; a cold key returns
   `503 Retry-After: 1` and never falls back to the raw CTE path. The canonical catalog, events
   page `1/20`, and groups page `1/20` keys are owned by an AppState background warm controller;
-  it performs one bounded `AdminAlertsCacheWarm` read per slice only when two pool connections are
-  already idle, foreground activity is at most five requests per second, and recent contention is
-  clear. Before this admission check, the controller may ask the runtime to grow a lazy pool within
-  the same bounded budget; failure to establish two idle connections defers the slice. It stages all
-  three values behind one projection-generation fence and publishes them together. A deferred warm
-  retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing HTTP to
-  trigger a rebuild.
+  performs one bounded `AdminAlertsCacheWarm` read per slice when a single pool connection is
+  available, foreground activity is at most five requests per second, and recent contention is
+  clear. It does not prewarm or reserve extra connections: a lazy pool can run the warm slice with
+  its one idle connection, while a foreground checkout or waiter causes a typed defer. It stages
+  all three values behind one projection-generation fence and publishes them together. A deferred
+  warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
+  HTTP to trigger a rebuild.

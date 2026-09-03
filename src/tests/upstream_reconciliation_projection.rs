@@ -8,6 +8,81 @@ use std::{
 use tokio::net::TcpListener;
 
 #[tokio::test]
+async fn reconciliation_candidates_prioritize_partial_observations() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-partial-priority"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-partial-priority")
+        .await
+        .expect("create shared upstream key");
+    let period_start = now - 1_200;
+    let period_end = now - 900;
+    for (token_id, period_code) in [
+        ("token-partial-observation", "2026-07-15/S1-partial"),
+        ("token-fresh-candidate", "2026-07-15/S1-fresh"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_reconciliation_usage (
+                token_id, key_id, period_code, project_id, billing_subject, period_start, period_end,
+                request_count, first_used_at, last_used_at, updated_at, settlement_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+            "#,
+        )
+        .bind(token_id)
+        .bind(&key_id)
+        .bind(period_code)
+        .bind(format!("project-{token_id}"))
+        .bind(format!("account:{token_id}"))
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_start)
+        .bind(period_end)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert candidate usage");
+    }
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_key_observations (
+             token_id, period_code, work_generation, key_id, upstream_usage, observed_at
+           ) VALUES (?, ?, 1, ?, 5, ?)"#,
+    )
+    .bind("token-partial-observation")
+    .bind("2026-07-15/S1-partial")
+    .bind(&key_id)
+    .bind(now - 10)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert partial key observation");
+
+    let batch = proxy
+        .key_store
+        .next_upstream_reconciliation_candidates(2)
+        .await
+        .expect("load candidate batch");
+    assert_eq!(batch.candidates.len(), 2);
+    assert_eq!(
+        batch.candidates[0].token_id, "token-partial-observation",
+        "a candidate with a durable partial observation must resume before a fresh candidate"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_projection_micro_slices_resume() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

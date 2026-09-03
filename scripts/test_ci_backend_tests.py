@@ -306,6 +306,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertEqual(
             set(prefixes),
             {
+                "server::admin_alerts_prewarm_tests::",
                 "server::tests::admin_logs_and_summary::admin_",
                 "server::tests::admin_token_filters_and_maintenance::admin_",
                 "server::tests::admin_analysis_pressure::analysis_",
