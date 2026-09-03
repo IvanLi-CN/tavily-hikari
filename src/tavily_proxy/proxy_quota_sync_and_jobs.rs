@@ -639,11 +639,6 @@ impl TavilyProxy {
                     observed,
                 } => return Ok(settled + no_adjustment + observed),
                 ClaimedReconciliationRunOutcome::Deferred { reason, .. } => {
-                    // The compatibility entry point is not the durable scheduler. A
-                    // key-scoped cooldown is already persisted for the scheduler's
-                    // earliest wake, so waiting here would only spin until the short
-                    // one-shot budget expires. Claimed runs still return the typed
-                    // defer so their continuation can be enqueued atomically.
                     if reason == RECONCILIATION_RETRY_REASON_KEY_COOLDOWN {
                         return Ok(0);
                     }
@@ -1952,10 +1947,7 @@ impl TavilyProxy {
         {
             research_defer_reason = Some(RECONCILIATION_RETRY_REASON_KEY_COOLDOWN);
         }
-        let research_made_progress = research.polled > 0
-            || research.terminal > 0
-            || research.pending > 0
-            || research.retries > 0;
+        let research_made_progress = research.polled > 0;
         if research_defer_reason.is_none()
             && main_key_cooldown_deferred
             && !research_made_progress

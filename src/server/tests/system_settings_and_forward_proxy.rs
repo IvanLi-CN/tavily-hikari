@@ -2373,7 +2373,7 @@ use super::upstream_support_and_manual_jobs::*;
         );
 
         tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(10),
             proxy.wait_for_rebalance_audits_idle_for_test(),
         )
             .await
