@@ -6,8 +6,8 @@
 
 - Implementation: 当前集成候选上的增量收敛
 - Lifecycle: active
-- Delivery topology: initiative aggregate
-- Integration branch: `prd/performance-debt-recovery`
+- Delivery topology: initiative v4 checkpointed
+- Integration branch: `prd/sqlite-admin-read-reconciliation-liveness`
 
 ## Coverage / rollout summary
 
@@ -67,6 +67,11 @@
   MaintenanceRuntime 与 HA writable-tenure 生命周期仍是后续架构工作。
 - 101 双库只读快照上的 baseline/candidate production-shape 对比、全量质量门禁和 aggregate PR review
   是交付前硬门禁。
+- The active integration frontier keeps administrator Alerts canonical warm publication separate
+  from reconciliation source-revision and multi-key continuation changes. The two delivery slices
+  share only their documented invariants; they do not modify `SqliteRuntime`, SQLite parameters,
+  or public interfaces. Their implementation may proceed independently, while integration,
+  testbox, checkpoint, publication, and observation evidence stay serial.
 
 ## Durable recovery convergence
 

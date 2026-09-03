@@ -17,6 +17,9 @@
 - durable per-channel work 替代单一 HA GC representative，避免一个 channel 的延迟阻塞全部排债。
 - durable projections 与共享 snapshots 替代请求线程上的重复聚合和 flush-on-read。
 - 窄 runtime 接口和 architecture checker 替代依赖约定，防止 raw pool/coalescer 再次泄漏。
+- Canonical Alerts warm publication and reconciliation source revision are maintained as separate
+  delivery seams: their write ownership is independent, but integration and release evidence are
+  deliberately serialized to keep production-shape conclusions attributable.
 
 ## References
 

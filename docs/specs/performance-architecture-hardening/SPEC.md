@@ -103,6 +103,30 @@
   A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
   continuation when the candidate is still incomplete; cross-key summation and terminalization wait
   until every current-generation key is present.
+- Canonical administrator Alerts warm ownership belongs to one AppState controller. For catalog,
+  events page `1/20`, and groups page `1/20`, it reads projection coverage once per attempted
+  generation, runs every projected statement in its own bounded read session (`100ms` acquire,
+  `250ms` native deadline), and atomically publishes all three entries only when they share the
+  same complete projection generation. A warm attempt must not require two idle pool connections,
+  borrow a bulk permit, retain a cross-slice transaction, or let HTTP trigger reconstruction.
+  HTTP serves only an exact-key last-good entry: fresh when generation-complete, stale while that
+  entry remains valid, and `503 Retry-After: 1` for a cold or expired exact key.
+- `pendingResearch` is a compatibility total for Research rows whose `terminal_at` is unset; it is
+  not a drain-debt or liveness metric because `poll_resolution=unavailable` remains included to
+  preserve the 24-hour degraded protection. `pollablePending` is the only queue metric for rows
+  eligible for the Research drain. An unavailable row is neither terminal nor billable and must
+  not be re-polled until its established lifecycle changes.
+- Reconciliation source revision advances only for a logical usage or current key-set change. A
+  storage-only import, replay, timestamp refresh, or equal logical payload must not reopen work or
+  discard current-generation partial observations. Missing keys rotate deterministically across
+  claimed continuations; each run may request at most two, and terminalization occurs only after
+  every current-generation observation is durably present. Claim fencing protects observations,
+  cursor progress, and the unique delayed representative; terminalization alone cleans those
+  observations.
+- Canonical Alerts warm and reconciliation source-revision work are independent delivery seams.
+  They may be developed in parallel without modifying shared `SqliteRuntime`, SQLite parameters,
+  or public interfaces. Child integration, shared testbox evidence, checkpoint promotion, stable
+  publication, and production observation remain serial so one result cannot mask the other.
 - Historical usage projection has a versioned lifecycle independent of candidate selection. A
   pending upgrade projects one bounded page only after durable candidates drain, while new usage
   is maintained by triggers. A completed lifecycle must not requeue a completed no-adjustment
@@ -212,6 +236,14 @@
   starts warm work: canonical misses and expired entries return `503 Retry-After: 1`, while a prior
   generation remains available as stale until the next complete publish. Warm defers use
   `5s/5s/30s` backoff and never acquire the bulk permit.
+- Canonical warm coverage is fetched once per attempted generation. Catalog, events page `1/20`,
+  and groups page `1/20` then use independently bounded projected statements and publish only as
+  one same-generation cache set. No projected statement may exceed `250ms`; a deadline is evidence
+  for a query-plan follow-up, not permission to increase the deadline or restore a raw fallback.
+- Reconciliation liveness reports `pollablePending` separately from the compatible
+  `pendingResearch` total. Current-generation partial observations survive no-op source writes and
+  claim-fenced continuations, and no multi-key candidate may terminalize before all selected keys
+  are durably observed.
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。
@@ -261,6 +293,10 @@
 
 - 每个 child PR 的 checks、review 与 integration CI 必须绑定同一 head SHA。
 - aggregate 不得存在未解决 P0/P1/P2 finding。
+- Integration branches under `prd/**` run `CI Pipeline` on every push. A Bootstrap that refreshes
+  this Spec binds its contract only after that exact integration SHA passes; baseline validation,
+  child integration, shared testbox evidence, checkpoint promotion, and stable publication remain
+  separate serial gates.
 
 ## Visual Evidence
 
