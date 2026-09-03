@@ -330,6 +330,23 @@ async fn record_admin_alerts_last_good_at_generation(
     }
 }
 
+#[cfg(test)]
+pub(crate) async fn expire_admin_alerts_canonical_last_good_for_test(
+    state: &AppState,
+    key: &str,
+) {
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    if let Some(entry) = cache
+        .admin_alerts
+        .entries
+        .iter_mut()
+        .find(|entry| entry.key == key && entry.canonical)
+    {
+        entry.stored_at = tokio::time::Instant::now() - ADMIN_ALERTS_CACHE_TTL;
+    }
+}
+
 async fn publish_admin_alerts_canonical(
     state: &AppState,
     generation: u64,

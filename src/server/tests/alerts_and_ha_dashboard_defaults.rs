@@ -832,6 +832,25 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         );
     }
 
+    for (route, key) in [
+        ("catalog", "catalog".to_string()),
+        ("events", super::super::default_admin_alert_cache_key("events")),
+        ("groups", super::super::default_admin_alert_cache_key("groups")),
+    ] {
+        super::super::expire_admin_alerts_canonical_last_good_for_test(state.as_ref(), &key).await;
+        let expired = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("expired pinned Alerts response");
+        assert_eq!(expired.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            expired.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+    }
+
     state.proxy.force_next_admin_alert_read_deadline_for_test();
     let cold = client
         .get(format!("http://{admin_addr}/api/alerts/events?page=2"))
