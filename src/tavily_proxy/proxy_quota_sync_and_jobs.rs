@@ -639,6 +639,14 @@ impl TavilyProxy {
                     observed,
                 } => return Ok(settled + no_adjustment + observed),
                 ClaimedReconciliationRunOutcome::Deferred { reason, .. } => {
+                    // The compatibility entry point is not the durable scheduler. A
+                    // key-scoped cooldown is already persisted for the scheduler's
+                    // earliest wake, so waiting here would only spin until the short
+                    // one-shot budget expires. Claimed runs still return the typed
+                    // defer so their continuation can be enqueued atomically.
+                    if reason == RECONCILIATION_RETRY_REASON_KEY_COOLDOWN {
+                        return Ok(0);
+                    }
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
                         return Err(ProxyError::Other(format!(
@@ -1820,7 +1828,6 @@ impl TavilyProxy {
         let research_page = if result.is_ok()
             && !remote_attempt_budget_deferred
             && !main_remote_budget_deferred
-            && !main_key_cooldown_deferred
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
         {
@@ -1945,8 +1952,13 @@ impl TavilyProxy {
         {
             research_defer_reason = Some(RECONCILIATION_RETRY_REASON_KEY_COOLDOWN);
         }
+        let research_made_progress = research.polled > 0
+            || research.terminal > 0
+            || research.pending > 0
+            || research.retries > 0;
         if research_defer_reason.is_none()
             && main_key_cooldown_deferred
+            && !research_made_progress
             && key_cooldown_retry_at.is_some()
         {
             research_defer_reason = Some(RECONCILIATION_RETRY_REASON_KEY_COOLDOWN);
