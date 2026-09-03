@@ -32,8 +32,18 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25,
         ]
     );
+    let source_revision_triggers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (\
+         'trg_upstream_reconciliation_usage_work_insert', \
+         'trg_upstream_reconciliation_usage_work_update')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read reconciliation source-revision triggers");
+    assert_eq!(source_revision_triggers, 2);
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -970,7 +980,8 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
     assert_eq!(
         versions,
         vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25,
         ]
     );
 

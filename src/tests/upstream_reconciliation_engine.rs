@@ -258,8 +258,20 @@ async fn remote_attempt_budget_defer_does_not_raise_local_pressure() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed local backoff state");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_run_observation
+              SET upstream_429_count = 6,
+                  transport_failure_count = 5,
+                  semantic_failure_count = 4,
+                  local_pressure_count = 3,
+                  last_transport_kind = 'timeout'
+            WHERE id = 'local'"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed unrelated retry state");
 
-    proxy
+    let continuation = proxy
         .finalize_deferred_upstream_reconciliation_claim(
             claim.id,
             claim.claim_generation,
@@ -268,6 +280,7 @@ async fn remote_attempt_budget_defer_does_not_raise_local_pressure() {
         )
         .await
         .expect("persist remote-attempt budget continuation");
+    assert!(continuation.created);
 
     let local_backoff: Vec<(String, String)> = sqlx::query_as(
         "SELECT key, value FROM meta WHERE key IN ('upstream_reconciliation_local_pressure_streak_v1', 'upstream_reconciliation_local_backoff_level_v1') ORDER BY key",
@@ -302,6 +315,44 @@ async fn remote_attempt_budget_defer_does_not_raise_local_pressure() {
         Some(RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET)
     );
     assert_eq!(observation.next_retry_at, Some(now + 30));
+    assert_eq!(observation.upstream_429, 6);
+    assert_eq!(observation.transport_failure, 5);
+    assert_eq!(observation.semantic_failure, 4);
+    assert_eq!(observation.local_pressure, 3);
+    assert_eq!(observation.last_transport_kind.as_deref(), Some("timeout"));
+    let active_continuations: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), MIN(available_at), MAX(available_at) FROM scheduled_jobs \
+         WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read remote-attempt continuation");
+    assert_eq!(active_continuations, (1, now + 30, now + 30));
+    assert!(matches!(
+        proxy
+            .finalize_deferred_upstream_reconciliation_claim(
+                claim.id,
+                claim.claim_generation,
+                RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET,
+                now + 30,
+            )
+            .await,
+        Err(ProxyError::StaleClaim { .. })
+    ));
+    let duplicate_continuations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs \
+         WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count claim-fenced remote-attempt continuations");
+    assert_eq!(duplicate_continuations, 1);
+    let actual_adjustments: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM billing_reconciliation_adjustments")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count actual reconciliation adjustments");
+    assert_eq!(actual_adjustments, 0);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);
@@ -2439,6 +2490,26 @@ async fn reconciliation_multi_key_observations_resume_without_partial_terminal()
     .await
     .expect("make settlement continuation due");
 
+    drop(proxy);
+    let (resumed_backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-multi-key-resume"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        resumed_backend_time,
+    )
+    .await
+    .expect("restart proxy with durable observations");
+    let persisted_after_restart: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = 'multi-key-resume-token' AND work_generation = 3",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read observations after restart");
+    assert_eq!(persisted_after_restart, 2);
+
     let resumed = proxy
         .run_upstream_reconciliation_once(&format!("http://{address}"))
         .await
@@ -2476,6 +2547,237 @@ async fn reconciliation_multi_key_observations_resume_without_partial_terminal()
         settlement.1, 2,
         "partial run and resumed run are two attempts"
     );
+    let actual_adjustments: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM billing_reconciliation_adjustments")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count actual reconciliation adjustments");
+    assert_eq!(
+        actual_adjustments, 0,
+        "compare-mode multi-key completion must not alter billing truth"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_observations() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 9, 2, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-source-revision"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let first_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-source-revision-a")
+        .await
+        .expect("create first upstream key");
+    let additional_key_ids = vec![
+        proxy
+            .add_or_undelete_key("tvly-reconciliation-source-revision-b")
+            .await
+            .expect("create second upstream key"),
+        proxy
+            .add_or_undelete_key("tvly-reconciliation-source-revision-c")
+            .await
+            .expect("create third upstream key"),
+    ];
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: "source-revision-token".to_string(),
+        period_code: "2026-09-02/S1".to_string(),
+        project_id: "source-revision-project".to_string(),
+        billing_subject: "token:source-revision-token".to_string(),
+        settlement_mode: "shadow".to_string(),
+        period_start: now - 4_000,
+        period_end: now - 900,
+        pending_research: 0,
+        degraded: false,
+    };
+    let insert_usage_sql = r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 period_start, period_end, request_count, first_used_at,
+                 last_used_at, updated_at, settlement_mode
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')"#;
+    sqlx::query(insert_usage_sql)
+        .bind(&candidate.token_id)
+        .bind(&first_key_id)
+        .bind(&candidate.period_code)
+        .bind(&candidate.project_id)
+        .bind(&candidate.billing_subject)
+        .bind(candidate.period_start)
+        .bind(candidate.period_end)
+        .bind(now - 1_000)
+        .bind(now - 900)
+        .bind(now - 900)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert initial reconciliation source");
+    proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            1,
+            &[ReconciliationKeyObservation {
+                key_id: first_key_id.clone(),
+                upstream_usage: 7,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 1,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("persist first-generation observation");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_work \
+         SET next_attempt_at = ?, last_outcome = 'remote_attempt_budget' \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(now + 30)
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed partial work state");
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage \
+         SET first_used_at = first_used_at, last_used_at = last_used_at + 1, \
+             updated_at = updated_at + 1, request_count = request_count \
+         WHERE token_id = ? AND key_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&first_key_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("refresh storage-only source fields");
+    let no_op_state: (i64, i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read storage-refresh work state");
+    assert_eq!(
+        no_op_state,
+        (1, 0, now + 30, Some("remote_attempt_budget".to_string()))
+    );
+    let first_generation_observations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = ? AND period_code = ? AND work_generation = 1",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count preserved storage-refresh observations");
+    assert_eq!(first_generation_observations, 1);
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage SET request_count = request_count + 1 \
+         WHERE token_id = ? AND key_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&first_key_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("record logical source revision");
+    let reopened_state: (i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT work_generation, next_attempt_at, last_outcome \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read logically reopened work state");
+    assert_eq!(reopened_state, (2, 0, None));
+    proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            2,
+            &[ReconciliationKeyObservation {
+                key_id: first_key_id.clone(),
+                upstream_usage: 8,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 2,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("persist logically reopened observation");
+
+    for key_id in &additional_key_ids {
+        sqlx::query(insert_usage_sql)
+            .bind(&candidate.token_id)
+            .bind(key_id)
+            .bind(&candidate.period_code)
+            .bind(&candidate.project_id)
+            .bind(&candidate.billing_subject)
+            .bind(candidate.period_start)
+            .bind(candidate.period_end)
+            .bind(now - 1_000)
+            .bind(now - 900)
+            .bind(now - 900)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("add current reconciliation key");
+    }
+    let key_set_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read key-set revision generation");
+    assert_eq!(key_set_generation, 4);
+    let retained_observations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count retained pre-terminal observations");
+    assert_eq!(retained_observations, 2);
+    let ordered_key_sets = proxy
+        .key_store
+        .reconciliation_key_ids_batch(&[(
+            candidate.token_id.clone(),
+            candidate.period_code.clone(),
+        )])
+        .await
+        .expect("read deterministically ordered current key set");
+    let mut expected_key_ids = vec![first_key_id];
+    expected_key_ids.extend(additional_key_ids);
+    expected_key_ids.sort();
+    assert_eq!(
+        ordered_key_sets.get(&(candidate.token_id.clone(), candidate.period_code.clone())),
+        Some(&expected_key_ids)
+    );
+    let current_generation_observations = proxy
+        .key_store
+        .reconciliation_key_observations(&candidate, key_set_generation, &expected_key_ids)
+        .await
+        .expect("read current generation observations");
+    assert!(current_generation_observations.is_empty());
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

@@ -47,18 +47,15 @@ scope only; the existing `period_reconciliation` 429 cooldown remains independen
 transitions are claim-fenced and keep raw upstream details out of durable observations.
 
 For a period that maps to more than one eligible upstream key, persist each successful key observation
-by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
-write `remote_attempt_budget` and schedule one durable 30-second continuation; do not write a semantic
-failure or terminal result. Sum usage and enter the existing compare/active terminal path only after
-all current-generation key observations are present. Delete the local observations atomically with
-terminal completion, and fence both observation writes and reads by claim generation.
-
-For a period that maps to more than one eligible upstream key, persist each successful key observation
-by work generation before requesting another key. Cap each run at two remote requests. If keys remain,
-write `remote_attempt_budget` and schedule one durable 30-second continuation; do not write a semantic
-failure or terminal result. Sum usage and enter the existing compare/active terminal path only after
-all current-generation key observations are present. Delete the local observations atomically with
-terminal completion, and fence both observation writes and reads by claim generation.
+by work generation before requesting another key. Advance that generation only for a logical usage
+revision or current Key-set change: storage replay, timestamp refresh, and an equal logical payload
+must retain partial observations. Read missing keys in deterministic order and cap each main run at two
+remote requests. If keys remain, write `remote_attempt_budget` and use the current claim to create or
+reuse one durable 30-second continuation; this must not write a semantic failure, transport or 429
+state, local-pressure state, or billing truth. Sum usage and enter the existing compare/active terminal
+path only after all current-generation key observations are present. Delete local observations
+atomically only with terminal completion, and fence both observation writes and continuations by claim
+generation.
 
 ## Activation controller
 

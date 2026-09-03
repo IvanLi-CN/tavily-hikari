@@ -85,18 +85,9 @@ impl KeyStore {
             tx.rollback().await?;
             return Ok(ReconciliationKeyObservationPersistOutcome::StaleClaim);
         }
-        // A new usage generation must never reuse a previous generation's
-        // local observations. Stale rows are rebuildable and are removed only
-        // after the current claim/generation fence has been acquired.
-        sqlx::query(
-            "DELETE FROM upstream_reconciliation_key_observations \
-             WHERE token_id = ? AND period_code = ? AND work_generation <> ?",
-        )
-        .bind(&candidate.token_id)
-        .bind(&candidate.period_code)
-        .bind(work_generation)
-        .execute(&mut *tx)
-        .await?;
+        // Reads are generation-scoped, so a newer source revision cannot reuse
+        // these rows. Retain obsolete observations until terminal completion so
+        // a claim-fenced source change never discards durable partial state.
         for observation in observations {
             sqlx::query(
                 r#"INSERT INTO upstream_reconciliation_key_observations (

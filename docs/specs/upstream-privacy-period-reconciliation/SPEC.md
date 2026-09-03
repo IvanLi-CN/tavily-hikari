@@ -91,9 +91,11 @@
   usage advances stable `(token_id, key_id, period_code)` keyset micro-slices only when no durable
   candidate is ready. A slice reads at most `25..100` rows outside the write transaction, then
   atomically merges work and advances its claim-fenced cursor in one short transaction. Candidate
-  selection never aggregates raw usage. New usage is maintained by write triggers, and a usage
-  update after terminal settlement reopens that generation without reviving a completed
-  no-adjustment period through the legacy cursor.
+  selection never aggregates raw usage. New usage is maintained by write triggers: only a logical
+  usage revision or a current upstream-Key-set change opens a new work generation. Storage-only
+  import/replay, timestamp refresh, and equal logical source payloads leave the generation and its
+  partial observations intact; a logical source revision after terminal settlement opens exactly
+  one new generation without reviving a completed no-adjustment period through the legacy cursor.
 - Reconciliation budgets are cooperative boundaries, not cancellation timers. Foreground pressure,
   SQLite contention, and the 20-second run deadline prevent the next safe phase from starting; they
   never cancel an open transaction. An unfinished projection persists a typed continuation and
@@ -163,16 +165,10 @@
   observation are selected before fresh candidates sharing the same scheduling Key so the partial
   set can converge. A partial observation never becomes a semantic failure or terminal result.
   Terminal completion clears these node-local rows, and generation or claim fencing ignores stale
-  observations. The observation table is derived state, not HA outbox truth.
-- When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
-  response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
-  run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second
-  continuation while the set is incomplete. Sum usage and enter the existing compare/active terminal
-  path only after all current-generation keys are observed; candidates with an existing partial
-  observation are selected before fresh candidates sharing the same scheduling Key so the partial set
-  can converge. A partial observation never becomes a semantic failure or terminal result. Terminal
-  completion clears these node-local rows, and generation or claim fencing ignores stale observations.
-  The observation table is derived state, not HA outbox truth.
+  observations. A claimed `remote_attempt_budget` defer atomically finishes only its current claim
+  and leaves exactly one 30-second auto continuation; it changes neither billing truth nor
+  semantic, transport, upstream-429, or local-pressure state. The observation table is derived
+  state, not HA outbox truth.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）
