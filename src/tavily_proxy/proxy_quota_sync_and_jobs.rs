@@ -764,8 +764,13 @@ impl TavilyProxy {
                 reason: "pool_pressure"
             }
         ) {
-            self.prewarm_upstream_reconciliation_projection_capacity()
-                .await;
+            if let Err(error) = self
+                .prewarm_upstream_reconciliation_projection_capacity()
+                .await
+                && !error.is_deferred()
+            {
+                return Err(error);
+            }
             local_admission_outcome = self.admit_upstream_reconciliation_projection();
         }
         let mut local_admission = match local_admission_outcome {

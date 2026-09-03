@@ -117,10 +117,12 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
     }
 
-    pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity(&self) {
+    pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity(
+        &self,
+    ) -> Result<(), ProxyError> {
         self.sqlite_runtime
             .prewarm_reconciliation_projection_capacity()
-            .await;
+            .await
     }
 
     pub(crate) async fn upstream_reconciliation_run_admission_state(

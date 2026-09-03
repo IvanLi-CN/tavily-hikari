@@ -807,6 +807,51 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_read_waits_for_history_projection_coverage() {
+    let db_path = temp_db_path("admin-alerts-history-coverage");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-history-coverage".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    // Drain the empty sidecar so the recent lane is healthy before isolating
+    // the history lane. This mirrors the scheduler's normal catch-up path.
+    for _ in 0..64 {
+        proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("advance alert projection");
+        if proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET phase = 'catching_up'",
+    )
+    .execute(&pool)
+    .await
+    .expect("hold history projection in catch-up");
+
+    let result = proxy.admin_alert_catalog().await;
+    assert!(
+        matches!(
+            result,
+            Err(tavily_hikari::ProxyError::Deferred { ref operation, ref reason })
+                if *operation == "admin_alerts_read" && reason == "history_projection_catching_up"
+        ),
+        "canonical admin reads must not publish while history is incomplete: {result:?}"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admission() {
     let db_path = temp_db_path("admin-privacy-status-last-good");
     let db_str = db_path.to_string_lossy().to_string();

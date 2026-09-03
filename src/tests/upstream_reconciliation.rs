@@ -1134,7 +1134,8 @@ async fn reconciliation_rejects_reclaimed_scheduled_job_claim() {
     // admission timing assertion before the fenced claim is inspected.
     proxy
         .prewarm_upstream_reconciliation_projection_capacity()
-        .await;
+        .await
+        .expect("prewarm reconciliation projection capacity");
     assert!(matches!(
         proxy
             .run_upstream_reconciliation_once_claimed_outcome(
@@ -1257,7 +1258,8 @@ async fn reconciliation_rejects_reclaimed_claim_after_remote_fetch() {
     // does not turn it into a foreground-admission timing test.
     proxy
         .prewarm_upstream_reconciliation_projection_capacity()
-        .await;
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let running_proxy = proxy.clone();
     let running = tokio::spawn(async move {
         running_proxy

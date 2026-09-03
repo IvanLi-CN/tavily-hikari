@@ -465,10 +465,12 @@ impl TavilyProxy {
         }
     }
 
-    pub async fn prewarm_upstream_reconciliation_projection_capacity(&self) {
+    pub async fn prewarm_upstream_reconciliation_projection_capacity(
+        &self,
+    ) -> Result<(), ProxyError> {
         self.key_store
             .prewarm_upstream_reconciliation_projection_capacity()
-            .await;
+            .await
     }
 
     pub fn record_foreground_activity(&self) {

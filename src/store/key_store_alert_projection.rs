@@ -423,7 +423,7 @@ impl KeyStore {
         // whether the slice can run.
         self.sqlite_runtime
             .prewarm_maintenance_bulk_capacity()
-            .await;
+            .await?;
         let _admission = match self.try_admit_alert_projection() {
             Ok(permit) => permit,
             Err(reason) => {
@@ -869,7 +869,7 @@ impl KeyStore {
     pub(crate) async fn refresh_dashboard_alert_projection_summary(&self) -> Result<bool, ProxyError> {
         self.sqlite_runtime
             .prewarm_maintenance_bulk_capacity()
-            .await;
+            .await?;
         let Ok(_permit) = self.try_admit_alert_projection() else {
             return Ok(false);
         };

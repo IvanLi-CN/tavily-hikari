@@ -833,7 +833,26 @@ impl KeyStore {
             && fresh_sources == sources
             && stale_reason.is_none()
         {
-            return Ok(());
+            // Administrator Events and Groups include the durable history
+            // lane. A recent-tail generation alone is not a complete
+            // canonical read: publishing while history is still catching up
+            // would permanently cache a partial payload until the next warm
+            // interval. Check both lanes in this same snapshot before the
+            // caller builds any canonical value.
+            let history_result = sqlx::query_as::<_, (i64, i64)>(
+                r#"SELECT COUNT(*),
+                          SUM(CASE WHEN phase = 'idle' THEN 1 ELSE 0 END)
+                     FROM observability.dashboard_alert_projection_history_state"#,
+            )
+            .fetch_one(&mut **session)
+            .await;
+            let (history_sources, idle_history_sources) = session.query(history_result).await?;
+            if history_sources == ALERT_PROJECTION_SOURCES.len() as i64
+                && idle_history_sources == history_sources
+            {
+                return Ok(());
+            }
+            return session.defer("history_projection_catching_up").await;
         }
         session
             .defer(stale_reason.unwrap_or_else(|| "coverage_projecting".to_string()))

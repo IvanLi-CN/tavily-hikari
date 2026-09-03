@@ -681,7 +681,10 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
             .expect_err("ordinary bulk work still reserves two foreground slots"),
         SqliteAdmissionDeferReason::PoolPressure
     );
-    runtime.prewarm_reconciliation_projection_capacity().await;
+    runtime
+        .prewarm_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation capacity");
     assert_eq!(runtime.inner.pool.size(), 3);
     assert_eq!(runtime.inner.pool.num_idle(), 2);
     runtime.mark_recent_contention_for_test();
@@ -721,11 +724,29 @@ async fn admin_alerts_cache_warm_prewarm_grows_lazy_pool_before_admission() {
     assert_eq!(runtime.inner.pool.size(), 1);
     assert_eq!(runtime.inner.pool.num_idle(), 1);
 
-    runtime.prewarm_maintenance_bulk_capacity().await;
+    runtime
+        .prewarm_maintenance_bulk_capacity()
+        .await
+        .expect("prewarm admin Alerts capacity");
 
     assert_eq!(runtime.inner.pool.size(), 3);
     assert!(runtime.inner.pool.num_idle() >= 2);
     assert_eq!(runtime.admin_alerts_cache_warm_defer_reason(), None);
+}
+
+#[tokio::test]
+async fn maintenance_capacity_warm_propagates_non_transient_pool_errors() {
+    let runtime = single_connection_runtime().await;
+    runtime.inner.pool.close().await;
+
+    let error = runtime
+        .prewarm_maintenance_bulk_capacity()
+        .await
+        .expect_err("closed pool must not be treated as pressure");
+    assert!(matches!(
+        error,
+        ProxyError::Database(sqlx::Error::PoolClosed)
+    ));
 }
 
 #[tokio::test]
@@ -750,7 +771,7 @@ async fn reconciliation_projection_prewarm_does_not_block_foreground_capacity() 
     let prewarm_runtime = runtime.clone();
     let foreground_pool = runtime.inner.pool.clone();
     let started = Instant::now();
-    let ((), foreground) = tokio::join!(
+    let (prewarm_result, foreground) = tokio::join!(
         prewarm_runtime.prewarm_reconciliation_projection_capacity(),
         async {
             tokio::time::timeout(Duration::from_millis(250), foreground_pool.acquire())
@@ -759,6 +780,7 @@ async fn reconciliation_projection_prewarm_does_not_block_foreground_capacity() 
                 .expect("foreground connection")
         }
     );
+    prewarm_result.expect("prewarm reconciliation capacity");
     assert!(started.elapsed() < Duration::from_millis(250));
 
     drop((foreground, existing_foreground));

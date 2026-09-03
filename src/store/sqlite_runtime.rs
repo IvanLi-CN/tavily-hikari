@@ -838,12 +838,12 @@ impl SqliteRuntime {
             .map(|permit| SqliteMaintenanceRunLease { _permit: permit })
     }
 
-    pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) {
+    pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) -> Result<(), ProxyError> {
         if self.inner.pool.num_idle() >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
             || self.inner.pool.size() >= self.inner.maximum_connections
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
         {
-            return;
+            return Ok(());
         }
 
         let deadline = Instant::now() + Duration::from_millis(100);
@@ -874,7 +874,13 @@ impl SqliteRuntime {
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(ProxyError::Database(sqlx::Error::PoolTimedOut)) => {
+                    // A bounded pool wait is expected pressure. Leave the
+                    // admission decision to the caller, which will return a
+                    // typed pool-pressure defer without hiding the timeout.
+                    break;
+                }
+                Err(error) => return Err(error),
             }
         }
         for (conn, pool_wait) in held {
@@ -893,10 +899,13 @@ impl SqliteRuntime {
         {
             tokio::task::yield_now().await;
         }
+        Ok(())
     }
 
-    pub(crate) async fn prewarm_reconciliation_projection_capacity(&self) {
-        self.prewarm_maintenance_bulk_capacity().await;
+    pub(crate) async fn prewarm_reconciliation_projection_capacity(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.prewarm_maintenance_bulk_capacity().await
     }
 
     pub(crate) fn maintenance_bulk_continue_reason(&self) -> Option<SqliteAdmissionDeferReason> {
