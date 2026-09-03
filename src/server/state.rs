@@ -953,8 +953,10 @@ mod admin_alerts_prewarm_tests {
 
     #[test]
     fn canonical_publish_discards_all_staged_values_after_a_generation_change() {
-        let mut cache = DashboardOverviewCacheState::default();
-        cache.alert_projection_generation = 2;
+        let mut cache = DashboardOverviewCacheState {
+            alert_projection_generation: 2,
+            ..Default::default()
+        };
 
         assert!(
             !publish_admin_alerts_canonical_into_cache(
