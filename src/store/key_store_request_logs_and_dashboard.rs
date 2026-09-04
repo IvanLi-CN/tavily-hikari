@@ -11,6 +11,26 @@ struct RequestLogCatalogRollupKeyParts<'a> {
     operational_class: &'a str,
 }
 
+const DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE: i64 = 32;
+const DASHBOARD_QUOTA_SOURCE_PAGE_SIZE: i64 = 32;
+
+#[derive(Clone, Debug)]
+struct DashboardQuotaRecoveryCursor {
+    captured_at: i64,
+    key_id: String,
+    id: i64,
+}
+
+impl From<&DashboardQuotaSample> for DashboardQuotaRecoveryCursor {
+    fn from(sample: &DashboardQuotaSample) -> Self {
+        Self {
+            captured_at: sample.captured_at,
+            key_id: sample.key_id.clone(),
+            id: sample.id,
+        }
+    }
+}
+
 impl KeyStore {
     fn request_log_catalog_rollup_key_from_parts(
         parts: RequestLogCatalogRollupKeyParts<'_>,
@@ -2221,6 +2241,103 @@ impl KeyStore {
         })
     }
 
+    async fn fetch_dashboard_quota_recovery_watermark(
+        &self,
+        today_end: i64,
+    ) -> Result<DashboardQuotaSampleWatermark, ProxyError> {
+        let mut cursor: Option<DashboardQuotaRecoveryCursor> = None;
+        let mut source_id = 0_i64;
+        let mut source_captured_at = 0_i64;
+        let mut source_count = 0_i64;
+        loop {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let query_result = match cursor.as_ref() {
+                Some(cursor) => sqlx::query(
+                    r#"
+                    SELECT id, key_id, captured_at
+                    FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
+                    WHERE captured_at < ?
+                      AND captured_at <= ?
+                      AND (
+                        captured_at < ?
+                        OR (
+                            captured_at = ?
+                            AND (
+                                key_id > ?
+                                OR (key_id = ? AND id > ?)
+                            )
+                        )
+                      )
+                    ORDER BY captured_at DESC, key_id ASC, id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(today_end)
+                .bind(cursor.captured_at)
+                .bind(cursor.captured_at)
+                .bind(cursor.captured_at)
+                .bind(&cursor.key_id)
+                .bind(&cursor.key_id)
+                .bind(cursor.id)
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(&mut *session)
+                .await,
+                None => sqlx::query(
+                    r#"
+                    SELECT id, key_id, captured_at
+                    FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
+                    WHERE captured_at < ?
+                    ORDER BY captured_at DESC, key_id ASC, id ASC
+                    LIMIT ?
+                    "#,
+                )
+                .bind(today_end)
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(&mut *session)
+                .await,
+            };
+            let rows = session.query(query_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let rows = rows?;
+            let samples = rows
+                .into_iter()
+                .map(|row| {
+                    Ok::<_, sqlx::Error>(DashboardQuotaRecoveryCursor {
+                        id: row.try_get("id")?,
+                        key_id: row.try_get("key_id")?,
+                        captured_at: row.try_get("captured_at")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let Some(last_sample) = samples.last().cloned() else {
+                return Ok(DashboardQuotaSampleWatermark {
+                    source_id,
+                    source_captured_at,
+                    source_count,
+                });
+            };
+            source_id = samples
+                .iter()
+                .map(|sample| sample.id)
+                .max()
+                .unwrap_or(source_id)
+                .max(source_id);
+            source_captured_at = source_captured_at.max(samples[0].captured_at);
+            source_count += samples.len() as i64;
+            if samples.len() < DASHBOARD_QUOTA_SOURCE_PAGE_SIZE as usize {
+                return Ok(DashboardQuotaSampleWatermark {
+                    source_id,
+                    source_captured_at,
+                    source_count,
+                });
+            }
+            cursor = Some(last_sample);
+        }
+    }
+
     pub(crate) async fn fetch_dashboard_quota_charge_read_model(
         &self,
         bounds: SummaryWindowBounds,
@@ -2233,66 +2350,46 @@ impl KeyStore {
             ..
         } = bounds;
         let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        let watermark = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
-        let rows = sqlx::query(
-            r#"
-            WITH window_rows AS (
-                SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-                  AND id <= ?
-            ),
-            sampled_keys AS (
-                SELECT DISTINCT key_id FROM window_rows
-            ),
-            baseline_rows AS (
-                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM api_key_quota_sync_samples s
-                WHERE s.key_id IN (SELECT key_id FROM sampled_keys)
-                  AND s.id = (
-                    SELECT candidate.id
-                    FROM api_key_quota_sync_samples candidate
-                    WHERE candidate.key_id = s.key_id
-                      AND candidate.captured_at < ?
-                      AND candidate.id <= ?
-                    ORDER BY candidate.captured_at DESC, candidate.id DESC
-                    LIMIT 1
-                  )
-            )
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM window_rows
-            UNION ALL
-            SELECT id, key_id, quota_remaining, captured_at
-            FROM baseline_rows
-            ORDER BY key_id ASC, captured_at ASC, id ASC
-            "#,
-        )
-        .bind(sample_window_start)
-        .bind(today_end)
-        .bind(watermark.source_id)
-        .bind(sample_window_start)
-        .bind(watermark.source_id)
-        .fetch_all(&self.pool)
-        .await?;
-        let samples = rows
-            .into_iter()
-            .map(|row| {
-                Ok::<_, sqlx::Error>(DashboardQuotaSample {
-                    id: row.try_get("id")?,
-                    key_id: row.try_get("key_id")?,
-                    quota_remaining: row.try_get("quota_remaining")?,
-                    captured_at: row.try_get("captured_at")?,
-                    previous_quota_remaining: None,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(DashboardQuotaChargeReadModel::from_samples(
-            bounds,
-            stale_key_count,
-            watermark,
-            samples,
-        ))
+        'restart: loop {
+            let target = self.fetch_dashboard_quota_recovery_watermark(today_end).await?;
+            let mut model = DashboardQuotaChargeReadModel::empty(bounds, stale_key_count, target);
+            let mut cursor = None;
+
+            loop {
+                let samples = self
+                    .fetch_dashboard_quota_recovery_page(
+                        sample_window_start,
+                        today_end,
+                        target.source_id,
+                        cursor.as_ref(),
+                        DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE,
+                    )
+                    .await?;
+                let baselines = self
+                    .fetch_dashboard_quota_recovery_baselines(
+                        sample_window_start,
+                        target.source_id,
+                        &samples,
+                    )
+                    .await?;
+
+                model.stage_recovery_page_desc(&baselines, &samples);
+                #[cfg(debug_assertions)]
+                self.wait_for_dashboard_overview_read_pause_if_installed()
+                    .await;
+                if self.fetch_dashboard_quota_recovery_watermark(today_end).await? != target {
+                    continue 'restart;
+                }
+                if samples.len() < DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE as usize {
+                    model.finish_recovery();
+                    if self.fetch_dashboard_quota_recovery_watermark(today_end).await? == target {
+                        return Ok(model);
+                    }
+                    continue 'restart;
+                }
+                cursor = samples.last().map(DashboardQuotaRecoveryCursor::from);
+            }
+        }
     }
 
     pub(crate) async fn fetch_dashboard_quota_incremental_samples(
@@ -2332,7 +2429,7 @@ impl KeyStore {
                       AND candidate.captured_at < ?
                     ORDER BY candidate.captured_at DESC, candidate.id DESC
                     LIMIT 1
-                )
+            )
             ORDER BY pending.id ASC
             "#,
         )
@@ -2355,6 +2452,205 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok((watermark, samples))
+    }
+
+    async fn fetch_dashboard_quota_recovery_page(
+        &self,
+        sample_window_start: i64,
+        today_end: i64,
+        target_source_id: i64,
+        cursor: Option<&DashboardQuotaRecoveryCursor>,
+        page_size: i64,
+    ) -> Result<Vec<DashboardQuotaSample>, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let page_size = page_size.max(1);
+        let query_result = match cursor {
+            Some(cursor) => sqlx::query(
+                r#"
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+                  AND id <= ?
+                  AND captured_at <= ?
+                  AND (
+                    captured_at < ?
+                    OR (
+                        captured_at = ?
+                        AND (
+                            key_id > ?
+                            OR (key_id = ? AND id > ?)
+                        )
+                    )
+                  )
+                ORDER BY captured_at DESC, key_id ASC, id ASC
+                LIMIT ?
+                "#,
+            )
+            .bind(sample_window_start)
+            .bind(today_end)
+            .bind(target_source_id)
+            .bind(cursor.captured_at)
+            .bind(cursor.captured_at)
+            .bind(cursor.captured_at)
+            .bind(&cursor.key_id)
+            .bind(&cursor.key_id)
+            .bind(cursor.id)
+            .bind(page_size)
+            .fetch_all(&mut *session)
+            .await,
+            None => sqlx::query(
+                r#"
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+                  AND id <= ?
+                ORDER BY captured_at DESC, key_id ASC, id ASC
+                LIMIT ?
+                "#,
+            )
+            .bind(sample_window_start)
+            .bind(today_end)
+            .bind(target_source_id)
+            .bind(page_size)
+            .fetch_all(&mut *session)
+            .await,
+        };
+        let rows = session.query(query_result).await;
+        let finish = session.finish().await;
+        finish?;
+        rows?
+            .into_iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("key_id")?,
+                    quota_remaining: row.try_get("quota_remaining")?,
+                    captured_at: row.try_get("captured_at")?,
+                    previous_quota_remaining: None,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ProxyError::Database)
+    }
+
+    async fn fetch_dashboard_quota_recovery_baselines(
+        &self,
+        sample_window_start: i64,
+        target_source_id: i64,
+        samples: &[DashboardQuotaSample],
+    ) -> Result<Vec<DashboardQuotaSample>, ProxyError> {
+        let mut key_ids = samples
+            .iter()
+            .map(|sample| sample.key_id.as_str())
+            .collect::<Vec<_>>();
+        key_ids.sort_unstable();
+        key_ids.dedup();
+        if key_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut baselines = Vec::with_capacity(key_ids.len());
+        for key_id in key_ids {
+            if let Some(baseline) = self
+                .fetch_dashboard_quota_recovery_baseline(
+                    key_id,
+                    sample_window_start,
+                    target_source_id,
+                )
+                .await?
+            {
+                baselines.push(baseline);
+            }
+        }
+        Ok(baselines)
+    }
+
+    async fn fetch_dashboard_quota_recovery_baseline(
+        &self,
+        key_id: &str,
+        sample_window_start: i64,
+        target_source_id: i64,
+    ) -> Result<Option<DashboardQuotaSample>, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let query_result = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT captured_at
+            FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
+            WHERE key_id = ?
+              AND captured_at < ?
+              AND id <= ?
+            ORDER BY captured_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(key_id)
+        .bind(sample_window_start)
+        .bind(target_source_id)
+        .bind(1_i64)
+        .fetch_optional(&mut *session)
+        .await;
+        let captured_at = session.query(query_result).await;
+        let finish = session.finish().await;
+        finish?;
+        let Some(captured_at) = captured_at? else {
+            return Ok(None);
+        };
+
+        let mut after_id = 0_i64;
+        let mut baseline = None;
+        loop {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let query_result = sqlx::query(
+                r#"
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
+                WHERE key_id = ?
+                  AND captured_at = ?
+                  AND id > ?
+                  AND id <= ?
+                ORDER BY id ASC
+                LIMIT ?
+                "#,
+            )
+            .bind(key_id)
+            .bind(captured_at)
+            .bind(after_id)
+            .bind(target_source_id)
+            .bind(DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(query_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let samples = rows?
+                .into_iter()
+                .map(|row| {
+                    Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                        id: row.try_get("id")?,
+                        key_id: row.try_get("key_id")?,
+                        quota_remaining: row.try_get("quota_remaining")?,
+                        captured_at: row.try_get("captured_at")?,
+                        previous_quota_remaining: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let Some(last_sample) = samples.last().cloned() else {
+                return Ok(baseline);
+            };
+            after_id = last_sample.id;
+            baseline = Some(last_sample);
+            if samples.len() < DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE as usize {
+                return Ok(baseline);
+            }
+        }
     }
 
     pub(crate) async fn list_keys_pending_quota_sync(
