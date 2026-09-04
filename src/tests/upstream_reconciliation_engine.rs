@@ -2562,7 +2562,7 @@ async fn reconciliation_multi_key_observations_resume_without_partial_terminal()
 }
 
 #[tokio::test]
-async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_observations() {
+async fn reconciliation_source_revisions_distinguish_storage_and_logical_timestamps() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 9, 2, 12, 0);
@@ -2694,8 +2694,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
 
     sqlx::query(
         "UPDATE upstream_reconciliation_usage \
-         SET first_used_at = first_used_at, last_used_at = last_used_at + 1, \
-             updated_at = updated_at + 1, request_count = request_count \
+         SET updated_at = updated_at + 1 \
          WHERE token_id = ? AND key_id = ? AND period_code = ?",
     )
     .bind(&candidate.token_id)
@@ -2703,7 +2702,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .bind(&candidate.period_code)
     .execute(&proxy.key_store.pool)
     .await
-    .expect("refresh storage-only source fields");
+    .expect("refresh storage-only source timestamp");
     let no_op_state: (i64, i64, i64, Option<String>) = sqlx::query_as(
         "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
          FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
@@ -2712,7 +2711,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .bind(&candidate.period_code)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read storage-refresh work state");
+    .expect("read storage-only refresh work state");
     assert_eq!(
         no_op_state,
         (1, 0, now + 30, Some("remote_attempt_budget".to_string()))
@@ -2725,8 +2724,34 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .bind(&candidate.period_code)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("count preserved storage-refresh observations");
+    .expect("count preserved storage-only observations");
     assert_eq!(first_generation_observations, 1);
+
+    for (field, delta, expected_generation) in [
+        ("first_used_at", -1_i64, 2_i64),
+        ("last_used_at", 1_i64, 3_i64),
+    ] {
+        sqlx::query(&format!(
+            "UPDATE upstream_reconciliation_usage SET {field} = {field} + {delta} \
+             WHERE token_id = ? AND key_id = ? AND period_code = ?",
+        ))
+        .bind(&candidate.token_id)
+        .bind(&first_key_id)
+        .bind(&candidate.period_code)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("record logical source timestamp revision");
+        let timestamp_state: (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT work_generation, next_attempt_at, last_outcome \
+             FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read logical timestamp revision");
+        assert_eq!(timestamp_state, (expected_generation, 0, None), "{field}");
+    }
 
     sqlx::query(
         "UPDATE upstream_reconciliation_usage SET request_count = request_count + 1 \
@@ -2747,18 +2772,18 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read logically reopened work state");
-    assert_eq!(reopened_state, (2, 0, None));
+    assert_eq!(reopened_state, (4, 0, None));
     proxy
         .key_store
         .persist_reconciliation_key_observations(
             &candidate,
-            2,
+            4,
             &[ReconciliationKeyObservation {
                 key_id: first_key_id.clone(),
                 upstream_usage: 8,
             }],
             Some(ReconciliationWorkFence {
-                work_generation: 2,
+                work_generation: 4,
                 claimed_job: None,
             }),
         )
@@ -2790,7 +2815,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read key-set revision generation");
-    assert_eq!(key_set_generation, 4);
+    assert_eq!(key_set_generation, 6);
     let retained_observations: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
          WHERE token_id = ? AND period_code = ?",
