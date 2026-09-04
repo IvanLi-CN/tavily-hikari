@@ -350,7 +350,7 @@ async fn dashboard_overview_snapshot_is_reused_within_the_same_freshness_wave() 
 }
 
 #[tokio::test]
-async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running() {
+async fn dashboard_overview_snapshot_serves_last_good_while_quota_recovery_runs() {
     let db_path = temp_db_path("dashboard-overview-last-good-refresh");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -378,6 +378,33 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
         remote_attempt_admission: new_remote_attempt_admission(),
     });
 
+    let key_id = state
+        .proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list seeded keys")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(1_000_i64)
+    .bind(999_i64)
+    .bind(now - 20)
+    .bind("test")
+    .execute(&pool)
+    .await
+    .expect("insert initial quota sample");
+
     let initial = load_dashboard_overview_snapshot(&state)
         .await
         .expect("initial overview snapshot");
@@ -386,11 +413,34 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
         .proxy
         .install_dashboard_overview_read_pause_for_test()
         .await;
-    state
-        .proxy
-        .debug_enqueue_dashboard_credit_rollups(Utc::now().timestamp(), 1)
-        .await;
+    for offset in 0..34_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quota_sync_samples (
+                key_id, quota_limit, quota_remaining, captured_at, source
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(1_000_i64)
+        .bind(999 - offset)
+        .bind(now - 100 + offset)
+        .bind("test")
+        .execute(&pool)
+        .await
+        .expect("record quota sample");
+    }
+    state.proxy.mark_dashboard_read_dirty_for_test().await;
     expire_dashboard_overview_freshness_probe(&state).await;
+
+    let freshness = compute_dashboard_overview_freshness(&state)
+        .await
+        .expect("read quota-change freshness");
+    assert!(
+        initial.freshness.differs_only_by_quota_charge(&freshness),
+        "the controlled refresh must enter the quota-only recovery path"
+    );
+    let expected_freshness_probe_count = dashboard_overview_freshness_probe_count(&state).await + 1;
 
     let served = tokio::time::timeout(
         Duration::from_millis(250),
@@ -403,6 +453,16 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
         Arc::ptr_eq(&served, &initial),
         "warm refresh should serve the existing immutable snapshot",
     );
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let cache = cache_handle.lock().await;
+    assert!(
+        cache.loading,
+        "quota-only change must start a background refresh; request_generation={:?}, built_generation={:?}, last_probe={:?}",
+        state.proxy.dashboard_read_generation(),
+        cache.built_request_stats_generation,
+        cache.last_freshness_probe_at,
+    );
+    drop(cache);
 
     tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
         .await
@@ -418,10 +478,16 @@ async fn dashboard_overview_snapshot_serves_last_good_while_refresh_is_running()
     assert!(signatures.iter().all(Result::is_ok));
     assert_eq!(
         dashboard_overview_freshness_probe_count(&state).await,
-        1,
-        "subscriber count must not multiply the singleflight freshness probe",
+        expected_freshness_probe_count,
+        "subscriber count must not multiply the background freshness probe",
     );
     pause.release();
+
+    let recovered = wait_for_dashboard_overview_refresh(&state).await;
+    assert!(
+        !Arc::ptr_eq(&recovered, &initial),
+        "the completed recovery must replace last-good only after the staged model is ready",
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

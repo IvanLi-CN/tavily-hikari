@@ -2788,6 +2788,7 @@ mod tests {
     }
 
     include!("key_store_runtime_logging_tests.rs");
+    include!("key_store_dashboard_quota_recovery_tests.rs");
 
     #[test]
     fn db_operation_log_format_includes_operation_context_and_error() {

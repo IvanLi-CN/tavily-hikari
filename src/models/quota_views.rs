@@ -19,6 +19,14 @@ pub(crate) struct DashboardQuotaSample {
     pub previous_quota_remaining: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+struct DashboardQuotaRecoveryWindowGroup {
+    key_id: String,
+    captured_at: i64,
+    first_sample: DashboardQuotaSample,
+    last_sample: DashboardQuotaSample,
+}
+
 /// Rebuildable quota-only state for Dashboard's append-only sample source.
 ///
 /// The overview cache owns presentation data. This model retains just enough
@@ -30,30 +38,32 @@ pub(crate) struct DashboardQuotaChargeReadModel {
     pub watermark: DashboardQuotaSampleWatermark,
     bounds: SummaryWindowBounds,
     last_sample_by_key: HashMap<String, DashboardQuotaSample>,
+    recovery_next_sample_by_key: HashMap<String, DashboardQuotaSample>,
+    recovery_baseline_by_key: HashMap<String, DashboardQuotaSample>,
+    recovery_window_group: Option<DashboardQuotaRecoveryWindowGroup>,
     today_sampled_keys: HashSet<String>,
     yesterday_sampled_keys: HashSet<String>,
     month_sampled_keys: HashSet<String>,
 }
 
 impl DashboardQuotaChargeReadModel {
-    pub(crate) fn from_samples(
+    pub(crate) fn empty(
         bounds: SummaryWindowBounds,
         stale_key_count: i64,
         watermark: DashboardQuotaSampleWatermark,
-        samples: Vec<DashboardQuotaSample>,
     ) -> Self {
         let mut model = Self {
             snapshot: DashboardQuotaChargeSnapshot::default(),
             watermark,
             bounds,
             last_sample_by_key: HashMap::new(),
+            recovery_next_sample_by_key: HashMap::new(),
+            recovery_baseline_by_key: HashMap::new(),
+            recovery_window_group: None,
             today_sampled_keys: HashSet::new(),
             yesterday_sampled_keys: HashSet::new(),
             month_sampled_keys: HashSet::new(),
         };
-        for sample in samples {
-            model.apply_sample(&sample);
-        }
         model.set_stale_key_count(stale_key_count);
         model
     }
@@ -115,6 +125,44 @@ impl DashboardQuotaChargeReadModel {
         self.set_stale_key_count(stale_key_count);
     }
 
+    /// Recovery pages follow the existing `(captured_at DESC, key_id ASC)`
+    /// index. Rows with the same Key and timestamp are folded together before
+    /// the older group is processed, preserving chronological charge deltas.
+    pub(crate) fn stage_recovery_page_desc(
+        &mut self,
+        baselines: &[DashboardQuotaSample],
+        samples: &[DashboardQuotaSample],
+    ) {
+        for baseline in baselines {
+            self.recovery_baseline_by_key
+                .entry(baseline.key_id.clone())
+                .or_insert_with(|| baseline.clone());
+        }
+        for sample in samples {
+            self.stage_recovery_window_sample(sample);
+        }
+    }
+
+    /// Finalizes a private recovery draft after every page has been read. A
+    /// baseline only contributes after the complete window has a known next
+    /// sample for its Key.
+    pub(crate) fn finish_recovery(&mut self) {
+        self.finish_recovery_window_group();
+        let baselines = std::mem::take(&mut self.recovery_baseline_by_key);
+        for (key_id, baseline) in baselines {
+            let Some(next_sample) = self.recovery_next_sample_by_key.get(&key_id).cloned() else {
+                continue;
+            };
+            let delta = baseline
+                .quota_remaining
+                .saturating_sub(next_sample.quota_remaining)
+                .max(0);
+            self.record_sample_charge(&next_sample, delta);
+        }
+        self.recovery_next_sample_by_key.clear();
+        self.refresh_sampled_key_counts();
+    }
+
     fn apply_sample(&mut self, sample: &DashboardQuotaSample) {
         let previous = self
             .last_sample_by_key
@@ -125,6 +173,66 @@ impl DashboardQuotaChargeReadModel {
             .map(|previous| previous.saturating_sub(sample.quota_remaining).max(0))
             .unwrap_or_default();
 
+        self.record_sample_charge(sample, delta);
+        self.last_sample_by_key
+            .insert(sample.key_id.clone(), sample.clone());
+    }
+
+    fn stage_recovery_window_sample(&mut self, sample: &DashboardQuotaSample) {
+        let continues_group = self.recovery_window_group.as_ref().is_some_and(|group| {
+            group.key_id == sample.key_id && group.captured_at == sample.captured_at
+        });
+        if !continues_group {
+            self.finish_recovery_window_group();
+            self.recovery_window_group = Some(DashboardQuotaRecoveryWindowGroup {
+                key_id: sample.key_id.clone(),
+                captured_at: sample.captured_at,
+                first_sample: sample.clone(),
+                last_sample: sample.clone(),
+            });
+            return;
+        }
+
+        let previous_sample = self
+            .recovery_window_group
+            .as_ref()
+            .expect("matching recovery group is present")
+            .last_sample
+            .clone();
+        let delta = previous_sample
+            .quota_remaining
+            .saturating_sub(sample.quota_remaining)
+            .max(0);
+        self.record_sample_charge(sample, delta);
+        self.recovery_window_group
+            .as_mut()
+            .expect("matching recovery group is present")
+            .last_sample = sample.clone();
+    }
+
+    fn finish_recovery_window_group(&mut self) {
+        let Some(group) = self.recovery_window_group.take() else {
+            return;
+        };
+
+        if let Some(next_sample) = self.recovery_next_sample_by_key.get(&group.key_id).cloned() {
+            let delta = group
+                .last_sample
+                .quota_remaining
+                .saturating_sub(next_sample.quota_remaining)
+                .max(0);
+            self.record_sample_charge(&next_sample, delta);
+        } else {
+            self.record_sample_charge(&group.last_sample, 0);
+            self.last_sample_by_key
+                .entry(group.key_id.clone())
+                .or_insert(group.last_sample.clone());
+        }
+        self.recovery_next_sample_by_key
+            .insert(group.key_id, group.first_sample);
+    }
+
+    fn record_sample_charge(&mut self, sample: &DashboardQuotaSample, delta: i64) {
         if sample.captured_at >= self.bounds.month_quota_charge_start
             && sample.captured_at < self.bounds.today_end
         {
@@ -158,18 +266,19 @@ impl DashboardQuotaChargeReadModel {
             self.yesterday_sampled_keys.insert(sample.key_id.clone());
             update_latest_sync_at(&mut self.snapshot.yesterday, sample.captured_at);
         }
-
-        self.last_sample_by_key
-            .insert(sample.key_id.clone(), sample.clone());
     }
 
     fn set_stale_key_count(&mut self, stale_key_count: i64) {
-        self.snapshot.today.sampled_key_count = self.today_sampled_keys.len() as i64;
+        self.refresh_sampled_key_counts();
         self.snapshot.today.stale_key_count = stale_key_count;
-        self.snapshot.yesterday.sampled_key_count = self.yesterday_sampled_keys.len() as i64;
         self.snapshot.yesterday.stale_key_count = stale_key_count;
-        self.snapshot.month.sampled_key_count = self.month_sampled_keys.len() as i64;
         self.snapshot.month.stale_key_count = stale_key_count;
+    }
+
+    fn refresh_sampled_key_counts(&mut self) {
+        self.snapshot.today.sampled_key_count = self.today_sampled_keys.len() as i64;
+        self.snapshot.yesterday.sampled_key_count = self.yesterday_sampled_keys.len() as i64;
+        self.snapshot.month.sampled_key_count = self.month_sampled_keys.len() as i64;
     }
 }
 
