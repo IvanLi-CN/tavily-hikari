@@ -4,10 +4,10 @@
 
 ## Current Status
 
-- Implementation: 当前集成候选上的增量收敛
+- Implementation: Initiative Bootstrap 已冻结共同合同，等待三张独立 Ticket
 - Lifecycle: active
-- Delivery topology: initiative aggregate
-- Integration branch: `prd/performance-debt-recovery`
+- Delivery topology: checkpointed initiative
+- Integration branch: `prd/sqlite-admin-read-reconciliation-liveness-v2`
 
 ## Coverage / rollout summary
 
@@ -67,6 +67,23 @@
   MaintenanceRuntime 与 HA writable-tenure 生命周期仍是后续架构工作。
 - 101 双库只读快照上的 baseline/candidate production-shape 对比、全量质量门禁和 aggregate PR review
   是交付前硬门禁。
+
+## Current delivery seams
+
+- Alerts Ticket owns only the AppState canonical warm controller, catalog facet slice builder, and
+  exact-key cache-first handler. It reads coverage once per warm generation, keeps each projected
+  statement within the existing `100ms` acquire and `250ms` native deadline, and atomically
+  publishes catalog, Events `1/20`, and Groups `1/20` only for one complete projection generation.
+- Reconciliation Ticket owns only logical usage-to-work revision detection, generation-scoped Key
+  observations, stable missing-Key rotation, and claim-fenced continuation. Storage-only replay or
+  timestamp updates retain the current generation and its partial observations; only a listed
+  logical source change reopens work.
+- Dashboard Ticket owns only `DashboardQuotaChargeReadModel`, append-only quota-sample watermarks,
+  bounded incremental hydration, and immutable quota-only snapshot patches. A discontinuity uses a
+  background keyset rebuild; request paths do not wait for it or rebuild the full overview.
+- The three implementation surfaces may proceed independently. Integration CI, shared testbox
+  evidence, checkpoint promotion, stable publication, and post-release observation remain serial
+  frontier gates.
 
 ## Durable recovery convergence
 

@@ -103,6 +103,12 @@
   A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
   continuation when the candidate is still incomplete; cross-key summation and terminalization wait
   until every current-generation key is present.
+- A reconciliation work generation advances only when its logical source changes: `project_id`,
+  `billing_subject`, `settlement_mode`, period bounds, `request_count`, `first_used_at`,
+  `last_used_at`, or the current Key set. An equal logical payload, import replay, storage-only
+  timestamp refresh, or `updated_at` change must retain the generation and its partial-key
+  observations. A logical change reopens work once; the new generation cannot terminalize until its
+  own Key observations are complete.
 - Historical usage projection has a versioned lifecycle independent of candidate selection. A
   pending upgrade projects one bounded page only after durable candidates drain, while new usage
   is maintained by triggers. A completed lifecycle must not requeue a completed no-adjustment
@@ -115,6 +121,11 @@
 - Dashboard 的 recent alert summary 只由 projection worker 在独立的 60 秒窗口内物化。若 source
   generation 在窗口内前进，已有 summary 必须标记 stale，Dashboard HTTP/SSE 继续服务 last-good，而非
   在读取路径执行 sidecar 聚合。
+- `DashboardQuotaChargeReadModel` owns append-only quota-sample watermarks and bounded incremental
+  hydration. A contiguous new sample updates only an immutable quota-charge patch in the shared
+  snapshot; it must not start a complete overview build. A discontinuous source revision, including
+  an out-of-order import or backfill, schedules a background keyset rebuild. HTTP and SSE continue
+  to serve immutable last-good data without waiting for that rebuild or exposing a partial payload.
 - 历史 lane 的 fence 必须与 recent tail 的起点同秒衔接：tail 拥有起点秒内的记录，history 包含严格更早
   的记录，运行时始终使用复合 cursor；仅 v17 对旧的“同秒 + 空 id”历史 fence 做一次性上一秒迁移，
   以恢复该低 sentinel 的边界所有权。空闲 source probe 不得写 cursor/generation；覆盖观察只能由
@@ -204,19 +215,32 @@
   a matching entry it returns `503 Retry-After: 1` instead of beginning a raw alert CTE.
 - Admin Alerts acquires its bounded read session directly from `SqliteRuntime`: acquire is capped
   at `100ms`, every SQLite statement has a native `250ms` deadline, and coverage plus projected
-  catalog/events/groups reads never borrow a bulk permit or raw pool connection. Canonical
-  catalog, events page `1/20`, and groups page `1/20` are prewarmed by one AppState-owned
-  low-priority controller. It requires one available bounded read slot, foreground activity at most
-  `5 rps`, and no recent contention; it does not reserve or grow extra pool capacity, stages the
-  three reads, and publishes them only when the projection generation is unchanged. HTTP never
-  starts warm work: canonical misses and expired entries return `503 Retry-After: 1`, while a prior
-  generation remains available as stale until the next complete publish. Warm defers use
-  `5s/5s/30s` backoff and never acquire the bulk permit.
+  catalog/events/groups reads never borrow a bulk permit or raw pool connection. One AppState-owned
+  low-priority controller reads coverage once for an attempted generation, then builds catalog
+  request-kind, user, token, Key, type, and retention facets as independent slices; events and
+  groups page `1/20` are independent slices as well. Each statement retains the `100ms` acquire and
+  `250ms` native deadline. The controller stages all three canonical keys and publishes them only
+  when every staged value is complete at one unchanged projection generation. It requires one
+  available bounded read slot, foreground activity at most `5 rps`, and no recent contention; it
+  does not reserve or grow extra pool capacity. HTTP never starts warm work: canonical misses and
+  expired entries return `503 Retry-After: 1`, while a prior generation remains available as stale
+  until the next complete publish. Warm defers use `5s/5s/30s` backoff and never acquire the bulk
+  permit.
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。
 - 单连接池取消 read snapshot、HA export 或 immediate write 后，下一次 immediate transaction 可立即
   开始；writer lock 下管理员读取在 250ms 内返回 durable 数据且不产生读取触发的 busy。
+- Canonical Alerts warm reads coverage once per attempted generation; each catalog facet, Events
+  page `1/20`, and Groups page `1/20` independently meets the `100ms` acquire and `250ms`
+  statement budget. A failed, cancelled, or superseded warm attempt never publishes a mixed
+  generation, while a later complete same-generation attempt publishes all three canonical keys.
+- A storage-only reconciliation update preserves its generation and partial observations. Each
+  allowed logical source change reopens exactly one generation; stable missing-Key rotation resumes
+  from those observations and terminalizes only after all current-generation Keys are observed.
+- A contiguous quota sample does not trigger a complete Dashboard payload build. The quota read
+  model publishes an immutable bounded patch, while a discontinuous watermark rebuild remains in
+  the background and HTTP/SSE continue serving last-good data.
 
 ### Reproducible performance workload
 

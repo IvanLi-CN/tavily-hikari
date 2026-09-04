@@ -45,10 +45,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   `1/20`, and groups `1/20` cache keys. It starts only in a low-pressure window with one bounded
   read slot available, foreground activity at most `5 rps`, and no contention in the previous five
   seconds. It does not grow or reserve a lazy pool before admission; a foreground checkout or
-  acquire waiter produces a typed defer. Each `AdminAlertsCacheWarm` slice gets the normal `100ms`
-  acquire and `250ms` native read deadline; all three staged values publish only at one unchanged
-  projection generation. Defers retry after `5s`, `5s`, then `30s`, while a generation change
-  re-arms one controller run.
+  acquire waiter produces a typed defer. Each warm attempt reads coverage once for its candidate
+  generation, then builds catalog request-kind, user, token, Key, type, and retention facets as
+  separate `AdminAlertsCacheWarm` slices; Events and Groups page `1/20` are separate slices too.
+  Every statement gets the normal `100ms` acquire and `250ms` native read deadline. All three
+  staged values publish only at one unchanged, complete projection generation. Defers retry after
+  `5s`, `5s`, then `30s`, while a generation change re-arms one controller run.
   Canonical HTTP handlers never trigger or wait for warm work: a current entry is fresh, an older
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
   These cache-only payload responses do not count as synthetic SQLite foreground activity. A configured
@@ -103,6 +105,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   one key in a multi-key candidate. It is rebuildable diagnostic state, never a terminal result or
   HA outbox truth. The engine requests at most two missing keys per run and cannot sum or complete
   the candidate until every current-generation key is observed.
+- `logical reconciliation source revision`: the durable work generation identity derived from
+  `project_id`, `billing_subject`, `settlement_mode`, period bounds, `request_count`,
+  `first_used_at`, `last_used_at`, and the current Key set. Equal logical payloads, import replay,
+  storage timestamp refreshes, and `updated_at` changes do not advance it or discard partial key
+  observations. A change in any listed input reopens work once; the new generation owns a separate
+  complete-Key requirement before it may terminalize.
 - `remote attempt budget`: the typed nonterminal continuation used when a candidate still has missing
   keys after the two-request run cap. It schedules one claim-fenced representative 30 seconds later
   without incrementing semantic, transport, 429, or local-pressure streaks.
@@ -182,6 +190,11 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   catches missed invalidations. Requests under SQLite pressure return last-good coverage rather
   than starting an independent rebuild. Quota sample freshness uses append-only primary-key/time
   watermarks and a payload build reuses the watermark already read by its triggering probe.
+- `DashboardQuotaChargeReadModel`: the AppState owner of the quota-charge portion of the Dashboard
+  snapshot. A contiguous append-only quota-sample watermark causes bounded incremental hydration
+  and one immutable quota-only patch, never a complete overview build. An out-of-order sample,
+  backfill, or source-revision discontinuity schedules a background keyset rebuild; HTTP and SSE
+  keep serving the previous immutable snapshot until it completes.
 - `AlertProjection`: an observability-sidecar projection with separate stable cursor/fence lanes:
   the recent tail serves Dashboard and the historical lane serves administrator Events and Groups.
   Dashboard accepts a recent summary only at `recent_coverage=ok`; otherwise the read model retains
