@@ -19,11 +19,14 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
             let mut next_delay_secs = DASHBOARD_ALERT_PROJECTION_INTERVAL_SECS;
             match state
                 .proxy
-                .advance_dashboard_alert_projection_scheduler_step()
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
                 .await
             {
-                Ok((true, _)) => {
-                    mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+                Ok(step) if step.canonical_alerts_dirty => {
+                    if step.dashboard_dirty {
+                        mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+                    }
+                    mark_admin_alerts_projection_generation(state.as_ref()).await;
                     if last_error.take().is_some() {
                         tracing::info!(
                             component = "dashboard_alert_projection",
@@ -32,7 +35,7 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
                         );
                     }
                 }
-                Ok((false, true)) => {
+                Ok(step) if step.idle => {
                     next_delay_secs = DASHBOARD_ALERT_PROJECTION_IDLE_INTERVAL_SECS;
                     let now = state.proxy.backend_time().now_ts();
                     if now.saturating_sub(last_idle_observation_at)
@@ -54,7 +57,7 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
                         }
                     }
                 }
-                Ok((false, false)) => {}
+                Ok(_) => {}
                 Err(err) => {
                     let error = err.to_string();
                     if last_error.as_deref() != Some(error.as_str()) {

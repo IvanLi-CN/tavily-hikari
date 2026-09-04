@@ -428,6 +428,14 @@ class BackendTestRunnerContractTests(unittest.TestCase):
             integrity["include_prefixes"], ["tests::dashboard_rollup_integrity::"]
         )
 
+    def test_lib_core_owns_alert_projection_scheduler_step_tests(self):
+        _targets, shards = RUNNER.load_manifest()
+        core = next(shard for shard in shards if shard["id"] == "lib-core")
+
+        self.assertIn(
+            "tavily_proxy::scheduler_step_tests::", core["include_prefixes"]
+        )
+
     def test_linuxdo_dashboard_overview_has_one_manifest_owner(self):
         _targets, shards = RUNNER.load_manifest()
         forward = next(shard for shard in shards if shard["id"] == "bin-linuxdo-forward")

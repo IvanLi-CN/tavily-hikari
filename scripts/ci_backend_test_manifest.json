@@ -96,6 +96,7 @@
         "store::tests::",
         "tavily_proxy::observability_deferred_writer_tests::",
         "tavily_proxy::privacy_status_phase_budget_tests::",
+        "tavily_proxy::scheduler_step_tests::",
         "tavily_proxy::tests::",
         "tests::request_kind_and_core::parse_",
         "tests::proxy_affinity_and_summary::extract_",
