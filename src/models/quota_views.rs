@@ -81,6 +81,9 @@ impl DashboardQuotaChargeReadModel {
             || samples.first().map(|sample| sample.id)
                 != Some(self.watermark.source_id.saturating_add(1))
             || samples.last().map(|sample| sample.id) != Some(next_watermark.source_id)
+            || samples
+                .windows(2)
+                .any(|pair| pair[1].id != pair[0].id.saturating_add(1))
         {
             return false;
         }

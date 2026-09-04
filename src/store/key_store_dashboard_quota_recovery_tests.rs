@@ -101,16 +101,30 @@ async fn dashboard_quota_source_probe_uses_the_source_id_as_its_revision() {
         },
         Vec::new(),
     );
+    let middle_gap_watermark = DashboardQuotaSampleWatermark {
+        source_id: 4,
+        source_captured_at: 700,
+        source_count: 4,
+    };
     assert!(
         !model.can_hydrate(
-            watermark,
-            &[DashboardQuotaSample {
-                id: 3,
-                key_id: DASHBOARD_QUOTA_SOURCE_PROBE_TEST_KEY_ID.to_string(),
-                quota_remaining: 997,
-                captured_at: 600,
-                previous_quota_remaining: Some(999),
-            }],
+            middle_gap_watermark,
+            &[
+                DashboardQuotaSample {
+                    id: 2,
+                    key_id: DASHBOARD_QUOTA_SOURCE_PROBE_TEST_KEY_ID.to_string(),
+                    quota_remaining: 998,
+                    captured_at: 600,
+                    previous_quota_remaining: Some(999),
+                },
+                DashboardQuotaSample {
+                    id: 4,
+                    key_id: DASHBOARD_QUOTA_SOURCE_PROBE_TEST_KEY_ID.to_string(),
+                    quota_remaining: 997,
+                    captured_at: 700,
+                    previous_quota_remaining: Some(998),
+                },
+            ],
         ),
         "a future-id gap must defer to the existing full recovery path"
     );
