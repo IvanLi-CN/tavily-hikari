@@ -1081,6 +1081,89 @@ struct DashboardSnapshot<'a> {
     logs: &'a [RequestLogView],
 }
 
+impl DashboardOverviewFreshness {
+    fn differs_only_by_quota_charge(&self, next: &Self) -> bool {
+        self.summary[..8] == next.summary[..8]
+            && self.summary_last_activity == next.summary_last_activity
+            && self.summary_window_starts == next.summary_window_starts
+            && self.dashboard_rollup_signature == next.dashboard_rollup_signature
+            && self.pending_dashboard_rollup_signature == next.pending_dashboard_rollup_signature
+            && self.rollup_integrity == next.rollup_integrity
+            && self.dashboard_api_key_lifecycle_signature == next.dashboard_api_key_lifecycle_signature
+            && self.dashboard_quarantine_lifecycle_signature
+                == next.dashboard_quarantine_lifecycle_signature
+            && self.dashboard_exhausted_lifecycle_signature
+                == next.dashboard_exhausted_lifecycle_signature
+            && self.forward_proxy == next.forward_proxy
+            && self.exhausted_keys == next.exhausted_keys
+            && self.latest_request_log_id == next.latest_request_log_id
+            && self.recent_request_logs == next.recent_request_logs
+            && self.trend_request_logs == next.trend_request_logs
+            && self.recent_jobs == next.recent_jobs
+            && self.recent_alerts_token == next.recent_alerts_token
+            && self.recent_alerts_total_events == next.recent_alerts_total_events
+            && self.recent_alerts_grouped_count == next.recent_alerts_grouped_count
+            && self.recent_alerts_counts == next.recent_alerts_counts
+            && self.recent_alerts_top_groups == next.recent_alerts_top_groups
+            && self.request_log_retention_days == next.request_log_retention_days
+            && self.hourly_window_anchor == next.hourly_window_anchor
+            && self.retention_since == next.retention_since
+    }
+}
+
+fn patch_dashboard_quota_charge_view(
+    target: &mut SummaryQuotaChargeView,
+    source: &tavily_hikari::SummaryQuotaCharge,
+) {
+    target.upstream_actual_credits = source.upstream_actual_credits;
+    target.sampled_key_count = source.sampled_key_count;
+    target.stale_key_count = source.stale_key_count;
+    target.latest_sync_at = source.latest_sync_at;
+}
+
+fn patch_dashboard_overview_quota_charge(
+    last_good: &DashboardOverviewSnapshot,
+    quota_charge: tavily_hikari::DashboardQuotaChargeSnapshot,
+    mut freshness: DashboardOverviewFreshness,
+    token: [i64; 5],
+) -> Result<DashboardOverviewSnapshot, ProxyError> {
+    let mut payload = last_good.payload.clone();
+    patch_dashboard_quota_charge_view(&mut payload.summary_windows.today.quota_charge, &quota_charge.today);
+    patch_dashboard_quota_charge_view(
+        &mut payload.summary_windows.yesterday.quota_charge,
+        &quota_charge.yesterday,
+    );
+    patch_dashboard_quota_charge_view(&mut payload.summary_windows.month.quota_charge, &quota_charge.month);
+    payload.summary.total_quota_limit = freshness.summary[8];
+    payload.summary.total_quota_remaining = freshness.summary[9];
+    payload.site_status.total_quota_limit = freshness.summary[8];
+    payload.site_status.remaining_quota = freshness.summary[9];
+
+    freshness.dashboard_quota_charge_token = token;
+    freshness.latest_quota_sync_sample_at = (token[0] != 0).then_some(token[1]);
+    let http_json = serde_json::to_vec(&payload)
+        .map(Bytes::from)
+        .map_err(|error| ProxyError::Other(format!("serialize dashboard quota patch: {error}")))?;
+    let sse_snapshot = DashboardSnapshot {
+        keys: &payload.exhausted_keys,
+        logs: &payload.recent_logs,
+        overview: &payload,
+    };
+    let sse_json = serde_json::to_vec(&sse_snapshot)
+        .map_err(|error| ProxyError::Other(format!("serialize dashboard quota patch SSE: {error}")))?;
+    let mut sse_snapshot_frame = Vec::with_capacity(sse_json.len().saturating_add(24));
+    sse_snapshot_frame.extend_from_slice(b"event: snapshot\ndata: ");
+    sse_snapshot_frame.extend_from_slice(&sse_json);
+    sse_snapshot_frame.extend_from_slice(b"\n\n");
+
+    Ok(DashboardOverviewSnapshot {
+        payload,
+        http_json,
+        sse_snapshot_frame: Bytes::from(sse_snapshot_frame),
+        freshness: Arc::new(freshness),
+    })
+}
+
 fn build_dashboard_trend(logs: &[RequestLogView]) -> DashboardTrendView {
     let mut sorted: Vec<&RequestLogView> = logs
         .iter()
@@ -2134,6 +2217,64 @@ async fn refresh_dashboard_overview_snapshot_with_reason(
                     },
                 );
                 return Ok(snapshot);
+            }
+            if let Some(cached) = cache.cached.as_ref()
+                && cached
+                    .freshness
+                    .differs_only_by_quota_charge(&freshness)
+            {
+                let last_good = cached.snapshot.clone();
+                drop(cache);
+                match state
+                    .proxy
+                    .dashboard_quota_charge_snapshot_for_freshness_at(
+                        state.proxy.backend_time().local_now(),
+                        freshness.dashboard_quota_charge_token,
+                    )
+                    .await
+                {
+                    Ok((quota_charge, token)) => {
+                        let patched = patch_dashboard_overview_quota_charge(
+                            last_good.as_ref(),
+                            quota_charge,
+                            freshness,
+                            token,
+                        )
+                        .map(Arc::new);
+                        let mut cache = cache_handle.lock().await;
+                        if cache.loading_generation == load_generation {
+                            cache.loading = false;
+                            cache.loading_started_at = None;
+                            cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
+                            if let Ok(snapshot) = patched.as_ref() {
+                                cache.cached = Some(CachedDashboardOverviewSnapshot {
+                                    snapshot: snapshot.clone(),
+                                    freshness: snapshot.freshness.clone(),
+                                });
+                            }
+                            cache.notify.notify_waiters();
+                        }
+                        load_guard.disarm();
+                        return patched;
+                    }
+                    Err(error) => {
+                        let mut cache = cache_handle.lock().await;
+                        if cache.loading_generation == load_generation {
+                            cache.loading = false;
+                            cache.loading_started_at = None;
+                            cache.last_freshness_probe_at = Some(tokio::time::Instant::now());
+                            cache.notify.notify_waiters();
+                        }
+                        load_guard.disarm();
+                        tracing::debug!(
+                            component = "admin_read",
+                            event = "dashboard_quota_recovery_deferred",
+                            err = %error,
+                            "serving immutable last-good Dashboard while quota recovery is unavailable"
+                        );
+                        return Ok(last_good);
+                    }
+                }
             }
             quota_charge_token_for_build = Some(freshness.dashboard_quota_charge_token);
         }

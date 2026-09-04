@@ -1,3 +1,19 @@
+const DASHBOARD_QUOTA_INCREMENTAL_HYDRATION_LIMIT: i64 = 33;
+
+fn dashboard_quota_charge_token_from_watermark(
+    watermark: DashboardQuotaSampleWatermark,
+    stale_key_count: i64,
+    month_quota_charge_start: i64,
+) -> [i64; 5] {
+    [
+        watermark.source_id,
+        watermark.source_captured_at,
+        0,
+        stale_key_count,
+        month_quota_charge_start,
+    ]
+}
+
 fn dashboard_recent_alerts_projection_token(summary: &RecentAlertsSummary) -> [i64; 4] {
     let top_group_last_seen_sum = summary
         .top_groups
@@ -25,8 +41,7 @@ impl TavilyProxy {
         stale_key_count: i64,
     ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 5]), ProxyError> {
         let token = self
-            .key_store
-            .fetch_dashboard_quota_charge_token(
+            .dashboard_quota_charge_token(
                 stale_key_count,
                 bounds.month_quota_charge_start,
                 bounds.today_end,
@@ -47,33 +62,64 @@ impl TavilyProxy {
         let stale_key_count = token[3];
 
         loop {
-            let waiter = {
+            let cached_model = {
                 let mut cache = self.dashboard_quota_charge_cache.lock().await;
                 if let Some(cached) = cache.cached.as_ref()
                     && cached.token == token
                 {
-                    return Ok((cached.value.clone(), token));
+                    return Ok((cached.model.snapshot.clone(), token));
                 }
                 if cache.loading {
-                    Some(cache.notify.clone().notified_owned())
+                    Err(cache.notify.clone().notified_owned())
                 } else {
                     cache.loading = true;
-                    None
+                    Ok(cache.cached.as_ref().map(|cached| cached.model.clone()))
                 }
             };
 
-            if let Some(waiter) = waiter {
-                waiter.await;
-                continue;
-            }
+            let cached_model = match cached_model {
+                Ok(model) => model,
+                Err(waiter) => {
+                    waiter.await;
+                    continue;
+                }
+            };
 
             let mut load_guard =
                 DashboardQuotaChargeLoadGuard::new(self.dashboard_quota_charge_cache.clone());
             let rebuild_started = Instant::now();
-            let snapshot = self
-                .key_store
-                .fetch_dashboard_quota_charge_snapshot(bounds, stale_key_count)
-                .await;
+            let mut recovery = false;
+            let model = match cached_model {
+                Some(mut cached_model) if cached_model.has_same_windows(bounds) => {
+                    let (watermark, samples) = self
+                        .key_store
+                        .fetch_dashboard_quota_incremental_samples(
+                            cached_model.watermark,
+                            DASHBOARD_QUOTA_INCREMENTAL_HYDRATION_LIMIT,
+                        )
+                        .await?;
+                    if cached_model.can_hydrate(watermark, &samples) {
+                        cached_model.hydrate(bounds, watermark, stale_key_count, &samples);
+                        Ok(cached_model)
+                    } else {
+                        recovery = true;
+                        self.key_store
+                            .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                            .await
+                    }
+                }
+                Some(_) => {
+                    recovery = true;
+                    self.key_store
+                        .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                        .await
+                }
+                None => {
+                    self.key_store
+                        .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                        .await
+                }
+            };
             crate::emit_sampled_perf_log(
                 crate::DbLogStatus::Info,
                 "admin_read",
@@ -82,23 +128,61 @@ impl TavilyProxy {
                 crate::PerfLogScope {
                     route: Some("/api/dashboard/overview"),
                     scope: Some("dashboard"),
-                    phase: Some("quota_charge_rebuild"),
-                    degraded: Some(if snapshot.is_ok() { "ok" } else { "error" }),
+                    phase: Some(if recovery {
+                        "quota_charge_recovery"
+                    } else {
+                        "quota_charge_hydrate"
+                    }),
+                    degraded: Some(if model.is_ok() { "ok" } else { "error" }),
                     ..Default::default()
                 },
             );
             let mut cache = self.dashboard_quota_charge_cache.lock().await;
             cache.loading = false;
-            if let Ok(value) = snapshot.as_ref() {
+            if let Ok(model) = model.as_ref() {
+                let token = dashboard_quota_charge_token_from_watermark(
+                    model.watermark,
+                    stale_key_count,
+                    bounds.month_quota_charge_start,
+                );
                 cache.cached = Some(CachedDashboardQuotaChargeSnapshot {
                     token,
-                    value: value.clone(),
+                    model: model.clone(),
                 });
+                cache.notify.notify_waiters();
+                load_guard.disarm();
+                return Ok((model.snapshot.clone(), token));
             }
             cache.notify.notify_waiters();
             load_guard.disarm();
-            return snapshot.map(|value| (value, token));
+            return model.map(|_| unreachable!("successful quota model returns above"));
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn dashboard_quota_charge_snapshot_for_freshness_at(
+        &self,
+        now: chrono::DateTime<Local>,
+        token: [i64; 5],
+    ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 5]), ProxyError> {
+        let today_start = start_of_local_day_utc_ts(now);
+        let yesterday_start = previous_local_day_start_utc_ts(now);
+        let month_start = start_of_local_month_utc_ts(now);
+        let bounds = SummaryWindowBounds {
+            today_start,
+            today_end: now.with_timezone(&Utc).timestamp().saturating_add(1),
+            today_period_end: next_local_day_start_utc_ts(today_start),
+            yesterday_start,
+            yesterday_end: yesterday_start
+                .saturating_add(now.with_timezone(&Utc).timestamp().saturating_add(1))
+                .saturating_sub(today_start),
+            month_start,
+            month_quota_charge_start: token[4],
+            month_period_end: crate::shift_local_month_start_utc_ts(month_start, 1),
+            previous_month_start: previous_local_month_start_utc_ts(now),
+            previous_month_end: month_start,
+        };
+        self.dashboard_quota_charge_snapshot_for_token(bounds, token).await
     }
 
     pub(crate) async fn dashboard_quota_charge_snapshot(
@@ -190,15 +274,18 @@ impl TavilyProxy {
         &self,
         stale_key_count: i64,
         month_quota_charge_start: i64,
-        today_end: i64,
+        _today_end: i64,
     ) -> Result<[i64; 5], ProxyError> {
         self.key_store
-            .fetch_dashboard_quota_charge_token(
-                stale_key_count,
-                month_quota_charge_start,
-                today_end,
-            )
+            .fetch_dashboard_quota_sample_watermark()
             .await
+            .map(|watermark| {
+                dashboard_quota_charge_token_from_watermark(
+                    watermark,
+                    stale_key_count,
+                    month_quota_charge_start,
+                )
+            })
     }
 
     pub async fn dashboard_recent_alerts_token(

@@ -2197,6 +2197,156 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn fetch_dashboard_quota_sample_watermark(
+        &self,
+    ) -> Result<DashboardQuotaSampleWatermark, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(MAX(id), 0) AS source_id,
+                COALESCE(MAX(captured_at), 0) AS source_captured_at
+            FROM api_key_quota_sync_samples
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(DashboardQuotaSampleWatermark {
+            source_id: row.try_get("source_id")?,
+            source_captured_at: row.try_get("source_captured_at")?,
+        })
+    }
+
+    pub(crate) async fn fetch_dashboard_quota_charge_read_model(
+        &self,
+        bounds: SummaryWindowBounds,
+        stale_key_count: i64,
+    ) -> Result<DashboardQuotaChargeReadModel, ProxyError> {
+        let SummaryWindowBounds {
+            today_end,
+            yesterday_start,
+            month_quota_charge_start,
+            ..
+        } = bounds;
+        let sample_window_start = yesterday_start.min(month_quota_charge_start);
+        let watermark = self.fetch_dashboard_quota_sample_watermark().await?;
+        let rows = sqlx::query(
+            r#"
+            WITH window_rows AS (
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+                  AND id <= ?
+            ),
+            sampled_keys AS (
+                SELECT DISTINCT key_id FROM window_rows
+            ),
+            baseline_rows AS (
+                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
+                FROM api_key_quota_sync_samples s
+                WHERE s.key_id IN (SELECT key_id FROM sampled_keys)
+                  AND s.id = (
+                    SELECT candidate.id
+                    FROM api_key_quota_sync_samples candidate
+                    WHERE candidate.key_id = s.key_id
+                      AND candidate.captured_at < ?
+                      AND candidate.id <= ?
+                    ORDER BY candidate.captured_at DESC, candidate.id DESC
+                    LIMIT 1
+                  )
+            )
+            SELECT id, key_id, quota_remaining, captured_at
+            FROM window_rows
+            UNION ALL
+            SELECT id, key_id, quota_remaining, captured_at
+            FROM baseline_rows
+            ORDER BY key_id ASC, captured_at ASC, id ASC
+            "#,
+        )
+        .bind(sample_window_start)
+        .bind(today_end)
+        .bind(watermark.source_id)
+        .bind(sample_window_start)
+        .bind(watermark.source_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let samples = rows
+            .into_iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("key_id")?,
+                    quota_remaining: row.try_get("quota_remaining")?,
+                    captured_at: row.try_get("captured_at")?,
+                    previous_quota_remaining: None,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(DashboardQuotaChargeReadModel::from_samples(
+            bounds,
+            stale_key_count,
+            watermark,
+            samples,
+        ))
+    }
+
+    pub(crate) async fn fetch_dashboard_quota_incremental_samples(
+        &self,
+        after: DashboardQuotaSampleWatermark,
+        limit: i64,
+    ) -> Result<(DashboardQuotaSampleWatermark, Vec<DashboardQuotaSample>), ProxyError> {
+        let watermark = self.fetch_dashboard_quota_sample_watermark().await?;
+        if watermark.source_id <= after.source_id {
+            return Ok((watermark, Vec::new()));
+        }
+
+        let rows = sqlx::query(
+            r#"
+            WITH pending AS (
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+            )
+            SELECT
+                pending.id,
+                pending.key_id,
+                pending.quota_remaining,
+                pending.captured_at,
+                previous.quota_remaining AS previous_quota_remaining
+            FROM pending
+            LEFT JOIN api_key_quota_sync_samples previous
+                ON previous.id = (
+                    SELECT id
+                    FROM api_key_quota_sync_samples candidate
+                    WHERE candidate.key_id = pending.key_id
+                      AND candidate.id < pending.id
+                    ORDER BY candidate.captured_at DESC, candidate.id DESC
+                    LIMIT 1
+                )
+            ORDER BY pending.id ASC
+            "#,
+        )
+        .bind(after.source_id)
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await?;
+        let samples = rows
+            .into_iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("key_id")?,
+                    quota_remaining: row.try_get("quota_remaining")?,
+                    captured_at: row.try_get("captured_at")?,
+                    previous_quota_remaining: row.try_get("previous_quota_remaining")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((watermark, samples))
+    }
+
     pub(crate) async fn list_keys_pending_quota_sync(
         &self,
         older_than_secs: i64,
