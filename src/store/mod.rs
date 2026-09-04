@@ -2761,6 +2761,7 @@ include!("key_store_dashboard_month_series.rs");
 include!("key_store_dashboard_rollup_integrity.rs");
 include!("key_store_request_stats_flush_and_public_metrics.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_dashboard_quota_source_probe.rs");
 include!("key_store_request_logs_summary_windows.rs");
 include!("key_store_user_rankings.rs");
 include!("key_store_analysis_pressure.rs");
