@@ -701,7 +701,7 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
 }
 
 #[tokio::test]
-async fn admin_alerts_background_warm_retries_and_preserves_last_good_contract() {
+async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses() {
     let db_path = temp_db_path("admin-alerts-last-good");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
