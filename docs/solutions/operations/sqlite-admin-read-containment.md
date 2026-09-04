@@ -77,10 +77,10 @@ reads:
   publishes them atomically at one projection generation; generation changes or partial failures
   discard the staged set. Retry at `5s/5s/30s`.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
-  or falling back to raw CTEs. Their fresh, stale, and cold responses must not be counted as
-  foreground SQLite activity, or client retries can indefinitely defer the background owner.
-  Noncanonical exact-key reads keep the existing bounded-read fallback and record foreground activity
-  only when that fallback will execute.
+  or falling back to raw CTEs. Their fresh, stale, and cold payload responses must not create synthetic
+  foreground SQLite activity, or client retries can indefinitely defer the background owner. A configured
+  passkey session lookup and a noncanonical exact-key bounded-read fallback each record their real
+  foreground SQLite work.
 - Apply the same last-good boundary to the single-key privacy-status read. Keep the immutable
   successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
   while cold pressure fails fast with `503 Retry-After: 1`. The HTTP path is bounded to 250ms and,

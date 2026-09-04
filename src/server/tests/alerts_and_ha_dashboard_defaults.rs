@@ -725,6 +725,7 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .expect("admin login");
     let cookie = find_cookie_pair(login.headers(), BUILTIN_ADMIN_COOKIE_NAME)
         .expect("admin session cookie");
+    let foreground_before_canonical = state.proxy.foreground_activity_rps();
 
     let cold = client
         .get(format!("http://{admin_addr}/api/alerts/catalog"))
@@ -747,6 +748,11 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
             Some("1")
         );
     }
+    assert_eq!(
+        state.proxy.foreground_activity_rps(),
+        foreground_before_canonical,
+        "canonical Alerts cache reads must not add synthetic SQLite foreground pressure"
+    );
 
     let mut projection_ready = false;
     for _ in 0..64 {
@@ -851,6 +857,7 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         );
     }
 
+    let foreground_before_fallback = state.proxy.foreground_activity_rps();
     state.proxy.force_next_admin_alert_read_deadline_for_test();
     let cold = client
         .get(format!("http://{admin_addr}/api/alerts/events?page=2"))
@@ -860,6 +867,10 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         .expect("cold alerts page");
     assert_eq!(cold.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(cold.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("1"));
+    assert!(
+        state.proxy.foreground_activity_rps() > foreground_before_fallback,
+        "a noncanonical Alerts fallback must account for its database read"
+    );
     let _ = std::fs::remove_file(db_path);
 }
 
