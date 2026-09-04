@@ -960,12 +960,11 @@ impl SqliteRuntime {
         // foreground work and ordinary admin reads. It uses one bounded read
         // slot; requiring two already-idle connections starves a lazy pool
         // under the normal one-connection foreground workload.
-        let idle = self.inner.pool.num_idle();
         if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if idle == 0 || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
+        } else if self.admin_alerts_cache_warm_has_pool_pressure() {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else {
             None
@@ -977,13 +976,17 @@ impl SqliteRuntime {
             Some(SqliteAdmissionDeferReason::ForegroundPressure.as_str())
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention.as_str())
-        } else if self.inner.pool.num_idle() == 0
-            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
-        {
+        } else if self.admin_alerts_cache_warm_has_pool_pressure() {
             Some(SqliteAdmissionDeferReason::PoolPressure.as_str())
         } else {
             None
         }
+    }
+
+    fn admin_alerts_cache_warm_has_pool_pressure(&self) -> bool {
+        let has_open_connection = self.inner.pool.size() > 0;
+        (has_open_connection && self.inner.pool.num_idle() == 0)
+            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
     }
 
     fn maintenance_bulk_defer_reason_for(

@@ -769,14 +769,43 @@ async fn admin_alerts_cache_warm_admits_with_one_idle_connection() {
         "canonical warm uses one bounded read slot and must not require two idle connections"
     );
 
-    runtime
-        .prewarm_maintenance_bulk_capacity()
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
         .await
-        .expect("prewarm admin Alerts capacity");
+        .expect("hold the only open connection");
+    assert_eq!(runtime.inner.pool.num_idle(), 0);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::PoolPressure),
+        "a foreground checkout remains pressure even while the lazy pool could grow"
+    );
+    drop(held_connection);
+}
 
-    assert_eq!(runtime.inner.pool.size(), 3);
-    assert!(runtime.inner.pool.num_idle() >= 2);
+#[tokio::test]
+async fn admin_alerts_cache_warm_admits_an_empty_lazy_pool_without_waiters() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .max_connections(3)
+            .connect_lazy("sqlite::memory:")
+            .expect("lazy three connection pool"),
+        3,
+    );
+
+    assert_eq!(runtime.inner.pool.size(), 0);
+    assert_eq!(runtime.inner.pool.num_idle(), 0);
     assert_eq!(runtime.admin_alerts_cache_warm_defer_reason(), None);
+    assert_eq!(runtime.admin_alerts_cache_warm_pressure_reason(), None);
+
+    runtime
+        .begin_read_snapshot(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect("the first bounded warm read can establish a lazy connection")
+        .close()
+        .await
+        .expect("close the lazy warm read");
 }
 
 #[tokio::test]

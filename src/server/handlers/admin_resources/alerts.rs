@@ -187,6 +187,7 @@ async fn get_alert_events(
         );
         return Err(alerts_sqlite_pressure_response());
     }
+    state.proxy.record_foreground_activity();
     match state.proxy.admin_alert_events_page(
             alert_type,
             since,
@@ -291,6 +292,7 @@ async fn get_alert_groups(
         );
         return Err(alerts_sqlite_pressure_response());
     }
+    state.proxy.record_foreground_activity();
     match state.proxy.admin_alert_groups_page(
             alert_type,
             since,

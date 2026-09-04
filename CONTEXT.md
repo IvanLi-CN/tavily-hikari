@@ -51,6 +51,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   re-arms one controller run.
   Canonical HTTP handlers never trigger or wait for warm work: a current entry is fresh, an older
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
+  These cache-only responses do not count as SQLite foreground activity; only a noncanonical
+  bounded-read fallback is foreground work.
 
 ## Reconciliation Terms
 

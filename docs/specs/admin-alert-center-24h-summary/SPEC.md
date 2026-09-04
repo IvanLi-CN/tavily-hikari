@@ -35,6 +35,8 @@
   惰性建立连接；HTTP 对 canonical key 只读 exact-key
   cache：同 generation 为 fresh，generation 落后但未过期为 stale，cold/过期为
   `503 Retry-After: 1`，绝不触发重建。
+  Canonical HTTP 的 fresh、stale 与 cold 响应不计入 SQLite 前台活动；只有实际进入 bounded
+  database fallback 的 noncanonical 读取才计量，避免 cache-only 重试自行阻止 warm admission。
 
 ## Non-goals
 

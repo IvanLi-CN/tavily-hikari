@@ -1145,9 +1145,16 @@ async fn db_maintenance_http_gate(
 fn db_maintenance_gated_path(path: &str) -> bool {
     path == "/mcp"
         || path.starts_with("/mcp/")
-        || path.starts_with("/api/")
+        || (path.starts_with("/api/") && !admin_alerts_cache_aware_path(path))
         || path == "/auth/linuxdo"
         || path.starts_with("/auth/linuxdo/")
+}
+
+fn admin_alerts_cache_aware_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/alerts/catalog" | "/api/alerts/events" | "/api/alerts/groups"
+    )
 }
 
 #[cfg(test)]
@@ -1155,11 +1162,15 @@ mod db_maintenance_gate_tests {
     use super::db_maintenance_gated_path;
 
     #[test]
-    fn maintenance_gate_only_covers_db_backed_routes() {
+    fn maintenance_gate_leaves_alerts_to_cache_aware_foreground_measurement() {
         assert!(db_maintenance_gated_path("/api/jobs"));
         assert!(db_maintenance_gated_path("/mcp"));
         assert!(db_maintenance_gated_path("/auth/linuxdo/callback"));
 
+        assert!(!db_maintenance_gated_path("/api/alerts/catalog"));
+        assert!(!db_maintenance_gated_path("/api/alerts/events"));
+        assert!(!db_maintenance_gated_path("/api/alerts/groups"));
+        assert!(db_maintenance_gated_path("/api/alerts/future-db-route"));
         assert!(!db_maintenance_gated_path("/health"));
         assert!(!db_maintenance_gated_path("/admin"));
         assert!(!db_maintenance_gated_path("/assets/admin.js"));
