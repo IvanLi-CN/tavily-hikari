@@ -65,6 +65,58 @@ async fn dashboard_quota_source_probe_walks_a_bounded_keyset_page() {
 }
 
 #[tokio::test]
+async fn dashboard_quota_source_probe_uses_the_source_id_as_its_revision() {
+    let (_temp_dir, store) = dashboard_quota_source_probe_store().await;
+    insert_dashboard_quota_source_probe_sample(&store, 500, 999).await;
+    insert_dashboard_quota_source_probe_sample(&store, 1_000, 998).await;
+    insert_dashboard_quota_source_probe_sample(&store, 600, 997).await;
+
+    let watermark = store
+        .fetch_dashboard_quota_sample_watermark(1_000)
+        .await
+        .expect("source probe finds the newest active source id");
+
+    assert_eq!(watermark.source_id, 3);
+    assert_eq!(watermark.source_captured_at, 600);
+    assert_eq!(watermark.source_count, 3);
+
+    let model = DashboardQuotaChargeReadModel::from_samples(
+        SummaryWindowBounds {
+            today_start: 800,
+            today_end: 1_000,
+            today_period_end: 1_000,
+            yesterday_start: 500,
+            yesterday_end: 800,
+            month_start: 0,
+            month_quota_charge_start: 0,
+            month_period_end: 1_000,
+            previous_month_start: -1_000,
+            previous_month_end: 0,
+        },
+        0,
+        DashboardQuotaSampleWatermark {
+            source_id: 1,
+            source_captured_at: 500,
+            source_count: 1,
+        },
+        Vec::new(),
+    );
+    assert!(
+        !model.can_hydrate(
+            watermark,
+            &[DashboardQuotaSample {
+                id: 3,
+                key_id: DASHBOARD_QUOTA_SOURCE_PROBE_TEST_KEY_ID.to_string(),
+                quota_remaining: 997,
+                captured_at: 600,
+                previous_quota_remaining: Some(999),
+            }],
+        ),
+        "a future-id gap must defer to the existing full recovery path"
+    );
+}
+
+#[tokio::test]
 async fn dashboard_quota_source_probe_defers_after_its_page_budget() {
     let (_temp_dir, store) = dashboard_quota_source_probe_store().await;
     insert_dashboard_quota_source_probe_sample(&store, 500, 999).await;

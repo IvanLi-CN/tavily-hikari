@@ -2211,6 +2211,8 @@ impl KeyStore {
         Ok(DashboardQuotaSampleWatermark {
             source_id,
             source_captured_at,
+            // Retain the existing private token shape without an unbounded
+            // count probe. This is an append-only source revision, not a row count.
             source_count: source_id,
         })
     }
