@@ -188,6 +188,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "tests::upstream_reconciliation_continuation::",
                 "tests::upstream_reconciliation_engine::",
                 "tests::upstream_reconciliation_fencing::",
+                "tests::upstream_reconciliation_logical_revision::",
                 "tests::upstream_reconciliation_projection::",
                 "tavily_proxy::reconciliation_engine_tests::",
                 "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
