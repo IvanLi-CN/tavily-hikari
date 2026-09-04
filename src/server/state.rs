@@ -168,9 +168,15 @@ impl DashboardOverviewCacheState {
         true
     }
 
-    fn finish_admin_alerts_prewarm(&mut self) {
+    fn finish_admin_alerts_prewarm(&mut self, attempt_generation: AdminAlertsProjectionGeneration) {
         self.admin_alerts_prewarm_in_flight = false;
         self.admin_alerts_prewarm_defers = 0;
+        if self.admin_alerts_projection_generation != attempt_generation.alerts
+            || self.alert_projection_generation != attempt_generation.dashboard
+        {
+            self.admin_alerts_prewarm_not_before = None;
+            return;
+        }
         self.admin_alerts_prewarm_not_before = Some(
             tokio::time::Instant::now() + ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
         );
@@ -533,7 +539,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
                         .await
-                        .finish_admin_alerts_prewarm();
+                        .finish_admin_alerts_prewarm(generation);
                     tracing::debug!(
                         component = "admin_read",
                         event = "alerts_canonical_warm_published",
@@ -569,7 +575,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
                         .await
-                        .finish_admin_alerts_prewarm();
+                        .finish_admin_alerts_prewarm(generation);
                     break;
                 }
             }
@@ -936,7 +942,10 @@ mod admin_alerts_prewarm_tests {
             "an in-flight prewarm must remain singleflight"
         );
 
-        cache.finish_admin_alerts_prewarm();
+        cache.finish_admin_alerts_prewarm(AdminAlertsProjectionGeneration {
+            alerts: 0,
+            dashboard: 0,
+        });
         assert!(
             !cache.try_start_admin_alerts_prewarm(
                 now + ADMIN_ALERTS_PREWARM_MIN_INTERVAL - std::time::Duration::from_secs(1)
@@ -957,8 +966,29 @@ mod admin_alerts_prewarm_tests {
         assert_eq!(cache.defer_admin_alerts_prewarm(now), std::time::Duration::from_secs(5));
         assert_eq!(cache.defer_admin_alerts_prewarm(now), std::time::Duration::from_secs(30));
 
-        cache.finish_admin_alerts_prewarm();
+        cache.finish_admin_alerts_prewarm(AdminAlertsProjectionGeneration {
+            alerts: 0,
+            dashboard: 0,
+        });
         assert_eq!(cache.admin_alerts_prewarm_defers, 0);
+    }
+
+    #[test]
+    fn completing_an_older_alerts_generation_leaves_the_warmer_rearmed() {
+        let mut cache = DashboardOverviewCacheState::default();
+        let prior_generation = AdminAlertsProjectionGeneration {
+            alerts: 0,
+            dashboard: 0,
+        };
+        assert!(cache.try_start_admin_alerts_prewarm(tokio::time::Instant::now()));
+
+        cache.admin_alerts_projection_generation = 1;
+        cache.admin_alerts_prewarm_not_before = None;
+        cache.finish_admin_alerts_prewarm(prior_generation);
+
+        assert!(!cache.admin_alerts_prewarm_in_flight);
+        assert!(cache.admin_alerts_prewarm_not_before.is_none());
+        assert!(cache.try_start_admin_alerts_prewarm(tokio::time::Instant::now()));
     }
 
     #[test]
