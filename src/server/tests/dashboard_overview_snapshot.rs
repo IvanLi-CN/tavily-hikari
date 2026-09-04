@@ -2048,6 +2048,46 @@ async fn dashboard_quota_backfill_recovers_in_background_from_last_good() {
         "the background recovery must recompute the out-of-order quota delta before publishing",
     );
 
+    let future_captured_at = Utc::now().timestamp().saturating_add(172_800);
+    for offset in 0..128_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quota_sync_samples (
+                key_id, quota_limit, quota_remaining, captured_at, source
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(2_000_i64)
+        .bind(1_500_i64.saturating_sub(offset))
+        .bind(future_captured_at.saturating_add(offset))
+        .bind("future_source_probe")
+        .execute(&pool)
+        .await
+        .expect("insert future quota sample beyond the source probe page budget");
+    }
+
+    expire_dashboard_overview_freshness_probe(&state).await;
+    let served_while_source_probe_is_deferred =
+        load_dashboard_overview_after_background_refresh(&state).await;
+    assert_eq!(
+        served_while_source_probe_is_deferred
+            .freshness
+            .dashboard_quota_charge_token,
+        recovered.freshness.dashboard_quota_charge_token,
+        "a deferred source probe must preserve the immutable last-good Dashboard snapshot",
+    );
+    assert_eq!(
+        served_while_source_probe_is_deferred
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .upstream_actual_credits,
+        300,
+        "a deferred source probe must not publish future quota samples",
+    );
+
     let _ = std::fs::remove_file(db_path);
 }
 
