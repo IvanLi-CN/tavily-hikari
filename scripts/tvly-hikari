@@ -74,7 +74,8 @@ validate_hikari_token() {
 tvly_version() {
   local tvly_bin="$1"
   "${tvly_bin}" --version 2>/dev/null \
-    | python3 -c 'import re, sys; data=sys.stdin.read(); match=re.search(r"\d+\.\d+\.\d+", data); print(match.group(0) if match else "")'
+    | python3 -c 'import re, sys; data=sys.stdin.read(); match=re.search(r"\d+\.\d+\.\d+", data); print(match.group(0) if match else "")' \
+    | tr -d '\r'
 }
 
 ensure_tvly_compatible() {
@@ -137,7 +138,11 @@ configure() {
   local target_dir
   target_dir="$(dirname "${target_file}")"
 
-  install -d -m 0700 "${target_dir}"
+  # `install -d -m 0700` fails on msys2/Git Bash, where POSIX modes cannot be
+  # applied to Windows ACLs. Create the directory with a tight umask so the mode
+  # is never wider than 0700, then tighten explicitly where chmod is supported.
+  (umask 077 && mkdir -p "${target_dir}")
+  chmod 0700 "${target_dir}" 2>/dev/null || true
   local tmp_file
   tmp_file="$(mktemp "${target_dir}/config.json.XXXXXX")"
   python3 - "$base_url" "$token" >"${tmp_file}" <<'PY'
@@ -163,7 +168,8 @@ read_config() {
 
   [[ -f "${CONFIG_FILE}" ]] || die "missing config at ${CONFIG_FILE}; run: tvly-hikari configure --base-url <origin> --token <th-...>"
   require_python
-  python3 - "${CONFIG_FILE}" <<'PY'
+  # Windows-native python3 emits CRLF; strip CR so `read -r` never captures it.
+  python3 - "${CONFIG_FILE}" <<'PY' | tr -d '\r'
 import json
 import sys
 
