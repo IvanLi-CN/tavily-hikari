@@ -2485,7 +2485,7 @@ mod serve_tests {
             .create_admin_passkey_session(&scope, None, 120)
             .await
             .expect("create passkey session");
-        let state = AppState {
+        let state = Arc::new(AppState {
             proxy,
             static_dir: None,
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
@@ -2507,9 +2507,9 @@ mod serve_tests {
             api_key_ip_geo_origin: "https://api.country.is".to_string(),
             dashboard_overview_cache: new_dashboard_overview_cache(),
             remote_attempt_admission: new_remote_attempt_admission(),
-        };
+        });
         let empty_headers = HeaderMap::new();
-        assert!(!is_admin_cache_aware_request(&state, &empty_headers).await);
+        assert!(!is_admin_cache_aware_request(state.as_ref(), &empty_headers).await);
         assert_eq!(state.proxy.foreground_activity_rps(), 0);
 
         let mut passkey_headers = HeaderMap::new();
@@ -2518,12 +2518,50 @@ mod serve_tests {
             HeaderValue::from_str(&format!("{ADMIN_PASSKEY_COOKIE_NAME}={}", session.token))
                 .expect("cookie header should be valid"),
         );
-        assert!(is_admin_cache_aware_request(&state, &passkey_headers).await);
+        assert!(is_admin_cache_aware_request(state.as_ref(), &passkey_headers).await);
         assert_eq!(
             state.proxy.foreground_activity_rps(),
             1,
             "passkey auth must account for its bounded SQLite lookup"
         );
+
+        let release_pool = Arc::new(tokio::sync::Notify::new());
+        let (pool_held_tx, pool_held_rx) = tokio::sync::oneshot::channel();
+        let pool_holder = {
+            let proxy = state.proxy.clone();
+            let release_pool = release_pool.clone();
+            tokio::spawn(async move { proxy.hold_sqlite_pool_until_for_test(pool_held_tx, release_pool).await })
+        };
+        tokio::time::timeout(Duration::from_secs(1), pool_held_rx)
+            .await
+            .expect("the app SQLite pool should be exhausted")
+            .expect("the pool holder should signal readiness");
+        let lookups = (0..5)
+            .map(|_| {
+                let state = state.clone();
+                let headers = passkey_headers.clone();
+                tokio::spawn(async move { is_admin_cache_aware_request(state.as_ref(), &headers).await })
+            })
+            .collect::<Vec<_>>();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.proxy.foreground_activity_rps() <= 5 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("passkey lookups should record before acquiring SQLite");
+        assert_eq!(
+            state.proxy.admin_alerts_cache_warm_pressure_reason(),
+            Some("foreground_pressure")
+        );
+        release_pool.notify_waiters();
+        for lookup in lookups {
+            assert!(lookup.await.expect("passkey lookup task joins"));
+        }
+        pool_holder
+            .await
+            .expect("pool holder joins")
+            .expect("pool holder releases cleanly");
     }
 
     #[tokio::test]

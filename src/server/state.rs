@@ -1977,22 +1977,16 @@ async fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
 }
 
 async fn try_is_admin_request(state: &AppState, headers: &HeaderMap) -> Result<bool, ProxyError> {
-    match classify_admin_request_authentication(state, headers).await {
+    match classify_admin_request_authentication(state, headers, false).await {
         AdminRequestAuthentication::InMemory(is_admin) => Ok(is_admin),
         AdminRequestAuthentication::PasskeyLookup(result) => result,
     }
 }
 
 async fn is_admin_cache_aware_request(state: &AppState, headers: &HeaderMap) -> bool {
-    match classify_admin_request_authentication(state, headers).await {
+    match classify_admin_request_authentication(state, headers, true).await {
         AdminRequestAuthentication::InMemory(is_admin) => is_admin,
-        AdminRequestAuthentication::PasskeyLookup(result) => {
-            // Canonical Alert payloads are cache-only, but a passkey session
-            // lookup is still a real bounded SQLite read that must constrain
-            // the background warmer.
-            state.proxy.record_foreground_activity();
-            result.unwrap_or(false)
-        }
+        AdminRequestAuthentication::PasskeyLookup(result) => result.unwrap_or(false),
     }
 }
 
@@ -2004,6 +1998,7 @@ enum AdminRequestAuthentication {
 async fn classify_admin_request_authentication(
     state: &AppState,
     headers: &HeaderMap,
+    record_passkey_foreground_activity: bool,
 ) -> AdminRequestAuthentication {
     if state.dev_open_admin {
         return AdminRequestAuthentication::InMemory(true);
@@ -2017,6 +2012,12 @@ async fn classify_admin_request_authentication(
     if state.admin_passkey.is_configured()
         && cookie_value(headers, ADMIN_PASSKEY_COOKIE_NAME).is_some()
     {
+        if record_passkey_foreground_activity {
+            // Canonical Alert payloads are cache-only, but a passkey session
+            // lookup is real bounded SQLite work. Record it before acquiring
+            // the connection so the warmer cannot race the lookup.
+            state.proxy.record_foreground_activity();
+        }
         return AdminRequestAuthentication::PasskeyLookup(
             resolve_admin_passkey_session(state, headers)
                 .await
