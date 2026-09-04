@@ -1692,11 +1692,11 @@ async fn dashboard_overview_snapshot_rebuilds_when_previous_month_lifecycle_chan
 }
 
 #[tokio::test]
-async fn dashboard_overview_snapshot_rebuilds_when_month_quota_samples_backfill() {
-    let db_path = temp_db_path("dashboard-overview-month-quota-backfill");
+async fn dashboard_overview_snapshot_patches_contiguous_quota_samples() {
+    let db_path = temp_db_path("dashboard-overview-contiguous-quota-samples");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-dashboard-overview-month-quota-backfill".to_string()],
+        vec!["tvly-dashboard-overview-contiguous-quota-samples".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -1733,6 +1733,9 @@ async fn dashboard_overview_snapshot_rebuilds_when_month_quota_samples_backfill(
     let first = load_dashboard_overview_snapshot(&state)
         .await
         .expect("first overview snapshot");
+    let first_quota_token = first
+        .freshness
+        .dashboard_quota_charge_token;
     let first_latest_sync = first
         .payload
         .summary_windows
@@ -1760,28 +1763,296 @@ async fn dashboard_overview_snapshot_rebuilds_when_month_quota_samples_backfill(
     .bind(2_000_i64)
     .bind(1_111_i64)
     .bind(month_quota_sample_start + 90)
-    .bind("ha_backfill")
+    .bind("quota_sync")
     .execute(&pool)
     .await
-    .expect("insert month quota sample backfill");
+    .expect("insert contiguous quota sample");
 
     let second = load_dashboard_overview_after_background_refresh(&state).await;
 
-    assert!(
-        dashboard_overview_build_count(&state).await >= 1,
-        "month quota sample backfills should rebuild the shared snapshot",
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "contiguous quota samples must publish a quota-only patch instead of building the overview",
     );
     assert_ne!(
         second.payload.summary_windows.month.quota_charge.latest_sync_at,
         first_latest_sync,
-        "month quota charge window should refresh after a retained backfill sample arrives",
+        "the immutable quota patch should carry the appended sample",
+    );
+    assert_ne!(
+        second.freshness.dashboard_quota_charge_token,
+        first_quota_token,
+        "the patched snapshot should advance the append-only quota watermark",
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&second.http_json).expect("quota-patched overview JSON");
+    assert!(
+        payload
+            .pointer("/summaryWindows/month/quota_charge/upstream_actual_credits")
+            .is_some(),
+        "the quota-only patch must retain the public Dashboard response shape",
     );
 
     let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]
-async fn dashboard_overview_snapshot_ignores_quota_baseline_backfills_for_cheap_freshness() {
+async fn dashboard_future_quota_sample_patches_when_it_enters_the_window() {
+    let db_path = temp_db_path("dashboard-overview-future-quota-sample");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-future-quota-sample".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy: proxy.clone(),
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let now = loop {
+        let now = proxy.backend_time().now_ts();
+        if now.rem_euclid(5 * 60) <= 288 {
+            break now;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    let future_captured_at = now.saturating_add(5);
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(2_000_i64)
+    .bind(2_000_i64)
+    .bind(now.saturating_sub(1))
+    .bind("quota_sync")
+    .execute(&pool)
+    .await
+    .expect("insert initial quota sample");
+
+    let first = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("first overview snapshot");
+    reset_dashboard_overview_build_count(&state).await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(2_000_i64)
+    .bind(1_700_i64)
+    .bind(future_captured_at)
+    .bind("quota_sync")
+    .execute(&pool)
+    .await
+    .expect("insert future quota sample");
+
+    expire_dashboard_overview_freshness_probe(&state).await;
+    let still_future = load_dashboard_overview_after_background_refresh(&state).await;
+    assert_eq!(
+        still_future.freshness.dashboard_quota_charge_token,
+        first.freshness.dashboard_quota_charge_token,
+        "a future sample must not advance the effective quota watermark",
+    );
+    assert_eq!(
+        still_future
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .upstream_actual_credits,
+        0,
+        "the future sample must not be charged before it enters the window",
+    );
+    reset_dashboard_overview_build_count(&state).await;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while proxy.backend_time().now_ts() < future_captured_at {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("future sample should enter the dashboard window");
+
+    let effective_freshness = compute_dashboard_overview_freshness(&state)
+        .await
+        .expect("freshness after future sample becomes effective");
+    assert!(
+        first
+            .freshness
+            .differs_only_by_quota_charge(&effective_freshness),
+        "a newly effective quota sample must remain eligible for the quota-only patch",
+    );
+
+    expire_dashboard_overview_freshness_probe(&state).await;
+    let patched = load_dashboard_overview_after_background_refresh(&state).await;
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "an effective appended sample must publish through a quota-only patch",
+    );
+    assert_ne!(
+        patched.freshness.dashboard_quota_charge_token,
+        first.freshness.dashboard_quota_charge_token,
+        "entering the window must advance the effective quota watermark without another append",
+    );
+    assert_eq!(
+        patched
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .upstream_actual_credits,
+        300,
+        "the quota-only patch must charge the newly effective sample",
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_quota_backfill_recovers_in_background_from_last_good() {
+    let db_path = temp_db_path("dashboard-overview-quota-backfill-recovery");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-quota-backfill-recovery".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let state = Arc::new(AppState {
+        proxy: proxy.clone(),
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let captured_at = start_of_month_dt(Utc::now()).timestamp().saturating_add(600);
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(2_000_i64)
+    .bind(1_500_i64)
+    .bind(captured_at)
+    .bind("quota_sync")
+    .execute(&pool)
+    .await
+    .expect("insert initial quota sample");
+
+    let first = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("first overview snapshot");
+    reset_dashboard_overview_build_count(&state).await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(2_000_i64)
+    .bind(1_800_i64)
+    .bind(captured_at.saturating_sub(1))
+    .bind("ha_backfill")
+    .execute(&pool)
+    .await
+    .expect("insert out-of-order quota backfill");
+
+    let served_while_recovering = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("serve immutable last-good during quota recovery");
+    assert_eq!(
+        served_while_recovering.freshness.dashboard_quota_charge_token,
+        first.freshness.dashboard_quota_charge_token,
+        "HTTP/SSE callers must not receive a partial quota patch while recovery runs",
+    );
+
+    let recovered = wait_for_dashboard_overview_refresh(&state).await;
+    assert_eq!(
+        dashboard_overview_build_count(&state).await,
+        0,
+        "quota recovery must not rebuild unrelated Dashboard payload sections",
+    );
+    assert_ne!(
+        recovered.freshness.dashboard_quota_charge_token,
+        first.freshness.dashboard_quota_charge_token,
+        "the recovered snapshot should record the new source revision",
+    );
+    assert_eq!(
+        recovered
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .upstream_actual_credits,
+        300,
+        "the background recovery must recompute the out-of-order quota delta before publishing",
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_quota_baseline_backfill_recovers_from_source_revision() {
     let db_path = temp_db_path("dashboard-overview-quota-baseline-backfill");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -1882,29 +2153,46 @@ async fn dashboard_overview_snapshot_ignores_quota_baseline_backfills_for_cheap_
     .await
     .expect("insert baseline backfill sample");
 
-    let second = load_dashboard_overview_snapshot(&state)
+    let served_while_recovering = load_dashboard_overview_snapshot(&state)
         .await
-        .expect("second overview snapshot");
+        .expect("serve immutable last-good dashboard");
+
+    assert_eq!(
+        served_while_recovering.freshness.dashboard_quota_charge_token,
+        first_quota_signature,
+        "source revisions must defer replacement until the quota recovery completes",
+    );
+    let recovered = wait_for_dashboard_overview_refresh(&state).await;
 
     assert_eq!(
         dashboard_overview_build_count(&state).await,
         0,
-        "baseline quota sample backfills should not invalidate the cheap freshness contract",
+        "quota source-revision recovery must not build the complete overview payload",
     );
-    assert_eq!(
-        second.freshness.dashboard_quota_charge_token,
+    assert_ne!(
+        recovered.freshness.dashboard_quota_charge_token,
         first_quota_signature,
-        "cheap quota token should stay stable when only pre-window baseline rows change",
+        "the recovered quota patch should record the new source revision",
     );
     assert_eq!(
-        second.payload.summary_windows.month.quota_charge.latest_sync_at,
+        recovered
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .latest_sync_at,
         first_latest_sync,
-        "baseline backfills should not need a newer in-window sample timestamp to keep cache hit stable",
+        "an earlier baseline must not regress the displayed latest quota sync timestamp",
     );
     assert_eq!(
-        second.payload.summary_windows.month.quota_charge.upstream_actual_credits,
-        first_upstream_actual,
-        "core overview should serve the cached quota slice until the cheap token changes",
+        recovered
+            .payload
+            .summary_windows
+            .month
+            .quota_charge
+            .upstream_actual_credits,
+        first_upstream_actual + 400,
+        "recovery should fold the revised baseline into the immutable quota-only patch",
     );
 
     let _ = std::fs::remove_file(db_path);

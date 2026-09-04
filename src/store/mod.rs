@@ -1279,20 +1279,6 @@ pub(crate) async fn begin_read_snapshot_sqlite_connection(
         .await
 }
 
-#[derive(Debug, Clone, Copy)]
-struct QuotaSyncSampleRow {
-    quota_remaining: i64,
-    captured_at: i64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct QuotaChargeAccumulator {
-    upstream_actual_credits: i64,
-    sampled_key_count: i64,
-    stale_key_count: i64,
-    latest_sync_at: Option<i64>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApiKeyTransientBackoffState {
     pub(crate) cooldown_until: i64,
