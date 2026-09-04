@@ -7,6 +7,7 @@ use super::*;
 pub(crate) struct DashboardQuotaSampleWatermark {
     pub source_id: i64,
     pub source_captured_at: i64,
+    pub source_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -70,13 +71,18 @@ impl DashboardQuotaChargeReadModel {
     ) -> bool {
         if next_watermark.source_id < self.watermark.source_id
             || next_watermark.source_captured_at < self.watermark.source_captured_at
+            || next_watermark.source_count < self.watermark.source_count
         {
             return false;
         }
-        if next_watermark.source_id == self.watermark.source_id {
+        if next_watermark.source_count == self.watermark.source_count {
             return next_watermark == self.watermark && samples.is_empty();
         }
-        if samples.is_empty()
+        if next_watermark
+            .source_count
+            .saturating_sub(self.watermark.source_count)
+            != samples.len() as i64
+            || samples.is_empty()
             || samples.first().map(|sample| sample.id)
                 != Some(self.watermark.source_id.saturating_add(1))
             || samples.last().map(|sample| sample.id) != Some(next_watermark.source_id)

@@ -1083,7 +1083,8 @@ struct DashboardSnapshot<'a> {
 
 impl DashboardOverviewFreshness {
     fn differs_only_by_quota_charge(&self, next: &Self) -> bool {
-        self.summary[..8] == next.summary[..8]
+        self.dashboard_quota_charge_token[..3] != next.dashboard_quota_charge_token[..3]
+            && self.summary[..8] == next.summary[..8]
             && self.summary_last_activity == next.summary_last_activity
             && self.summary_window_starts == next.summary_window_starts
             && self.dashboard_rollup_signature == next.dashboard_rollup_signature

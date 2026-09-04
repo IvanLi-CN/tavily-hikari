@@ -8,7 +8,7 @@ fn dashboard_quota_charge_token_from_watermark(
     [
         watermark.source_id,
         watermark.source_captured_at,
-        0,
+        watermark.source_count,
         stale_key_count,
         month_quota_charge_start,
     ]
@@ -66,6 +66,7 @@ impl TavilyProxy {
                 let mut cache = self.dashboard_quota_charge_cache.lock().await;
                 if let Some(cached) = cache.cached.as_ref()
                     && cached.token == token
+                    && cached.model.has_same_windows(bounds)
                 {
                     return Ok((cached.model.snapshot.clone(), token));
                 }
@@ -95,6 +96,7 @@ impl TavilyProxy {
                         .key_store
                         .fetch_dashboard_quota_incremental_samples(
                             cached_model.watermark,
+                            bounds.today_end,
                             DASHBOARD_QUOTA_INCREMENTAL_HYDRATION_LIMIT,
                         )
                         .await?;
@@ -274,10 +276,10 @@ impl TavilyProxy {
         &self,
         stale_key_count: i64,
         month_quota_charge_start: i64,
-        _today_end: i64,
+        today_end: i64,
     ) -> Result<[i64; 5], ProxyError> {
         self.key_store
-            .fetch_dashboard_quota_sample_watermark()
+            .fetch_dashboard_quota_sample_watermark(today_end)
             .await
             .map(|watermark| {
                 dashboard_quota_charge_token_from_watermark(

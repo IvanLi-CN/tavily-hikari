@@ -2199,20 +2199,25 @@ impl KeyStore {
 
     pub(crate) async fn fetch_dashboard_quota_sample_watermark(
         &self,
+        today_end: i64,
     ) -> Result<DashboardQuotaSampleWatermark, ProxyError> {
         let row = sqlx::query(
             r#"
             SELECT
                 COALESCE(MAX(id), 0) AS source_id,
-                COALESCE(MAX(captured_at), 0) AS source_captured_at
+                COALESCE(MAX(captured_at), 0) AS source_captured_at,
+                COUNT(*) AS source_count
             FROM api_key_quota_sync_samples
+            WHERE captured_at < ?
             "#,
         )
+        .bind(today_end)
         .fetch_one(&self.pool)
         .await?;
         Ok(DashboardQuotaSampleWatermark {
             source_id: row.try_get("source_id")?,
             source_captured_at: row.try_get("source_captured_at")?,
+            source_count: row.try_get("source_count")?,
         })
     }
 
@@ -2228,7 +2233,7 @@ impl KeyStore {
             ..
         } = bounds;
         let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        let watermark = self.fetch_dashboard_quota_sample_watermark().await?;
+        let watermark = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
         let rows = sqlx::query(
             r#"
             WITH window_rows AS (
@@ -2293,10 +2298,11 @@ impl KeyStore {
     pub(crate) async fn fetch_dashboard_quota_incremental_samples(
         &self,
         after: DashboardQuotaSampleWatermark,
+        today_end: i64,
         limit: i64,
     ) -> Result<(DashboardQuotaSampleWatermark, Vec<DashboardQuotaSample>), ProxyError> {
-        let watermark = self.fetch_dashboard_quota_sample_watermark().await?;
-        if watermark.source_id <= after.source_id {
+        let watermark = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
+        if watermark == after || watermark.source_id <= after.source_id {
             return Ok((watermark, Vec::new()));
         }
 
@@ -2306,6 +2312,7 @@ impl KeyStore {
                 SELECT id, key_id, quota_remaining, captured_at
                 FROM api_key_quota_sync_samples
                 WHERE id > ?
+                  AND captured_at < ?
                 ORDER BY id ASC
                 LIMIT ?
             )
@@ -2322,6 +2329,7 @@ impl KeyStore {
                     FROM api_key_quota_sync_samples candidate
                     WHERE candidate.key_id = pending.key_id
                       AND candidate.id < pending.id
+                      AND candidate.captured_at < ?
                     ORDER BY candidate.captured_at DESC, candidate.id DESC
                     LIMIT 1
                 )
@@ -2329,6 +2337,8 @@ impl KeyStore {
             "#,
         )
         .bind(after.source_id)
+        .bind(today_end)
+        .bind(today_end)
         .bind(limit.max(1))
         .fetch_all(&self.pool)
         .await?;
