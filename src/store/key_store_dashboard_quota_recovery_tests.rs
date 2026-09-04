@@ -95,6 +95,31 @@ async fn dashboard_quota_recovery_discards_a_multi_page_draft_on_native_deadline
 }
 
 #[tokio::test]
+async fn dashboard_quota_source_probe_defers_after_future_page_budget() {
+    let (_temp_dir, store, bounds) = dashboard_quota_recovery_store().await;
+    insert_dashboard_quota_recovery_sample(&store, 500, 999).await;
+    for offset in 0..(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE * DASHBOARD_QUOTA_SOURCE_MAX_PAGES as i64) {
+        insert_dashboard_quota_recovery_sample(&store, 1_000 + offset, 998 - offset).await;
+    }
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        store.fetch_dashboard_quota_sample_watermark(bounds.today_end),
+    )
+    .await
+    .expect("source probe must have a whole-operation page budget");
+
+    assert!(
+        matches!(
+            result,
+            Err(ProxyError::Deferred { operation, ref reason })
+                if operation == "admin_alerts_read" && reason == "read_budget"
+        ),
+        "future samples spanning multiple keyset pages must defer instead of extending the probe: {result:?}"
+    );
+}
+
+#[tokio::test]
 async fn dashboard_quota_recovery_paginates_an_exact_multi_page_window() {
     let (_temp_dir, store, bounds) = dashboard_quota_recovery_store().await;
     seed_dashboard_quota_recovery_samples(&store, 65).await;
@@ -112,6 +137,47 @@ async fn dashboard_quota_recovery_paginates_an_exact_multi_page_window() {
     assert_eq!(model.snapshot.month.latest_sync_at, Some(564));
     assert_eq!(model.snapshot.month.sampled_key_count, 1);
     assert_eq!(model.snapshot.month.stale_key_count, 3);
+}
+
+#[tokio::test]
+async fn dashboard_quota_recovery_defers_when_source_changes_on_every_staged_page() {
+    let (_temp_dir, store, bounds) = dashboard_quota_recovery_store().await;
+    seed_dashboard_quota_recovery_samples(&store, 1).await;
+    let mut next_pause = Some(store.install_dashboard_overview_read_pause().await);
+    let recovery_store = std::sync::Arc::clone(&store);
+    let recovery = tokio::spawn(async move {
+        recovery_store
+            .fetch_dashboard_quota_charge_read_model(bounds, 0)
+            .await
+    });
+
+    for attempt in 0..DASHBOARD_QUOTA_RECOVERY_MAX_ATTEMPTS {
+        let pause = next_pause
+            .take()
+            .expect("each restart stages a page before its source check");
+        tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+            .await
+            .expect("recovery staged a page");
+        insert_dashboard_quota_recovery_sample(&store, 600 + attempt as i64, 998 - attempt as i64)
+            .await;
+        pause.release();
+        if attempt + 1 < DASHBOARD_QUOTA_RECOVERY_MAX_ATTEMPTS {
+            next_pause = Some(store.install_dashboard_overview_read_pause().await);
+        }
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(2), recovery)
+        .await
+        .expect("recovery must stop after a bounded number of source changes")
+        .expect("join quota recovery");
+    assert!(
+        matches!(
+            result,
+            Err(ProxyError::Deferred { operation, ref reason })
+                if operation == "admin_alerts_read" && reason == "read_budget"
+        ),
+        "recovery must defer rather than restart forever when every staged page changes source: {result:?}"
+    );
 }
 
 #[tokio::test]

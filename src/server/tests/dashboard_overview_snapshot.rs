@@ -493,6 +493,170 @@ async fn dashboard_overview_snapshot_serves_last_good_while_quota_recovery_runs(
 }
 
 #[tokio::test]
+async fn dashboard_overview_releases_loading_after_quota_recovery_restart_budget() {
+    const QUOTA_RECOVERY_ATTEMPTS: usize = 3;
+
+    let db_path = temp_db_path("dashboard-overview-quota-recovery-restart-budget");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-overview-quota-recovery-restart-budget".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+
+    let key_id = state
+        .proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list seeded keys")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(1_000_i64)
+    .bind(999_i64)
+    .bind(now - 20)
+    .bind("test")
+    .execute(&pool)
+    .await
+    .expect("insert initial quota sample");
+
+    let initial = load_dashboard_overview_snapshot(&state)
+        .await
+        .expect("initial overview snapshot");
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id, quota_limit, quota_remaining, captured_at, source
+        ) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(1_000_i64)
+    .bind(998_i64)
+    .bind(now - 100)
+    .bind("test")
+    .execute(&pool)
+    .await
+    .expect("insert out-of-order quota sample");
+    state.proxy.mark_dashboard_read_dirty_for_test().await;
+    expire_dashboard_overview_freshness_probe(&state).await;
+
+    let freshness = compute_dashboard_overview_freshness(&state)
+        .await
+        .expect("read quota-change freshness");
+    assert!(
+        initial.freshness.differs_only_by_quota_charge(&freshness),
+        "the controlled refresh must enter quota recovery"
+    );
+
+    let mut next_pause = Some(
+        state
+            .proxy
+            .install_dashboard_overview_read_pause_for_test()
+            .await,
+    );
+    let served = tokio::time::timeout(
+        Duration::from_millis(250),
+        load_dashboard_overview_snapshot(&state),
+    )
+    .await
+    .expect("warm overview must not wait for a refresh")
+    .expect("last-good overview snapshot");
+    assert!(
+        Arc::ptr_eq(&served, &initial),
+        "the initial request must retain immutable last-good while recovery stages",
+    );
+
+    for attempt in 0..QUOTA_RECOVERY_ATTEMPTS {
+        let pause = next_pause
+            .take()
+            .expect("every restarted recovery stages a page");
+        tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+            .await
+            .expect("background recovery staged a page");
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quota_sync_samples (
+                key_id, quota_limit, quota_remaining, captured_at, source
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(1_000_i64)
+        .bind(997_i64 - attempt as i64)
+        .bind(now - 101 - attempt as i64)
+        .bind("test")
+        .execute(&pool)
+        .await
+        .expect("advance source after each staged page");
+        pause.release();
+        if attempt + 1 < QUOTA_RECOVERY_ATTEMPTS {
+            next_pause = Some(
+                state
+                    .proxy
+                    .install_dashboard_overview_read_pause_for_test()
+                    .await,
+            );
+        }
+    }
+
+    let settled = wait_for_dashboard_overview_refresh(&state).await;
+    assert!(
+        Arc::ptr_eq(&settled, &initial),
+        "a deferred recovery must leave immutable last-good published",
+    );
+    let cache_handle = dashboard_overview_cache_for_state(state.as_ref());
+    let cache = cache_handle.lock().await;
+    assert!(
+        !cache.loading,
+        "a bounded deferred recovery must release the overview singleflight loader",
+    );
+    assert!(
+        Arc::ptr_eq(
+            &cache
+                .cached
+                .as_ref()
+                .expect("last-good cache entry")
+                .snapshot,
+            &initial
+        ),
+        "the cache must not publish a partial or mixed recovery model",
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn dashboard_pressure_returns_last_good_without_refresh() {
     let db_path = temp_db_path("dashboard-overview-pressure-last-good");
     let db_str = db_path.to_string_lossy().to_string();

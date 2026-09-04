@@ -13,6 +13,8 @@ struct RequestLogCatalogRollupKeyParts<'a> {
 
 const DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE: i64 = 32;
 const DASHBOARD_QUOTA_SOURCE_PAGE_SIZE: i64 = 32;
+const DASHBOARD_QUOTA_SOURCE_MAX_PAGES: usize = 4;
+const DASHBOARD_QUOTA_RECOVERY_MAX_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug)]
 struct DashboardQuotaRecoveryCursor {
@@ -2235,9 +2237,20 @@ impl KeyStore {
         })
     }
 
+    fn dashboard_quota_read_budget_deferred(&self) -> ProxyError {
+        self.sqlite_runtime.record_deferred(
+            SqliteOperation::AdminAlertsCacheWarm,
+            SqliteAdmissionDeferReason::QueryDeadline,
+        );
+        ProxyError::Deferred {
+            operation: "admin_alerts_read",
+            reason: "read_budget".to_string(),
+        }
+    }
+
     async fn fetch_dashboard_quota_source_id(&self, today_end: i64) -> Result<i64, ProxyError> {
         let mut before_id = None;
-        loop {
+        for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
             let mut session = self
                 .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
                 .await?;
@@ -2286,8 +2299,12 @@ impl KeyStore {
             let Some((last_id, _)) = samples.last().copied() else {
                 return Ok(0);
             };
+            if samples.len() < DASHBOARD_QUOTA_SOURCE_PAGE_SIZE as usize {
+                return Ok(0);
+            }
             before_id = Some(last_id);
         }
+        Err(self.dashboard_quota_read_budget_deferred())
     }
 
     async fn fetch_dashboard_quota_source_captured_at(
@@ -2328,7 +2345,7 @@ impl KeyStore {
             ..
         } = bounds;
         let sample_window_start = yesterday_start.min(month_quota_charge_start);
-        'restart: loop {
+        for _ in 0..DASHBOARD_QUOTA_RECOVERY_MAX_ATTEMPTS {
             let target = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
             let mut model = DashboardQuotaChargeReadModel::empty(bounds, stale_key_count, target);
             let mut cursor = None;
@@ -2358,18 +2375,19 @@ impl KeyStore {
                 self.wait_for_dashboard_overview_read_pause_if_installed()
                     .await;
                 if self.fetch_dashboard_quota_sample_watermark(today_end).await? != target {
-                    continue 'restart;
+                    break;
                 }
                 if samples.len() < DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE as usize {
                     model.finish_recovery();
                     if self.fetch_dashboard_quota_sample_watermark(today_end).await? == target {
                         return Ok(model);
                     }
-                    continue 'restart;
+                    break;
                 }
                 cursor = samples.last().map(DashboardQuotaRecoveryCursor::from);
             }
         }
+        Err(self.dashboard_quota_read_budget_deferred())
     }
 
     pub(crate) async fn fetch_dashboard_quota_incremental_samples(
