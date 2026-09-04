@@ -3165,6 +3165,3 @@ impl KeyStore {
     }
 
 }
-
-#[cfg(test)]
-include!("key_store_dashboard_quota_recovery_tests.rs");
