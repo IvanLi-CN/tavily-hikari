@@ -2649,6 +2649,50 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .expect("seed partial work state");
 
     sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+           ON CONFLICT(token_id, key_id, period_code) DO UPDATE SET
+             project_id = excluded.project_id,
+             billing_subject = excluded.billing_subject,
+             period_start = excluded.period_start,
+             period_end = excluded.period_end,
+             request_count = excluded.request_count,
+             first_used_at = excluded.first_used_at,
+             last_used_at = excluded.last_used_at,
+             updated_at = excluded.updated_at,
+             settlement_mode = excluded.settlement_mode"#,
+    )
+    .bind(&candidate.token_id)
+    .bind(&first_key_id)
+    .bind(&candidate.period_code)
+    .bind(&candidate.project_id)
+    .bind(&candidate.billing_subject)
+    .bind(candidate.period_start)
+    .bind(candidate.period_end)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("replay an equal reconciliation source payload");
+    let replayed_state: (i64, i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read replayed work state");
+    assert_eq!(
+        replayed_state,
+        (1, 0, now + 30, Some("remote_attempt_budget".to_string()))
+    );
+
+    sqlx::query(
         "UPDATE upstream_reconciliation_usage \
          SET first_used_at = first_used_at, last_used_at = last_used_at + 1, \
              updated_at = updated_at + 1, request_count = request_count \
@@ -2827,6 +2871,22 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert durable work");
+    proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            1,
+            &[ReconciliationKeyObservation {
+                key_id: "key-observation-fence-key".to_string(),
+                upstream_usage: 4,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: 1,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("persist a partial observation before stale work");
 
     let stale_generation = proxy
         .key_store
@@ -2855,7 +2915,10 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read rejected generation observations");
-    assert_eq!(count, 0);
+    assert_eq!(
+        count, 1,
+        "a stale generation must retain prior observations"
+    );
 
     let queued = proxy
         .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
@@ -2895,7 +2958,7 @@ async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read rejected stale-claim observations");
-    assert_eq!(count, 0);
+    assert_eq!(count, 1, "a stale claim must retain prior observations");
 
     sqlx::query(
         "UPDATE scheduled_jobs SET available_at = 0 WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
