@@ -79,6 +79,7 @@ struct DashboardOverviewCacheState {
     loading_generation: u64,
     built_request_stats_generation: Option<u64>,
     alert_projection_generation: u64,
+    admin_alerts_projection_generation: u64,
     built_alert_projection_generation: Option<u64>,
     last_refresh_requested_at: Option<tokio::time::Instant>,
     last_freshness_probe_at: Option<tokio::time::Instant>,
@@ -106,6 +107,7 @@ impl Default for DashboardOverviewCacheState {
             loading_generation: 0,
             built_request_stats_generation: None,
             alert_projection_generation: 0,
+            admin_alerts_projection_generation: 0,
             built_alert_projection_generation: None,
             last_refresh_requested_at: None,
             last_freshness_probe_at: None,
@@ -192,11 +194,17 @@ enum AdminAlertsReadCacheValue {
     Groups(PaginatedAlertGroups),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdminAlertsProjectionGeneration {
+    alerts: u64,
+    dashboard: u64,
+}
+
 #[derive(Debug, Clone)]
 struct AdminAlertsReadCacheEntry {
     key: String,
     value: AdminAlertsReadCacheValue,
-    generation: u64,
+    generation: AdminAlertsProjectionGeneration,
     canonical: bool,
     observed_at: i64,
     stored_at: tokio::time::Instant,
@@ -265,14 +273,23 @@ async fn admin_alerts_last_good(
 async fn admin_alerts_canonical_last_good(
     state: &AppState,
     key: &str,
-) -> Option<(AdminAlertsReadCacheValue, i64, u64, u64)> {
+) -> Option<(
+    AdminAlertsReadCacheValue,
+    i64,
+    AdminAlertsProjectionGeneration,
+    AdminAlertsProjectionGeneration,
+)> {
     let cache = dashboard_overview_cache_for_state(state);
     let mut cache = cache.lock().await;
     let position = cache.admin_alerts.entries.iter().position(|entry| {
         entry.key == key && entry.canonical && entry.stored_at.elapsed() <= ADMIN_ALERTS_CACHE_TTL
     })?;
     let entry = cache.admin_alerts.entries.remove(position)?;
-    let result = (entry.value.clone(), entry.observed_at, entry.generation, cache.alert_projection_generation);
+    let current_generation = AdminAlertsProjectionGeneration {
+        alerts: cache.admin_alerts_projection_generation,
+        dashboard: cache.alert_projection_generation,
+    };
+    let result = (entry.value.clone(), entry.observed_at, entry.generation, current_generation);
     cache.admin_alerts.entries.push_front(entry);
     Some(result)
 }
@@ -291,18 +308,20 @@ async fn record_admin_alerts_last_good(
     .await;
 }
 
-async fn current_admin_alerts_generation(state: &AppState) -> u64 {
-    dashboard_overview_cache_for_state(state)
-        .lock()
-        .await
-        .alert_projection_generation
+async fn current_admin_alerts_generation(state: &AppState) -> AdminAlertsProjectionGeneration {
+    let cache = dashboard_overview_cache_for_state(state);
+    let cache = cache.lock().await;
+    AdminAlertsProjectionGeneration {
+        alerts: cache.admin_alerts_projection_generation,
+        dashboard: cache.alert_projection_generation,
+    }
 }
 
 async fn record_admin_alerts_last_good_at_generation(
     state: &AppState,
     key: String,
     value: AdminAlertsReadCacheValue,
-    generation: u64,
+    generation: AdminAlertsProjectionGeneration,
 ) {
     let cache = dashboard_overview_cache_for_state(state);
     let mut cache = cache.lock().await;
@@ -316,18 +335,7 @@ async fn record_admin_alerts_last_good_at_generation(
         observed_at: state.proxy.backend_time().now_ts(),
         stored_at: tokio::time::Instant::now(),
     });
-    while cache.admin_alerts.entries.len() > ADMIN_ALERTS_CACHE_CAPACITY {
-        if let Some(index) = cache
-            .admin_alerts
-            .entries
-            .iter()
-            .rposition(|entry| !entry.canonical)
-        {
-            cache.admin_alerts.entries.remove(index);
-        } else {
-            break;
-        }
-    }
+    retain_admin_alerts_cache_capacity(&mut cache);
 }
 
 #[cfg(test)]
@@ -349,7 +357,7 @@ pub(crate) async fn expire_admin_alerts_canonical_last_good_for_test(
 
 async fn publish_admin_alerts_canonical(
     state: &AppState,
-    generation: u64,
+    generation: AdminAlertsProjectionGeneration,
     catalog: AlertCatalog,
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
@@ -369,14 +377,18 @@ async fn publish_admin_alerts_canonical(
 
 fn publish_admin_alerts_canonical_into_cache(
     cache: &mut DashboardOverviewCacheState,
-    generation: u64,
+    generation: AdminAlertsProjectionGeneration,
     observed_at: i64,
     stored_at: tokio::time::Instant,
     catalog: AlertCatalog,
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
 ) -> bool {
-    if cache.alert_projection_generation != generation {
+    if (AdminAlertsProjectionGeneration {
+        alerts: cache.admin_alerts_projection_generation,
+        dashboard: cache.alert_projection_generation,
+    }) != generation
+    {
         return false;
     }
     for (key, value) in [
@@ -400,6 +412,11 @@ fn publish_admin_alerts_canonical_into_cache(
             stored_at,
         });
     }
+    retain_admin_alerts_cache_capacity(cache);
+    true
+}
+
+fn retain_admin_alerts_cache_capacity(cache: &mut DashboardOverviewCacheState) {
     while cache.admin_alerts.entries.len() > ADMIN_ALERTS_CACHE_CAPACITY {
         if let Some(index) = cache
             .admin_alerts
@@ -412,7 +429,6 @@ fn publish_admin_alerts_canonical_into_cache(
             break;
         }
     }
-    true
 }
 
 fn default_admin_alert_cache_key(kind: &str) -> String {
@@ -429,6 +445,17 @@ fn default_admin_alert_cache_key(kind: &str) -> String {
         20_i64,
     ))
     .expect("default admin Alerts cache key fields are serializable")
+}
+
+pub(crate) async fn mark_admin_alerts_projection_generation(state: &AppState) {
+    let cache = dashboard_overview_cache_for_state(state);
+    let mut cache = cache.lock().await;
+    cache.admin_alerts_projection_generation =
+        cache.admin_alerts_projection_generation.wrapping_add(1);
+    // Every completed Alerts sidecar slice invalidates the canonical cache.
+    // The warm controller can retry immediately, while Dashboard refreshes
+    // remain tied to their narrower recent-summary generation.
+    cache.admin_alerts_prewarm_not_before = None;
 }
 
 pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
@@ -863,9 +890,10 @@ pub(crate) async fn prime_admin_privacy_status_for_test(state: Arc<AppState>) {
 #[cfg(test)]
 mod admin_alerts_prewarm_tests {
     use super::{
-        ADMIN_ALERTS_PREWARM_MIN_INTERVAL, AdminAlertsReadCacheValue, AlertCatalog,
-        DashboardOverviewCacheState, PaginatedAlertEvents, PaginatedAlertGroups,
-        publish_admin_alerts_canonical_into_cache,
+        ADMIN_ALERTS_CACHE_CAPACITY, ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
+        AdminAlertsProjectionGeneration, AdminAlertsReadCacheEntry, AdminAlertsReadCacheValue,
+        AlertCatalog, DashboardOverviewCacheState, PaginatedAlertEvents, PaginatedAlertGroups,
+        publish_admin_alerts_canonical_into_cache, retain_admin_alerts_cache_capacity,
     };
 
     fn empty_catalog() -> AlertCatalog {
@@ -952,16 +980,24 @@ mod admin_alerts_prewarm_tests {
     }
 
     #[test]
-    fn canonical_publish_discards_all_staged_values_after_a_generation_change() {
+    fn canonical_publish_discards_all_staged_values_after_an_alerts_generation_change() {
         let mut cache = DashboardOverviewCacheState {
-            alert_projection_generation: 2,
+            admin_alerts_projection_generation: 2,
             ..Default::default()
+        };
+        let prior_generation = AdminAlertsProjectionGeneration {
+            alerts: 1,
+            dashboard: 0,
+        };
+        let current_generation = AdminAlertsProjectionGeneration {
+            alerts: 2,
+            dashboard: 0,
         };
 
         assert!(
             !publish_admin_alerts_canonical_into_cache(
                 &mut cache,
-                1,
+                prior_generation,
                 123,
                 tokio::time::Instant::now(),
                 empty_catalog(),
@@ -974,7 +1010,7 @@ mod admin_alerts_prewarm_tests {
 
         assert!(publish_admin_alerts_canonical_into_cache(
             &mut cache,
-            2,
+            current_generation,
             124,
             tokio::time::Instant::now(),
             empty_catalog(),
@@ -986,11 +1022,57 @@ mod admin_alerts_prewarm_tests {
             .admin_alerts
             .entries
             .iter()
-            .all(|entry| entry.generation == 2 && entry.canonical));
+            .all(|entry| entry.generation == current_generation && entry.canonical));
         assert!(matches!(
             cache.admin_alerts.entries[0].value,
             AdminAlertsReadCacheValue::Groups(_)
         ));
+    }
+
+    #[test]
+    fn canonical_alerts_entries_remain_pinned_in_a_bounded_cache() {
+        let generation = AdminAlertsProjectionGeneration {
+            alerts: 1,
+            dashboard: 1,
+        };
+        let mut cache = DashboardOverviewCacheState {
+            alert_projection_generation: generation.dashboard,
+            admin_alerts_projection_generation: generation.alerts,
+            ..Default::default()
+        };
+        assert!(publish_admin_alerts_canonical_into_cache(
+            &mut cache,
+            generation,
+            123,
+            tokio::time::Instant::now(),
+            empty_catalog(),
+            empty_events(),
+            empty_groups(),
+        ));
+
+        for index in 0..ADMIN_ALERTS_CACHE_CAPACITY {
+            cache.admin_alerts.entries.push_back(AdminAlertsReadCacheEntry {
+                key: format!("query-{index}"),
+                value: AdminAlertsReadCacheValue::Events(empty_events()),
+                generation,
+                canonical: false,
+                observed_at: 123,
+                stored_at: tokio::time::Instant::now(),
+            });
+        }
+        retain_admin_alerts_cache_capacity(&mut cache);
+
+        assert_eq!(cache.admin_alerts.entries.len(), ADMIN_ALERTS_CACHE_CAPACITY);
+        for key in [
+            "catalog".to_string(),
+            super::default_admin_alert_cache_key("events"),
+            super::default_admin_alert_cache_key("groups"),
+        ] {
+            assert!(
+                cache.admin_alerts.entries.iter().any(|entry| entry.key == key),
+                "canonical cache key {key} must remain pinned"
+            );
+        }
     }
 }
 

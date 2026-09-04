@@ -550,6 +550,127 @@ fn unrecoverable_quota_events_fall_back_to_compat_groups() {
 }
 
 #[tokio::test]
+async fn canonical_alerts_warm_reads_are_independently_bounded_and_reusable() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let db_path = temp_dir.path().join("alerts-canonical-warm-bounded.db");
+    let store = KeyStore::new_with_time(
+        &db_path.to_string_lossy(),
+        BackendTime::system(),
+    )
+    .await
+    .expect("create key store");
+
+    store
+        .sqlite_runtime
+        .force_next_cooperative_query_deadline_for_test();
+    let catalog = store
+        .fetch_admin_alert_catalog_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+        .await;
+    assert!(
+        matches!(
+            &catalog,
+            Err(ProxyError::Deferred { operation, reason })
+                if *operation == "admin_alerts_read" && reason == "read_budget"
+        ),
+        "catalog warm must use its own bounded projected read: {catalog:?}"
+    );
+    store
+        .fetch_admin_alert_catalog_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect("a later catalog warm read is reusable");
+
+    store
+        .sqlite_runtime
+        .force_next_cooperative_query_deadline_for_test();
+    let events = store
+        .fetch_admin_alert_events_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await;
+    assert!(
+        matches!(
+            &events,
+            Err(ProxyError::Deferred { operation, reason })
+                if *operation == "admin_alerts_read" && reason == "read_budget"
+        ),
+        "events warm must use its own bounded projected read: {events:?}"
+    );
+    store
+        .fetch_admin_alert_events_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("a later events warm read is reusable");
+
+    store
+        .sqlite_runtime
+        .force_next_cooperative_query_deadline_for_test();
+    let groups = store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await;
+    assert!(
+        matches!(
+            &groups,
+            Err(ProxyError::Deferred { operation, reason })
+                if *operation == "admin_alerts_read" && reason == "read_budget"
+        ),
+        "groups warm must use its own bounded projected read: {groups:?}"
+    );
+    store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("a later groups warm read is reusable");
+
+    assert_eq!(
+        store
+            .sqlite_runtime
+            .discarded_connections_for_test(SqliteOperation::AdminAlertsCacheWarm),
+        0,
+        "a deferred cache warm read restores its SQLite connection"
+    );
+}
+
+#[tokio::test]
 async fn fetch_alert_groups_page_executes_sqlite_grouped_query_for_mother_and_compat_groups() {
     let temp_dir = tempdir().expect("create temp dir");
     let db_path = temp_dir.path().join("alerts-groups.db");

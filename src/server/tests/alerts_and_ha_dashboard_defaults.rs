@@ -701,7 +701,7 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
 }
 
 #[tokio::test]
-async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses() {
+async fn admin_alerts_background_warm_retries_and_preserves_last_good_contract() {
     let db_path = temp_db_path("admin-alerts-last-good");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -772,39 +772,62 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
         }
     }
     assert!(projection_ready, "empty projection must complete before warming admin cache");
-    let catalog = state
-        .proxy
-        .admin_alert_catalog()
-        .await
-        .expect("build canonical catalog for the warm-cache fixture");
-    super::super::record_admin_alerts_last_good(
-        state.as_ref(),
-        "catalog".to_string(),
-        super::super::AdminAlertsReadCacheValue::Catalog(catalog),
-    )
-    .await;
-    let events = state
-        .proxy
-        .admin_alert_events_page(None, None, None, None, None, None, &[], 1, 20)
-        .await
-        .expect("build canonical events for the warm-cache fixture");
-    super::super::record_admin_alerts_last_good(
-        state.as_ref(),
-        super::super::default_admin_alert_cache_key("events"),
-        super::super::AdminAlertsReadCacheValue::Events(events),
-    )
-    .await;
-    let groups = state
-        .proxy
-        .admin_alert_groups_page(None, None, None, None, None, None, &[], 1, 20)
-        .await
-        .expect("build canonical groups for the warm-cache fixture");
-    super::super::record_admin_alerts_last_good(
-        state.as_ref(),
-        super::super::default_admin_alert_cache_key("groups"),
-        super::super::AdminAlertsReadCacheValue::Groups(groups),
-    )
-    .await;
+    state.proxy.force_next_admin_alert_read_deadline_for_test();
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            if cache.admin_alerts_prewarm_defers > 0 {
+                assert!(
+                    cache.admin_alerts.entries.iter().all(|entry| !entry.canonical),
+                    "a deferred projected read must not publish a partial canonical generation"
+                );
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the forced bounded warm read defers");
+
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let current_generation = super::super::AdminAlertsProjectionGeneration {
+                alerts: cache.admin_alerts_projection_generation,
+                dashboard: cache.alert_projection_generation,
+            };
+            let complete_generation = cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .all(|entry| entry.generation == current_generation)
+                && [
+                    "catalog".to_string(),
+                    super::super::default_admin_alert_cache_key("events"),
+                    super::super::default_admin_alert_cache_key("groups"),
+                ]
+                .into_iter()
+                .all(|key| {
+                    cache
+                        .admin_alerts
+                        .entries
+                        .iter()
+                        .any(|entry| entry.canonical && entry.key == key)
+                });
+            if complete_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the background warmer retries a transient bounded read and publishes all canonical keys");
     for route in ["catalog", "events", "groups"] {
         let warm = client
             .get(format!("http://{admin_addr}/api/alerts/{route}"))
