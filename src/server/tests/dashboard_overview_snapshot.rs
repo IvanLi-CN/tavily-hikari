@@ -440,6 +440,14 @@ async fn dashboard_overview_snapshot_serves_last_good_while_quota_recovery_runs(
         initial.freshness.differs_only_by_quota_charge(&freshness),
         "the controlled refresh must enter the quota-only recovery path"
     );
+    let mut non_quota_change = freshness.clone();
+    non_quota_change.request_log_retention_days += 1;
+    assert!(
+        !initial
+            .freshness
+            .differs_only_by_quota_charge(&non_quota_change),
+        "a non-quota freshness change must not use the quota-only path"
+    );
     let expected_freshness_probe_count = dashboard_overview_freshness_probe_count(&state).await + 1;
 
     let served = tokio::time::timeout(

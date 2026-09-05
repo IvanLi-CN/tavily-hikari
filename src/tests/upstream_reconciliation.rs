@@ -23,40 +23,8 @@ pub(super) fn reconciliation_test_db_path() -> PathBuf {
     dir.join("test.db")
 }
 
-struct ReconciliationRetriesEnvGuard {
-    previous: Option<String>,
-    _guard: tokio::sync::OwnedMutexGuard<()>,
-}
-
-impl ReconciliationRetriesEnvGuard {
-    async fn enable_once() -> Self {
-        let guard = env_lock().lock_owned().await;
-        let previous = std::env::var("HIKARI_RECONCILIATION_RETRIES").ok();
-        unsafe {
-            std::env::set_var("HIKARI_RECONCILIATION_RETRIES", "1");
-        }
-        Self {
-            previous,
-            _guard: guard,
-        }
-    }
-}
-
-impl Drop for ReconciliationRetriesEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            if let Some(previous) = self.previous.as_deref() {
-                std::env::set_var("HIKARI_RECONCILIATION_RETRIES", previous);
-            } else {
-                std::env::remove_var("HIKARI_RECONCILIATION_RETRIES");
-            }
-        }
-    }
-}
-
 #[tokio::test]
 async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_success() {
-    let _retries = ReconciliationRetriesEnvGuard::enable_once().await;
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
     let now = local_ts(2026, 9, 5, 12, 0);
@@ -70,6 +38,7 @@ async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_succe
     )
     .await
     .expect("create proxy");
+    proxy.enable_controlled_reconciliation_retry_for_test();
     let initial = proxy
         .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
         .await
