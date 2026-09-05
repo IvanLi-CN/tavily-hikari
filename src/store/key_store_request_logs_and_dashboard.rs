@@ -2437,8 +2437,8 @@ impl KeyStore {
         )
         .bind(after.source_id)
         .bind(today_end)
-        .bind(today_end)
         .bind(limit.max(1))
+        .bind(today_end)
         .fetch_all(&mut *session)
         .await;
         let rows = session.query(query_result).await;
