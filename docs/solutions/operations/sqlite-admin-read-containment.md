@@ -81,6 +81,9 @@ reads:
   foreground SQLite activity, or client retries can indefinitely defer the background owner. A configured
   passkey session lookup and a noncanonical exact-key bounded-read fallback each record their real
   foreground SQLite work.
+- Treat every durable alert projection advance, including history-only slices, as a canonical cache
+  generation change. The scheduler must fence the three staged values against that generation so a
+  partial or cancelled warm never replaces the prior exact-key last-good set.
 - Apply the same last-good boundary to the single-key privacy-status read. Keep the immutable
   successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
   while cold pressure fails fast with `503 Retry-After: 1`. The HTTP path is bounded to 250ms and,
