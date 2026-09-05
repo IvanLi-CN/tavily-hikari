@@ -192,6 +192,19 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `idle alert probe`: a source-fence check that finds no work. It is not projection progress: it
   never advances a cursor or generation, and a separate low-frequency observation heartbeat keeps
   recent-tail coverage explicit.
+- `canonical warm publication`: the Alerts warm controller reads each canonical catalog, events,
+  and groups key once per projection generation. It stages the three values and publishes them as a
+  single generation-fenced snapshot only after all keys have complete coverage; a partial or mixed
+  generation is never visible to HTTP.
+- `reconciliation source revision`: the logical revision of a usage-to-work input. It advances only
+  when billing identity, period bounds, request counts/timestamps, or the current upstream Key set
+  changes. Storage timestamps, identical payload imports, and replay bookkeeping do not reopen a
+  completed generation. Partial per-Key observations remain resumable until every key in the
+  current revision has been accepted.
+- `quota sample watermark`: the append-only primary-key/time boundary consumed by the Dashboard
+  quota-charge read model. A new sample advances only a bounded background slice and patches the
+  immutable last-good snapshot; it does not trigger a full overview rebuild or make HTTP wait for
+  backfill.
 
 ## HA Terms
 

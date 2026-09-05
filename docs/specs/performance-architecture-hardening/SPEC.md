@@ -141,6 +141,26 @@
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
+### Initiative boundaries
+
+- **Canonical Alerts warm:** the AppState-owned controller performs one bounded read for each
+  catalog, events page `1/20`, and groups page `1/20` key per projection generation. Values remain
+  staged until all three reads have complete coverage at the same generation, then publish
+  atomically. HTTP is cache-only and never starts or waits for a warm build.
+- **Reconciliation logical source revision:** usage-to-work generation advances only for a logical
+  change to project/billing identity, period bounds, request counts or usage timestamps, or the
+  current upstream Key set. Storage timestamp refreshes, equal payload imports and replay metadata
+  do not reopen a completed generation. Generation-scoped partial Key observations are resumable;
+  terminalization waits for every current-generation Key and does not change compare billing truth.
+- **Dashboard quota slice:** append-only quota samples are consumed by a bounded background
+  primary-key/time watermark. A sample update produces an immutable quota-only patch and does not
+  trigger a full overview payload build. Out-of-order or backfilled samples are rebuilt in the
+  background; HTTP/SSE continue to serve the last-good snapshot.
+
+These boundaries are independent Ticket ownership surfaces. They share the existing runtime,
+SQLite, public JSON, reconciliation mode, and remote concurrency contracts; integration validation,
+checkpoint promotion, and stable release remain serialized.
+
 ### Core flows
 
 1. Promotion 创建新 writable revision，并恰好启动一套 `MaintenanceRuntime`。
