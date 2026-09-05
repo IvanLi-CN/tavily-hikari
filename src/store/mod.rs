@@ -1279,20 +1279,6 @@ pub(crate) async fn begin_read_snapshot_sqlite_connection(
         .await
 }
 
-#[derive(Debug, Clone, Copy)]
-struct QuotaSyncSampleRow {
-    quota_remaining: i64,
-    captured_at: i64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct QuotaChargeAccumulator {
-    upstream_actual_credits: i64,
-    sampled_key_count: i64,
-    stale_key_count: i64,
-    latest_sync_at: Option<i64>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ApiKeyTransientBackoffState {
     pub(crate) cooldown_until: i64,
@@ -2773,6 +2759,7 @@ include!("key_store_announcements.rs");
 include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_dashboard_month_series.rs");
 include!("key_store_dashboard_rollup_integrity.rs");
+include!("key_store_dashboard_and_job_read_models.rs");
 include!("key_store_request_stats_flush_and_public_metrics.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_request_logs_summary_windows.rs");
@@ -2802,6 +2789,7 @@ mod tests {
     }
 
     include!("key_store_runtime_logging_tests.rs");
+    include!("key_store_dashboard_quota_recovery_tests.rs");
 
     #[test]
     fn db_operation_log_format_includes_operation_context_and_error() {
