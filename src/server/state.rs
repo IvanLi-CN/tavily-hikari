@@ -89,7 +89,9 @@ struct DashboardOverviewCacheState {
     admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
     admin_alerts_prewarm_defers: u8,
     #[cfg(test)]
-    admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmAfterCatalogPause>,
+    admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
+    admin_alerts_warm_before_projection_fence_pause: Option<AdminAlertsWarmPause>,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -119,6 +121,8 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_prewarm_defers: 0,
             #[cfg(test)]
             admin_alerts_warm_after_catalog_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_before_projection_fence_pause: None,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -158,7 +162,7 @@ fn admin_alerts_warm_error_reason(error: &tavily_hikari::ProxyError) -> &'static
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub(crate) struct AdminAlertsWarmAfterCatalogPause {
+pub(crate) struct AdminAlertsWarmPause {
     arrived: Arc<std::sync::atomic::AtomicBool>,
     arrived_notify: Arc<Notify>,
     released: Arc<std::sync::atomic::AtomicBool>,
@@ -166,7 +170,7 @@ pub(crate) struct AdminAlertsWarmAfterCatalogPause {
 }
 
 #[cfg(test)]
-impl AdminAlertsWarmAfterCatalogPause {
+impl AdminAlertsWarmPause {
     fn new() -> Self {
         Self {
             arrived: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -532,6 +536,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .proxy
                     .admin_alert_groups_page_for_cache_warm(1, 20)
                     .await?;
+                #[cfg(test)]
+                pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
+                if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                    return Err(admin_alerts_warm_deferred(reason));
+                }
                 if state
                     .proxy
                     .admin_alerts_canonical_warm_projection_fence()
@@ -616,12 +625,24 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
 #[cfg(test)]
 pub(crate) async fn install_admin_alerts_warm_after_catalog_pause_for_test(
     state: &AppState,
-) -> AdminAlertsWarmAfterCatalogPause {
-    let pause = AdminAlertsWarmAfterCatalogPause::new();
+) -> AdminAlertsWarmPause {
+    let pause = AdminAlertsWarmPause::new();
     dashboard_overview_cache_for_state(state)
         .lock()
         .await
         .admin_alerts_warm_after_catalog_pause = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
+pub(crate) async fn install_admin_alerts_warm_before_projection_fence_pause_for_test(
+    state: &AppState,
+) -> AdminAlertsWarmPause {
+    let pause = AdminAlertsWarmPause::new();
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_before_projection_fence_pause = Some(pause.clone());
     pause
 }
 
@@ -643,6 +664,24 @@ async fn pause_admin_alerts_warm_after_catalog_for_test(state: &AppState) {
     let Some(pause) = pause else {
         return;
     };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_before_projection_fence_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_before_projection_fence_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_for_test(pause: AdminAlertsWarmPause) {
     pause
         .arrived
         .store(true, std::sync::atomic::Ordering::Release);

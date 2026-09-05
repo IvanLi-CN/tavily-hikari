@@ -1005,6 +1005,86 @@ async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slic
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_defers_before_final_fence_when_pressure_arrives_between_slices() {
+    let db_path = temp_db_path("admin-alerts-final-fence-pressure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-final-fence-pressure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-final-fence-pressure-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before warming admin cache");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    let pause = super::super::install_admin_alerts_warm_before_projection_fence_pause_for_test(
+        state.as_ref(),
+    )
+    .await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pause.wait_until_arrived(),
+    )
+    .await
+    .expect("the retry reaches the groups-to-fence pause");
+
+    state.proxy.force_next_admin_alert_read_deadline_for_test();
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes pressure after the groups slice"
+    );
+    pause.release();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            if cache.admin_alerts_prewarm_defers > 0 {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("pressure before the final fence defers the canonical warm");
+
+    assert!(
+        state
+            .proxy
+            .admin_alerts_canonical_warm_projection_fence()
+            .await
+            .is_err(),
+        "the deferred warmer must not consume the final fence read budget"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_read_waits_for_history_projection_coverage() {
     let db_path = temp_db_path("admin-alerts-history-coverage");
     let db_str = db_path.to_string_lossy().to_string();
