@@ -88,6 +88,10 @@ struct DashboardOverviewCacheState {
     admin_alerts_prewarm_in_flight: bool,
     admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
     admin_alerts_prewarm_defers: u8,
+    #[cfg(test)]
+    admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
+    admin_alerts_warm_before_projection_fence_pause: Option<AdminAlertsWarmPause>,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -115,6 +119,10 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_prewarm_in_flight: false,
             admin_alerts_prewarm_not_before: None,
             admin_alerts_prewarm_defers: 0,
+            #[cfg(test)]
+            admin_alerts_warm_after_catalog_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_before_projection_fence_pause: None,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -145,9 +153,50 @@ fn admin_alerts_warm_error_reason(error: &tavily_hikari::ProxyError) -> &'static
         "foreground_pressure" => "foreground_pressure",
         "pool_pressure" => "pool_pressure",
         "recent_contention" => "recent_contention",
+        "projection_fence_changed" => "projection_fence_changed",
         "projection_generation_changed" => "projection_generation_changed",
         "read_budget" => "read_budget",
         _ => "deferred",
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct AdminAlertsWarmPause {
+    arrived: Arc<std::sync::atomic::AtomicBool>,
+    arrived_notify: Arc<Notify>,
+    released: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl AdminAlertsWarmPause {
+    fn new() -> Self {
+        Self {
+            arrived: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            arrived_notify: Arc::new(Notify::new()),
+            released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            release: Arc::new(Notify::new()),
+        }
+    }
+
+    pub(crate) async fn wait_until_arrived(&self) {
+        loop {
+            if self.arrived.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            let notified = self.arrived_notify.notified();
+            if self.arrived.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        self.released
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.release.notify_waiters();
     }
 }
 
@@ -459,12 +508,18 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             }
             let generation = current_admin_alerts_generation(state.as_ref()).await;
             let result = async {
+                let durable_projection_fence = state
+                    .proxy
+                    .admin_alerts_canonical_warm_projection_fence()
+                    .await?;
                 state.proxy.prepare_admin_alerts_canonical_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
                 state.proxy.record_admin_alerts_warm_slice();
                 let catalog = state.proxy.admin_alert_catalog_for_cache_warm().await?;
+                #[cfg(test)]
+                pause_admin_alerts_warm_after_catalog_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -481,6 +536,23 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .proxy
                     .admin_alert_groups_page_for_cache_warm(1, 20)
                     .await?;
+                #[cfg(test)]
+                pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
+                if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                    return Err(admin_alerts_warm_deferred(reason));
+                }
+                if state
+                    .proxy
+                    .admin_alerts_canonical_warm_projection_fence()
+                    .await?
+                    != durable_projection_fence
+                {
+                    state.proxy.record_admin_alerts_warm_generation_discard();
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "projection_fence_changed".to_string(),
+                    });
+                }
                 if !publish_admin_alerts_canonical(
                     state.as_ref(),
                     generation,
@@ -548,6 +620,82 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+pub(crate) async fn install_admin_alerts_warm_after_catalog_pause_for_test(
+    state: &AppState,
+) -> AdminAlertsWarmPause {
+    let pause = AdminAlertsWarmPause::new();
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_catalog_pause = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
+pub(crate) async fn install_admin_alerts_warm_before_projection_fence_pause_for_test(
+    state: &AppState,
+) -> AdminAlertsWarmPause {
+    let pause = AdminAlertsWarmPause::new();
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_before_projection_fence_pause = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
+pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_prewarm_not_before = None;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_catalog_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_catalog_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_before_projection_fence_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_before_projection_fence_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_for_test(pause: AdminAlertsWarmPause) {
+    pause
+        .arrived
+        .store(true, std::sync::atomic::Ordering::Release);
+    pause.arrived_notify.notify_waiters();
+    loop {
+        if pause.released.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let notified = pause.release.notified();
+        if pause.released.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        notified.await;
+    }
 }
 
 #[cfg(test)]
