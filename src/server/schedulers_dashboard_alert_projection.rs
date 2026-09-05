@@ -19,10 +19,13 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
             let mut next_delay_secs = DASHBOARD_ALERT_PROJECTION_INTERVAL_SECS;
             match state
                 .proxy
-                .advance_dashboard_alert_projection_scheduler_step()
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
                 .await
             {
-                Ok((true, _)) => {
+                Ok(step) if step.canonical_alerts_dirty => {
+                    // A projection advance moves the shared generation fence,
+                    // invalidating canonical Alerts entries before the warmer
+                    // stages a replacement set.
                     mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
                     if last_error.take().is_some() {
                         tracing::info!(
@@ -32,7 +35,7 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
                         );
                     }
                 }
-                Ok((false, true)) => {
+                Ok(step) if step.idle => {
                     next_delay_secs = DASHBOARD_ALERT_PROJECTION_IDLE_INTERVAL_SECS;
                     let now = state.proxy.backend_time().now_ts();
                     if now.saturating_sub(last_idle_observation_at)
@@ -54,7 +57,7 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
                         }
                     }
                 }
-                Ok((false, false)) => {}
+                Ok(_) => {}
                 Err(err) => {
                     let error = err.to_string();
                     if last_error.as_deref() != Some(error.as_str()) {
