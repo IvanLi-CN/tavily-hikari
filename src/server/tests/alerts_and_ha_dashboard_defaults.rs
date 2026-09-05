@@ -894,6 +894,117 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slices() {
+    let db_path = temp_db_path("admin-alerts-durable-warm-fence");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-durable-warm-fence".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-durable-warm-fence-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before warming admin cache");
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    let initial_last_good = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let canonical = cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .map(|entry| (entry.key.clone(), entry.generation, entry.stored_at))
+                .collect::<Vec<_>>();
+            if canonical.len() == 3 && !cache.admin_alerts_prewarm_in_flight {
+                break (cache.alert_projection_generation, canonical);
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial background warmer publishes canonical last-good values");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    let pause = super::super::install_admin_alerts_warm_after_catalog_pause_for_test(state.as_ref())
+        .await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        pause.wait_until_arrived(),
+    )
+    .await
+    .expect("the retry reaches the catalog-to-events pause");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let changed = sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET generation = generation + 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("commit a durable history projection generation between warm slices");
+    assert_eq!(changed.rows_affected(), 3);
+    {
+        let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let cache = cache_handle.lock().await;
+        assert_eq!(
+            cache.alert_projection_generation, initial_last_good.0,
+            "the scheduler has not yet propagated the durable projection commit into memory"
+        );
+    }
+    pause.release();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            if cache.admin_alerts_prewarm_defers > 0 {
+                let canonical = cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.canonical)
+                    .map(|entry| (entry.key.clone(), entry.generation, entry.stored_at))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    canonical, initial_last_good.1,
+                    "a durable generation change must discard staged values and retain last-good"
+                );
+                assert_eq!(cache.alert_projection_generation, initial_last_good.0);
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the durable fence mismatch defers the canonical warm");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_read_waits_for_history_projection_coverage() {
     let db_path = temp_db_path("admin-alerts-history-coverage");
     let db_str = db_path.to_string_lossy().to_string();

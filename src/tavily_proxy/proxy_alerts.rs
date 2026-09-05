@@ -70,6 +70,15 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn admin_alerts_canonical_warm_projection_fence(
+        &self,
+    ) -> Result<(i64, i64), ProxyError> {
+        self.key_store
+            .admin_alerts_canonical_warm_projection_fence()
+            .await
+    }
+
+    #[doc(hidden)]
     pub async fn prewarm_admin_alerts_cache_capacity(&self) -> Result<(), ProxyError> {
         self.key_store
             .sqlite_runtime

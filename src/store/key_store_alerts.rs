@@ -896,6 +896,33 @@ impl KeyStore {
         self.ensure_admin_alert_projection_coverage_for_warm().await
     }
 
+    pub(crate) async fn admin_alerts_canonical_warm_projection_fence(
+        &self,
+    ) -> Result<(i64, i64), ProxyError> {
+        // The canonical values use separate bounded snapshots. Capture both
+        // durable projection lanes before staging and again before publish so
+        // an intervening projection commit cannot mix their generations.
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let result = async {
+            let query_result = sqlx::query_as::<_, (i64, i64)>(
+                r#"SELECT
+                       (SELECT COALESCE(SUM(generation), 0)
+                          FROM observability.dashboard_alert_projection_state),
+                       (SELECT COALESCE(SUM(generation), 0)
+                          FROM observability.dashboard_alert_projection_history_state)"#,
+            )
+            .fetch_one(&mut *session)
+            .await;
+            session.query(query_result).await
+        }
+        .await;
+        let finish = session.finish().await;
+        finish?;
+        result
+    }
+
     async fn effective_auth_token_log_retention_days_in_admin_session(
         &self,
         session: &mut AdminAlertsReadSession,
