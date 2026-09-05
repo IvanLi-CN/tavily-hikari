@@ -1083,32 +1083,18 @@ struct DashboardSnapshot<'a> {
 
 impl DashboardOverviewFreshness {
     fn differs_only_by_quota_charge(&self, next: &Self) -> bool {
-        self.dashboard_quota_charge_token[..3] != next.dashboard_quota_charge_token[..3]
-            && self.summary[..8] == next.summary[..8]
-            && self.summary_last_activity == next.summary_last_activity
-            && self.summary_window_starts == next.summary_window_starts
-            && self.dashboard_rollup_signature == next.dashboard_rollup_signature
-            && self.pending_dashboard_rollup_signature == next.pending_dashboard_rollup_signature
-            && self.rollup_integrity == next.rollup_integrity
-            && self.dashboard_api_key_lifecycle_signature == next.dashboard_api_key_lifecycle_signature
-            && self.dashboard_quarantine_lifecycle_signature
-                == next.dashboard_quarantine_lifecycle_signature
-            && self.dashboard_exhausted_lifecycle_signature
-                == next.dashboard_exhausted_lifecycle_signature
-            && self.forward_proxy == next.forward_proxy
-            && self.exhausted_keys == next.exhausted_keys
-            && self.latest_request_log_id == next.latest_request_log_id
-            && self.recent_request_logs == next.recent_request_logs
-            && self.trend_request_logs == next.trend_request_logs
-            && self.recent_jobs == next.recent_jobs
-            && self.recent_alerts_token == next.recent_alerts_token
-            && self.recent_alerts_total_events == next.recent_alerts_total_events
-            && self.recent_alerts_grouped_count == next.recent_alerts_grouped_count
-            && self.recent_alerts_counts == next.recent_alerts_counts
-            && self.recent_alerts_top_groups == next.recent_alerts_top_groups
-            && self.request_log_retention_days == next.request_log_retention_days
-            && self.hourly_window_anchor == next.hourly_window_anchor
-            && self.retention_since == next.retention_since
+        if self.dashboard_quota_charge_token[..3] == next.dashboard_quota_charge_token[..3] {
+            return false;
+        }
+        let mut normalized_self = self.clone();
+        let mut normalized_next = next.clone();
+        for freshness in [&mut normalized_self, &mut normalized_next] {
+            freshness.dashboard_quota_charge_token = [0; 5];
+            freshness.dashboard_stale_key_count = 0;
+            freshness.latest_quota_sync_sample_at = None;
+            freshness.summary[8..].fill(0);
+        }
+        normalized_self == normalized_next
     }
 }
 

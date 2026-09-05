@@ -630,6 +630,8 @@ impl TavilyProxy {
             server_pressure_tail_replay_test_gate: Arc::new(
                 ServerPressureTailReplayTestGate::default(),
             ),
+            #[cfg(test)]
+            reconciliation_controlled_retry: Arc::new(AtomicBool::new(false)),
             health_readiness_grace_until: backend_time
                 .deadline_after(options.health_readiness_grace_period),
             backend_time,

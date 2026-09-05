@@ -917,6 +917,8 @@ pub struct TavilyProxy {
     observability_deferred_writer: Arc<Mutex<ObservabilityDeferredWriter>>,
     #[cfg(test)]
     server_pressure_tail_replay_test_gate: Arc<ServerPressureTailReplayTestGate>,
+    #[cfg(test)]
+    reconciliation_controlled_retry: Arc<AtomicBool>,
     health_readiness_grace_until: tokio::time::Instant,
     pub(crate) backend_time: BackendTime,
 }
@@ -2256,6 +2258,21 @@ impl UserBusinessCalls1hWindow {
 }
 
 impl TavilyProxy {
+    #[cfg(test)]
+    pub(crate) fn enable_controlled_reconciliation_retry_for_test(&self) {
+        self.reconciliation_controlled_retry
+            .store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn controlled_reconciliation_retry_enabled(&self) -> bool {
+        self.reconciliation_controlled_retry.load(Ordering::Relaxed)
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn controlled_reconciliation_retry_enabled(&self) -> bool {
+        false
+    }
     async fn business_calls_1h_limit_verdict_for_subject(
         &self,
         subject: &QuotaSubject,

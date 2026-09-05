@@ -354,17 +354,6 @@ impl ReconciliationEngine {
             .max(ladder_secs)
     }
 
-    #[cfg(test)]
-    fn controlled_retry_is_enabled() -> bool {
-        const CONTROLLED_RETRY_ENV: &str = "HIKARI_RECONCILIATION_RETRIES";
-        std::env::var(CONTROLLED_RETRY_ENV).as_deref() == Ok("1")
-    }
-
-    #[cfg(not(test))]
-    fn controlled_retry_is_enabled() -> bool {
-        false
-    }
-
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
         Self::deferred_at(
             proxy,
@@ -543,7 +532,7 @@ impl ReconciliationEngine {
             else {
                 return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
             };
-            if Self::controlled_retry_is_enabled() && attempt == 1 {
+            if proxy.controlled_reconciliation_retry_enabled() && attempt == 1 {
                 tracing::debug!(
                     component = "reconciliation",
                     event = "controlled_retry_deferred",
