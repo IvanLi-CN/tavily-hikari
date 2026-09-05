@@ -626,10 +626,18 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
             .map(|_| proxy.scheduled_job_claim("db_compaction", "manual", None, 1)),
     )
     .await;
-    let claimed: Vec<i64> = results
-        .into_iter()
-        .filter_map(|result| result.expect("claim should not error"))
-        .collect();
+    let mut claimed = Vec::new();
+    for result in results {
+        match result {
+            Ok(Some(job_id)) => claimed.push(job_id),
+            Ok(None) => {}
+            // A concurrent control claim must yield rather than wait past its
+            // foreground-protection budget. Its caller can retry the trigger;
+            // the durable uniqueness constraint remains the invariant here.
+            Err(error) if crate::store::is_transient_sqlite_write_error(&error) => {}
+            Err(error) => panic!("claim returned a non-transient error: {error}"),
+        }
+    }
     assert_eq!(claimed.len(), 1);
 
     let running_count: i64 =
