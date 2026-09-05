@@ -250,6 +250,7 @@ impl KeyStore {
                     | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
                     | RECONCILIATION_RETRY_REASON_KEY_COOLDOWN
                     | RECONCILIATION_RETRY_REASON_GENERATION_CHANGED
+                    | RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY
             );
             let local_backoff_until = if preserve_retry_state {
                 sqlx::query_scalar::<_, String>(
@@ -271,18 +272,40 @@ impl KeyStore {
                 until
             };
             let available_at = retry_at.max(local_backoff_until).max(now);
+            let attempt: i64 = sqlx::query_scalar(
+                r#"
+                SELECT attempt
+                FROM scheduled_jobs
+                WHERE id = ? AND status = 'running' AND claim_generation = ?
+                "#,
+            )
+            .bind(job_id)
+            .bind(claim_generation)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ProxyError::StaleClaim {
+                job_id,
+                claim_generation,
+            })?;
+            let status = if reason == RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY {
+                "error"
+            } else {
+                "success"
+            };
             let message = format!(
-                "outcome=sqlite_admission_deferred defer_reason={reason} retry_at={available_at}"
+                "outcome=sqlite_admission_deferred defer_reason={reason} attempt={attempt} retry_at={available_at}"
             );
             let updated = sqlx::query(
                 r#"UPDATE scheduled_jobs
-                   SET status = 'success', message = ?, finished_at = ?
-                   WHERE id = ? AND status = 'running' AND claim_generation = ?"#,
+                   SET status = ?, message = ?, finished_at = ?
+                   WHERE id = ? AND status = 'running' AND claim_generation = ? AND attempt = ?"#,
             )
+            .bind(status)
             .bind(message)
             .bind(now)
             .bind(job_id)
             .bind(claim_generation)
+            .bind(attempt)
             .execute(&mut *tx)
             .await?;
             if updated.rows_affected() == 0 {
@@ -350,8 +373,9 @@ impl KeyStore {
                 r#"INSERT INTO scheduled_jobs (
                        job_type, trigger_source, status, attempt, queued_at, available_at,
                        started_at, finished_at
-                   ) VALUES ('upstream_reconciliation', 'auto', 'queued', 1, ?, ?, NULL, NULL)"#,
+                   ) VALUES ('upstream_reconciliation', 'auto', 'queued', ?, ?, ?, NULL, NULL)"#,
             )
+            .bind(attempt.saturating_add(1))
             .bind(now)
             .bind(available_at)
             .execute(&mut *tx)

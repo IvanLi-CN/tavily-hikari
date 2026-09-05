@@ -24,6 +24,7 @@ pub(crate) const RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET: &str =
     "remote_attempt_budget";
 pub(crate) const RECONCILIATION_RETRY_REASON_KEY_COOLDOWN: &str = "key_cooldown";
 pub(crate) const RECONCILIATION_RETRY_REASON_GENERATION_CHANGED: &str = "generation_changed";
+pub(crate) const RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY: &str = "controlled_retry";
 pub(crate) const RECONCILIATION_OUTCOME_REMOTE_ATTEMPT_BUDGET: &str =
     "remote_attempt_budget";
 pub(crate) const RECONCILIATION_OUTCOME_LOCAL_PRESSURE: &str = "local_pressure";
@@ -103,6 +104,9 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
     if reason == RECONCILIATION_RETRY_REASON_GENERATION_CHANGED {
         return RECONCILIATION_RETRY_REASON_GENERATION_CHANGED;
     }
+    if reason == RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY {
+        return RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY;
+    }
     if reason.starts_with("usage http error 429 ") {
         return RECONCILIATION_RETRY_REASON_UPSTREAM_429;
     }
@@ -110,6 +114,34 @@ pub(crate) fn classify_reconciliation_retry_reason(reason: Option<&str>) -> &'st
 }
 
 impl KeyStore {
+    pub(crate) async fn upstream_reconciliation_claim_attempt(
+        &self,
+        job_id: i64,
+        claim_generation: i64,
+    ) -> Result<Option<i64>, ProxyError> {
+        let mut conn = self
+            .sqlite_runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await?;
+        let attempt = sqlx::query_scalar(
+            r#"
+            SELECT attempt
+            FROM scheduled_jobs
+            WHERE id = ? AND status = 'running' AND claim_generation = ?
+            "#,
+        )
+        .bind(job_id)
+        .bind(claim_generation)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(ProxyError::from);
+        let close = conn.close().await;
+        match (attempt, close) {
+            (Ok(attempt), Ok(())) => Ok(attempt),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        }
+    }
+
     pub(crate) fn try_admit_upstream_reconciliation_projection(
         &self,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {

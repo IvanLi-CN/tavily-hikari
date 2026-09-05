@@ -23,6 +23,152 @@ pub(super) fn reconciliation_test_db_path() -> PathBuf {
     dir.join("test.db")
 }
 
+struct ReconciliationRetriesEnvGuard {
+    previous: Option<String>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ReconciliationRetriesEnvGuard {
+    async fn enable_once() -> Self {
+        let guard = env_lock().lock_owned().await;
+        let previous = std::env::var("HIKARI_RECONCILIATION_RETRIES").ok();
+        unsafe {
+            std::env::set_var("HIKARI_RECONCILIATION_RETRIES", "1");
+        }
+        Self {
+            previous,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ReconciliationRetriesEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(previous) = self.previous.as_deref() {
+                std::env::set_var("HIKARI_RECONCILIATION_RETRIES", previous);
+            } else {
+                std::env::remove_var("HIKARI_RECONCILIATION_RETRIES");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_success() {
+    let _retries = ReconciliationRetriesEnvGuard::enable_once().await;
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 9, 5, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-controlled-reconciliation-retry"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let initial = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue initial reconciliation attempt");
+    let first_claim = proxy
+        .scheduled_job_mark_running(initial.job_id)
+        .await
+        .expect("claim initial reconciliation attempt")
+        .expect("initial reconciliation attempt is due");
+
+    let first_outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            first_claim.id,
+            first_claim.claim_generation,
+        )
+        .await
+        .expect("controlled first attempt returns a typed defer");
+    assert!(matches!(
+        first_outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "controlled_retry",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            first_claim.id,
+            first_claim.claim_generation,
+            "controlled_retry",
+            now + 30,
+        )
+        .await
+        .expect("finish failed attempt and queue its retry");
+    assert!(continuation.created);
+
+    let first_row: (i64, String, i64, i64, String) = sqlx::query_as(
+        "SELECT id, status, attempt, claim_generation, message FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(first_claim.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed first attempt");
+    assert_eq!(first_row.0, first_claim.id);
+    assert_eq!(first_row.1, "error");
+    assert_eq!(first_row.2, 1);
+    assert_eq!(first_row.3, first_claim.claim_generation);
+    assert!(first_row.4.contains("defer_reason=controlled_retry"));
+    assert!(first_row.4.contains("attempt=1"));
+
+    clock.set_now_ts(now + 30);
+    let second_claim = proxy
+        .scheduled_job_mark_running(continuation.job_id)
+        .await
+        .expect("claim retry")
+        .expect("retry is due");
+    assert_eq!(second_claim.attempt, 2);
+    let second_outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            second_claim.id,
+            second_claim.claim_generation,
+        )
+        .await
+        .expect("second reconciliation attempt completes");
+    assert!(matches!(
+        second_outcome,
+        ClaimedReconciliationRunOutcome::Completed {
+            settled: 0,
+            no_adjustment: 0,
+            observed: 0,
+        }
+    ));
+    proxy
+        .scheduled_job_finish_claimed(
+            second_claim.id,
+            second_claim.claim_generation,
+            "success",
+            Some("controlled retry completed"),
+        )
+        .await
+        .expect("finish successful retry");
+
+    let retry_row: (i64, String, i64, i64) = sqlx::query_as(
+        "SELECT id, status, attempt, claim_generation FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(second_claim.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed retry");
+    assert_eq!(retry_row.0, continuation.job_id);
+    assert_eq!(retry_row.1, "success");
+    assert_eq!(retry_row.2, 2);
+    assert_eq!(retry_row.3, second_claim.claim_generation);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
 #[tokio::test]
 async fn reconciliation_waits_for_a_complete_eligible_period() {
     let db_path = reconciliation_test_db_path();

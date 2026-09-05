@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25,
+            25, 26,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -981,7 +981,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25,
+            25, 26,
         ]
     );
 

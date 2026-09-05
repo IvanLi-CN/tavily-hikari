@@ -80,6 +80,11 @@
   30-second continuation until the full current-generation key set is present. Only then can the
   existing compare/active settlement path terminalize the work; terminal completion removes the local
   rows without creating HA outbox events or changing compare billing truth.
+- Schema migration `26` narrows the usage-work trigger to logical usage and source-timestamp changes;
+  storage-only `updated_at` refreshes therefore do not reopen a generation. Claim continuations fence
+  both `claim_generation` and the current scheduled-job `attempt`. A controlled retry can yield before
+  remote work, marks the claim as an error, and creates exactly one continuation with `attempt + 1`;
+  stale finalization cannot advance or overwrite a newer attempt.
 
 ## Remaining Gaps
 
