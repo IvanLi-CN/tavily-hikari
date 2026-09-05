@@ -192,6 +192,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `idle alert probe`: a source-fence check that finds no work. It is not projection progress: it
   never advances a cursor or generation, and a separate low-frequency observation heartbeat keeps
   recent-tail coverage explicit.
+- `canonical warm support surface`: the AppState cache state and its bounded read scheduler are
+  part of the Dashboard quota owner when immutable quota patches need in-memory publication.
+- `reconciliation revision support surface`: migration wiring plus runtime/HA schema contract tests
+  are part of the reconciliation owner when a logical source revision is replicated and must be
+  validated across baseline import. These surfaces remain local to the owning Ticket and do not
+  change the public API or HA billing truth.
 - `canonical warm publication`: the Alerts warm controller reads each canonical catalog, events,
   and groups key once per projection generation. It stages the three values and publishes them as a
   single generation-fenced snapshot only after all keys have complete coverage; a partial or mixed

@@ -161,6 +161,12 @@ These boundaries are independent Ticket ownership surfaces. They share the exist
 SQLite, public JSON, reconciliation mode, and remote concurrency contracts; integration validation,
 checkpoint promotion, and stable release remain serialized.
 
+Supporting state and contract-validation code belongs to the Ticket that owns the behavior: the
+Dashboard quota Ticket owns AppState cache state required to publish immutable quota patches, and
+the reconciliation Ticket owns additive migration wiring plus runtime/HA schema tests required to
+replicate and validate logical source revisions. These support surfaces do not authorize changes to
+SQLite configuration, billing semantics, or public response shapes.
+
 ### Core flows
 
 1. Promotion 创建新 writable revision，并恰好启动一套 `MaintenanceRuntime`。
