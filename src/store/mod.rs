@@ -2758,6 +2758,7 @@ include!("key_store_upstream_reconciliation_research.rs");
 include!("key_store_admin_privacy_read.rs");
 include!("key_store_reconciliation_controller.rs");
 include!("reconciliation_projection_controller.rs");
+include!("key_store_reconciliation_progress.rs");
 include!("reconciliation_observation_store.rs");
 include!("key_store_upstream_reconciliation_admission.rs");
 include!("key_store_users_and_oauth.rs");
