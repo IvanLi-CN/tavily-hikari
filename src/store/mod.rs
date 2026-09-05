@@ -2759,6 +2759,7 @@ include!("key_store_announcements.rs");
 include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_dashboard_month_series.rs");
 include!("key_store_dashboard_rollup_integrity.rs");
+include!("key_store_dashboard_and_job_read_models.rs");
 include!("key_store_request_stats_flush_and_public_metrics.rs");
 include!("key_store_request_logs_and_dashboard.rs");
 include!("key_store_request_logs_summary_windows.rs");
