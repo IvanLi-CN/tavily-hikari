@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "prd/**"
   pull_request:
     branches:
       - main
