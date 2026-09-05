@@ -423,7 +423,7 @@ struct CachedSummaryWindows {
 #[derive(Clone, Debug)]
 struct CachedDashboardQuotaChargeSnapshot {
     token: [i64; 5],
-    value: DashboardQuotaChargeSnapshot,
+    model: DashboardQuotaChargeReadModel,
 }
 
 #[derive(Clone, Debug)]
