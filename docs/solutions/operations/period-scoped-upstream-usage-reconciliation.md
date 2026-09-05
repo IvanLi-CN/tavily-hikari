@@ -56,6 +56,11 @@ state, local-pressure state, or billing truth. Sum usage and enter the existing 
 path only after all current-generation key observations are present. Delete local observations
 atomically only with terminal completion, and fence both observation writes and continuations by claim
 generation.
+The scheduled-job `attempt` is part of that fence: a controlled pre-request retry records an error for
+the current claim and creates one continuation at `attempt + 1`, while finalization rejects any stale
+`(job_id, claim_generation, attempt)` tuple. This makes retry injection deterministic in tests without
+issuing an upstream request and prevents a late first attempt from reopening work after the continuation
+has claimed it.
 
 ## Activation controller
 

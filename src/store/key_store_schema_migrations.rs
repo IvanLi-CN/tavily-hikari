@@ -102,6 +102,11 @@ const RECONCILIATION_SOURCE_REVISION_NAME: &str =
     "reconciliation-logical-source-revision-v1";
 const RECONCILIATION_SOURCE_REVISION_CHECKSUM: &str =
     "sha256:7c9f1d5e0b4a8d2c6e3f9a1b5d7c2e4f";
+const RECONCILIATION_SOURCE_TIMESTAMP_REVISION_VERSION: i64 = 26;
+const RECONCILIATION_SOURCE_TIMESTAMP_REVISION_NAME: &str =
+    "reconciliation-logical-source-timestamps-v1";
+const RECONCILIATION_SOURCE_TIMESTAMP_REVISION_CHECKSUM: &str =
+    "sha256:1e18be281aaa333fffdc1873bac99f9a";
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
@@ -824,6 +829,11 @@ impl KeyStore {
                 RECONCILIATION_SOURCE_REVISION_NAME,
                 RECONCILIATION_SOURCE_REVISION_CHECKSUM,
             ),
+            (
+                RECONCILIATION_SOURCE_TIMESTAMP_REVISION_VERSION,
+                RECONCILIATION_SOURCE_TIMESTAMP_REVISION_NAME,
+                RECONCILIATION_SOURCE_TIMESTAMP_REVISION_CHECKSUM,
+            ),
         ];
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
@@ -1185,6 +1195,21 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 25".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(RECONCILIATION_SOURCE_TIMESTAMP_REVISION_VERSION)
+            .await?
+            && !self
+                .schema_named_object_exists(
+                    "main",
+                    "trigger",
+                    "trg_upstream_reconciliation_usage_work_update",
+                )
+                .await?
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 26".to_string(),
             ));
         }
         Ok(())
@@ -1930,6 +1955,66 @@ impl KeyStore {
         .await
     }
 
+    async fn apply_reconciliation_source_timestamp_revision_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query("DROP TRIGGER IF EXISTS trg_upstream_reconciliation_usage_work_update")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            r#"CREATE TRIGGER IF NOT EXISTS trg_upstream_reconciliation_usage_work_update
+               AFTER UPDATE ON upstream_reconciliation_usage
+               WHEN NEW.token_id IS NOT OLD.token_id
+                 OR NEW.key_id IS NOT OLD.key_id
+                 OR NEW.period_code IS NOT OLD.period_code
+                 OR NEW.project_id IS NOT OLD.project_id
+                 OR NEW.billing_subject IS NOT OLD.billing_subject
+                 OR NEW.settlement_mode IS NOT OLD.settlement_mode
+                 OR NEW.period_start IS NOT OLD.period_start
+                 OR NEW.period_end IS NOT OLD.period_end
+                 OR NEW.request_count IS NOT OLD.request_count
+                 OR NEW.first_used_at IS NOT OLD.first_used_at
+                 OR NEW.last_used_at IS NOT OLD.last_used_at
+               BEGIN
+                 INSERT INTO upstream_reconciliation_work (
+                   token_id, period_code, project_id, billing_subject, settlement_mode,
+                   period_start, period_end, scheduling_key_id, updated_at,
+                   work_generation, completed_generation, next_attempt_at, last_outcome
+                 ) VALUES (
+                   NEW.token_id, NEW.period_code, NEW.project_id, NEW.billing_subject,
+                   NEW.settlement_mode, NEW.period_start, NEW.period_end, NEW.key_id, NEW.updated_at,
+                   1, 0, 0, NULL
+                 )
+                 ON CONFLICT(token_id, period_code) DO UPDATE SET
+                   project_id = MIN(upstream_reconciliation_work.project_id, excluded.project_id),
+                   billing_subject = MIN(upstream_reconciliation_work.billing_subject, excluded.billing_subject),
+                   settlement_mode = MIN(upstream_reconciliation_work.settlement_mode, excluded.settlement_mode),
+                   period_start = MIN(upstream_reconciliation_work.period_start, excluded.period_start),
+                   period_end = MAX(upstream_reconciliation_work.period_end, excluded.period_end),
+                   scheduling_key_id = MIN(upstream_reconciliation_work.scheduling_key_id, excluded.scheduling_key_id),
+                   updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at),
+                   work_generation = upstream_reconciliation_work.work_generation + 1,
+                   next_attempt_at = 0,
+                   last_outcome = NULL;
+
+                 UPDATE upstream_reconciliation_work
+                    SET work_generation = work_generation + 1,
+                        next_attempt_at = 0,
+                        last_outcome = NULL
+                  WHERE (OLD.token_id IS NOT NEW.token_id OR OLD.period_code IS NOT NEW.period_code)
+                    AND token_id = OLD.token_id AND period_code = OLD.period_code;
+               END"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            RECONCILIATION_SOURCE_TIMESTAMP_REVISION_VERSION,
+            RECONCILIATION_SOURCE_TIMESTAMP_REVISION_NAME,
+            RECONCILIATION_SOURCE_TIMESTAMP_REVISION_CHECKSUM,
+        )
+        .await
+    }
+
     async fn apply_reconciliation_key_observation_migration(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_key_observations (
@@ -2459,6 +2544,13 @@ impl KeyStore {
         {
             self.apply_reconciliation_source_revision_migration().await?;
         }
+        if !self
+            .schema_migration_applied(RECONCILIATION_SOURCE_TIMESTAMP_REVISION_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_source_timestamp_revision_migration()
+                .await?;
+        }
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -2519,6 +2611,8 @@ impl KeyStore {
             .await?;
         self.apply_reconciliation_poll_resolution_migration().await?;
         self.apply_reconciliation_source_revision_migration().await?;
+        self.apply_reconciliation_source_timestamp_revision_migration()
+            .await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -2526,7 +2620,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 25_i64,
+            migration_count = 26_i64,
         );
         Ok(())
     }

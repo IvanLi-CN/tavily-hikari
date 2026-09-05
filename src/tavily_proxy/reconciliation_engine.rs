@@ -354,6 +354,17 @@ impl ReconciliationEngine {
             .max(ladder_secs)
     }
 
+    #[cfg(test)]
+    fn controlled_retry_is_enabled() -> bool {
+        const CONTROLLED_RETRY_ENV: &str = "HIKARI_RECONCILIATION_RETRIES";
+        std::env::var(CONTROLLED_RETRY_ENV).as_deref() == Ok("1")
+    }
+
+    #[cfg(not(test))]
+    fn controlled_retry_is_enabled() -> bool {
+        false
+    }
+
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
         Self::deferred_at(
             proxy,
@@ -519,6 +530,33 @@ impl ReconciliationEngine {
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
+            if let Err(reason) = proxy
+                .key_store
+                .try_admit_upstream_reconciliation_projection()
+            {
+                return Ok(Self::deferred(&proxy, reason.as_str()));
+            }
+            let Some(attempt) = proxy
+                .key_store
+                .upstream_reconciliation_claim_attempt(job_id, claim_generation)
+                .await?
+            else {
+                return Ok(ClaimedReconciliationRunOutcome::StaleClaim);
+            };
+            if Self::controlled_retry_is_enabled() && attempt == 1 {
+                tracing::debug!(
+                    component = "reconciliation",
+                    event = "controlled_retry_deferred",
+                    job_id,
+                    claim_generation,
+                    attempt,
+                    "controlled reconciliation retry deferred before remote work"
+                );
+                return Ok(Self::deferred(
+                    &proxy,
+                    RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY,
+                ));
+            }
             proxy
                 .run_upstream_reconciliation_once_inner(
                     &usage_base,

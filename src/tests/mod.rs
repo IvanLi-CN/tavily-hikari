@@ -49,6 +49,8 @@ mod upstream_reconciliation;
 mod upstream_reconciliation_continuation;
 mod upstream_reconciliation_engine;
 mod upstream_reconciliation_fencing;
+mod upstream_reconciliation_key_observations;
+mod upstream_reconciliation_observation;
 mod upstream_reconciliation_projection;
 mod usage_series_and_backfills;
 mod user_business_calls_1h;

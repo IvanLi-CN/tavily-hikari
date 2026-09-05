@@ -2649,9 +2649,52 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .expect("seed partial work state");
 
     sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'shadow')
+           ON CONFLICT(token_id, key_id, period_code) DO UPDATE SET
+             project_id = excluded.project_id,
+             billing_subject = excluded.billing_subject,
+             period_start = excluded.period_start,
+             period_end = excluded.period_end,
+             request_count = excluded.request_count,
+             first_used_at = excluded.first_used_at,
+             last_used_at = excluded.last_used_at,
+             updated_at = excluded.updated_at,
+             settlement_mode = excluded.settlement_mode"#,
+    )
+    .bind(&candidate.token_id)
+    .bind(&first_key_id)
+    .bind(&candidate.period_code)
+    .bind(&candidate.project_id)
+    .bind(&candidate.billing_subject)
+    .bind(candidate.period_start)
+    .bind(candidate.period_end)
+    .bind(now - 1_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("replay an equal reconciliation source payload");
+    let replayed_state: (i64, i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read replayed work state");
+    assert_eq!(
+        replayed_state,
+        (1, 0, now + 30, Some("remote_attempt_budget".to_string()))
+    );
+
+    sqlx::query(
         "UPDATE upstream_reconciliation_usage \
-         SET first_used_at = first_used_at, last_used_at = last_used_at + 1, \
-             updated_at = updated_at + 1, request_count = request_count \
+         SET updated_at = updated_at + 1 \
          WHERE token_id = ? AND key_id = ? AND period_code = ?",
     )
     .bind(&candidate.token_id)
@@ -2659,7 +2702,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .bind(&candidate.period_code)
     .execute(&proxy.key_store.pool)
     .await
-    .expect("refresh storage-only source fields");
+    .expect("refresh storage-only source timestamp");
     let no_op_state: (i64, i64, i64, Option<String>) = sqlx::query_as(
         "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
          FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
@@ -2668,7 +2711,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .bind(&candidate.period_code)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read storage-refresh work state");
+    .expect("read storage-only refresh work state");
     assert_eq!(
         no_op_state,
         (1, 0, now + 30, Some("remote_attempt_budget".to_string()))
@@ -2683,6 +2726,32 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .await
     .expect("count preserved storage-refresh observations");
     assert_eq!(first_generation_observations, 1);
+
+    for (field, delta, expected_generation) in [
+        ("first_used_at", -1_i64, 2_i64),
+        ("last_used_at", 1_i64, 3_i64),
+    ] {
+        sqlx::query(&format!(
+            "UPDATE upstream_reconciliation_usage SET {field} = {field} + {delta} \
+             WHERE token_id = ? AND key_id = ? AND period_code = ?",
+        ))
+        .bind(&candidate.token_id)
+        .bind(&first_key_id)
+        .bind(&candidate.period_code)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("record logical source timestamp revision");
+        let timestamp_state: (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT work_generation, next_attempt_at, last_outcome \
+             FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read logical timestamp revision");
+        assert_eq!(timestamp_state, (expected_generation, 0, None), "{field}");
+    }
 
     sqlx::query(
         "UPDATE upstream_reconciliation_usage SET request_count = request_count + 1 \
@@ -2703,18 +2772,18 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read logically reopened work state");
-    assert_eq!(reopened_state, (2, 0, None));
+    assert_eq!(reopened_state, (4, 0, None));
     proxy
         .key_store
         .persist_reconciliation_key_observations(
             &candidate,
-            2,
+            4,
             &[ReconciliationKeyObservation {
                 key_id: first_key_id.clone(),
                 upstream_usage: 8,
             }],
             Some(ReconciliationWorkFence {
-                work_generation: 2,
+                work_generation: 4,
                 claimed_job: None,
             }),
         )
@@ -2746,7 +2815,7 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read key-set revision generation");
-    assert_eq!(key_set_generation, 4);
+    assert_eq!(key_set_generation, 6);
     let retained_observations: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
          WHERE token_id = ? AND period_code = ?",
@@ -2778,200 +2847,6 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
         .await
         .expect("read current generation observations");
     assert!(current_generation_observations.is_empty());
-
-    drop(proxy);
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn reconciliation_key_observations_reject_stale_generation_and_claim() {
-    let db_path = reconciliation_test_db_path();
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = local_ts(2026, 7, 15, 12, 0);
-    let (backend_time, clock) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-reconciliation-key-observation-fence"],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-    let candidate = UpstreamReconciliationCandidate {
-        token_id: "key-observation-fence-token".to_string(),
-        period_code: "2026-07-15/S1".to_string(),
-        project_id: "key-observation-fence-project".to_string(),
-        billing_subject: "token:key-observation-fence-token".to_string(),
-        settlement_mode: "shadow".to_string(),
-        period_start: now - 4_000,
-        period_end: now - 900,
-        pending_research: 0,
-        degraded: false,
-    };
-    sqlx::query(
-        r#"INSERT INTO upstream_reconciliation_work (
-             token_id, period_code, project_id, billing_subject, settlement_mode,
-             period_start, period_end, scheduling_key_id, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'key-observation-fence-key', ?)
-        "#,
-    )
-    .bind(&candidate.token_id)
-    .bind(&candidate.period_code)
-    .bind(&candidate.project_id)
-    .bind(&candidate.billing_subject)
-    .bind(&candidate.settlement_mode)
-    .bind(candidate.period_start)
-    .bind(candidate.period_end)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("insert durable work");
-
-    let stale_generation = proxy
-        .key_store
-        .persist_reconciliation_key_observations(
-            &candidate,
-            2,
-            &[ReconciliationKeyObservation {
-                key_id: "key-observation-fence-key".to_string(),
-                upstream_usage: 7,
-            }],
-            Some(ReconciliationWorkFence {
-                work_generation: 2,
-                claimed_job: None,
-            }),
-        )
-        .await
-        .expect("stale generation is handled");
-    assert!(matches!(
-        stale_generation,
-        ReconciliationKeyObservationPersistOutcome::StaleGeneration
-    ));
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
-    )
-    .bind(&candidate.token_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read rejected generation observations");
-    assert_eq!(count, 0);
-
-    let queued = proxy
-        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
-        .await
-        .expect("enqueue representative");
-    let claim = proxy
-        .scheduled_job_mark_running(queued.job_id)
-        .await
-        .expect("claim representative")
-        .expect("representative is claimed");
-    clock.set_now_ts(now + 61);
-    assert_eq!(proxy.recover_stale_scheduled_jobs().await.unwrap(), 1);
-    let stale_claim = proxy
-        .key_store
-        .persist_reconciliation_key_observations(
-            &candidate,
-            1,
-            &[ReconciliationKeyObservation {
-                key_id: "key-observation-fence-key".to_string(),
-                upstream_usage: 7,
-            }],
-            Some(ReconciliationWorkFence {
-                work_generation: 1,
-                claimed_job: Some((claim.id, claim.claim_generation)),
-            }),
-        )
-        .await
-        .expect("stale claim is handled");
-    assert!(matches!(
-        stale_claim,
-        ReconciliationKeyObservationPersistOutcome::StaleClaim
-    ));
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations WHERE token_id = ?",
-    )
-    .bind(&candidate.token_id)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read rejected stale-claim observations");
-    assert_eq!(count, 0);
-
-    sqlx::query(
-        "UPDATE scheduled_jobs SET available_at = 0 WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("make recovered representative due");
-    let queued_generation_change = proxy
-        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
-        .await
-        .expect("enqueue generation-change representative");
-    let generation_claim = proxy
-        .scheduled_job_mark_running(queued_generation_change.job_id)
-        .await
-        .expect("claim generation-change representative")
-        .expect("generation-change representative is claimed");
-    sqlx::query(
-        r#"UPDATE upstream_reconciliation_work
-              SET work_generation = 2, completed_generation = 0
-            WHERE token_id = ? AND period_code = ?"#,
-    )
-    .bind(&candidate.token_id)
-    .bind(&candidate.period_code)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("advance work generation while claim remains current");
-    let generation_changed = proxy
-        .key_store
-        .persist_reconciliation_key_observations(
-            &candidate,
-            1,
-            &[ReconciliationKeyObservation {
-                key_id: "key-observation-fence-key".to_string(),
-                upstream_usage: 7,
-            }],
-            Some(ReconciliationWorkFence {
-                work_generation: 1,
-                claimed_job: Some((generation_claim.id, generation_claim.claim_generation)),
-            }),
-        )
-        .await
-        .expect("generation change is classified without losing the claim");
-    assert!(matches!(
-        generation_changed,
-        ReconciliationKeyObservationPersistOutcome::StaleGeneration
-    ));
-    let continuation = proxy
-        .finalize_deferred_upstream_reconciliation_claim(
-            generation_claim.id,
-            generation_claim.claim_generation,
-            RECONCILIATION_RETRY_REASON_GENERATION_CHANGED,
-            now + 90,
-        )
-        .await
-        .expect("generation change has a durable continuation");
-    let generation_claim_status: String =
-        sqlx::query_scalar("SELECT status FROM scheduled_jobs WHERE id = ?")
-            .bind(generation_claim.id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("read generation-change claim status");
-    assert_eq!(generation_claim_status, "success");
-    let active_representatives: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("count generation-change representatives");
-    assert_eq!(active_representatives, 1);
-    let continuation_at: i64 =
-        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
-            .bind(continuation.job_id)
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("read generation-change continuation");
-    assert_eq!(continuation_at, now + 90);
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

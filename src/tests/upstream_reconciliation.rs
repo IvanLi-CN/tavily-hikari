@@ -23,6 +23,152 @@ pub(super) fn reconciliation_test_db_path() -> PathBuf {
     dir.join("test.db")
 }
 
+struct ReconciliationRetriesEnvGuard {
+    previous: Option<String>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ReconciliationRetriesEnvGuard {
+    async fn enable_once() -> Self {
+        let guard = env_lock().lock_owned().await;
+        let previous = std::env::var("HIKARI_RECONCILIATION_RETRIES").ok();
+        unsafe {
+            std::env::set_var("HIKARI_RECONCILIATION_RETRIES", "1");
+        }
+        Self {
+            previous,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for ReconciliationRetriesEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(previous) = self.previous.as_deref() {
+                std::env::set_var("HIKARI_RECONCILIATION_RETRIES", previous);
+            } else {
+                std::env::remove_var("HIKARI_RECONCILIATION_RETRIES");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_success() {
+    let _retries = ReconciliationRetriesEnvGuard::enable_once().await;
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 9, 5, 12, 0);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-controlled-reconciliation-retry"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let initial = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue initial reconciliation attempt");
+    let first_claim = proxy
+        .scheduled_job_mark_running(initial.job_id)
+        .await
+        .expect("claim initial reconciliation attempt")
+        .expect("initial reconciliation attempt is due");
+
+    let first_outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            first_claim.id,
+            first_claim.claim_generation,
+        )
+        .await
+        .expect("controlled first attempt returns a typed defer");
+    assert!(matches!(
+        first_outcome,
+        ClaimedReconciliationRunOutcome::Deferred {
+            reason: "controlled_retry",
+            retry_at,
+        } if retry_at == now + 30
+    ));
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            first_claim.id,
+            first_claim.claim_generation,
+            "controlled_retry",
+            now + 30,
+        )
+        .await
+        .expect("finish failed attempt and queue its retry");
+    assert!(continuation.created);
+
+    let first_row: (i64, String, i64, i64, String) = sqlx::query_as(
+        "SELECT id, status, attempt, claim_generation, message FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(first_claim.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed first attempt");
+    assert_eq!(first_row.0, first_claim.id);
+    assert_eq!(first_row.1, "error");
+    assert_eq!(first_row.2, 1);
+    assert_eq!(first_row.3, first_claim.claim_generation);
+    assert!(first_row.4.contains("defer_reason=controlled_retry"));
+    assert!(first_row.4.contains("attempt=1"));
+
+    clock.set_now_ts(now + 30);
+    let second_claim = proxy
+        .scheduled_job_mark_running(continuation.job_id)
+        .await
+        .expect("claim retry")
+        .expect("retry is due");
+    assert_eq!(second_claim.attempt, 2);
+    let second_outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            second_claim.id,
+            second_claim.claim_generation,
+        )
+        .await
+        .expect("second reconciliation attempt completes");
+    assert!(matches!(
+        second_outcome,
+        ClaimedReconciliationRunOutcome::Completed {
+            settled: 0,
+            no_adjustment: 0,
+            observed: 0,
+        }
+    ));
+    proxy
+        .scheduled_job_finish_claimed(
+            second_claim.id,
+            second_claim.claim_generation,
+            "success",
+            Some("controlled retry completed"),
+        )
+        .await
+        .expect("finish successful retry");
+
+    let retry_row: (i64, String, i64, i64) = sqlx::query_as(
+        "SELECT id, status, attempt, claim_generation FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(second_claim.id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read completed retry");
+    assert_eq!(retry_row.0, continuation.job_id);
+    assert_eq!(retry_row.1, "success");
+    assert_eq!(retry_row.2, 2);
+    assert_eq!(retry_row.3, second_claim.claim_generation);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
 #[tokio::test]
 async fn reconciliation_waits_for_a_complete_eligible_period() {
     let db_path = reconciliation_test_db_path();
@@ -3324,164 +3470,6 @@ async fn daily_reconciliation_progress_includes_actual_mode_windows() {
             && key.pending_research == 1
             && key.pending_project_ids == 1
     }));
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn reconciliation_observation_reports_due_window_without_queue_count() {
-    let db_path = reconciliation_test_db_path();
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = local_ts(2026, 7, 15, 12, 0);
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-reconciliation-queue"],
-        "http://127.0.0.1:9",
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    sqlx::query(
-        r#"
-        INSERT INTO upstream_reconciliation_usage (
-            token_id, key_id, period_code, project_id, billing_subject,
-            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-        "#,
-    )
-    .bind("token-queued")
-    .bind("key-queued")
-    .bind("2026-07-15/S1")
-    .bind("project-queued")
-    .bind("token:token-queued")
-    .bind(now - 4_000)
-    .bind(now - 900)
-    .bind(now - 1_000)
-    .bind(now - 900)
-    .bind(now - 900)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("insert queued usage");
-
-    sqlx::query(
-        r#"
-        INSERT INTO upstream_reconciliation_usage (
-            token_id, key_id, period_code, project_id, billing_subject,
-            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-        "#,
-    )
-    .bind("token-research")
-    .bind("key-research")
-    .bind("2026-07-15/S1")
-    .bind("project-research")
-    .bind("token:token-research")
-    .bind(now - 4_000)
-    .bind(now - 900)
-    .bind(now - 1_000)
-    .bind(now - 900)
-    .bind(now - 900)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("insert research usage");
-    sqlx::query(
-        r#"
-        INSERT INTO upstream_reconciliation_research (
-            request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, ?)
-        "#,
-    )
-    .bind("research-1")
-    .bind("token-research")
-    .bind("key-research")
-    .bind("2026-07-15/S1")
-    .bind(now - 950)
-    .bind(now - 900)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("insert pending research");
-
-    let observation = proxy
-        .key_store
-        .upstream_reconciliation_observation()
-        .await
-        .expect("read bounded reconciliation observation");
-    assert_eq!(observation.coverage, "unknown");
-    assert!(observation.queue_estimate.is_none());
-    assert!(observation.has_eligible);
-    assert!(
-        observation
-            .oldest_candidate_age_secs
-            .is_some_and(|age| age >= 900)
-    );
-
-    sqlx::query(
-        r#"
-        INSERT INTO upstream_reconciliation_settlements (
-            settlement_key, token_id, period_code, project_id, billing_subject,
-            period_start, period_end, status, next_attempt_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rate_limited', ?, ?, ?)
-        "#,
-    )
-    .bind("v1:token-queued:2026-07-15/S1")
-    .bind("token-queued")
-    .bind("2026-07-15/S1")
-    .bind("project-queued")
-    .bind("token:token-queued")
-    .bind(now - 4_000)
-    .bind(now - 900)
-    .bind(now + 300)
-    .bind(now)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("delay queued settlement");
-    let delayed_observation = proxy
-        .key_store
-        .upstream_reconciliation_observation()
-        .await
-        .expect("read delayed reconciliation observation");
-    assert!(!delayed_observation.has_eligible);
-    assert!(delayed_observation.oldest_candidate_age_secs.is_none());
-
-    for suffix in ["second", "third"] {
-        sqlx::query(
-            r#"
-            INSERT INTO upstream_reconciliation_usage (
-                token_id, key_id, period_code, project_id, billing_subject,
-                period_start, period_end, request_count, first_used_at, last_used_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-            "#,
-        )
-        .bind(format!("token-{suffix}"))
-        .bind(format!("key-{suffix}"))
-        .bind("2026-07-15/S1")
-        .bind(format!("project-{suffix}"))
-        .bind(format!("token:token-{suffix}"))
-        .bind(now - 4_000)
-        .bind(now - 900)
-        .bind(now - 1_000)
-        .bind(now - 900)
-        .bind(now - 900)
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("insert additional queued usage");
-    }
-    proxy
-        .key_store
-        .mark_upstream_reconciliation_run_completed_at(now)
-        .await
-        .expect("mark reconciliation observation ready");
-    let observed = proxy
-        .key_store
-        .upstream_reconciliation_observation()
-        .await
-        .expect("read observed bounded queue estimate");
-    assert_eq!(observed.coverage, "bounded");
-    assert_eq!(observed.queue_estimate, Some(2));
 
     let _ = std::fs::remove_file(db_path);
 }
