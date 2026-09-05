@@ -331,7 +331,6 @@ impl ReconciliationEngine {
     const REMOTE_ATTEMPT_STALE_TURN_REASON: &'static str = "reconciliation_turn_stale";
     const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
     const REMOTE_REQUEST_DEADLINE_ERROR: &'static str = "reconciliation remote request deadline exceeded";
-    const CONTROLLED_RETRY_ENV: &'static str = "HIKARI_RECONCILIATION_RETRIES";
     // The compatibility one-shot API has no durable representative job.
     const ONE_SHOT_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -355,8 +354,15 @@ impl ReconciliationEngine {
             .max(ladder_secs)
     }
 
+    #[cfg(test)]
     fn controlled_retry_is_enabled() -> bool {
-        std::env::var(Self::CONTROLLED_RETRY_ENV).as_deref() == Ok("1")
+        const CONTROLLED_RETRY_ENV: &str = "HIKARI_RECONCILIATION_RETRIES";
+        std::env::var(CONTROLLED_RETRY_ENV).as_deref() == Ok("1")
+    }
+
+    #[cfg(not(test))]
+    fn controlled_retry_is_enabled() -> bool {
+        false
     }
 
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
