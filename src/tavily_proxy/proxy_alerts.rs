@@ -1,3 +1,40 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlertProjectionSchedulerStep {
+    pub dashboard_dirty: bool,
+    pub canonical_alerts_dirty: bool,
+    pub idle: bool,
+    refresh_dashboard_summary: bool,
+}
+
+fn classify_dashboard_alert_projection_scheduler_step(
+    outcome: AlertProjectionSliceOutcome,
+) -> AlertProjectionSchedulerStep {
+    match outcome {
+        AlertProjectionSliceOutcome::Advanced {
+            dashboard_dirty,
+            complete,
+            ..
+        } => AlertProjectionSchedulerStep {
+            dashboard_dirty,
+            canonical_alerts_dirty: true,
+            idle: false,
+            refresh_dashboard_summary: dashboard_dirty || complete,
+        },
+        AlertProjectionSliceOutcome::Idle => AlertProjectionSchedulerStep {
+            dashboard_dirty: false,
+            canonical_alerts_dirty: false,
+            idle: true,
+            refresh_dashboard_summary: true,
+        },
+        AlertProjectionSliceOutcome::Deferred { .. } => AlertProjectionSchedulerStep {
+            dashboard_dirty: false,
+            canonical_alerts_dirty: false,
+            idle: false,
+            refresh_dashboard_summary: false,
+        },
+    }
+}
+
 impl TavilyProxy {
     #[doc(hidden)]
     pub fn admin_privacy_status_refresh_defer_reason(&self) -> Option<&'static str> {
@@ -82,27 +119,24 @@ impl TavilyProxy {
     pub async fn advance_dashboard_alert_projection_scheduler_step(
         &self,
     ) -> Result<(bool, bool), ProxyError> {
-        match self.advance_dashboard_alert_projection_slice_outcome().await? {
-            AlertProjectionSliceOutcome::Advanced {
-                dashboard_dirty,
-                complete,
-                ..
-            } => {
-                if dashboard_dirty || complete {
-                    self.key_store
-                        .refresh_dashboard_alert_projection_summary()
-                        .await?;
-                }
-                Ok((dashboard_dirty, false))
-            }
-            AlertProjectionSliceOutcome::Idle => {
-                self.key_store
-                    .refresh_dashboard_alert_projection_summary()
-                    .await?;
-                Ok((false, true))
-            }
-            AlertProjectionSliceOutcome::Deferred { .. } => Ok((false, false)),
+        let step = self
+            .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+            .await?;
+        Ok((step.dashboard_dirty, step.idle))
+    }
+
+    pub async fn advance_dashboard_alert_projection_scheduler_step_with_alerts(
+        &self,
+    ) -> Result<AlertProjectionSchedulerStep, ProxyError> {
+        let step = classify_dashboard_alert_projection_scheduler_step(
+            self.advance_dashboard_alert_projection_slice_outcome().await?,
+        );
+        if step.refresh_dashboard_summary {
+            self.key_store
+                .refresh_dashboard_alert_projection_summary()
+                .await?;
         }
+        Ok(step)
     }
 
     pub async fn refresh_dashboard_alert_projection_observation(&self) -> Result<bool, ProxyError> {
@@ -318,5 +352,26 @@ impl TavilyProxy {
         self.key_store
             .fetch_projected_recent_alerts_summary(window_hours)
             .await
+    }
+}
+
+#[cfg(test)]
+mod scheduler_step_tests {
+    use super::classify_dashboard_alert_projection_scheduler_step;
+    use crate::store::AlertProjectionSliceOutcome;
+
+    #[test]
+    fn history_only_projection_advance_marks_canonical_alerts_dirty() {
+        let step = classify_dashboard_alert_projection_scheduler_step(
+            AlertProjectionSliceOutcome::Advanced {
+                rows: 1,
+                complete: false,
+                dashboard_dirty: false,
+            },
+        );
+
+        assert!(step.canonical_alerts_dirty);
+        assert!(!step.dashboard_dirty);
+        assert!(!step.refresh_dashboard_summary);
     }
 }
