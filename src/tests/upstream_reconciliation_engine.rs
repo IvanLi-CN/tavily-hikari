@@ -2148,6 +2148,14 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
         .expect("claim representative")
         .expect("representative is claimed");
 
+    // Keep this regression focused on the injected settlement-write failure. The
+    // lazy pool's first bulk-admission sample is covered by dedicated admission
+    // tests and can otherwise defer before this run reaches the trigger.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
+
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             &format!("http://{address}"),
@@ -2156,13 +2164,16 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
         )
         .await
         .expect("SQLite pressure is a typed run outcome");
-    assert!(matches!(
-        outcome,
-        ClaimedReconciliationRunOutcome::Deferred {
-            reason: "local_pressure",
-            retry_at,
-        } if retry_at >= proxy.backend_time().now_ts().saturating_add(30)
-    ));
+    assert!(
+        matches!(
+            outcome,
+            ClaimedReconciliationRunOutcome::Deferred {
+                reason: "local_pressure",
+                retry_at,
+            } if retry_at >= proxy.backend_time().now_ts().saturating_add(30)
+        ),
+        "settlement pressure must return a local-pressure defer, got {outcome:?}"
+    );
     let generations: (i64, i64) = sqlx::query_as(
         "SELECT work_generation, completed_generation FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = '2026-07-15/S1'",
     )
