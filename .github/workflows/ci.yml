@@ -233,6 +233,9 @@ jobs:
       - name: Verify backend shard coverage
         run: python3 scripts/ci_backend_tests.py verify --prebuilt-root /tmp/backend-test-artifacts
 
+      - name: Test backend shard runner contract
+        run: python3 scripts/test_ci_backend_tests.py
+
       - name: Upload backend test artifacts
         uses: actions/upload-artifact@v4
         with:

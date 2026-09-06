@@ -553,7 +553,14 @@ impl KeyStore {
                 return Err(err);
             }
         }
-        session.finish().await
+        let reconciliation_identity_repair_rearmed =
+            session.reconciliation_identity_repair_rearmed();
+        let result = session.finish().await?;
+        if reconciliation_identity_repair_rearmed {
+            self.ensure_upstream_reconciliation_representative_job()
+                .await?;
+        }
+        Ok(result)
     }
 
     pub(crate) async fn apply_ha_events_ndjson(
@@ -1248,6 +1255,7 @@ impl KeyStore {
             saw_end: false,
             quota_cache_dirty: mode == HaBaselineApplyMode::Replace
                 && channel != HaSyncChannel::Billing,
+            reconciliation_identity_repair_dirty: false,
             quota_cache: Arc::clone(&self.account_quota_resolution_cache),
             quota_cache_generation: Arc::clone(&self.account_quota_resolution_generation),
             quota_cache_transitions: Arc::clone(&self.account_quota_resolution_transitions),
@@ -2632,6 +2640,11 @@ impl HaBaselineApplySession {
                 }
                 ensure_ha_resource_whitelisted(self.channel, resource)?;
                 self.quota_cache_dirty |= ha_resource_affects_account_quota(resource);
+                self.reconciliation_identity_repair_dirty |= self.channel == HaSyncChannel::Runtime
+                    && matches!(
+                        resource,
+                        "upstream_reconciliation_usage" | "upstream_reconciliation_work"
+                    );
                 let data = value
                     .get("data")
                     .cloned()
@@ -2689,6 +2702,23 @@ impl HaBaselineApplySession {
             return Err(ProxyError::Other(
                 "HA baseline must include baseline_start and baseline_end".to_string(),
             ));
+        }
+        if self.reconciliation_identity_repair_dirty {
+            sqlx::query(
+                r#"UPDATE upstream_reconciliation_projection_state
+                   SET cursor_token_id = '', cursor_key_id = '', cursor_period_code = '',
+                       identity_repair_generation = identity_repair_generation + 1,
+                       completed = CASE WHEN EXISTS(
+                           SELECT 1 FROM upstream_reconciliation_usage LIMIT 1
+                       ) THEN 0 ELSE 1 END,
+                       next_retry_at = 0,
+                       last_defer_reason = CASE WHEN EXISTS(
+                           SELECT 1 FROM upstream_reconciliation_usage LIMIT 1
+                       ) THEN 'identity_repair_pending' ELSE NULL END
+                   WHERE id = 'local'"#,
+            )
+            .execute(&mut *self.conn)
+            .await?;
         }
         if let Err(err) = clear_ha_outbox_suppression_on_conn(&mut self.conn).await {
             let _ = self.conn.rollback_and_reenable_foreign_keys().await;

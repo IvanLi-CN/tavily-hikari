@@ -17,24 +17,41 @@ struct ReconciliationProjectionAggregate {
     scheduling_key_id: String,
     updated_at: i64,
     terminal_outcome: Option<String>,
+    source_work_generation: Option<i64>,
 }
 
-type ReconciliationProjectionSourceRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    Option<String>,
-    Option<i64>,
-);
+#[derive(sqlx::FromRow)]
+struct ReconciliationProjectionSourceRow {
+    token_id: String,
+    period_code: String,
+    project_id: String,
+    billing_subject: String,
+    settlement_mode: String,
+    period_start: i64,
+    period_end: i64,
+    scheduling_key_id: String,
+    updated_at: i64,
+    settlement_status: Option<String>,
+    settlement_delta_credits: Option<i64>,
+    source_work_generation: Option<i64>,
+}
 
-type ReconciliationProjectionStateRow =
-    (String, String, String, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+#[derive(sqlx::FromRow)]
+struct ReconciliationProjectionStateRow {
+    cursor_token_id: String,
+    cursor_key_id: String,
+    cursor_period_code: String,
+    batch_size: i64,
+    fast_slice_streak: i64,
+    completed: i64,
+    tx_hold_le_10: i64,
+    tx_hold_le_25: i64,
+    tx_hold_le_50: i64,
+    tx_hold_le_100: i64,
+    tx_hold_le_250: i64,
+    tx_hold_over_250: i64,
+    identity_repair_generation: i64,
+}
 
 struct ReconciliationProjectionController<'a> {
     store: &'a KeyStore,
@@ -155,20 +172,21 @@ impl<'a> ReconciliationProjectionController<'a> {
             r#"SELECT cursor_token_id, cursor_key_id, cursor_period_code,
                   batch_size, fast_slice_streak, completed,
                   tx_hold_le_10, tx_hold_le_25, tx_hold_le_50,
-                  tx_hold_le_100, tx_hold_le_250, tx_hold_over_250
+                  tx_hold_le_100, tx_hold_le_250, tx_hold_over_250,
+                  identity_repair_generation
            FROM upstream_reconciliation_projection_state WHERE id = 'local'"#,
         )
         .fetch_one(&mut *state_connection)
         .await;
         let state = state_connection.complete_query(state_result).await?;
-        if state.5 != 0 {
+        if state.completed != 0 {
             return Ok(ReconciliationProjectionSliceOutcome::Advanced {
                 scanned_rows: 0,
                 completed: true,
             });
         }
         let batch_size = state
-            .3
+            .batch_size
             .clamp(RECONCILIATION_PROJECTION_MIN_BATCH, RECONCILIATION_PROJECTION_MAX_BATCH);
         let mut snapshot = self
             .store
@@ -176,19 +194,29 @@ impl<'a> ReconciliationProjectionController<'a> {
             .begin_reconciliation_read(ReconciliationReadKind::HistoricalProjection)
             .await?;
         let rows_result = sqlx::query_as(
-            r#"SELECT u.token_id, u.key_id, u.period_code, u.project_id,
-                      u.billing_subject, u.settlement_mode, u.period_start,
-                      u.period_end, u.updated_at, s.status, s.delta_credits
+            r#"SELECT u.token_id AS token_id, u.period_code AS period_code,
+                      MIN(u.project_id) AS project_id,
+                      MIN(u.billing_subject) AS billing_subject,
+                      MIN(u.settlement_mode) AS settlement_mode,
+                      MIN(u.period_start) AS period_start,
+                      MAX(u.period_end) AS period_end,
+                      MIN(u.key_id) AS scheduling_key_id,
+                      MAX(u.updated_at) AS updated_at,
+                      MIN(s.status) AS settlement_status,
+                      MIN(s.delta_credits) AS settlement_delta_credits,
+                      MAX(w.work_generation) AS source_work_generation
                FROM upstream_reconciliation_usage u
+               LEFT JOIN upstream_reconciliation_work w
+                 ON w.token_id = u.token_id AND w.period_code = u.period_code
                LEFT JOIN upstream_reconciliation_settlements s
                  ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
-               WHERE (u.token_id, u.key_id, u.period_code) > (?, ?, ?)
-               ORDER BY u.token_id, u.key_id, u.period_code
+               WHERE (u.token_id, u.period_code) > (?, ?)
+               GROUP BY u.token_id, u.period_code
+               ORDER BY u.token_id, u.period_code
                LIMIT ?"#,
         )
-        .bind(&state.0)
-        .bind(&state.1)
-        .bind(&state.2)
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_period_code)
         .bind(batch_size)
         .fetch_all(&mut *snapshot)
         .await;
@@ -199,7 +227,15 @@ impl<'a> ReconciliationProjectionController<'a> {
                     return self.defer_source_read_budget(claimed_job).await;
                 }
             };
-        let Some(last) = rows.last().map(|row| (row.0.clone(), row.1.clone(), row.2.clone()))
+        let Some(last) = rows
+            .last()
+            .map(|row| {
+                (
+                    row.token_id.clone(),
+                    String::new(),
+                    row.period_code.clone(),
+                )
+            })
         else {
             let mut tx = self
                 .store
@@ -210,17 +246,22 @@ impl<'a> ReconciliationProjectionController<'a> {
                 if !Self::claim_is_current(&mut tx, claimed_job).await? {
                     return Ok(ReconciliationProjectionWriteStatus::StaleClaim);
                 }
+                if !Self::projection_snapshot_is_current(&mut tx, &state).await? {
+                    return Ok(ReconciliationProjectionWriteStatus::CursorConflict);
+                }
                 let updated = sqlx::query(
                     r#"UPDATE upstream_reconciliation_projection_state
                        SET completed = 1, next_retry_at = 0, last_defer_reason = NULL,
                            updated_at = ?
                        WHERE id = 'local' AND cursor_token_id = ? AND cursor_key_id = ?
-                         AND cursor_period_code = ? AND completed = 0"#,
+                         AND cursor_period_code = ? AND completed = 0
+                         AND identity_repair_generation = ?"#,
                 )
                 .bind(self.store.backend_time.now_ts())
-                .bind(&state.0)
-                .bind(&state.1)
-                .bind(&state.2)
+                .bind(&state.cursor_token_id)
+                .bind(&state.cursor_key_id)
+                .bind(&state.cursor_period_code)
+                .bind(state.identity_repair_generation)
                 .execute(&mut *tx)
                 .await?;
                 if updated.rows_affected() != 1 {
@@ -269,39 +310,22 @@ impl<'a> ReconciliationProjectionController<'a> {
             ReconciliationProjectionAggregate,
         >::new();
         for row in &rows {
-            let entry = aggregates
-                .entry((row.0.clone(), row.2.clone()))
+            aggregates
+                .entry((row.token_id.clone(), row.period_code.clone()))
                 .or_insert_with(|| ReconciliationProjectionAggregate {
-                    project_id: row.3.clone(),
-                    billing_subject: row.4.clone(),
-                    settlement_mode: row.5.clone(),
-                    period_start: row.6,
-                    period_end: row.7,
-                    scheduling_key_id: row.1.clone(),
-                    updated_at: row.8,
+                    project_id: row.project_id.clone(),
+                    billing_subject: row.billing_subject.clone(),
+                    settlement_mode: row.settlement_mode.clone(),
+                    period_start: row.period_start,
+                    period_end: row.period_end,
+                    scheduling_key_id: row.scheduling_key_id.clone(),
+                    updated_at: row.updated_at,
                     terminal_outcome: projection_terminal_outcome(
-                        row.9.as_deref(),
-                        row.10,
+                        row.settlement_status.as_deref(),
+                        row.settlement_delta_credits,
                     ),
+                    source_work_generation: row.source_work_generation,
                 });
-            if row.3 < entry.project_id {
-                entry.project_id.clone_from(&row.3);
-            }
-            if row.4 < entry.billing_subject {
-                entry.billing_subject.clone_from(&row.4);
-            }
-            if row.5 < entry.settlement_mode {
-                entry.settlement_mode.clone_from(&row.5);
-            }
-            entry.period_start = entry.period_start.min(row.6);
-            entry.period_end = entry.period_end.max(row.7);
-            if row.1 < entry.scheduling_key_id {
-                entry.scheduling_key_id.clone_from(&row.1);
-            }
-            entry.updated_at = entry.updated_at.max(row.8);
-            if entry.terminal_outcome.is_none() {
-                entry.terminal_outcome = projection_terminal_outcome(row.9.as_deref(), row.10);
-            }
         }
 
         let terminal_repairs = aggregates
@@ -322,6 +346,11 @@ impl<'a> ReconciliationProjectionController<'a> {
         let write_result = async {
             if !Self::claim_is_current(&mut tx, claimed_job).await? {
                 return Ok(ReconciliationProjectionWriteStatus::StaleClaim);
+            }
+            if !Self::projection_snapshot_is_current(&mut tx, &state).await?
+                || !Self::aggregate_generations_match_current_work(&mut tx, &aggregates).await?
+            {
+                return Ok(ReconciliationProjectionWriteStatus::CursorConflict);
             }
             if !aggregates.is_empty() {
             let mut merge = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
@@ -344,13 +373,37 @@ impl<'a> ReconciliationProjectionController<'a> {
             });
             merge.push(
                 r#" ON CONFLICT(token_id, period_code) DO UPDATE SET
-                     project_id = MIN(upstream_reconciliation_work.project_id, excluded.project_id),
-                     billing_subject = MIN(upstream_reconciliation_work.billing_subject, excluded.billing_subject),
-                     settlement_mode = MIN(upstream_reconciliation_work.settlement_mode, excluded.settlement_mode),
-                     period_start = MIN(upstream_reconciliation_work.period_start, excluded.period_start),
-                     period_end = MAX(upstream_reconciliation_work.period_end, excluded.period_end),
-                     scheduling_key_id = MIN(upstream_reconciliation_work.scheduling_key_id, excluded.scheduling_key_id),
-                     updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at)"#,
+                     project_id = excluded.project_id,
+                     billing_subject = excluded.billing_subject,
+                     settlement_mode = excluded.settlement_mode,
+                     period_start = excluded.period_start,
+                     period_end = excluded.period_end,
+                     scheduling_key_id = excluded.scheduling_key_id,
+                     updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at),
+                     work_generation = upstream_reconciliation_work.work_generation +
+                       CASE WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                              OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                              OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                              OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                              OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                              OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                            THEN 1 ELSE 0 END,
+                     next_attempt_at = CASE
+                       WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                         OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                         OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                         OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                         OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                         OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                       THEN 0 ELSE upstream_reconciliation_work.next_attempt_at END,
+                     last_outcome = CASE
+                       WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                         OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                         OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                         OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                         OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                         OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                       THEN NULL ELSE upstream_reconciliation_work.last_outcome END"#,
             );
                 merge.build().execute(&mut *tx).await?;
             }
@@ -386,14 +439,25 @@ impl<'a> ReconciliationProjectionController<'a> {
                 repair.build().execute(&mut *tx).await?;
             }
         let write_ms = write_started.elapsed().as_millis() as i64;
-        let mut hold_histogram = [state.6, state.7, state.8, state.9, state.10, state.11];
+        let mut hold_histogram = [
+            state.tx_hold_le_10,
+            state.tx_hold_le_25,
+            state.tx_hold_le_50,
+            state.tx_hold_le_100,
+            state.tx_hold_le_250,
+            state.tx_hold_over_250,
+        ];
         let hold_bucket = RECONCILIATION_PROJECTION_HOLD_BUCKETS_MS
             .iter()
             .position(|upper| write_ms <= *upper)
             .unwrap_or(RECONCILIATION_PROJECTION_HOLD_BUCKETS_MS.len() - 1);
         hold_histogram[hold_bucket] = hold_histogram[hold_bucket].saturating_add(1);
         let transaction_p95_ms = reconciliation_projection_hold_p95_ms(&hold_histogram);
-        let fast_streak = if write_ms <= 50 { state.4 + 1 } else { 0 };
+        let fast_streak = if write_ms <= 50 {
+            state.fast_slice_streak + 1
+        } else {
+            0
+        };
         let next_batch = if write_ms > 100 {
             (batch_size / 2).max(RECONCILIATION_PROJECTION_MIN_BATCH)
         } else if fast_streak >= 2 {
@@ -415,7 +479,8 @@ impl<'a> ReconciliationProjectionController<'a> {
                    tx_hold_over_250 = ?,
                    next_retry_at = ?, last_defer_reason = NULL, updated_at = ?
                WHERE id = 'local' AND cursor_token_id = ? AND cursor_key_id = ?
-                 AND cursor_period_code = ? AND completed = 0"#,
+                 AND cursor_period_code = ? AND completed = 0
+                 AND identity_repair_generation = ?"#,
         )
         .bind(&last.0)
         .bind(&last.1)
@@ -437,9 +502,10 @@ impl<'a> ReconciliationProjectionController<'a> {
                 .saturating_add(continuation_secs),
         )
         .bind(self.store.backend_time.now_ts())
-        .bind(&state.0)
-        .bind(&state.1)
-        .bind(&state.2)
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_key_id)
+        .bind(&state.cursor_period_code)
+        .bind(state.identity_repair_generation)
             .execute(&mut *tx)
             .await?;
             if updated.rows_affected() != 1 {
@@ -494,6 +560,60 @@ impl<'a> ReconciliationProjectionController<'a> {
         .fetch_one(&mut **tx)
         .await?
             != 0)
+    }
+
+    async fn projection_snapshot_is_current(
+        tx: &mut SqliteImmediateTransaction,
+        state: &ReconciliationProjectionStateRow,
+    ) -> Result<bool, ProxyError> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM upstream_reconciliation_projection_state
+                 WHERE id = 'local' AND cursor_token_id = ? AND cursor_key_id = ?
+                   AND cursor_period_code = ? AND completed = 0
+                   AND identity_repair_generation = ?
+               )"#,
+        )
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_key_id)
+        .bind(&state.cursor_period_code)
+        .bind(state.identity_repair_generation)
+        .fetch_one(&mut **tx)
+        .await?
+            != 0)
+    }
+
+    async fn aggregate_generations_match_current_work(
+        tx: &mut SqliteImmediateTransaction,
+        aggregates: &std::collections::BTreeMap<
+            (String, String),
+            ReconciliationProjectionAggregate,
+        >,
+    ) -> Result<bool, ProxyError> {
+        if aggregates.is_empty() {
+            return Ok(true);
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "WITH expected(token_id, period_code, work_generation) AS (",
+        );
+        query.push_values(aggregates.iter(), |mut values, ((token_id, period_code), aggregate)| {
+            values
+                .push_bind(token_id)
+                .push_bind(period_code)
+                .push_bind(aggregate.source_work_generation);
+        });
+        query.push(
+            r#") SELECT e.work_generation, w.work_generation
+                  FROM expected e
+             LEFT JOIN upstream_reconciliation_work w
+                    ON w.token_id = e.token_id AND w.period_code = e.period_code"#,
+        );
+        let generations: Vec<(Option<i64>, Option<i64>)> =
+            query.build_query_as().fetch_all(&mut **tx).await?;
+        Ok(generations.len() == aggregates.len()
+            && generations
+                .into_iter()
+                .all(|(expected, current)| expected == current))
     }
 
     async fn defer_source_read_budget(
