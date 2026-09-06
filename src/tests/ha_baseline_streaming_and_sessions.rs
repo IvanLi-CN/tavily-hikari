@@ -1,6 +1,154 @@
 use super::*;
 
 #[tokio::test]
+async fn runtime_baseline_rearms_current_source_identity_repair() {
+    let source_path = temp_db_path("ha-current-source-identity-source");
+    let source_str = source_path.to_string_lossy().to_string();
+    let source = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-current-source-identity-source".to_string()],
+        DEFAULT_UPSTREAM,
+        &source_str,
+    )
+    .await
+    .expect("create source proxy");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             settlement_mode, period_start, period_end, request_count,
+             first_used_at, last_used_at, updated_at
+           ) VALUES ('ha-identity-token', 'ha-identity-key', '2026-07-15/S1',
+                     'identity-current', 'token:identity-current', 'shadow',
+                     100, 400, 1, 100, 200, 300)"#,
+    )
+    .execute(&source.key_store.pool)
+    .await
+    .expect("insert current reconciliation source");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_work
+           SET project_id = 'identity-stale', billing_subject = 'token:identity-stale',
+               period_start = 1, period_end = 2, scheduling_key_id = 'stale-key',
+               work_generation = 3, completed_generation = 3, next_attempt_at = 999,
+               last_outcome = 'settled'
+           WHERE token_id = 'ha-identity-token' AND period_code = '2026-07-15/S1'"#,
+    )
+    .execute(&source.key_store.pool)
+    .await
+    .expect("seed stale durable work identity");
+    let baseline = source
+        .export_ha_baseline_ndjson(HaSyncChannel::Runtime, "identity-target")
+        .await
+        .expect("export runtime baseline with stale work");
+
+    let target_path = temp_db_path("ha-current-source-identity-target");
+    let target_str = target_path.to_string_lossy().to_string();
+    let target = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-current-source-identity-target".to_string()],
+        DEFAULT_UPSTREAM,
+        &target_str,
+    )
+    .await
+    .expect("create target proxy");
+    let mut settings = target
+        .get_system_settings()
+        .await
+        .expect("load target reconciliation settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    target
+        .set_system_settings(&settings)
+        .await
+        .expect("enable target reconciliation representative");
+    let mut session = target
+        .begin_ha_baseline_apply(HaSyncChannel::Runtime)
+        .await
+        .expect("begin runtime baseline apply");
+    for line in baseline
+        .ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        session
+            .apply_line(line)
+            .await
+            .expect("apply runtime baseline line");
+    }
+    session
+        .finish()
+        .await
+        .expect("finish runtime baseline before enqueueing representative");
+    target
+        .ensure_upstream_reconciliation_representative_job()
+        .await
+        .expect("enqueue the rearmed reconciliation representative");
+
+    let pending: (i64, Option<String>, i64) = sqlx::query_as(
+        "SELECT completed, last_defer_reason, identity_repair_generation \
+         FROM upstream_reconciliation_projection_state \
+         WHERE id = 'local'",
+    )
+    .fetch_one(&target.key_store.pool)
+    .await
+    .expect("read rearmed identity repair state");
+    assert_eq!(
+        pending,
+        (0, Some("identity_repair_pending".to_string()), 2),
+        "the Runtime baseline must fence snapshots from before the import"
+    );
+    let representative_jobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs \
+         WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&target.key_store.pool)
+    .await
+    .expect("read rearmed reconciliation representative");
+    assert_eq!(representative_jobs, 1);
+    assert_eq!(
+        target
+            .key_store
+            .advance_upstream_reconciliation_work_projection()
+            .await
+            .expect("repair imported stale work"),
+        ReconciliationProjectionSliceOutcome::Advanced {
+            scanned_rows: 1,
+            completed: false,
+        }
+    );
+    let repaired: (String, String, i64, i64, String, i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT project_id, billing_subject, period_start, period_end, scheduling_key_id, \
+                    work_generation, next_attempt_at, last_outcome \
+             FROM upstream_reconciliation_work \
+             WHERE token_id = 'ha-identity-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&target.key_store.pool)
+    .await
+    .expect("read repaired imported work identity");
+    assert_eq!(
+        repaired,
+        (
+            "identity-current".to_string(),
+            "token:identity-current".to_string(),
+            100,
+            400,
+            "ha-identity-key".to_string(),
+            4,
+            0,
+            None,
+        )
+    );
+
+    drop(source);
+    drop(target);
+    for path in [&source_path, &target_path] {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    }
+}
+
+#[tokio::test]
 async fn ha_quota_truth_apply_invalidates_cached_account_resolution() {
     let db_path = temp_db_path("ha-quota-cache-invalidation");
     let db_str = db_path.to_string_lossy().to_string();

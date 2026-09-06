@@ -1908,6 +1908,28 @@ async fn reconciliation_projection_rejects_stale_claim() {
     .await
     .expect("create proxy");
     sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             settlement_mode, period_start, period_end, request_count,
+             first_used_at, last_used_at, updated_at
+           ) VALUES ('stale-claim-identity-token', 'stale-claim-identity-key',
+                     '2026-07-15/S1', 'identity-current', 'token:identity-current',
+                     'shadow', 100, 400, 1, 100, 200, 300)"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert pending stale-claim identity source");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_work
+           SET project_id = 'identity-stale', billing_subject = 'token:identity-stale',
+               period_start = 1, period_end = 2, scheduling_key_id = 'stale-key',
+               work_generation = 3
+           WHERE token_id = 'stale-claim-identity-token' AND period_code = '2026-07-15/S1'"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed stale work identity for stale claim");
+    sqlx::query(
         "UPDATE upstream_reconciliation_projection_state SET completed = 0 WHERE id = 'local'",
     )
     .execute(&proxy.key_store.pool)
@@ -1935,6 +1957,19 @@ async fn reconciliation_projection_rejects_stale_claim() {
             .await
             .expect("reject stale projection claim"),
         ReconciliationProjectionSliceOutcome::StaleClaim
+    );
+    let unchanged: (String, String, i64) = sqlx::query_as(
+        "SELECT project_id, scheduling_key_id, work_generation \
+         FROM upstream_reconciliation_work \
+         WHERE token_id = 'stale-claim-identity-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stale-claim fenced work");
+    assert_eq!(
+        unchanged,
+        ("identity-stale".to_string(), "stale-key".to_string(), 3),
+        "a stale claim must not repair or advance the durable work identity"
     );
 
     drop(proxy);
@@ -2847,6 +2882,122 @@ async fn reconciliation_source_revisions_ignore_storage_refresh_and_retain_obser
         .await
         .expect("read current generation observations");
     assert!(current_generation_observations.is_empty());
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconciliation_source_updates_rederive_current_group_identity() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(local_ts(2026, 9, 2, 12, 0));
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-source-identity"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let first_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-source-identity-a")
+        .await
+        .expect("create first upstream key");
+    let second_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-source-identity-b")
+        .await
+        .expect("create second upstream key");
+    let token_id = "source-identity-token";
+    let period_code = "2026-09-02/S1";
+    let insert_usage = r#"INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, settlement_mode,
+            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, 1, 2, 3)"#;
+    for (key_id, project_id, billing_subject, period_start, period_end) in [
+        (
+            &first_key_id,
+            "identity-a",
+            "token:identity-a",
+            100_i64,
+            400_i64,
+        ),
+        (
+            &second_key_id,
+            "identity-m",
+            "token:identity-m",
+            200_i64,
+            500_i64,
+        ),
+    ] {
+        sqlx::query(insert_usage)
+            .bind(token_id)
+            .bind(key_id)
+            .bind(period_code)
+            .bind(project_id)
+            .bind(billing_subject)
+            .bind(period_start)
+            .bind(period_end)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("insert reconciliation source row");
+    }
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage SET token_id = 'source-identity-next-token' \
+         WHERE token_id = ? AND key_id = ? AND period_code = ?",
+    )
+    .bind(token_id)
+    .bind(&first_key_id)
+    .bind(period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("move lexically first source row into a new token group");
+
+    let old_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
+         scheduling_key_id, work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(token_id)
+    .bind(period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rederived old source group");
+    assert_eq!(
+        old_group,
+        (
+            "identity-m".to_string(),
+            "token:identity-m".to_string(),
+            "shadow".to_string(),
+            200,
+            500,
+            second_key_id,
+            3,
+        )
+    );
+    let new_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
+         scheduling_key_id, work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-next-token' AND period_code = ?",
+    )
+    .bind(period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rederived new source group");
+    assert_eq!(
+        new_group,
+        (
+            "identity-a".to_string(),
+            "token:identity-a".to_string(),
+            "shadow".to_string(),
+            100,
+            400,
+            first_key_id,
+            1,
+        )
+    );
 
     drop(proxy);
     let _ = std::fs::remove_file(db_path);

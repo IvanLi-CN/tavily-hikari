@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26,
+            25, 26, 27, 28, 29,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -44,6 +44,33 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read reconciliation source-revision triggers");
     assert_eq!(source_revision_triggers, 2);
+    let source_identity_trigger_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' \
+         AND name = 'trg_upstream_reconciliation_usage_work_update'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read current reconciliation source-identity trigger");
+    assert!(
+        source_identity_trigger_sql.contains("FROM upstream_reconciliation_usage"),
+        "v27 must derive updated work identity from the current source group"
+    );
+    let identity_repair_generation_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_projection_state') \
+         WHERE name = 'identity_repair_generation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v29 identity-repair generation column");
+    assert_eq!(identity_repair_generation_column, 1);
+    let identity_repair_index: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_upstream_reconciliation_usage_identity_repair')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v28 identity-repair index");
+    assert_eq!(identity_repair_index, 1);
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -181,6 +208,70 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
 }
 
 #[tokio::test]
+async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity() {
+    let db_path = temp_db_path("reconciliation-identity-fence-v28-upgrade");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-identity-fence-v28-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create current database");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 29")
+        .execute(&pool)
+        .await
+        .expect("restore the v28 migration ledger");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_projection_state \
+         DROP COLUMN identity_repair_generation",
+    )
+    .execute(&pool)
+    .await
+    .expect("restore the v28 projection state");
+    pool.close().await;
+
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-identity-fence-v28-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("upgrade an existing v28 database");
+    let v28_checksum: String =
+        sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 28")
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("read preserved v28 checksum");
+    assert_eq!(
+        v28_checksum,
+        "sha256:ab30da1112183f3ea75cde687ab08e1685588e3885e5183c6ffb5f788f49b0af"
+    );
+    let v29_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 29)")
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("read v29 ledger record");
+    assert_eq!(v29_recorded, 1);
+    let fence_generation: i64 = sqlx::query_scalar(
+        "SELECT identity_repair_generation FROM upstream_reconciliation_projection_state \
+         WHERE id = 'local'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read v29 repair generation");
+    assert_eq!(fence_generation, 1);
+
+    drop(reopened);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn reconciliation_transport_observation_migration_is_additive_and_warm_safe() {
     let db_path = temp_db_path("reconciliation-transport-observation-migration");
     let db_str = db_path.to_string_lossy().to_string();
@@ -270,6 +361,348 @@ async fn reconciliation_transport_observation_migration_is_additive_and_warm_saf
 }
 
 #[tokio::test]
+async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v26_work() {
+    let db_path = temp_db_path("reconciliation-current-source-identity-repair-v29");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-current-source-identity-repair-v29".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    let mut transaction = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin v26 migration fixture");
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (27, 28, 29)")
+        .execute(&mut *transaction)
+        .await
+        .expect("simulate an existing v26 ledger");
+    sqlx::query("DROP INDEX idx_upstream_reconciliation_usage_identity_repair")
+        .execute(&mut *transaction)
+        .await
+        .expect("remove v28 identity-repair index");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_projection_state \
+         DROP COLUMN identity_repair_generation",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("remove v29 identity-repair generation");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_update")
+        .execute(&mut *transaction)
+        .await
+        .expect("remove v27 source-identity trigger");
+    sqlx::query(
+        r#"CREATE TRIGGER trg_upstream_reconciliation_usage_work_update
+           AFTER UPDATE ON upstream_reconciliation_usage
+           WHEN NEW.token_id IS NOT OLD.token_id
+             OR NEW.key_id IS NOT OLD.key_id
+             OR NEW.period_code IS NOT OLD.period_code
+             OR NEW.project_id IS NOT OLD.project_id
+             OR NEW.billing_subject IS NOT OLD.billing_subject
+             OR NEW.settlement_mode IS NOT OLD.settlement_mode
+             OR NEW.period_start IS NOT OLD.period_start
+             OR NEW.period_end IS NOT OLD.period_end
+             OR NEW.request_count IS NOT OLD.request_count
+             OR NEW.first_used_at IS NOT OLD.first_used_at
+             OR NEW.last_used_at IS NOT OLD.last_used_at
+           BEGIN
+             INSERT INTO upstream_reconciliation_work (
+               token_id, period_code, project_id, billing_subject, settlement_mode,
+               period_start, period_end, scheduling_key_id, updated_at,
+               work_generation, completed_generation, next_attempt_at, last_outcome
+             ) VALUES (
+               NEW.token_id, NEW.period_code, NEW.project_id, NEW.billing_subject,
+               NEW.settlement_mode, NEW.period_start, NEW.period_end, NEW.key_id, NEW.updated_at,
+               1, 0, 0, NULL
+             )
+             ON CONFLICT(token_id, period_code) DO UPDATE SET
+               project_id = MIN(upstream_reconciliation_work.project_id, excluded.project_id),
+               billing_subject = MIN(upstream_reconciliation_work.billing_subject, excluded.billing_subject),
+               settlement_mode = MIN(upstream_reconciliation_work.settlement_mode, excluded.settlement_mode),
+               period_start = MIN(upstream_reconciliation_work.period_start, excluded.period_start),
+               period_end = MAX(upstream_reconciliation_work.period_end, excluded.period_end),
+               scheduling_key_id = MIN(upstream_reconciliation_work.scheduling_key_id, excluded.scheduling_key_id),
+               updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at),
+               work_generation = upstream_reconciliation_work.work_generation + 1,
+               next_attempt_at = 0,
+               last_outcome = NULL;
+
+             UPDATE upstream_reconciliation_work
+                SET work_generation = work_generation + 1,
+                    next_attempt_at = 0,
+                    last_outcome = NULL
+              WHERE (OLD.token_id IS NOT NEW.token_id OR OLD.period_code IS NOT NEW.period_code)
+                AND token_id = OLD.token_id AND period_code = OLD.period_code;
+           END"#,
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("restore the v26 usage-update trigger");
+    transaction
+        .commit()
+        .await
+        .expect("commit v26 migration fixture");
+
+    for (key_id, project_id, billing_subject, period_start, period_end) in [
+        (
+            "source-identity-key-a",
+            "identity-a",
+            "token:identity-a",
+            100_i64,
+            400_i64,
+        ),
+        (
+            "source-identity-key-m",
+            "identity-m",
+            "token:identity-m",
+            200_i64,
+            500_i64,
+        ),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 settlement_mode, period_start, period_end, request_count,
+                 first_used_at, last_used_at, updated_at
+               ) VALUES ('source-identity-v26-token', ?, '2026-07-15/S1', ?, ?,
+                         'shadow', ?, ?, 1, 100, 200, 300)"#,
+        )
+        .bind(key_id)
+        .bind(project_id)
+        .bind(billing_subject)
+        .bind(period_start)
+        .bind(period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert v26 reconciliation source");
+    }
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage SET token_id = 'source-identity-v27-token' \
+         WHERE token_id = 'source-identity-v26-token' AND key_id = 'source-identity-key-a'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("create a stale v26 work identity before upgrade");
+    let stale_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stale v26 work generation");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_key_observations (
+             token_id, period_code, work_generation, key_id, upstream_usage, observed_at
+           ) VALUES ('source-identity-v26-token', '2026-07-15/S1', ?,
+                     'source-identity-key-m', 17, 300)"#,
+    )
+    .bind(stale_generation)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("record partial observation for stale generation");
+    for index in 0..24 {
+        sqlx::query(
+            r#"INSERT INTO upstream_reconciliation_usage (
+                 token_id, key_id, period_code, project_id, billing_subject,
+                 settlement_mode, period_start, period_end, request_count,
+                 first_used_at, last_used_at, updated_at
+               ) VALUES (?, ?, '2026-07-15/S1', 'identity-filler',
+                         'token:identity-filler', 'shadow', 100, 400, 1, 100, 200, 300)"#,
+        )
+        .bind(format!("source-identity-z-{index:02}"))
+        .bind(format!("source-identity-filler-key-{index:02}"))
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert resumable identity-repair filler");
+    }
+
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("upgrade a v26 database to v29"),
+        "an existing v26 database must not request full bootstrap"
+    );
+    let v28_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 28)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v28 ledger record");
+    assert_eq!(v28_recorded, 1);
+    let v29_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 29)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v29 ledger record");
+    assert_eq!(v29_recorded, 1);
+    let repair_state: (String, String, String, i64, Option<String>) = sqlx::query_as(
+        "SELECT cursor_token_id, cursor_key_id, cursor_period_code, completed, last_defer_reason \
+         FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read identity-repair projection state");
+    assert_eq!(
+        repair_state,
+        (
+            String::new(),
+            String::new(),
+            String::new(),
+            0,
+            Some("identity_repair_pending".to_string()),
+        )
+    );
+
+    let old_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
+                scheduling_key_id, work_generation \
+         FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rederived old work group");
+    assert_eq!(
+        old_group,
+        (
+            "identity-a".to_string(),
+            "token:identity-a".to_string(),
+            "shadow".to_string(),
+            100,
+            500,
+            "source-identity-key-a".to_string(),
+            stale_generation,
+        )
+    );
+
+    assert_eq!(
+        proxy
+            .key_store
+            .advance_upstream_reconciliation_work_projection()
+            .await
+            .expect("repair first stale work identity"),
+        ReconciliationProjectionSliceOutcome::Advanced {
+            scanned_rows: 25,
+            completed: false,
+        }
+    );
+    let repaired_old_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
+                scheduling_key_id, work_generation \
+         FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read repaired old work group");
+    assert_eq!(
+        repaired_old_group,
+        (
+            "identity-m".to_string(),
+            "token:identity-m".to_string(),
+            "shadow".to_string(),
+            200,
+            500,
+            "source-identity-key-m".to_string(),
+            stale_generation + 1,
+        )
+    );
+    let preserved_observation: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1' \
+           AND work_generation = ? AND key_id = 'source-identity-key-m'",
+    )
+    .bind(stale_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read preserved stale-generation observation");
+    assert_eq!(preserved_observation, 1);
+    let current_generation_observation: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1' \
+           AND work_generation = ?",
+    )
+    .bind(stale_generation + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read fenced replacement-generation observations");
+    assert_eq!(current_generation_observation, 0);
+
+    let current_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
+        "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
+                scheduling_key_id, work_generation \
+         FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-v27-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rederived current work group");
+    assert_eq!(
+        current_group,
+        (
+            "identity-a".to_string(),
+            "token:identity-a".to_string(),
+            "shadow".to_string(),
+            100,
+            400,
+            "source-identity-key-a".to_string(),
+            1,
+        )
+    );
+
+    drop(proxy);
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-current-source-identity-repair-v29".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("restart resumable identity repair");
+    assert_eq!(
+        reopened
+            .key_store
+            .advance_upstream_reconciliation_work_projection()
+            .await
+            .expect("repair next identity after restart"),
+        ReconciliationProjectionSliceOutcome::Advanced {
+            scanned_rows: 1,
+            completed: false,
+        }
+    );
+    assert_eq!(
+        reopened
+            .key_store
+            .advance_upstream_reconciliation_work_projection()
+            .await
+            .expect("complete identity repair after restart"),
+        ReconciliationProjectionSliceOutcome::Advanced {
+            scanned_rows: 0,
+            completed: true,
+        }
+    );
+    let repaired_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read repaired generation after restart");
+    assert_eq!(repaired_generation, stale_generation + 1);
+    drop(reopened);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn reconciliation_engine_state_migration_resumes_an_incomplete_legacy_projection() {
     let db_path = temp_db_path("reconciliation-engine-state-v9");
     let db_str = db_path.to_string_lossy().to_string();
@@ -291,11 +724,11 @@ async fn reconciliation_engine_state_migration_resumes_an_incomplete_legacy_proj
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN transport_retry_at",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_failure_streak",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_retry_at",
-        // Rebuild the full post-v8 migration tail from the legacy fixture.  Keeping
-        // v19 recorded while its observation table is intentionally dropped would
+        // Rebuild the full post-v8 migration tail from the legacy fixture. Keeping
+        // a later migration recorded while its prerequisite object is intentionally dropped would
         // correctly trigger warm-start drift rejection before the missing migrations
         // can be replayed.
-        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 19",
+        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 29",
     ] {
         sqlx::query(statement)
             .execute(&proxy.key_store.pool)
@@ -981,7 +1414,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26,
+            25, 26, 27, 28, 29,
         ]
     );
 
