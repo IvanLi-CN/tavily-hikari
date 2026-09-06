@@ -1908,6 +1908,28 @@ async fn reconciliation_projection_rejects_stale_claim() {
     .await
     .expect("create proxy");
     sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             settlement_mode, period_start, period_end, request_count,
+             first_used_at, last_used_at, updated_at
+           ) VALUES ('stale-claim-identity-token', 'stale-claim-identity-key',
+                     '2026-07-15/S1', 'identity-current', 'token:identity-current',
+                     'shadow', 100, 400, 1, 100, 200, 300)"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert pending stale-claim identity source");
+    sqlx::query(
+        r#"UPDATE upstream_reconciliation_work
+           SET project_id = 'identity-stale', billing_subject = 'token:identity-stale',
+               period_start = 1, period_end = 2, scheduling_key_id = 'stale-key',
+               work_generation = 3
+           WHERE token_id = 'stale-claim-identity-token' AND period_code = '2026-07-15/S1'"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed stale work identity for stale claim");
+    sqlx::query(
         "UPDATE upstream_reconciliation_projection_state SET completed = 0 WHERE id = 'local'",
     )
     .execute(&proxy.key_store.pool)
@@ -1935,6 +1957,19 @@ async fn reconciliation_projection_rejects_stale_claim() {
             .await
             .expect("reject stale projection claim"),
         ReconciliationProjectionSliceOutcome::StaleClaim
+    );
+    let unchanged: (String, String, i64) = sqlx::query_as(
+        "SELECT project_id, scheduling_key_id, work_generation \
+         FROM upstream_reconciliation_work \
+         WHERE token_id = 'stale-claim-identity-token' AND period_code = '2026-07-15/S1'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stale-claim fenced work");
+    assert_eq!(
+        unchanged,
+        ("identity-stale".to_string(), "stale-key".to_string(), 3),
+        "a stale claim must not repair or advance the durable work identity"
     );
 
     drop(proxy);

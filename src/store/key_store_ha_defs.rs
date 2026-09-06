@@ -44,6 +44,7 @@ pub struct HaBaselineApplySession {
     saw_start: bool,
     saw_end: bool,
     quota_cache_dirty: bool,
+    reconciliation_identity_repair_dirty: bool,
     quota_cache: Arc<RwLock<HashMap<String, AccountQuotaResolutionCacheEntry>>>,
     quota_cache_generation: Arc<std::sync::atomic::AtomicU64>,
     quota_cache_transitions: Arc<std::sync::atomic::AtomicU64>,

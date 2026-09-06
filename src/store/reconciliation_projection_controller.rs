@@ -25,9 +25,9 @@ type ReconciliationProjectionSourceRow = (
     String,
     String,
     String,
+    i64,
+    i64,
     String,
-    i64,
-    i64,
     i64,
     Option<String>,
     Option<i64>,
@@ -176,18 +176,20 @@ impl<'a> ReconciliationProjectionController<'a> {
             .begin_reconciliation_read(ReconciliationReadKind::HistoricalProjection)
             .await?;
         let rows_result = sqlx::query_as(
-            r#"SELECT u.token_id, u.key_id, u.period_code, u.project_id,
-                      u.billing_subject, u.settlement_mode, u.period_start,
-                      u.period_end, u.updated_at, s.status, s.delta_credits
+            r#"SELECT u.token_id, u.period_code, MIN(u.project_id),
+                      MIN(u.billing_subject), MIN(u.settlement_mode),
+                      MIN(u.period_start), MAX(u.period_end), MIN(u.key_id),
+                      MAX(u.updated_at), MIN(s.status), MIN(s.delta_credits)
                FROM upstream_reconciliation_usage u
+               INDEXED BY idx_upstream_reconciliation_usage_identity_repair
                LEFT JOIN upstream_reconciliation_settlements s
                  ON s.settlement_key = 'v1:' || u.token_id || ':' || u.period_code
-               WHERE (u.token_id, u.key_id, u.period_code) > (?, ?, ?)
-               ORDER BY u.token_id, u.key_id, u.period_code
+               WHERE (u.token_id, u.period_code) > (?, ?)
+               GROUP BY u.token_id, u.period_code
+               ORDER BY u.token_id, u.period_code
                LIMIT ?"#,
         )
         .bind(&state.0)
-        .bind(&state.1)
         .bind(&state.2)
         .bind(batch_size)
         .fetch_all(&mut *snapshot)
@@ -199,7 +201,9 @@ impl<'a> ReconciliationProjectionController<'a> {
                     return self.defer_source_read_budget(claimed_job).await;
                 }
             };
-        let Some(last) = rows.last().map(|row| (row.0.clone(), row.1.clone(), row.2.clone()))
+        let Some(last) = rows
+            .last()
+            .map(|row| (row.0.clone(), String::new(), row.1.clone()))
         else {
             let mut tx = self
                 .store
@@ -269,39 +273,21 @@ impl<'a> ReconciliationProjectionController<'a> {
             ReconciliationProjectionAggregate,
         >::new();
         for row in &rows {
-            let entry = aggregates
-                .entry((row.0.clone(), row.2.clone()))
+            aggregates
+                .entry((row.0.clone(), row.1.clone()))
                 .or_insert_with(|| ReconciliationProjectionAggregate {
-                    project_id: row.3.clone(),
-                    billing_subject: row.4.clone(),
-                    settlement_mode: row.5.clone(),
-                    period_start: row.6,
-                    period_end: row.7,
-                    scheduling_key_id: row.1.clone(),
+                    project_id: row.2.clone(),
+                    billing_subject: row.3.clone(),
+                    settlement_mode: row.4.clone(),
+                    period_start: row.5,
+                    period_end: row.6,
+                    scheduling_key_id: row.7.clone(),
                     updated_at: row.8,
                     terminal_outcome: projection_terminal_outcome(
                         row.9.as_deref(),
                         row.10,
                     ),
                 });
-            if row.3 < entry.project_id {
-                entry.project_id.clone_from(&row.3);
-            }
-            if row.4 < entry.billing_subject {
-                entry.billing_subject.clone_from(&row.4);
-            }
-            if row.5 < entry.settlement_mode {
-                entry.settlement_mode.clone_from(&row.5);
-            }
-            entry.period_start = entry.period_start.min(row.6);
-            entry.period_end = entry.period_end.max(row.7);
-            if row.1 < entry.scheduling_key_id {
-                entry.scheduling_key_id.clone_from(&row.1);
-            }
-            entry.updated_at = entry.updated_at.max(row.8);
-            if entry.terminal_outcome.is_none() {
-                entry.terminal_outcome = projection_terminal_outcome(row.9.as_deref(), row.10);
-            }
         }
 
         let terminal_repairs = aggregates
@@ -344,13 +330,37 @@ impl<'a> ReconciliationProjectionController<'a> {
             });
             merge.push(
                 r#" ON CONFLICT(token_id, period_code) DO UPDATE SET
-                     project_id = MIN(upstream_reconciliation_work.project_id, excluded.project_id),
-                     billing_subject = MIN(upstream_reconciliation_work.billing_subject, excluded.billing_subject),
-                     settlement_mode = MIN(upstream_reconciliation_work.settlement_mode, excluded.settlement_mode),
-                     period_start = MIN(upstream_reconciliation_work.period_start, excluded.period_start),
-                     period_end = MAX(upstream_reconciliation_work.period_end, excluded.period_end),
-                     scheduling_key_id = MIN(upstream_reconciliation_work.scheduling_key_id, excluded.scheduling_key_id),
-                     updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at)"#,
+                     project_id = excluded.project_id,
+                     billing_subject = excluded.billing_subject,
+                     settlement_mode = excluded.settlement_mode,
+                     period_start = excluded.period_start,
+                     period_end = excluded.period_end,
+                     scheduling_key_id = excluded.scheduling_key_id,
+                     updated_at = MAX(upstream_reconciliation_work.updated_at, excluded.updated_at),
+                     work_generation = upstream_reconciliation_work.work_generation +
+                       CASE WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                              OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                              OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                              OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                              OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                              OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                            THEN 1 ELSE 0 END,
+                     next_attempt_at = CASE
+                       WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                         OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                         OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                         OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                         OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                         OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                       THEN 0 ELSE upstream_reconciliation_work.next_attempt_at END,
+                     last_outcome = CASE
+                       WHEN upstream_reconciliation_work.project_id IS NOT excluded.project_id
+                         OR upstream_reconciliation_work.billing_subject IS NOT excluded.billing_subject
+                         OR upstream_reconciliation_work.settlement_mode IS NOT excluded.settlement_mode
+                         OR upstream_reconciliation_work.period_start IS NOT excluded.period_start
+                         OR upstream_reconciliation_work.period_end IS NOT excluded.period_end
+                         OR upstream_reconciliation_work.scheduling_key_id IS NOT excluded.scheduling_key_id
+                       THEN NULL ELSE upstream_reconciliation_work.last_outcome END"#,
             );
                 merge.build().execute(&mut *tx).await?;
             }
