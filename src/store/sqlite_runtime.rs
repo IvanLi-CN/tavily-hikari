@@ -125,6 +125,7 @@ pub(crate) enum SqliteOperation {
     AdminMutation,
     AdminAlertsRead,
     AdminAlertsCacheWarm,
+    DashboardQuotaRead,
     AdminPrivacyRead,
     AdminRead,
     AlertProjection,
@@ -183,6 +184,7 @@ impl SqliteOperation {
             Self::AdminMutation => "admin_mutation",
             Self::AdminAlertsRead => "admin_alerts_read",
             Self::AdminAlertsCacheWarm => "admin_alerts_cache_warm",
+            Self::DashboardQuotaRead => "dashboard_quota_read",
             Self::AdminPrivacyRead => "admin_privacy_read",
             Self::AdminRead => "admin_read",
             Self::AlertProjection => "alert_projection",
@@ -208,6 +210,7 @@ impl SqliteOperation {
             Self::AdminMutation | Self::ForegroundJobTrigger => "foreground_work",
             Self::AdminAlertsRead
             | Self::AdminAlertsCacheWarm
+            | Self::DashboardQuotaRead
             | Self::AdminPrivacyRead
             | Self::BillingLedgerAuditRead
             | Self::HaBaselineRead
@@ -231,6 +234,7 @@ impl SqliteOperation {
             Self::AdminMutation => Duration::from_millis(100),
             Self::AdminAlertsRead
             | Self::AdminAlertsCacheWarm
+            | Self::DashboardQuotaRead
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AlertProjection
@@ -254,6 +258,7 @@ impl SqliteOperation {
             Self::AdminMutation => Duration::from_millis(100),
             Self::AdminAlertsRead
             | Self::AdminAlertsCacheWarm
+            | Self::DashboardQuotaRead
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AlertProjection
@@ -280,6 +285,7 @@ impl SqliteOperation {
             // a future that still owns the physical connection.
             Self::AdminAlertsRead
             | Self::AdminAlertsCacheWarm
+            | Self::DashboardQuotaRead
             | Self::AdminPrivacyRead
             | Self::AdminRead
             | Self::AdminMutation
@@ -1112,7 +1118,9 @@ impl SqliteRuntime {
             };
         let cooperative_run_deadline = if matches!(
             operation,
-            SqliteOperation::AdminAlertsRead | SqliteOperation::AdminAlertsCacheWarm
+            SqliteOperation::AdminAlertsRead
+                | SqliteOperation::AdminAlertsCacheWarm
+                | SqliteOperation::DashboardQuotaRead
         ) {
             let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
             let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
@@ -1171,6 +1179,7 @@ impl SqliteRuntime {
             SqliteOperation::AdminPrivacyRead
                 | SqliteOperation::AdminAlertsRead
                 | SqliteOperation::AdminAlertsCacheWarm
+                | SqliteOperation::DashboardQuotaRead
         ) {
             // Admin privacy refreshes are detached from the HTTP budget. Its
             // connection-local busy timeout is the bounded defer mechanism;
@@ -1226,6 +1235,10 @@ impl SqliteRuntime {
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
             SqliteOperation::AdminAlertsCacheWarm => Some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            )),
+            SqliteOperation::DashboardQuotaRead => Some((
                 ADMIN_ALERTS_READ_RUN_BUDGET,
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
@@ -1923,6 +1936,7 @@ impl KeyStore {
     ) -> Result<AdminAlertsReadSession, ProxyError> {
         Ok(AdminAlertsReadSession {
             snapshot: Some(self.sqlite_runtime.begin_read_snapshot(operation).await?),
+            operation,
         })
     }
 
@@ -1970,6 +1984,7 @@ pub(crate) struct ReconciliationReadSession {
 #[derive(Debug)]
 pub(crate) struct AdminAlertsReadSession {
     snapshot: Option<SqliteReadSnapshot>,
+    operation: SqliteOperation,
 }
 
 #[derive(Debug)]
@@ -2018,7 +2033,7 @@ impl SqliteOperationConnection {
                 .record_deferred(self.operation, SqliteAdmissionDeferReason::QueryDeadline);
             return match restore_result {
                 Ok(()) => Err(ProxyError::Deferred {
-                    operation: "admin_alerts_read",
+                    operation: self.operation.as_str(),
                     reason: "read_budget".to_string(),
                 }),
                 Err(restore_err) => Err(ProxyError::Database(restore_err)),
@@ -2521,7 +2536,7 @@ impl AdminAlertsReadSession {
     /// use the same close path as the native read deadline.
     pub(crate) async fn defer<T>(&mut self, reason: impl Into<String>) -> Result<T, ProxyError> {
         let error = ProxyError::Deferred {
-            operation: "admin_alerts_read",
+            operation: self.operation.as_str(),
             reason: reason.into(),
         };
         match self
