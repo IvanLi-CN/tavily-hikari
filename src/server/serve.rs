@@ -1793,7 +1793,11 @@ async fn apply_ha_baseline_response_stream(
             return Err(err.into());
         }
     }
-    let result = session.finish().await.map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
+    let result = state
+        .proxy
+        .finish_ha_baseline_apply(session)
+        .await
+        .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
     refresh_admin_password_state_after_ha_apply(state, channel).await?;
     let detail = match mode {
         tavily_hikari::HaBaselineApplyMode::Replace => "replace",
