@@ -149,6 +149,128 @@ async fn runtime_baseline_rearms_current_source_identity_repair() {
 }
 
 #[tokio::test]
+async fn runtime_event_key_removal_fences_reconciliation_source_identity() {
+    let db_path = temp_db_path("ha-current-source-identity-delete");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-ha-current-source-identity-delete".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create target proxy");
+    let token_id = "ha-identity-delete-token";
+    let period_code = "2026-07-15/S1";
+    let insert_usage = r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             settlement_mode, period_start, period_end, request_count,
+             first_used_at, last_used_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, 100, 200, 300)"#;
+    for (key_id, project_id, billing_subject, period_start, period_end) in [
+        (
+            "ha-identity-delete-key-a",
+            "identity-a",
+            "token:identity-a",
+            100_i64,
+            400_i64,
+        ),
+        (
+            "ha-identity-delete-key-b",
+            "identity-b",
+            "token:identity-b",
+            200_i64,
+            500_i64,
+        ),
+    ] {
+        sqlx::query(insert_usage)
+            .bind(token_id)
+            .bind(key_id)
+            .bind(period_code)
+            .bind(project_id)
+            .bind(billing_subject)
+            .bind(period_start)
+            .bind(period_end)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("seed runtime reconciliation source");
+    }
+    let initial_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(token_id)
+    .bind(period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read initial work generation");
+
+    let events = [
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_start",
+            "channel": "runtime",
+            "after": 0,
+            "limit": 1,
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "event",
+            "channel": "runtime",
+            "event": {
+                "seq": 1,
+                "resource": "upstream_reconciliation_usage",
+                "resourceId": "ha-identity-delete-token:ha-identity-delete-key-a:2026-07-15/S1",
+                "op": "delete",
+                "payload": {
+                    "token_id": token_id,
+                    "key_id": "ha-identity-delete-key-a",
+                    "period_code": period_code,
+                },
+            },
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "events_end",
+            "channel": "runtime",
+            "lastSeq": 1,
+            "eventCount": 1,
+        }),
+    ]
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    proxy
+        .apply_ha_events_ndjson(HaSyncChannel::Runtime, &events)
+        .await
+        .expect("apply runtime source Key removal");
+
+    let rederived: (String, String, i64, i64) = sqlx::query_as(
+        "SELECT scheduling_key_id, project_id, work_generation, next_attempt_at \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(token_id)
+    .bind(period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read HA-fenced reconciliation work");
+    assert_eq!(
+        rederived,
+        (
+            "ha-identity-delete-key-b".to_string(),
+            "identity-b".to_string(),
+            initial_generation + 1,
+            0,
+        )
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn ha_quota_truth_apply_invalidates_cached_account_resolution() {
     let db_path = temp_db_path("ha-quota-cache-invalidation");
     let db_str = db_path.to_string_lossy().to_string();

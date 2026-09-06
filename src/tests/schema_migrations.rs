@@ -32,18 +32,19 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29,
+            25, 26, 27, 28, 29, 30,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (\
          'trg_upstream_reconciliation_usage_work_insert', \
-         'trg_upstream_reconciliation_usage_work_update')",
+         'trg_upstream_reconciliation_usage_work_update', \
+         'trg_upstream_reconciliation_usage_work_delete')",
     )
     .fetch_one(&pool)
     .await
     .expect("read reconciliation source-revision triggers");
-    assert_eq!(source_revision_triggers, 2);
+    assert_eq!(source_revision_triggers, 3);
     let source_identity_trigger_sql: String = sqlx::query_scalar(
         "SELECT sql FROM sqlite_master WHERE type = 'trigger' \
          AND name = 'trg_upstream_reconciliation_usage_work_update'",
@@ -71,6 +72,17 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("verify v28 does not create a business usage index");
     assert_eq!(identity_repair_usage_index, 0);
+    let source_identity_delete_trigger_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' \
+         AND name = 'trg_upstream_reconciliation_usage_work_delete'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read current reconciliation source-identity delete trigger");
+    assert!(
+        source_identity_delete_trigger_sql.contains("work_generation = work_generation + 1"),
+        "v30 must fence a work generation after any source Key removal"
+    );
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -221,7 +233,7 @@ async fn reconciliation_identity_fence_migration_preserves_v28_ledger_contract()
     drop(proxy);
 
     let pool = connect_sqlite_test_pool(&db_str).await;
-    sqlx::query("DELETE FROM schema_migrations WHERE version = 29")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (29, 30)")
         .execute(&pool)
         .await
         .expect("restore the v28 migration ledger");
@@ -371,7 +383,7 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
         .begin()
         .await
         .expect("begin v26 migration fixture");
-    sqlx::query("DELETE FROM schema_migrations WHERE version IN (27, 28, 29)")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (27, 28, 29, 30)")
         .execute(&mut *transaction)
         .await
         .expect("simulate an existing v26 ledger");
@@ -1004,6 +1016,44 @@ async fn versioned_schema_migrations_reject_missing_recorded_objects() {
         error
             .to_string()
             .contains("object validation failed at version 3")
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn current_source_identity_delete_migration_rejects_missing_trigger() {
+    let db_path = temp_db_path("schema-migration-source-identity-delete-trigger");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-source-identity-delete-trigger".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_delete")
+        .execute(&pool)
+        .await
+        .expect("remove recorded source Key delete trigger");
+    pool.close().await;
+
+    let error = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-source-identity-delete-trigger".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect_err("missing source Key delete trigger must reject startup");
+    assert!(
+        error
+            .to_string()
+            .contains("object validation failed at version 30")
     );
 
     let _ = std::fs::remove_file(&db_path);

@@ -92,7 +92,8 @@
   candidate is ready. A slice reads at most `25..100` rows outside the write transaction, then
   atomically merges work and advances its claim-fenced cursor in one short transaction. Candidate
   selection never aggregates raw usage. New usage is maintained by write triggers: only a logical
-  usage revision or a current upstream-Key-set change opens a new work generation. Storage-only
+  usage revision or a current upstream-Key-set change, including a Key removal, opens a new work
+  generation. Storage-only
   import/replay, timestamp refresh, and equal logical source payloads leave the generation and its
   partial observations intact; a logical source revision after terminal settlement opens exactly
   one new generation without reviving a completed no-adjustment period through the legacy cursor.

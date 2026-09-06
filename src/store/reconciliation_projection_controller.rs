@@ -20,36 +20,38 @@ struct ReconciliationProjectionAggregate {
     source_work_generation: Option<i64>,
 }
 
-type ReconciliationProjectionSourceRow = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    String,
-    i64,
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-);
+#[derive(sqlx::FromRow)]
+struct ReconciliationProjectionSourceRow {
+    token_id: String,
+    period_code: String,
+    project_id: String,
+    billing_subject: String,
+    settlement_mode: String,
+    period_start: i64,
+    period_end: i64,
+    scheduling_key_id: String,
+    updated_at: i64,
+    settlement_status: Option<String>,
+    settlement_delta_credits: Option<i64>,
+    source_work_generation: Option<i64>,
+}
 
-type ReconciliationProjectionStateRow = (
-    String,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-);
+#[derive(sqlx::FromRow)]
+struct ReconciliationProjectionStateRow {
+    cursor_token_id: String,
+    cursor_key_id: String,
+    cursor_period_code: String,
+    batch_size: i64,
+    fast_slice_streak: i64,
+    completed: i64,
+    tx_hold_le_10: i64,
+    tx_hold_le_25: i64,
+    tx_hold_le_50: i64,
+    tx_hold_le_100: i64,
+    tx_hold_le_250: i64,
+    tx_hold_over_250: i64,
+    identity_repair_generation: i64,
+}
 
 struct ReconciliationProjectionController<'a> {
     store: &'a KeyStore,
@@ -177,14 +179,14 @@ impl<'a> ReconciliationProjectionController<'a> {
         .fetch_one(&mut *state_connection)
         .await;
         let state = state_connection.complete_query(state_result).await?;
-        if state.5 != 0 {
+        if state.completed != 0 {
             return Ok(ReconciliationProjectionSliceOutcome::Advanced {
                 scanned_rows: 0,
                 completed: true,
             });
         }
         let batch_size = state
-            .3
+            .batch_size
             .clamp(RECONCILIATION_PROJECTION_MIN_BATCH, RECONCILIATION_PROJECTION_MAX_BATCH);
         let mut snapshot = self
             .store
@@ -192,11 +194,17 @@ impl<'a> ReconciliationProjectionController<'a> {
             .begin_reconciliation_read(ReconciliationReadKind::HistoricalProjection)
             .await?;
         let rows_result = sqlx::query_as(
-            r#"SELECT u.token_id, u.period_code, MIN(u.project_id),
-                      MIN(u.billing_subject), MIN(u.settlement_mode),
-                      MIN(u.period_start), MAX(u.period_end), MIN(u.key_id),
-                      MAX(u.updated_at), MIN(s.status), MIN(s.delta_credits),
-                      MAX(w.work_generation)
+            r#"SELECT u.token_id AS token_id, u.period_code AS period_code,
+                      MIN(u.project_id) AS project_id,
+                      MIN(u.billing_subject) AS billing_subject,
+                      MIN(u.settlement_mode) AS settlement_mode,
+                      MIN(u.period_start) AS period_start,
+                      MAX(u.period_end) AS period_end,
+                      MIN(u.key_id) AS scheduling_key_id,
+                      MAX(u.updated_at) AS updated_at,
+                      MIN(s.status) AS settlement_status,
+                      MIN(s.delta_credits) AS settlement_delta_credits,
+                      MAX(w.work_generation) AS source_work_generation
                FROM upstream_reconciliation_usage u
                LEFT JOIN upstream_reconciliation_work w
                  ON w.token_id = u.token_id AND w.period_code = u.period_code
@@ -207,8 +215,8 @@ impl<'a> ReconciliationProjectionController<'a> {
                ORDER BY u.token_id, u.period_code
                LIMIT ?"#,
         )
-        .bind(&state.0)
-        .bind(&state.2)
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_period_code)
         .bind(batch_size)
         .fetch_all(&mut *snapshot)
         .await;
@@ -221,7 +229,13 @@ impl<'a> ReconciliationProjectionController<'a> {
             };
         let Some(last) = rows
             .last()
-            .map(|row| (row.0.clone(), String::new(), row.1.clone()))
+            .map(|row| {
+                (
+                    row.token_id.clone(),
+                    String::new(),
+                    row.period_code.clone(),
+                )
+            })
         else {
             let mut tx = self
                 .store
@@ -244,10 +258,10 @@ impl<'a> ReconciliationProjectionController<'a> {
                          AND identity_repair_generation = ?"#,
                 )
                 .bind(self.store.backend_time.now_ts())
-                .bind(&state.0)
-                .bind(&state.1)
-                .bind(&state.2)
-                .bind(state.12)
+                .bind(&state.cursor_token_id)
+                .bind(&state.cursor_key_id)
+                .bind(&state.cursor_period_code)
+                .bind(state.identity_repair_generation)
                 .execute(&mut *tx)
                 .await?;
                 if updated.rows_affected() != 1 {
@@ -297,20 +311,20 @@ impl<'a> ReconciliationProjectionController<'a> {
         >::new();
         for row in &rows {
             aggregates
-                .entry((row.0.clone(), row.1.clone()))
+                .entry((row.token_id.clone(), row.period_code.clone()))
                 .or_insert_with(|| ReconciliationProjectionAggregate {
-                    project_id: row.2.clone(),
-                    billing_subject: row.3.clone(),
-                    settlement_mode: row.4.clone(),
-                    period_start: row.5,
-                    period_end: row.6,
-                    scheduling_key_id: row.7.clone(),
-                    updated_at: row.8,
+                    project_id: row.project_id.clone(),
+                    billing_subject: row.billing_subject.clone(),
+                    settlement_mode: row.settlement_mode.clone(),
+                    period_start: row.period_start,
+                    period_end: row.period_end,
+                    scheduling_key_id: row.scheduling_key_id.clone(),
+                    updated_at: row.updated_at,
                     terminal_outcome: projection_terminal_outcome(
-                        row.9.as_deref(),
-                        row.10,
+                        row.settlement_status.as_deref(),
+                        row.settlement_delta_credits,
                     ),
-                    source_work_generation: row.11,
+                    source_work_generation: row.source_work_generation,
                 });
         }
 
@@ -425,14 +439,25 @@ impl<'a> ReconciliationProjectionController<'a> {
                 repair.build().execute(&mut *tx).await?;
             }
         let write_ms = write_started.elapsed().as_millis() as i64;
-        let mut hold_histogram = [state.6, state.7, state.8, state.9, state.10, state.11];
+        let mut hold_histogram = [
+            state.tx_hold_le_10,
+            state.tx_hold_le_25,
+            state.tx_hold_le_50,
+            state.tx_hold_le_100,
+            state.tx_hold_le_250,
+            state.tx_hold_over_250,
+        ];
         let hold_bucket = RECONCILIATION_PROJECTION_HOLD_BUCKETS_MS
             .iter()
             .position(|upper| write_ms <= *upper)
             .unwrap_or(RECONCILIATION_PROJECTION_HOLD_BUCKETS_MS.len() - 1);
         hold_histogram[hold_bucket] = hold_histogram[hold_bucket].saturating_add(1);
         let transaction_p95_ms = reconciliation_projection_hold_p95_ms(&hold_histogram);
-        let fast_streak = if write_ms <= 50 { state.4 + 1 } else { 0 };
+        let fast_streak = if write_ms <= 50 {
+            state.fast_slice_streak + 1
+        } else {
+            0
+        };
         let next_batch = if write_ms > 100 {
             (batch_size / 2).max(RECONCILIATION_PROJECTION_MIN_BATCH)
         } else if fast_streak >= 2 {
@@ -477,10 +502,10 @@ impl<'a> ReconciliationProjectionController<'a> {
                 .saturating_add(continuation_secs),
         )
         .bind(self.store.backend_time.now_ts())
-        .bind(&state.0)
-        .bind(&state.1)
-        .bind(&state.2)
-        .bind(state.12)
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_key_id)
+        .bind(&state.cursor_period_code)
+        .bind(state.identity_repair_generation)
             .execute(&mut *tx)
             .await?;
             if updated.rows_affected() != 1 {
@@ -549,10 +574,10 @@ impl<'a> ReconciliationProjectionController<'a> {
                    AND identity_repair_generation = ?
                )"#,
         )
-        .bind(&state.0)
-        .bind(&state.1)
-        .bind(&state.2)
-        .bind(state.12)
+        .bind(&state.cursor_token_id)
+        .bind(&state.cursor_key_id)
+        .bind(&state.cursor_period_code)
+        .bind(state.identity_repair_generation)
         .fetch_one(&mut **tx)
         .await?
             != 0)

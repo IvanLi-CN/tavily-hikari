@@ -48,8 +48,9 @@ transitions are claim-fenced and keep raw upstream details out of durable observ
 
 For a period that maps to more than one eligible upstream key, persist each successful key observation
 by work generation before requesting another key. Advance that generation only for a logical usage
-revision or current Key-set change: storage replay, timestamp refresh, and an equal logical payload
-must retain partial observations. Read missing keys in deterministic order and cap each main run at two
+revision or current Key-set change, including a removed Key: storage replay, timestamp refresh, and
+an equal logical payload must retain partial observations. Read missing keys in deterministic order
+and cap each main run at two
 remote requests. If keys remain, write `remote_attempt_budget` and use the current claim to create or
 reuse one durable 30-second continuation; this must not write a semantic failure, transport or 429
 state, local-pressure state, or billing truth. Sum usage and enter the existing compare/active terminal

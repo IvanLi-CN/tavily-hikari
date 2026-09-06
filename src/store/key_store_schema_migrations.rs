@@ -122,6 +122,11 @@ const RECONCILIATION_CURRENT_SOURCE_IDENTITY_FENCE_NAME: &str =
     "reconciliation-current-source-identity-fence-v1";
 const RECONCILIATION_CURRENT_SOURCE_IDENTITY_FENCE_CHECKSUM: &str =
     "sha256:4e52e9dc9aa2a9fedcab4ccd12da3bc8fed407a2b0f936ff3fae535f48ccac1f";
+const RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_VERSION: i64 = 30;
+const RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_NAME: &str =
+    "reconciliation-current-source-identity-delete-v1";
+const RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_CHECKSUM: &str =
+    "sha256:9d2c4857e8b1a036f4c5d7e98a0b2c3d4e5f60718293a4b5c6d7e8f9012a3b4c";
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
@@ -864,6 +869,11 @@ impl KeyStore {
                 RECONCILIATION_CURRENT_SOURCE_IDENTITY_FENCE_NAME,
                 RECONCILIATION_CURRENT_SOURCE_IDENTITY_FENCE_CHECKSUM,
             ),
+            (
+                RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_VERSION,
+                RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_NAME,
+                RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_CHECKSUM,
+            ),
         ];
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
             "SELECT version, name, checksum FROM schema_migrations ORDER BY version",
@@ -1269,6 +1279,21 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 28".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_VERSION)
+            .await?
+            && !self
+                .schema_named_object_exists(
+                    "main",
+                    "trigger",
+                    "trg_upstream_reconciliation_usage_work_delete",
+                )
+                .await?
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 30".to_string(),
             ));
         }
         Ok(())
@@ -2273,6 +2298,90 @@ impl KeyStore {
         .await
     }
 
+    async fn apply_reconciliation_current_source_identity_delete_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        // A removed source Key is a logical source change. Keep the durable work row for
+        // audit/recovery, but fence all observations from the prior Key set before another
+        // candidate can use them.
+        sqlx::query("DROP TRIGGER IF EXISTS trg_upstream_reconciliation_usage_work_delete")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            r#"CREATE TRIGGER IF NOT EXISTS trg_upstream_reconciliation_usage_work_delete
+               AFTER DELETE ON upstream_reconciliation_usage
+               BEGIN
+                 UPDATE upstream_reconciliation_work
+                    SET project_id = (
+                          SELECT MIN(project_id)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        billing_subject = (
+                          SELECT MIN(billing_subject)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        settlement_mode = (
+                          SELECT MIN(settlement_mode)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        period_start = (
+                          SELECT MIN(period_start)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        period_end = (
+                          SELECT MAX(period_end)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        scheduling_key_id = (
+                          SELECT MIN(key_id)
+                          FROM upstream_reconciliation_usage
+                          WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                        ),
+                        updated_at = MAX(
+                          updated_at,
+                          COALESCE((
+                            SELECT MAX(updated_at)
+                            FROM upstream_reconciliation_usage
+                            WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                          ), updated_at)
+                        ),
+                        work_generation = work_generation + 1,
+                        next_attempt_at = 0,
+                        last_outcome = NULL
+                  WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                    AND EXISTS (
+                      SELECT 1
+                      FROM upstream_reconciliation_usage
+                      WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                    );
+
+                 UPDATE upstream_reconciliation_work
+                    SET work_generation = work_generation + 1,
+                        next_attempt_at = 0,
+                        last_outcome = NULL
+                  WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM upstream_reconciliation_usage
+                      WHERE token_id = OLD.token_id AND period_code = OLD.period_code
+                    );
+               END"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_VERSION,
+            RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_NAME,
+            RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_CHECKSUM,
+        )
+        .await
+    }
+
     async fn apply_reconciliation_key_observation_migration(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS upstream_reconciliation_key_observations (
@@ -2830,6 +2939,13 @@ impl KeyStore {
             self.apply_reconciliation_current_source_identity_fence_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_current_source_identity_delete_migration()
+                .await?;
+        }
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -2898,6 +3014,8 @@ impl KeyStore {
             .await?;
         self.apply_reconciliation_current_source_identity_fence_migration()
             .await?;
+        self.apply_reconciliation_current_source_identity_delete_migration()
+            .await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -2905,7 +3023,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 29_i64,
+            migration_count = 30_i64,
         );
         Ok(())
     }

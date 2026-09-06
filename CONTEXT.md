@@ -204,9 +204,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   generation is never visible to HTTP.
 - `reconciliation source revision`: the logical revision of a usage-to-work input. It advances only
   when billing identity, period bounds, request counts/timestamps, or the current upstream Key set
-  changes. Storage timestamps, identical payload imports, and replay bookkeeping do not reopen a
-  completed generation. Partial per-Key observations remain resumable until every key in the
-  current revision has been accepted.
+  changes, including Key addition, replacement, or removal. Storage timestamps, identical payload
+  imports, and replay bookkeeping do not reopen a completed generation. Partial per-Key observations
+  remain resumable until every key in the current revision has been accepted.
 - `quota sample watermark`: the append-only primary-key/time boundary consumed by the Dashboard
   quota-charge read model. A new sample advances only a bounded background slice and patches the
   immutable last-good snapshot; it does not trigger a full overview rebuild or make HTTP wait for
