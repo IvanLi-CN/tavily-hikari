@@ -1045,6 +1045,14 @@ async fn reconciliation_research_read_deadline_defers_only_the_drain() {
         .expect("claim representative")
         .expect("representative is claimed");
 
+    // This regression owns the Research-drain deadline. Prewarm the lazy
+    // maintenance pool so its first admission sample cannot defer the main
+    // reconciliation before the drain is exercised.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
+
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             "http://127.0.0.1:9",
@@ -1053,10 +1061,10 @@ async fn reconciliation_research_read_deadline_defers_only_the_drain() {
         )
         .await
         .expect("main reconciliation ignores due Research");
-    assert!(matches!(
-        outcome,
-        ClaimedReconciliationRunOutcome::Completed { .. }
-    ));
+    assert!(
+        matches!(outcome, ClaimedReconciliationRunOutcome::Completed { .. }),
+        "unexpected main reconciliation outcome: {outcome:?}"
+    );
     let research: (Option<i64>, i64) = sqlx::query_as(
         "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research WHERE request_id = 'research-deadline-request'",
     )
