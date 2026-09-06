@@ -110,7 +110,7 @@ async fn dashboard_quota_recovery_discards_a_multi_page_draft_on_native_deadline
         matches!(
             result,
             Err(ProxyError::Deferred { operation, ref reason })
-                if operation == "admin_alerts_read" && reason == "read_budget"
+                if operation == "dashboard_quota_read" && reason == "read_budget"
         ),
         "recovery must discard its draft when a bounded source page reaches the native deadline: {result:?}"
     );
@@ -142,7 +142,7 @@ async fn dashboard_quota_source_probe_defers_after_future_page_budget() {
         matches!(
             result,
             Err(ProxyError::Deferred { operation, ref reason })
-                if operation == "admin_alerts_read" && reason == "read_budget"
+                if operation == "dashboard_quota_read" && reason == "read_budget"
         ),
         "future samples spanning multiple keyset pages must defer instead of extending the probe: {result:?}"
     );
@@ -241,7 +241,7 @@ async fn dashboard_quota_recovery_defers_when_source_changes_on_every_staged_pag
         matches!(
             result,
             Err(ProxyError::Deferred { operation, ref reason })
-                if operation == "admin_alerts_read" && reason == "read_budget"
+                if operation == "dashboard_quota_read" && reason == "read_budget"
         ),
         "recovery must defer rather than restart forever when every staged page changes source: {result:?}"
     );

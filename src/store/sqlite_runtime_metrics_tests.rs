@@ -47,6 +47,33 @@ async fn deferred_read_close_is_not_reported_as_a_database_error() {
 }
 
 #[tokio::test]
+async fn workload_window_keeps_dashboard_quota_read_defers_out_of_alerts_warm_metrics() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    let error = ProxyError::Deferred {
+        operation: "dashboard_quota_read",
+        reason: "read_budget".to_string(),
+    };
+
+    runtime.record_deferred_error(SqliteOperation::DashboardQuotaRead, &error);
+
+    let window = runtime.inner.workload.lock().unwrap();
+    let quota_metrics = &window.operations[&SqliteOperation::DashboardQuotaRead];
+    assert_eq!(quota_metrics.deferred, 1);
+    assert_eq!(
+        quota_metrics
+            .deferred_by_reason
+            .get(&SqliteAdmissionDeferReason::QueryDeadline),
+        Some(&1)
+    );
+    assert!(
+        !window
+            .operations
+            .contains_key(&SqliteOperation::AdminAlertsCacheWarm),
+        "Dashboard quota timeouts must not be attributed to canonical Alerts warming"
+    );
+}
+
+#[tokio::test]
 async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_fields() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
     runtime.record_admin_alerts_warm_slice();

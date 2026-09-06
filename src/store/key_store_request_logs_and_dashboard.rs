@@ -2240,11 +2240,11 @@ impl KeyStore {
 
     fn dashboard_quota_read_budget_deferred(&self) -> ProxyError {
         self.sqlite_runtime.record_deferred(
-            SqliteOperation::AdminAlertsCacheWarm,
+            SqliteOperation::DashboardQuotaRead,
             SqliteAdmissionDeferReason::QueryDeadline,
         );
         ProxyError::Deferred {
-            operation: "admin_alerts_read",
+            operation: "dashboard_quota_read",
             reason: "read_budget".to_string(),
         }
     }
@@ -2253,7 +2253,7 @@ impl KeyStore {
         let mut before_id = None;
         for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
             let mut session = self
-                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
                 .await?;
             let query_result = match before_id {
                 Some(before_id) => sqlx::query(
@@ -2313,7 +2313,7 @@ impl KeyStore {
         today_end: i64,
     ) -> Result<i64, ProxyError> {
         let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
             .await?;
         let query_result = sqlx::query_scalar::<_, i64>(
             r#"
@@ -2403,7 +2403,7 @@ impl KeyStore {
         }
 
         let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
             .await?;
         let query_result = sqlx::query(
             r#"
@@ -2468,7 +2468,7 @@ impl KeyStore {
         page_size: i64,
     ) -> Result<Vec<DashboardQuotaSample>, ProxyError> {
         let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
             .await?;
         let page_size = page_size.max(1);
         let query_result = match cursor {
@@ -2622,7 +2622,7 @@ impl KeyStore {
         lower_bound: i64,
     ) -> Result<Option<DashboardQuotaSample>, ProxyError> {
         let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
             .await?;
         let query_result = sqlx::query_scalar::<_, i64>(
             r#"
@@ -2654,7 +2654,7 @@ impl KeyStore {
         let mut baseline = None;
         loop {
             let mut session = self
-                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
                 .await?;
             let query_result = sqlx::query(
                 r#"
