@@ -631,9 +631,6 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
         match result {
             Ok(Some(job_id)) => claimed.push(job_id),
             Ok(None) => {}
-            // A concurrent control claim must yield rather than wait past its
-            // foreground-protection budget. Its caller can retry the trigger;
-            // the durable uniqueness constraint remains the invariant here.
             Err(error) if crate::store::is_transient_sqlite_write_error(&error) => {}
             Err(error) => panic!("claim returned a non-transient error: {error}"),
         }
