@@ -612,13 +612,6 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn finish_ha_baseline_apply(
-        &self,
-        session: crate::store::HaBaselineApplySession,
-    ) -> Result<HaApplyResult, ProxyError> {
-        self.key_store.finish_ha_baseline_apply(session).await
-    }
-
     pub async fn begin_ha_events_apply(
         &self,
         channel: HaSyncChannel,

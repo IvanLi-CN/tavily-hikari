@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28,
+            25, 26, 27, 28, 29,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -61,7 +61,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     )
     .fetch_one(&pool)
     .await
-    .expect("read v28 identity-repair generation column");
+    .expect("read v29 identity-repair generation column");
     assert_eq!(identity_repair_generation_column, 1);
     let identity_repair_index: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' \
@@ -69,8 +69,8 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     )
     .fetch_one(&pool)
     .await
-    .expect("check v28 does not add a business-table index");
-    assert_eq!(identity_repair_index, 0);
+    .expect("read v28 identity-repair index");
+    assert_eq!(identity_repair_index, 1);
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -208,6 +208,70 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
 }
 
 #[tokio::test]
+async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity() {
+    let db_path = temp_db_path("reconciliation-identity-fence-v28-upgrade");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-identity-fence-v28-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create current database");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 29")
+        .execute(&pool)
+        .await
+        .expect("restore the v28 migration ledger");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_projection_state \
+         DROP COLUMN identity_repair_generation",
+    )
+    .execute(&pool)
+    .await
+    .expect("restore the v28 projection state");
+    pool.close().await;
+
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-identity-fence-v28-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("upgrade an existing v28 database");
+    let v28_checksum: String =
+        sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 28")
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("read preserved v28 checksum");
+    assert_eq!(
+        v28_checksum,
+        "sha256:ab30da1112183f3ea75cde687ab08e1685588e3885e5183c6ffb5f788f49b0af"
+    );
+    let v29_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 29)")
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("read v29 ledger record");
+    assert_eq!(v29_recorded, 1);
+    let fence_generation: i64 = sqlx::query_scalar(
+        "SELECT identity_repair_generation FROM upstream_reconciliation_projection_state \
+         WHERE id = 'local'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read v29 repair generation");
+    assert_eq!(fence_generation, 1);
+
+    drop(reopened);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn reconciliation_transport_observation_migration_is_additive_and_warm_safe() {
     let db_path = temp_db_path("reconciliation-transport-observation-migration");
     let db_str = db_path.to_string_lossy().to_string();
@@ -298,10 +362,10 @@ async fn reconciliation_transport_observation_migration_is_additive_and_warm_saf
 
 #[tokio::test]
 async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v26_work() {
-    let db_path = temp_db_path("reconciliation-current-source-identity-repair-v28");
+    let db_path = temp_db_path("reconciliation-current-source-identity-repair-v29");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-reconciliation-current-source-identity-repair-v28".to_string()],
+        vec!["tvly-reconciliation-current-source-identity-repair-v29".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -314,17 +378,21 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
         .begin()
         .await
         .expect("begin v26 migration fixture");
-    sqlx::query("DELETE FROM schema_migrations WHERE version IN (27, 28)")
+    sqlx::query("DELETE FROM schema_migrations WHERE version IN (27, 28, 29)")
         .execute(&mut *transaction)
         .await
         .expect("simulate an existing v26 ledger");
+    sqlx::query("DROP INDEX idx_upstream_reconciliation_usage_identity_repair")
+        .execute(&mut *transaction)
+        .await
+        .expect("remove v28 identity-repair index");
     sqlx::query(
         "ALTER TABLE upstream_reconciliation_projection_state \
          DROP COLUMN identity_repair_generation",
     )
     .execute(&mut *transaction)
     .await
-    .expect("remove v28 identity-repair generation");
+    .expect("remove v29 identity-repair generation");
     sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_update")
         .execute(&mut *transaction)
         .await
@@ -460,7 +528,7 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
             .key_store
             .prepare_versioned_schema()
             .await
-            .expect("upgrade a v26 database to v28"),
+            .expect("upgrade a v26 database to v29"),
         "an existing v26 database must not request full bootstrap"
     );
     let v28_recorded: i64 =
@@ -469,6 +537,12 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
             .await
             .expect("read v28 ledger record");
     assert_eq!(v28_recorded, 1);
+    let v29_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 29)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v29 ledger record");
+    assert_eq!(v29_recorded, 1);
     let repair_state: (String, String, String, i64, Option<String>) = sqlx::query_as(
         "SELECT cursor_token_id, cursor_key_id, cursor_period_code, completed, last_defer_reason \
          FROM upstream_reconciliation_projection_state WHERE id = 'local'",
@@ -586,7 +660,7 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
 
     drop(proxy);
     let reopened = TavilyProxy::with_endpoint(
-        vec!["tvly-reconciliation-current-source-identity-repair-v28".to_string()],
+        vec!["tvly-reconciliation-current-source-identity-repair-v29".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -654,7 +728,7 @@ async fn reconciliation_engine_state_migration_resumes_an_incomplete_legacy_proj
         // a later migration recorded while its prerequisite object is intentionally dropped would
         // correctly trigger warm-start drift rejection before the missing migrations
         // can be replayed.
-        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 28",
+        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 29",
     ] {
         sqlx::query(statement)
             .execute(&proxy.key_store.pool)
@@ -1340,7 +1414,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28,
+            25, 26, 27, 28, 29,
         ]
     );
 
