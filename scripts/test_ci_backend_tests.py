@@ -165,6 +165,8 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertTrue(
             all(
                 prefix.startswith("tests::upstream_reconciliation::")
+                or prefix
+                == "tests::upstream_reconciliation_observation::reconciliation_observation_reports_due_window_without_queue_count"
                 for prefix in upstream["include_prefixes"]
             )
         )
@@ -188,7 +190,10 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "tests::upstream_reconciliation_continuation::",
                 "tests::upstream_reconciliation_engine::",
                 "tests::upstream_reconciliation_fencing::",
+                "tests::upstream_reconciliation_key_observations::",
                 "tests::upstream_reconciliation_projection::",
+                "tests::upstream_reconciliation_source_identity::",
+                "tests::upstream_reconciliation::reconciliation_controlled_retry_advances_the_claim_attempt_before_success",
                 "tavily_proxy::reconciliation_engine_tests::",
                 "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
                 "upstream_privacy::tests::",
