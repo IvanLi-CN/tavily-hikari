@@ -48,10 +48,37 @@ async fn runtime_baseline_rearms_current_source_identity_repair() {
     )
     .await
     .expect("create target proxy");
-    target
-        .apply_ha_baseline_ndjson(HaSyncChannel::Runtime, &baseline.ndjson)
+    let mut settings = target
+        .get_system_settings()
         .await
-        .expect("import runtime baseline");
+        .expect("load target reconciliation settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    target
+        .set_system_settings(&settings)
+        .await
+        .expect("enable target reconciliation representative");
+    let mut session = target
+        .begin_ha_baseline_apply(HaSyncChannel::Runtime)
+        .await
+        .expect("begin runtime baseline apply");
+    for line in baseline
+        .ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        session
+            .apply_line(line)
+            .await
+            .expect("apply runtime baseline line");
+    }
+    target
+        .finish_ha_baseline_apply(session)
+        .await
+        .expect("finish runtime baseline through the shared finalizer");
 
     let pending: (i64, Option<String>) = sqlx::query_as(
         "SELECT completed, last_defer_reason FROM upstream_reconciliation_projection_state \
@@ -61,6 +88,14 @@ async fn runtime_baseline_rearms_current_source_identity_repair() {
     .await
     .expect("read rearmed identity repair state");
     assert_eq!(pending, (0, Some("identity_repair_pending".to_string())));
+    let representative_jobs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs \
+         WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&target.key_store.pool)
+    .await
+    .expect("read rearmed reconciliation representative");
+    assert_eq!(representative_jobs, 1);
     assert_eq!(
         target
             .key_store

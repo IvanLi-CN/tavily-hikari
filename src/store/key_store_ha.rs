@@ -553,7 +553,7 @@ impl KeyStore {
                 return Err(err);
             }
         }
-        session.finish().await
+        self.finish_ha_baseline_apply(session).await
     }
 
     pub(crate) async fn apply_ha_events_ndjson(
@@ -1253,6 +1253,20 @@ impl KeyStore {
             quota_cache_generation: Arc::clone(&self.account_quota_resolution_generation),
             quota_cache_transitions: Arc::clone(&self.account_quota_resolution_transitions),
         })
+    }
+
+    pub(crate) async fn finish_ha_baseline_apply(
+        &self,
+        session: HaBaselineApplySession,
+    ) -> Result<HaApplyResult, ProxyError> {
+        let reconciliation_identity_repair_rearmed =
+            session.reconciliation_identity_repair_rearmed();
+        let result = session.finish().await?;
+        if reconciliation_identity_repair_rearmed {
+            self.ensure_upstream_reconciliation_representative_job()
+                .await?;
+        }
+        Ok(result)
     }
 
     pub(crate) async fn begin_ha_events_apply(
@@ -2698,8 +2712,9 @@ impl HaBaselineApplySession {
         }
         if self.reconciliation_identity_repair_dirty {
             sqlx::query(
-                r#"UPDATE upstream_reconciliation_projection_state
+            r#"UPDATE upstream_reconciliation_projection_state
                    SET cursor_token_id = '', cursor_key_id = '', cursor_period_code = '',
+                       identity_repair_generation = identity_repair_generation + 1,
                        completed = CASE WHEN EXISTS(
                            SELECT 1 FROM upstream_reconciliation_usage LIMIT 1
                        ) THEN 0 ELSE 1 END,

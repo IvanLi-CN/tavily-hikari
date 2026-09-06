@@ -55,14 +55,22 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         source_identity_trigger_sql.contains("FROM upstream_reconciliation_usage"),
         "v27 must derive updated work identity from the current source group"
     );
+    let identity_repair_generation_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_projection_state') \
+         WHERE name = 'identity_repair_generation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v28 identity-repair generation column");
+    assert_eq!(identity_repair_generation_column, 1);
     let identity_repair_index: i64 = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' \
          AND name = 'idx_upstream_reconciliation_usage_identity_repair')",
     )
     .fetch_one(&pool)
     .await
-    .expect("read v28 identity-repair index");
-    assert_eq!(identity_repair_index, 1);
+    .expect("check v28 does not add a business-table index");
+    assert_eq!(identity_repair_index, 0);
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -310,10 +318,13 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
         .execute(&mut *transaction)
         .await
         .expect("simulate an existing v26 ledger");
-    sqlx::query("DROP INDEX idx_upstream_reconciliation_usage_identity_repair")
-        .execute(&mut *transaction)
-        .await
-        .expect("remove v28 identity-repair index");
+    sqlx::query(
+        "ALTER TABLE upstream_reconciliation_projection_state \
+         DROP COLUMN identity_repair_generation",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("remove v28 identity-repair generation");
     sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_update")
         .execute(&mut *transaction)
         .await
@@ -540,6 +551,16 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
     .await
     .expect("read preserved stale-generation observation");
     assert_eq!(preserved_observation, 1);
+    let current_generation_observation: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_reconciliation_key_observations \
+         WHERE token_id = 'source-identity-v26-token' AND period_code = '2026-07-15/S1' \
+           AND work_generation = ?",
+    )
+    .bind(stale_generation + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read fenced replacement-generation observations");
+    assert_eq!(current_generation_observation, 0);
 
     let current_group: (String, String, String, i64, i64, String, i64) = sqlx::query_as(
         "SELECT project_id, billing_subject, settlement_mode, period_start, period_end, \
@@ -629,11 +650,11 @@ async fn reconciliation_engine_state_migration_resumes_an_incomplete_legacy_proj
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN transport_retry_at",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_failure_streak",
         "ALTER TABLE upstream_reconciliation_work DROP COLUMN semantic_retry_at",
-        // Rebuild the full post-v8 migration tail from the legacy fixture.  Keeping
-        // v19 recorded while its observation table is intentionally dropped would
+        // Rebuild the full post-v8 migration tail from the legacy fixture. Keeping
+        // a later migration recorded while its prerequisite object is intentionally dropped would
         // correctly trigger warm-start drift rejection before the missing migrations
         // can be replayed.
-        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 19",
+        "DELETE FROM schema_migrations WHERE version BETWEEN 9 AND 28",
     ] {
         sqlx::query(statement)
             .execute(&proxy.key_store.pool)

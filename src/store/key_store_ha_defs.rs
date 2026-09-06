@@ -50,6 +50,12 @@ pub struct HaBaselineApplySession {
     quota_cache_transitions: Arc<std::sync::atomic::AtomicU64>,
 }
 
+impl HaBaselineApplySession {
+    pub(crate) fn reconciliation_identity_repair_rearmed(&self) -> bool {
+        self.reconciliation_identity_repair_dirty
+    }
+}
+
 #[derive(Debug)]
 pub struct HaBaselineReadSession {
     channel: HaSyncChannel,
