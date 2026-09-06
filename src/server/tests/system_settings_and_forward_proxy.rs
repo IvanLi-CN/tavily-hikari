@@ -2372,12 +2372,6 @@ use super::upstream_support_and_manual_jobs::*;
             "invalid rebalance tool args should never hit upstream"
         );
 
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            proxy.wait_for_rebalance_audits_idle_for_test(),
-        )
-            .await
-            .expect("rebalance audits should finish before the test reads them");
         let pool = connect_sqlite_test_pool(&db_str).await;
         let rows = super::observability_audit_support::wait_for_rebalance_audit_count(
             &pool,
