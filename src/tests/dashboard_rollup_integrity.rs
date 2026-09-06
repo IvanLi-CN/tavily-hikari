@@ -584,6 +584,12 @@ async fn rebalance_rollup_recovery_is_fenced_and_resumable() {
     .await
     .expect("count matching recovery source logs");
     assert_eq!(matched, 501);
+    // Start from the legacy source fixture, not any checkpoint that startup
+    // may have initialized before the legacy rows were inserted.
+    sqlx::query("DELETE FROM dashboard_rollup_rebalance_recovery WHERE id = 1")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear recovery checkpoint for legacy fixture");
 
     let first = proxy
         .run_dashboard_rollup_integrity_slice()
