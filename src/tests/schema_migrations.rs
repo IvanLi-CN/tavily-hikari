@@ -61,16 +61,16 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     )
     .fetch_one(&pool)
     .await
-    .expect("read v29 identity-repair generation column");
+    .expect("read v28 identity-repair generation column");
     assert_eq!(identity_repair_generation_column, 1);
-    let identity_repair_index: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' \
-         AND name = 'idx_upstream_reconciliation_usage_identity_repair')",
+    let identity_repair_usage_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_upstream_reconciliation_usage_identity_repair'",
     )
     .fetch_one(&pool)
     .await
-    .expect("read v28 identity-repair index");
-    assert_eq!(identity_repair_index, 1);
+    .expect("verify v28 does not create a business usage index");
+    assert_eq!(identity_repair_usage_index, 0);
     let transport_observation_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_run_observation') WHERE name = 'last_transport_kind'",
     )
@@ -208,7 +208,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
 }
 
 #[tokio::test]
-async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity() {
+async fn reconciliation_identity_fence_migration_preserves_v28_ledger_contract() {
     let db_path = temp_db_path("reconciliation-identity-fence-v28-upgrade");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -225,13 +225,6 @@ async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity()
         .execute(&pool)
         .await
         .expect("restore the v28 migration ledger");
-    sqlx::query(
-        "ALTER TABLE upstream_reconciliation_projection_state \
-         DROP COLUMN identity_repair_generation",
-    )
-    .execute(&pool)
-    .await
-    .expect("restore the v28 projection state");
     pool.close().await;
 
     let reopened = TavilyProxy::with_endpoint(
@@ -248,7 +241,7 @@ async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity()
             .expect("read preserved v28 checksum");
     assert_eq!(
         v28_checksum,
-        "sha256:ab30da1112183f3ea75cde687ab08e1685588e3885e5183c6ffb5f788f49b0af"
+        "sha256:0e7d9125e32e321c1bad42d11970145c522da5de4c3b84111fceb589217cb049"
     );
     let v29_recorded: i64 =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 29)")
@@ -262,7 +255,7 @@ async fn reconciliation_identity_fence_migration_preserves_v28_ledger_identity()
     )
     .fetch_one(&reopened.key_store.pool)
     .await
-    .expect("read v29 repair generation");
+    .expect("read preserved v28 repair generation");
     assert_eq!(fence_generation, 1);
 
     drop(reopened);
@@ -382,17 +375,13 @@ async fn reconciliation_current_source_identity_repair_migration_resumes_stale_v
         .execute(&mut *transaction)
         .await
         .expect("simulate an existing v26 ledger");
-    sqlx::query("DROP INDEX idx_upstream_reconciliation_usage_identity_repair")
-        .execute(&mut *transaction)
-        .await
-        .expect("remove v28 identity-repair index");
     sqlx::query(
         "ALTER TABLE upstream_reconciliation_projection_state \
          DROP COLUMN identity_repair_generation",
     )
     .execute(&mut *transaction)
     .await
-    .expect("remove v29 identity-repair generation");
+    .expect("remove v28 identity-repair generation");
     sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_update")
         .execute(&mut *transaction)
         .await
