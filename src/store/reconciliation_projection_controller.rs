@@ -35,22 +35,21 @@ type ReconciliationProjectionSourceRow = (
     Option<i64>,
 );
 
-type ReconciliationProjectionStateRow =
-    (
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-    );
+type ReconciliationProjectionStateRow = (
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
 
 struct ReconciliationProjectionController<'a> {
     store: &'a KeyStore,

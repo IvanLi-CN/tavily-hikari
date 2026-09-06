@@ -75,19 +75,28 @@ async fn runtime_baseline_rearms_current_source_identity_repair() {
             .await
             .expect("apply runtime baseline line");
     }
-    target
-        .finish_ha_baseline_apply(session)
+    session
+        .finish()
         .await
-        .expect("finish runtime baseline through the shared finalizer");
+        .expect("finish runtime baseline before enqueueing representative");
+    target
+        .ensure_upstream_reconciliation_representative_job()
+        .await
+        .expect("enqueue the rearmed reconciliation representative");
 
-    let pending: (i64, Option<String>) = sqlx::query_as(
-        "SELECT completed, last_defer_reason FROM upstream_reconciliation_projection_state \
+    let pending: (i64, Option<String>, i64) = sqlx::query_as(
+        "SELECT completed, last_defer_reason, identity_repair_generation \
+         FROM upstream_reconciliation_projection_state \
          WHERE id = 'local'",
     )
     .fetch_one(&target.key_store.pool)
     .await
     .expect("read rearmed identity repair state");
-    assert_eq!(pending, (0, Some("identity_repair_pending".to_string())));
+    assert_eq!(
+        pending,
+        (0, Some("identity_repair_pending".to_string()), 2),
+        "the Runtime baseline must fence snapshots from before the import"
+    );
     let representative_jobs: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM scheduled_jobs \
          WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
