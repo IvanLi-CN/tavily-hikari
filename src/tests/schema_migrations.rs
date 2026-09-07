@@ -276,19 +276,24 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
 
     sqlx::query(
         "UPDATE observability.admin_alert_canonical_groups_state \
-         SET active_generation = 1 WHERE singleton = 1",
+         SET active_generation = 7 WHERE singleton = 1",
     )
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed legacy active generation");
-    sqlx::query(
-        "INSERT INTO observability.admin_alert_canonical_groups \
-         (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
-         VALUES (1, 1, 1, 1, 'legacy', 'legacy-group', '{}')",
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("seed legacy canonical group row");
+    for position in 1..=26_i64 {
+        sqlx::query(
+            "INSERT INTO observability.admin_alert_canonical_groups \
+             (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
+             VALUES (7, ?, ?, 1, 'legacy', ?, '{}')",
+        )
+        .bind(position)
+        .bind(position)
+        .bind(format!("legacy-group-{position}"))
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed legacy canonical group row");
+    }
     sqlx::query("DELETE FROM schema_migrations WHERE version = 33")
         .execute(&proxy.key_store.pool)
         .await
@@ -325,13 +330,53 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read v33 initialized row count");
-    assert_eq!(active_row_count, 1);
+    assert_eq!(active_row_count, 26);
     let v33_recorded: i64 =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 33)")
             .fetch_one(&proxy.key_store.pool)
             .await
             .expect("read v33 ledger record");
     assert_eq!(v33_recorded, 1);
+
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_groups \
+         (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
+         VALUES (1, 1, 100, 1, 'current', 'current-group', '{}')",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed first reusable slot");
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 1, active_row_count = 1 WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate the first reusable-slot publish");
+    assert!(
+        proxy
+            .key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+            .expect("reclaim the first bounded legacy batch"),
+        "one 25-row batch must leave the remaining legacy row for the next slice"
+    );
+    assert!(
+        !proxy
+            .key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+            .expect("finish reclaiming retired legacy generations"),
+        "the reclaimer must converge after the legacy generation is no longer active"
+    );
+    let legacy_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+         WHERE build_generation = 7",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count retired legacy rows");
+    assert_eq!(legacy_rows, 0);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
