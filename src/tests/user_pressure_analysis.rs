@@ -1498,7 +1498,6 @@ async fn analysis_pressure_background_rebuild_releases_latch_after_success() {
     })
     .await
     .expect("successful rebuild should release the latch so a later serving promotion can reschedule it");
-    reopened.cancel_server_pressure_buckets_rebuild().await;
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
