@@ -1170,13 +1170,11 @@ impl KeyStore {
         let rows = self
             .fetch_alert_query_rows_for_operation(query, AlertReadSource::Projected, operation)
             .await?;
-        let items = rows
-            .into_iter()
-            .map(Self::decode_alert_event_projection_row)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(Self::build_alert_event_from_projection)
-            .collect::<Vec<_>>();
+        let items = Self::build_alert_event_items(
+            rows.into_iter()
+                .map(Self::decode_alert_event_projection_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         emit_perf_log(
             DbLogStatus::Info,
             "admin_read",
@@ -1230,13 +1228,11 @@ impl KeyStore {
             .fetch_all(&mut *session)
             .await;
             let rows = session.query(rows_result).await?;
-            let items = rows
-                .into_iter()
-                .map(Self::decode_default_alert_event_projection_row)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter_map(Self::build_alert_event_from_projection)
-                .collect::<Vec<_>>();
+            let items = Self::build_alert_event_items(
+                rows.into_iter()
+                    .map(Self::decode_default_alert_event_projection_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
             Ok::<_, ProxyError>(PaginatedAlertEvents {
                 items,
                 total,
@@ -2385,6 +2381,14 @@ impl KeyStore {
         };
         event.semantic_window = event_semantic_window(&event);
         Some(event)
+    }
+
+    fn build_alert_event_items(
+        rows: impl IntoIterator<Item = AlertEventProjectionRow>,
+    ) -> Vec<AlertEventRecord> {
+        rows.into_iter()
+            .filter_map(Self::build_alert_event_from_projection)
+            .collect()
     }
 
     #[allow(clippy::too_many_arguments)]
