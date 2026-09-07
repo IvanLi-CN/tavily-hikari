@@ -871,21 +871,6 @@ impl SqliteRuntime {
     }
 
     pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) -> Result<(), ProxyError> {
-        self.prewarm_maintenance_bulk_capacity_with_foreground_policy(false)
-            .await
-    }
-
-    pub(crate) async fn prewarm_reconciliation_projection_capacity_after_aged_turn(
-        &self,
-    ) -> Result<(), ProxyError> {
-        self.prewarm_maintenance_bulk_capacity_with_foreground_policy(true)
-            .await
-    }
-
-    async fn prewarm_maintenance_bulk_capacity_with_foreground_policy(
-        &self,
-        bypass_foreground_pressure: bool,
-    ) -> Result<(), ProxyError> {
         if self.inner.pool.num_idle() >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
             || self.inner.pool.size() >= self.inner.maximum_connections
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
@@ -899,8 +884,7 @@ impl SqliteRuntime {
         // pool pressure remains distinguishable from a projection failure.
         let mut held = Vec::new();
         while self.inner.pool.size() < self.inner.maximum_connections {
-            if (!bypass_foreground_pressure
-                && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS)
+            if (self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS)
                 || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
             {
                 break;

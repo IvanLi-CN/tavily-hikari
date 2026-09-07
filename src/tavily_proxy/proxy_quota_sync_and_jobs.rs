@@ -770,20 +770,17 @@ impl TavilyProxy {
             }
         };
         let mut local_admission_outcome = admit_local_projection();
-        if matches!(
+        if !aged_main_turn
+            && matches!(
             local_admission_outcome,
             SqliteAdmissionOutcome::Deferred {
                 reason: "pool_pressure"
             }
-        ) {
-            let prewarm_result = if aged_main_turn {
-                self.prewarm_upstream_reconciliation_projection_capacity_after_aged_turn()
-                    .await
-            } else {
-                self.prewarm_upstream_reconciliation_projection_capacity()
-                    .await
-            };
-            if let Err(error) = prewarm_result
+        )
+        {
+            if let Err(error) = self
+                .prewarm_upstream_reconciliation_projection_capacity()
+                .await
                 && !error.is_deferred()
             {
                 return Err(error);

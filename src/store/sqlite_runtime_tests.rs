@@ -747,6 +747,44 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
 }
 
 #[tokio::test]
+async fn aged_reconciliation_turn_preserves_foreground_pool_reservation() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("SQLite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("lazy three connection pool"),
+        3,
+    );
+    let foreground = runtime.inner.pool.acquire().await.expect("foreground");
+    let second = runtime.inner.pool.acquire().await.expect("grow pool");
+    drop(second);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.pool.num_idle() < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("returned connection becomes idle");
+
+    assert_eq!(
+        runtime
+            .try_admit_reconciliation_projection_after_aged_turn()
+            .expect_err("an aged turn must not consume foreground-reserved capacity"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+    assert_eq!(runtime.inner.pool.size(), 2);
+    assert_eq!(runtime.inner.pool.num_idle(), 1);
+
+    drop(foreground);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_admits_with_one_idle_connection() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()

@@ -164,14 +164,6 @@ impl KeyStore {
             .await
     }
 
-    pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity_after_aged_turn(
-        &self,
-    ) -> Result<(), ProxyError> {
-        self.sqlite_runtime
-            .prewarm_reconciliation_projection_capacity_after_aged_turn()
-            .await
-    }
-
     pub(crate) async fn upstream_reconciliation_run_admission_state(
         &self,
         claimed_job: Option<(i64, i64)>,

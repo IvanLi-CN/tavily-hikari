@@ -489,14 +489,6 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn prewarm_upstream_reconciliation_projection_capacity_after_aged_turn(
-        &self,
-    ) -> Result<(), ProxyError> {
-        self.key_store
-            .prewarm_upstream_reconciliation_projection_capacity_after_aged_turn()
-            .await
-    }
-
     pub fn record_foreground_activity(&self) {
         self.key_store.record_foreground_activity();
     }
