@@ -61,9 +61,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   keyset-reads complete projected history in independent bounded slices, applies the existing Rust
   grouping semantics, and stages a new generation. It atomically switches only when the complete
   source fence is unchanged; failed or changed fences leave last-good visible and obsolete rows are
-  reclaimed in small background write batches that never gate active-generation publication, but must
-  finish before a later replacement generation can stage. This derived model never enters the HA outbox
-  and does not change filtered Groups semantics.
+  uses two reusable staging slots. A source-fenced replacement writes the non-active slot, then atomically
+  switches its generation and row-count; obsolete tails are reclaimed in small background write batches
+  without gating publication. This derived model never enters the HA outbox and does not change filtered
+  Groups semantics.
 
 ## Reconciliation Terms
 

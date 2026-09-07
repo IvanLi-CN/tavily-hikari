@@ -145,14 +145,14 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         key_observation_identity_index_sql.contains("key_source_identity"),
         "v32 must index the per-Key logical source identity"
     );
-    let canonical_groups_state: (i64, i64, i64) = sqlx::query_as(
-        "SELECT active_generation, source_recent_generation, source_history_generation \
+    let canonical_groups_state: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, active_row_count, source_recent_generation, source_history_generation \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&pool)
     .await
     .expect("read v31 canonical group model state");
-    assert_eq!(canonical_groups_state, (0, -1, -1));
+    assert_eq!(canonical_groups_state, (0, 0, -1, -1));
     let canonical_groups_index: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'index' \
          AND name = 'idx_admin_alert_canonical_groups_page'",

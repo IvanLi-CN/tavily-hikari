@@ -1,7 +1,7 @@
 const ADMIN_ALERT_CANONICAL_GROUPS_VERSION: i64 = 31;
 const ADMIN_ALERT_CANONICAL_GROUPS_NAME: &str = "admin-alert-canonical-groups-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_CHECKSUM: &str =
-    "sha256:15dc6c4d56ff4d14a71c1af66f086757a1bc0c97c42b1e69e970f0f03c1e4afe";
+    "sha256:224a57029dc376a13f0c53ed7296c4413ec1f44c15a6c0d378f4f8a7c6ad2b51";
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION: i64 = 32;
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_NAME: &str =
     "reconciliation-key-observation-source-identity-v1";
@@ -33,6 +33,9 @@ impl KeyStore {
                 .await?
                 || !self
                     .schema_object_exists("observability", "admin_alert_canonical_groups_state")
+                    .await?
+                || !self
+                    .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
                     .await?
                 || !self
                     .schema_named_object_exists(
@@ -88,12 +91,24 @@ impl KeyStore {
             r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_groups_state (
                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                 active_generation INTEGER NOT NULL DEFAULT 0,
+                active_row_count INTEGER NOT NULL DEFAULT 0,
                 source_recent_generation INTEGER NOT NULL DEFAULT -1,
                 source_history_generation INTEGER NOT NULL DEFAULT -1
             )"#,
         )
         .execute(&self.pool)
         .await?;
+        if !self
+            .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN active_row_count INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_groups (
                 build_generation INTEGER NOT NULL,

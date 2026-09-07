@@ -13,17 +13,6 @@ impl KeyStore {
             return self.read_admin_alert_canonical_groups_model(source_fence).await;
         }
 
-        // An active generation remains publishable while the dedicated worker drains retired
-        // rows. Only a replacement build waits for that bounded backlog, which prevents repeated
-        // fence rejections from staging generations faster than the reclaimer can remove them.
-        if self.reclaim_admin_alert_canonical_groups_generations().await? {
-            self.sqlite_runtime
-                .record_admin_alerts_canonical_group_defer();
-            return Err(ProxyError::Deferred {
-                operation: "admin_alerts_cache_warm",
-                reason: "groups_generation_reclaim_pending".to_string(),
-            });
-        }
         self.build_admin_alert_canonical_groups_model(source_fence)
             .await?;
         self.read_admin_alert_canonical_groups_model(source_fence).await
@@ -142,7 +131,7 @@ impl KeyStore {
                     Box::pin(async move {
                         for (position, last_seen, total_count, alert_type, group_id, payload_json) in rows {
                             sqlx::query(
-                                r#"INSERT INTO observability.admin_alert_canonical_groups (
+                        r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_groups (
                                        build_generation, position, last_seen, total_count,
                                        alert_type, group_id, payload_json
                                    ) VALUES (?, ?, ?, ?, ?, ?, ?)"#,
@@ -163,13 +152,14 @@ impl KeyStore {
                 .await?;
         }
 
+        let active_row_count = staged_rows.len() as i64;
         let published = self
             .sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
                     let changed = sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
-                              SET active_generation = ?, source_recent_generation = ?,
+                              SET active_generation = ?, active_row_count = ?, source_recent_generation = ?,
                                   source_history_generation = ?
                             WHERE singleton = 1
                               AND ? = (SELECT COALESCE(SUM(generation), 0)
@@ -178,6 +168,7 @@ impl KeyStore {
                                          FROM observability.dashboard_alert_projection_history_state)"#,
                     )
                     .bind(build_generation)
+                    .bind(active_row_count)
                     .bind(source_fence.0)
                     .bind(source_fence.1)
                     .bind(source_fence.0)
@@ -206,8 +197,8 @@ impl KeyStore {
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
         let query_result = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(MAX(build_generation), 0) + 1 \
-             FROM observability.admin_alert_canonical_groups",
+            "SELECT CASE active_generation WHEN 1 THEN 2 ELSE 1 END \
+             FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
         )
         .fetch_one(&mut *session)
         .await;
@@ -224,8 +215,8 @@ impl KeyStore {
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, |tx| {
                 Box::pin(async move {
-                    let active_generation = sqlx::query_scalar::<_, i64>(
-                        "SELECT active_generation \
+                    let (active_generation, active_row_count) = sqlx::query_as::<_, (i64, i64)>(
+                        "SELECT active_generation, active_row_count \
                          FROM observability.admin_alert_canonical_groups_state \
                          WHERE singleton = 1",
                     )
@@ -237,22 +228,24 @@ impl KeyStore {
                              WHERE rowid IN (
                                  SELECT rowid
                                    FROM observability.admin_alert_canonical_groups
-                                  WHERE build_generation != ?
-                                  ORDER BY build_generation ASC, position ASC
+                                  WHERE build_generation = ? AND position > ?
+                                  ORDER BY position ASC
                                   LIMIT 25
                              )"#,
                     )
                     .bind(active_generation)
+                    .bind(active_row_count)
                     .execute(&mut **tx)
                     .await?;
                     let remaining = sqlx::query_scalar::<_, bool>(
                         r#"SELECT EXISTS(
                              SELECT 1
                                FROM observability.admin_alert_canonical_groups
-                              WHERE build_generation != ?
+                              WHERE build_generation = ? AND position > ?
                          )"#,
                     )
                     .bind(active_generation)
+                    .bind(active_row_count)
                     .fetch_one(&mut **tx)
                     .await?;
                     Ok::<_, ProxyError>(remaining)
@@ -269,13 +262,14 @@ impl KeyStore {
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
         let result = async {
-            let state_result = sqlx::query_as::<_, (i64, i64, i64)>(
-                "SELECT active_generation, source_recent_generation, source_history_generation \
+            let state_result = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                "SELECT active_generation, active_row_count, source_recent_generation, \
+                        source_history_generation \
                  FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
             )
             .fetch_optional(&mut *session)
             .await;
-            let Some((generation, recent, history)) = session.query(state_result).await? else {
+            let Some((generation, row_count, recent, history)) = session.query(state_result).await? else {
                 return Err(ProxyError::Deferred {
                     operation: "admin_alerts_cache_warm",
                     reason: "groups_model_unavailable".to_string(),
@@ -289,19 +283,21 @@ impl KeyStore {
             }
             let total_result = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-                 WHERE build_generation = ?",
+                 WHERE build_generation = ? AND position <= ?",
             )
             .bind(generation)
+            .bind(row_count)
             .fetch_one(&mut *session)
             .await;
             let total = session.query(total_result).await?;
             let rows_result = sqlx::query_scalar::<_, String>(
                 "SELECT payload_json FROM observability.admin_alert_canonical_groups \
-                 WHERE build_generation = ? \
+                 WHERE build_generation = ? AND position <= ? \
                  ORDER BY last_seen DESC, total_count DESC, alert_type DESC, group_id DESC \
                  LIMIT 20 OFFSET 0",
             )
             .bind(generation)
+            .bind(row_count)
             .fetch_all(&mut *session)
             .await;
             let items = session

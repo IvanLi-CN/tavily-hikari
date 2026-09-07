@@ -124,9 +124,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - The canonical Groups page is served from a local observability read model. Its builder uses bounded
   keyset projection slices and existing Rust grouping semantics, stages one generation, and switches
   only after the complete durable projection fence is unchanged. Staged or obsolete groups are never
-  visible to HTTP and are reclaimed in short background transactions that never gate active-generation
-  publication, though replacement staging waits for the bounded backlog. This sidecar-derived model is
-  not HA truth.
+  visible to HTTP. Two reusable staging slots bound retained rows across source-fence retries; a short
+  background transaction trims only obsolete active-slot tails and never gates publication. This
+  sidecar-derived model is not HA truth.
 - Multi-Key reconciliation observations are reusable only when candidate-global, Key-set, and per-Key
   logical source identities all match. A single changed Key rereads only that Key; global or Key-set
   changes fence all observations. This refines a local read optimization only and leaves claim fences,

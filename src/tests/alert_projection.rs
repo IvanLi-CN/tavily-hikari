@@ -509,16 +509,17 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
         groups, expected,
         "the canonical model preserves Groups semantics"
     );
-    let state: (i64, i64, i64) = sqlx::query_as(
-        "SELECT active_generation, source_recent_generation, source_history_generation \
+    let state: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, active_row_count, source_recent_generation, source_history_generation \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read canonical groups state");
     assert!(state.0 > 0, "the complete Groups model must be published");
+    assert_eq!(state.1, groups.total);
     assert_eq!(
-        (state.1, state.2),
+        (state.2, state.3),
         proxy
             .admin_alerts_canonical_warm_projection_fence()
             .await
@@ -550,16 +551,17 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
         .await
         .expect("rebuild canonical groups model after source generation change");
     assert_eq!(rebuilt.total, 1);
-    let rebuilt_state: (i64, i64, i64) = sqlx::query_as(
-        "SELECT active_generation, source_recent_generation, source_history_generation \
+    let rebuilt_state: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, active_row_count, source_recent_generation, source_history_generation \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read rebuilt canonical groups state");
-    assert!(rebuilt_state.0 > state.0);
+    assert_ne!(rebuilt_state.0, state.0);
+    assert_eq!(rebuilt_state.1, rebuilt.total);
     assert_eq!(
-        (rebuilt_state.1, rebuilt_state.2),
+        (rebuilt_state.2, rebuilt_state.3),
         proxy
             .admin_alerts_canonical_warm_projection_fence()
             .await
@@ -608,8 +610,8 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
         .await
         .expect("publish an active canonical groups generation");
     assert_eq!(active.total, 1);
-    let active_generation: i64 = sqlx::query_scalar(
-        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+    let (active_generation, active_row_count): (i64, i64) = sqlx::query_as(
+        "SELECT active_generation, active_row_count FROM observability.admin_alert_canonical_groups_state \
          WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
@@ -626,8 +628,8 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
                    alert_type, group_id, payload_json
                ) VALUES (?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(active_generation + 1)
-        .bind(position)
+        .bind(active_generation)
+        .bind(active_row_count + position)
         .bind(now)
         .bind(1_i64)
         .bind("retired")
@@ -664,9 +666,10 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
         assert!(has_more);
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-             WHERE build_generation != ?",
+             WHERE build_generation = ? AND position > ?",
         )
         .bind(active_generation)
+        .bind(active_row_count)
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("count remaining retired rows");
@@ -698,9 +701,10 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     assert_eq!(reclaimed, active);
     let retired_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-         WHERE build_generation != ?",
+         WHERE build_generation = ? AND position > ?",
     )
     .bind(active_generation)
+    .bind(active_row_count)
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("confirm retired generations are gone");
@@ -713,7 +717,7 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacement_staging() {
+async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fence_changes() {
     let db_path = temp_db_path("alert-canonical-groups-replacement-backlog");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_556_000;
@@ -755,9 +759,10 @@ async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacem
     .await
     .expect("read active generation");
 
+    let staging_generation = if active_generation == 1 { 2 } else { 1 };
     // This is intentionally larger than one minute of the 25-row/5s background cleanup
-    // cadence. A new source fence must drain the old staged generation instead of writing a
-    // fresh one on each retry and growing the sidecar without bound.
+    // cadence. New source fences reuse this inactive slot; they must not allocate a third
+    // physical generation or wait long enough to exhaust the five-minute last-good cache.
     for position in 1..=326_i64 {
         sqlx::query(
             r#"INSERT INTO observability.admin_alert_canonical_groups (
@@ -765,7 +770,7 @@ async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacem
                    alert_type, group_id, payload_json
                ) VALUES (?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(active_generation + 1)
+        .bind(staging_generation)
         .bind(position)
         .bind(now)
         .bind(1_i64)
@@ -784,10 +789,8 @@ async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacem
     .await
     .expect("advance the source fence");
 
-    for remaining_after_batch in [
-        301_i64, 276, 251, 226, 201, 176, 151, 126, 101, 76, 51, 26, 1,
-    ] {
-        let error = proxy
+    for source_change in 0..3 {
+        let rebuilt = proxy
             .key_store
             .fetch_admin_alert_groups_page_for_operation(
                 None,
@@ -802,50 +805,44 @@ async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacem
                 SqliteOperation::AdminAlertsCacheWarm,
             )
             .await
-            .expect_err("replacement waits for the bounded retired-generation backlog");
-        assert!(matches!(
-            error,
-            ProxyError::Deferred { ref reason, .. } if reason == "groups_generation_reclaim_pending"
-        ));
-        let (remaining, newest_generation): (i64, i64) = sqlx::query_as(
+            .expect("replacement must publish without serially draining the inactive slot");
+        assert_eq!(rebuilt, active);
+        let (active_slot, active_row_count, retained_rows): (i64, i64, i64) = sqlx::query_as(
             "SELECT \
-                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-                   WHERE build_generation != ?), \
-                 (SELECT MAX(build_generation) FROM observability.admin_alert_canonical_groups)",
+                 (SELECT active_generation \
+                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
+                 (SELECT active_row_count \
+                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
+                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups)",
         )
-        .bind(active_generation)
         .fetch_one(&proxy.key_store.pool)
         .await
-        .expect("inspect bounded retired-generation cleanup");
-        assert_eq!(remaining, remaining_after_batch);
-        assert_eq!(newest_generation, active_generation + 1);
+        .expect("inspect the two-slot canonical model");
+        let expected_slot = if source_change % 2 == 0 {
+            staging_generation
+        } else {
+            active_generation
+        };
+        assert_eq!(active_slot, expected_slot);
+        assert_eq!(active_row_count, rebuilt.total);
+        assert_eq!(retained_rows, 327, "two reusable slots bound retained rows");
+        if source_change < 2 {
+            sqlx::query(
+                "UPDATE observability.dashboard_alert_projection_history_state \
+                 SET generation = generation + 1",
+            )
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("advance source fence for the next replacement");
+        }
     }
 
-    let rebuilt = proxy
+    let has_tail = proxy
         .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
+        .reclaim_admin_alert_canonical_groups_generations()
         .await
-        .expect("stage only after retired rows have drained");
-    assert_eq!(rebuilt, active);
-    let newest_generation: i64 = sqlx::query_scalar(
-        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
-         WHERE singleton = 1",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read replacement active generation");
-    assert_eq!(newest_generation, active_generation + 1);
+        .expect("reclaim the active slot's obsolete tail");
+    assert!(has_tail);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
