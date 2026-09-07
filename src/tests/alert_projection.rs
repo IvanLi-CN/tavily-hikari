@@ -713,6 +713,147 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_model_drains_retired_rows_before_replacement_staging() {
+    let db_path = temp_db_path("alert-canonical-groups-replacement-backlog");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_556_000;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-replacement-backlog".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-replacement-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let active = proxy
+        .key_store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("publish an active canonical groups generation");
+    let active_generation: i64 = sqlx::query_scalar(
+        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read active generation");
+
+    // This is intentionally larger than one minute of the 25-row/5s background cleanup
+    // cadence. A new source fence must drain the old staged generation instead of writing a
+    // fresh one on each retry and growing the sidecar without bound.
+    for position in 1..=326_i64 {
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_groups (
+                   build_generation, position, last_seen, total_count,
+                   alert_type, group_id, payload_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(active_generation + 1)
+        .bind(position)
+        .bind(now)
+        .bind(1_i64)
+        .bind("retired")
+        .bind(format!("retired-{position}"))
+        .bind("{}")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed a retired staged generation");
+    }
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state \
+         SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the source fence");
+
+    for remaining_after_batch in [
+        301_i64, 276, 251, 226, 201, 176, 151, 126, 101, 76, 51, 26, 1,
+    ] {
+        let error = proxy
+            .key_store
+            .fetch_admin_alert_groups_page_for_operation(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                1,
+                20,
+                SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await
+            .expect_err("replacement waits for the bounded retired-generation backlog");
+        assert!(matches!(
+            error,
+            ProxyError::Deferred { ref reason, .. } if reason == "groups_generation_reclaim_pending"
+        ));
+        let (remaining, newest_generation): (i64, i64) = sqlx::query_as(
+            "SELECT \
+                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+                   WHERE build_generation != ?), \
+                 (SELECT MAX(build_generation) FROM observability.admin_alert_canonical_groups)",
+        )
+        .bind(active_generation)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("inspect bounded retired-generation cleanup");
+        assert_eq!(remaining, remaining_after_batch);
+        assert_eq!(newest_generation, active_generation + 1);
+    }
+
+    let rebuilt = proxy
+        .key_store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("stage only after retired rows have drained");
+    assert_eq!(rebuilt, active);
+    let newest_generation: i64 = sqlx::query_scalar(
+        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read replacement active generation");
+    assert_eq!(newest_generation, active_generation + 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn alert_projection_keeps_dashboard_tail_complete_while_history_catches_up() {
     let db_path = temp_db_path("alert-projection-independent-history");
     let db_string = db_path.to_string_lossy().to_string();

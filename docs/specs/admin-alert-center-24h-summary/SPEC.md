@@ -44,8 +44,8 @@
   路径运行完整历史 JSON CTE。builder 从 complete history projection 以 source-fenced keyset
   slices 读取事件、复用既有 Rust grouping 语义，并将 staged groups 作为一代写入；只有全部 slice
   成功且 source fence 未变化才原子切换 active generation。旧代和失败 staged rows 只能以不阻塞
-  active generation 发布的小批次后台回收，绝不参与 HTTP；该模型不进入 HA outbox，筛选的非 canonical
-  Groups 仍保留原有语义。
+  active generation 发布的小批次后台回收，绝不参与 HTTP；后续 replacement staging 必须先清空该
+  有界 backlog。该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
   Canonical HTTP 的 fresh、stale 与 cold payload 响应不计入 synthetic SQLite 前台活动；已配置
   passkey 的 session lookup 与实际进入 bounded database fallback 的 noncanonical 读取仍计量；
   前者在开始获取 SQLite 连接之前计量，避免 cache-only 重试自行阻止 warm admission，同时不隐藏

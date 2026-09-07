@@ -6,13 +6,26 @@ impl KeyStore {
         &self,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
         let source_fence = self.admin_alerts_canonical_warm_projection_fence().await?;
-        if !self
+        if self
             .admin_alert_canonical_groups_model_is_current(source_fence)
             .await?
         {
-            self.build_admin_alert_canonical_groups_model(source_fence)
-                .await?;
+            return self.read_admin_alert_canonical_groups_model(source_fence).await;
         }
+
+        // An active generation remains publishable while the dedicated worker drains retired
+        // rows. Only a replacement build waits for that bounded backlog, which prevents repeated
+        // fence rejections from staging generations faster than the reclaimer can remove them.
+        if self.reclaim_admin_alert_canonical_groups_generations().await? {
+            self.sqlite_runtime
+                .record_admin_alerts_canonical_group_defer();
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_generation_reclaim_pending".to_string(),
+            });
+        }
+        self.build_admin_alert_canonical_groups_model(source_fence)
+            .await?;
         self.read_admin_alert_canonical_groups_model(source_fence).await
     }
 
