@@ -119,6 +119,9 @@
   return; uncertainty closes the physical connection. Billed-credit hydrate is the pre-request
   source-read gate; after an observation, settlement reads current ledger state through a bounded
   finalization connection so charges recorded during HTTP are not missed.
+- Administrator Alerts canonical Events reads are outside this reconciliation source contract: they
+  use the independent `AdminAlertsCacheWarm` snapshot and projection time index, while reconciliation
+  source reads retain their own preparation deadline and claim-fenced continuation.
 - The global remote-attempt limit is one actual outbound HTTP request. Candidate selection,
   projection, hydrate, finalization, and Research bookkeeping do not hold that request lease.
   Manual work keeps priority; automatic main reconciliation and Research drain representatives

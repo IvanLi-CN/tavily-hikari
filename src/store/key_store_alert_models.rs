@@ -9,6 +9,18 @@ struct AlertEventFilters<'a> {
     request_kinds: &'a [String],
 }
 
+impl AlertEventFilters<'_> {
+    fn is_unfiltered(self) -> bool {
+        self.alert_type.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
+            && self.user_id.is_none()
+            && self.token_id.is_none()
+            && self.key_id.is_none()
+            && self.request_kinds.is_empty()
+    }
+}
+
 #[derive(Clone, Copy)]
 enum AlertReadSource {
     Raw,

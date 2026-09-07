@@ -45,6 +45,9 @@ stable cursor, so tying its liveness to the main run is unnecessary.
   resumed run actually begins HTTP, so ordinary automatic jobs cannot take the released lease first,
   although their local preparation may still proceed. The reservation ID, owner kind, and resumable
   flag form one synchronized lifecycle, so clearing an old turn cannot corrupt a newer reservation.
+- The administrator Alerts canonical warm path is independent of this drain. Its indexed Events read
+  and cache publication do not consume the Research request turn, alter drain fairness, or change any
+  reconciliation outcome.
 
 ## Consequences
 

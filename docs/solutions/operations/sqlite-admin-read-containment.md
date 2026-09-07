@@ -81,6 +81,11 @@ reads:
   foreground SQLite activity, or client retries can indefinitely defer the background owner. A configured
   passkey session lookup and a noncanonical exact-key bounded-read fallback each record their real
   foreground SQLite work.
+- The default Events `1/20` warm slice reads `COUNT(*)` and the indexed page directly from
+  `dashboard_alert_projection_events` and decodes its materialized `payload_json` in Rust. Filtered
+  reads retain the JSON CTE contract. A statement that still misses the 250ms native deadline must be
+  handled by a separate query-plan-driven projection/index change; increasing the deadline or restoring
+  a raw fallback is not an admissible containment.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

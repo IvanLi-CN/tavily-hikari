@@ -115,6 +115,11 @@
 - Dashboard 的 recent alert summary 只由 projection worker 在独立的 60 秒窗口内物化。若 source
   generation 在窗口内前进，已有 summary 必须标记 stale，Dashboard HTTP/SSE 继续服务 last-good，而非
   在读取路径执行 sidecar 聚合。
+- The canonical Events `1/20` page is read directly from the projection table's time index: its
+  count and ordered page do not evaluate the JSON CTE, and Rust decodes the already-materialized
+  payload. This optimization is limited to the unfiltered canonical key; a filtered read keeps the
+  existing CTE semantics. A production-shaped statement that misses the native deadline requires
+  query-plan evidence before any separate projection/index change.
 - 历史 lane 的 fence 必须与 recent tail 的起点同秒衔接：tail 拥有起点秒内的记录，history 包含严格更早
   的记录，运行时始终使用复合 cursor；仅 v17 对旧的“同秒 + 空 id”历史 fence 做一次性上一秒迁移，
   以恢复该低 sentinel 的边界所有权。空闲 source probe 不得写 cursor/generation；覆盖观察只能由

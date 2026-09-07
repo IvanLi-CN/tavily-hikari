@@ -701,6 +701,115 @@ async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_s
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
+    let db_path = temp_db_path("admin-alerts-indexed-events");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-indexed-events".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let payload = serde_json::json!({
+        "source_kind": "auth_token_log",
+        "source_id": "alert-source-1",
+        "row_sort_id": "alert-sort-1",
+        "alert_type": "upstream_rate_limited_429",
+        "occurred_at": 1_700_000_000_i64,
+        "token_id": "token-1",
+        "key_id": "key-1",
+        "request_log_id": null,
+        "method": "POST",
+        "path": "/mcp",
+        "query": null,
+        "request_kind_key": "tavily_search",
+        "request_kind_label": "Tavily Search",
+        "request_kind_detail": "POST /mcp",
+        "result_status": "error",
+        "failure_kind": "upstream_rate_limited_429",
+        "error_message": "HTTP 429",
+        "counts_business_quota": true,
+        "user_id": "user-1",
+        "user_display_name": "Test User",
+        "user_username": "tester",
+        "reason_code": null,
+        "reason_summary": null,
+        "reason_detail": null,
+        "job_id": null,
+        "job_type": null,
+        "job_trigger_source": null,
+        "job_status": null,
+        "job_attempt": null,
+        "job_message": null,
+        "job_queued_at": null,
+        "job_started_at": null,
+        "job_finished_at": null
+    })
+    .to_string();
+    sqlx::query(
+        r#"INSERT INTO observability.dashboard_alert_projection_events
+               (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
+           VALUES ('auth_token_log', 'alert-source-1', 1700000000, 'alert-sort-1', ?, 1700000000)"#,
+    )
+    .bind(payload)
+    .execute(&pool)
+    .await
+    .expect("seed projected alert event");
+
+    let plan_rows = sqlx::query(
+        r#"EXPLAIN QUERY PLAN
+             SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json
+               FROM observability.dashboard_alert_projection_events
+              ORDER BY occurred_at DESC, row_sort_id DESC
+              LIMIT 20 OFFSET 0"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain canonical event page");
+    let plan = plan_rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("detail").ok())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        plan.contains("idx_dashboard_alert_projection_events_time"),
+        "canonical Events page must use its time index: {plan}"
+    );
+
+    let count_plan_rows = sqlx::query(
+        r#"EXPLAIN QUERY PLAN
+             SELECT COUNT(*)
+               FROM observability.dashboard_alert_projection_events"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain canonical event count");
+    let count_plan = count_plan_rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("detail").ok())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        count_plan.contains("idx_dashboard_alert_projection_events_time"),
+        "canonical Events count must use a covering time index: {count_plan}"
+    );
+
+    let events = proxy
+        .admin_alert_events_page_for_cache_warm(1, 20)
+        .await
+        .expect("indexed canonical event page");
+    assert_eq!(events.total, 1);
+    assert_eq!(events.items.len(), 1);
+    assert_eq!(events.items[0].id, "auth_token_log:alert-source-1");
+    assert_eq!(events.items[0].alert_type, "upstream_rate_limited_429");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses() {
     let db_path = temp_db_path("admin-alerts-last-good");
     let db_str = db_path.to_string_lossy().to_string();

@@ -35,6 +35,11 @@
   惰性建立连接；HTTP 对 canonical key 只读 exact-key
   cache：同 generation 为 fresh，generation 落后但未过期为 stale，cold/过期为
   `503 Retry-After: 1`，绝不触发重建。
+  默认 Events `1/20` 的 canonical slice 直接从投影表的
+  `(occurred_at DESC, row_sort_id DESC)` 索引读取计数和页面，并在 Rust 解码已物化的
+  `payload_json`；只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状
+  快照上仍超过 `250ms`，必须先提交 `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高
+  读预算或恢复 raw fallback。
   Canonical HTTP 的 fresh、stale 与 cold payload 响应不计入 synthetic SQLite 前台活动；已配置
   passkey 的 session lookup 与实际进入 bounded database fallback 的 noncanonical 读取仍计量；
   前者在开始获取 SQLite 连接之前计量，避免 cache-only 重试自行阻止 warm admission，同时不隐藏

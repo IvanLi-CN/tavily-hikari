@@ -171,6 +171,10 @@
 - `component=admin_read event=alerts_canonical_warm_published|alerts_canonical_warm_deferred`
   Warm diagnostics report only the defer category, retry delay, projection generation outcome, and
   aggregate slice counts. They never include SQL, filters, users, tokens, keys, or response bodies.
+- The canonical Events warm slice reports the bounded indexed projection phase separately from
+  filtered CTE reads. Its metrics cover only statement elapsed/defer and decoded row count; no SQL,
+  payload, or filter value is recorded. A future query-plan change must retain the same operation
+  boundary and native deadline.
 - `component=startup event=admin_privacy_status_prewarm_started|admin_privacy_status_prewarm_deferred`
   - `component=admin_read event=low_memory_protection_decision`
 - `sqlite_workload_window` aggregates `observability_deferred_write` alongside other operation

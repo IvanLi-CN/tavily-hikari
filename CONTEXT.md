@@ -53,6 +53,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
   These cache-only payload responses do not count as synthetic SQLite foreground activity. A configured
   passkey session lookup and a noncanonical bounded-read fallback are each real foreground work.
+  The default Events `1/20` warm slice reads count and page rows directly through the projection
+  time index and decodes materialized payloads in Rust; filtered/noncanonical reads keep their existing
+  JSON CTE semantics. A production-shaped statement that still exceeds the native deadline requires
+  query-plan evidence and a separate projection/index task, never a larger read budget or raw fallback.
 
 ## Reconciliation Terms
 

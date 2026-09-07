@@ -117,3 +117,7 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   all three values behind one projection-generation fence and publishes them together. A deferred
   warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
   HTTP to trigger a rebuild.
+- The canonical Events page is the bounded exception to the general filtered read builder: it uses
+  the projection table's time index for `COUNT(*)` and the first twenty rows, then decodes the stored
+  event payload in Rust. Any remaining >250ms source-read evidence must be presented as a query plan
+  before a later projection/index change; this ADR does not authorize a larger deadline or raw fallback.

@@ -521,6 +521,10 @@ source when a usable persisted runtime already exists.
   most 80 due rows. The exact processed `(next_poll_at, key_id, request_id)` cursor, Research outcome,
   and optional Key cooldown commit in one claim-fenced transaction. A read deadline, cancellation,
   or stale claim leaves all three unchanged.
+- The unfiltered administrator Events canonical page is a bounded read-only exception to the
+  filtered JSON projection builder: it uses the projection time index and decodes materialized
+  payloads after the query. Its `100ms` acquire and `250ms` native statement deadline remain fixed;
+  a missed deadline is evidence for a separate query-plan task, not a reason to relax this contract.
 
 ## Related ADRs
 
