@@ -643,6 +643,7 @@ async fn non_aged_research_defers_for_foreground_pressure() {
         .expect("claim Research drain")
         .expect("Research drain becomes running");
 
+    let run_started_at = state.proxy.backend_time().now_ts();
     assert!(
         run_manual_claimed_job(
             state.clone(),
@@ -659,6 +660,7 @@ async fn non_aged_research_defers_for_foreground_pressure() {
         .await,
         "a non-aged Research representative receives a durable defer"
     );
+    let run_finished_at = state.proxy.backend_time().now_ts();
     let finished_message: String = sqlx::query_scalar(
         "SELECT COALESCE(message, '') FROM scheduled_jobs WHERE id = ?",
     )
@@ -674,7 +676,11 @@ async fn non_aged_research_defers_for_foreground_pressure() {
     .await
     .expect("read Research continuation");
     assert_eq!(finished_message, "deferred=foreground_pressure");
-    assert_eq!(continuation_at, now + 30);
+    assert!(
+        (run_started_at + 30..=run_finished_at + 30).contains(&continuation_at),
+        "continuation must be scheduled exactly 30 seconds from the defer decision: \
+         started={run_started_at}, finished={run_finished_at}, continuation={continuation_at}"
+    );
 
     drop(state);
     let _ = std::fs::remove_file(db_path);
