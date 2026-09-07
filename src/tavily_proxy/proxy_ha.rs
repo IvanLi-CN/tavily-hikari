@@ -465,11 +465,35 @@ impl TavilyProxy {
         }
     }
 
+    pub fn admit_upstream_reconciliation_projection_after_aged_turn(
+        &self,
+    ) -> SqliteAdmissionOutcome {
+        match self
+            .key_store
+            .try_admit_upstream_reconciliation_projection_after_aged_turn()
+        {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
     pub async fn prewarm_upstream_reconciliation_projection_capacity(
         &self,
     ) -> Result<(), ProxyError> {
         self.key_store
             .prewarm_upstream_reconciliation_projection_capacity()
+            .await
+    }
+
+    pub async fn prewarm_upstream_reconciliation_projection_capacity_after_aged_turn(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .prewarm_upstream_reconciliation_projection_capacity_after_aged_turn()
             .await
     }
 

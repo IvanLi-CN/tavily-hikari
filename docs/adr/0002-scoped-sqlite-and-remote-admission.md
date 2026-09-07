@@ -48,6 +48,12 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   interval. After an accepted five-second `remote_lease` continuation, the controller retains that
   aged Research reservation until its resumed run begins an actual HTTP request; ordinary automatic
   remote jobs may still prepare locally but cannot reclaim the released request lease.
+- `foreground_rps` remains a foreground-protection heuristic, not a SQLite-capacity signal. A
+  normal main reconciliation run and normal Research drain defer above the threshold. An
+  already-granted aged Main or Research turn may bypass that one heuristic for one actual request,
+  but still requires SQLite idle capacity, no recent contention, its normal bounded read, the
+  request-scoped lease, and claim-fenced finalization. The exception never raises remote
+  concurrency or lets bulk work preempt a foreground pool waiter.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read
   calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
   At the same low-frequency window boundary it may sample only configured core/observability DB and

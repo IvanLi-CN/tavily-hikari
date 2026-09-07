@@ -45,6 +45,10 @@ stable cursor, so tying its liveness to the main run is unnecessary.
   resumed run actually begins HTTP, so ordinary automatic jobs cannot take the released lease first,
   although their local preparation may still proceed. The reservation ID, owner kind, and resumable
   flag form one synchronized lifecycle, so clearing an old turn cannot corrupt a newer reservation.
+- An already-granted aged main-reconciliation turn receives the parallel one-request exception to
+  the `foreground_rps` heuristic. It remains a bulk SQLite operation: idle foreground capacity,
+  recent-contention checks, the one bulk permit, the native source-read deadline, and its claim
+  fence all remain mandatory. A non-aged main run still yields for foreground traffic.
 - The administrator Alerts canonical warm path is independent of this drain. Its indexed Events read
   and cache publication do not consume the Research request turn, alter drain fairness, or change any
   reconciliation outcome.

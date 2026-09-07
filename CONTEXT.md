@@ -138,6 +138,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   traffic. It is not a CPU, SQLite-pool, cgroup, or host-load metric. A non-aged Research drain
   defers above five requests per second; an aged Research turn bypasses only this heuristic for
   one bounded poll and still requires SQLite admission, the request lease, and a claim fence.
+  An already-granted aged Main reconciliation turn receives the same one-request exception; it
+  still requires two idle-or-allocatable foreground-reserved connections, no recent contention,
+  the one bulk permit, a request-scoped lease, and claim-fenced finalization. A non-aged Main run
+  continues to defer above the threshold.
   Its durable `scheduled_jobs.queued_at` fairness anchor survives foreground, lease, read-budget,
   and control defers; an accepted poll or Key cooldown begins a new interval.
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in

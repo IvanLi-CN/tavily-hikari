@@ -519,12 +519,6 @@ impl ReconciliationEngine {
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
-            if let Err(reason) = proxy
-                .key_store
-                .try_admit_upstream_reconciliation_projection()
-            {
-                return Ok(Self::deferred(&proxy, reason.as_str()));
-            }
             let Some(attempt) = proxy
                 .key_store
                 .upstream_reconciliation_claim_attempt(job_id, claim_generation)

@@ -781,6 +781,27 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_maintenance_bulk_with_foreground_policy(operation, false)
+    }
+
+    /// An aged reconciliation fairness turn may bypass the request-rate
+    /// heuristic once. It still needs the normal idle-capacity, contention,
+    /// shutdown, and single-bulk-permit protections before it can prepare a
+    /// request.
+    pub(crate) fn try_admit_reconciliation_projection_after_aged_turn(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_maintenance_bulk_with_foreground_policy(
+            SqliteOperation::ReconciliationProjection,
+            true,
+        )
+    }
+
+    fn try_admit_maintenance_bulk_with_foreground_policy(
+        &self,
+        operation: SqliteOperation,
+        bypass_foreground_pressure: bool,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
         if self
             .inner
@@ -790,7 +811,7 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        let reason = self.maintenance_bulk_defer_reason_for(operation);
+        let reason = self.maintenance_bulk_defer_reason_for(operation, bypass_foreground_pressure);
         if let Some(reason) = reason {
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -850,6 +871,21 @@ impl SqliteRuntime {
     }
 
     pub(crate) async fn prewarm_maintenance_bulk_capacity(&self) -> Result<(), ProxyError> {
+        self.prewarm_maintenance_bulk_capacity_with_foreground_policy(false)
+            .await
+    }
+
+    pub(crate) async fn prewarm_reconciliation_projection_capacity_after_aged_turn(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.prewarm_maintenance_bulk_capacity_with_foreground_policy(true)
+            .await
+    }
+
+    async fn prewarm_maintenance_bulk_capacity_with_foreground_policy(
+        &self,
+        bypass_foreground_pressure: bool,
+    ) -> Result<(), ProxyError> {
         if self.inner.pool.num_idle() >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS as usize
             || self.inner.pool.size() >= self.inner.maximum_connections
             || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
@@ -863,7 +899,8 @@ impl SqliteRuntime {
         // pool pressure remains distinguishable from a projection failure.
         let mut held = Vec::new();
         while self.inner.pool.size() < self.inner.maximum_connections {
-            if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS
+            if (!bypass_foreground_pressure
+                && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS)
                 || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
             {
                 break;
@@ -1003,9 +1040,10 @@ impl SqliteRuntime {
     fn maintenance_bulk_defer_reason_for(
         &self,
         operation: SqliteOperation,
+        bypass_foreground_pressure: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
         let foreground_rps = self.foreground_activity_rps();
-        if foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+        if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() && !operation.probes_recent_contention() {
             Some(SqliteAdmissionDeferReason::RecentContention)

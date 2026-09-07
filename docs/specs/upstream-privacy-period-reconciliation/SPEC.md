@@ -150,9 +150,11 @@
   one request, and atomically accepts its pending/terminal/retry result, exact cursor, Key cooldown,
   and claim fence. `foreground_pressure`, `read_budget`, and `control_defer` schedule one
   30-second continuation; `remote_lease` schedules one five-second continuation. They advance no
-  cursor or retry streak. Above five instance-local foreground requests per second, only an aged
-  Research turn may run one bounded poll; it does not bypass SQLite admission, the request lease,
-  or claim-fenced finalization. After an accepted `remote_lease` continuation, that aged reservation
+  cursor or retry streak. Above five instance-local foreground requests per second, a normal main
+  reconciliation run and a normal Research drain defer. An already-granted aged Main or Research
+  turn may run one bounded request, but it does not bypass SQLite idle-capacity or contention
+  admission, the native read deadline, the request lease, or claim-fenced finalization. After an
+  accepted `remote_lease` continuation, that aged reservation
   remains held until the resumed Research run starts HTTP; ordinary automatic remote work may
   prepare locally but cannot claim the released lease. The turn identity, owner and resumable state
   transition together, so an old claim cleanup cannot corrupt a newer aged reservation.

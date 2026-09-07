@@ -760,21 +760,35 @@ impl TavilyProxy {
             try_remote_attempt: false,
             attempt_deadline: None,
         };
-        let mut local_admission_outcome = self.admit_upstream_reconciliation_projection();
+        let aged_main_turn = reconciliation_turn
+            .is_some_and(|turn| turn.kind() == crate::ReconciliationTurnKind::Main);
+        let admit_local_projection = || {
+            if aged_main_turn {
+                self.admit_upstream_reconciliation_projection_after_aged_turn()
+            } else {
+                self.admit_upstream_reconciliation_projection()
+            }
+        };
+        let mut local_admission_outcome = admit_local_projection();
         if matches!(
             local_admission_outcome,
             SqliteAdmissionOutcome::Deferred {
                 reason: "pool_pressure"
             }
         ) {
-            if let Err(error) = self
-                .prewarm_upstream_reconciliation_projection_capacity()
-                .await
+            let prewarm_result = if aged_main_turn {
+                self.prewarm_upstream_reconciliation_projection_capacity_after_aged_turn()
+                    .await
+            } else {
+                self.prewarm_upstream_reconciliation_projection_capacity()
+                    .await
+            };
+            if let Err(error) = prewarm_result
                 && !error.is_deferred()
             {
                 return Err(error);
             }
-            local_admission_outcome = self.admit_upstream_reconciliation_projection();
+            local_admission_outcome = admit_local_projection();
         }
         let mut local_admission = match local_admission_outcome {
             SqliteAdmissionOutcome::Admitted(admission) => admission,

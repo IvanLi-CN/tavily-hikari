@@ -2674,7 +2674,10 @@ async fn run_manual_claimed_job(
             drop(_job_execution_gate);
             let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
             let foreground_rps = state.proxy.foreground_activity_rps();
-            if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS {
+            let aged_main_turn = reconciliation_turn
+                .as_ref()
+                .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::Main);
+            if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS && !aged_main_turn {
                 let deferred = defer_reconciliation_for_sqlite_admission(
                     &state,
                     job_id,

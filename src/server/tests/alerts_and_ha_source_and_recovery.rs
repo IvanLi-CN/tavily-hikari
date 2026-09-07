@@ -4,7 +4,7 @@ use super::*;
 use futures_util::FutureExt;
 
 #[tokio::test]
-async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_local_backoff() {
+async fn aged_reconciliation_turn_bypasses_foreground_heuristic_once() {
     let db_path = temp_db_path("reconciliation-low-pressure-recovery");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -107,11 +107,16 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
         .expect("claim reconciliation representative")
         .expect("representative becomes running");
 
-    assert_eq!(
-        state.proxy.foreground_activity_rps(),
-        0,
-        "recovery worker starts after foreground traffic has drained"
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS,
+        "fixture establishes foreground-rate pressure"
     );
+    let turn = remote_attempt_admission_for_state(state.as_ref())
+        .reserve_aged_reconciliation_turn()
+        .expect("aged reconciliation receives the next automatic remote turn");
     assert!(
         run_manual_claimed_job(
             state.clone(),
@@ -122,21 +127,26 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
                 claim_generation: claim.claim_generation,
                 _job_execution_gate: None,
             },
-            None,
+            Some(turn),
             false,
         )
         .await
     );
-    let completed: i64 = sqlx::query_scalar(
-        "SELECT completed_generation >= work_generation FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = 'recovery/S1'",
+    let work: (i64, i64, i64, String) = sqlx::query_as(
+        "SELECT work_generation, completed_generation, next_attempt_at, last_outcome \
+         FROM upstream_reconciliation_work WHERE token_id = ? AND period_code = 'recovery/S1'",
     )
     .bind(&token.id)
     .fetch_one(&pool)
     .await
-    .expect("read shadow fixture completion");
+    .expect("read shadow fixture state");
     assert_eq!(
-        completed, 1,
-        "a low-pressure recovery worker must not turn an eligible shadow terminal into an empty backoff completion"
+        work.1,
+        work.0,
+        "an aged reconciliation turn must commit a bounded shadow terminal under foreground pressure: \
+         next_attempt_at={}, last_outcome={}",
+        work.2,
+        work.3,
     );
 
     drop(state);
@@ -144,7 +154,7 @@ async fn reconciliation_low_pressure_recovery_runs_shadow_fixture_despite_prior_
 }
 
 #[tokio::test]
-async fn reconciliation_foreground_defer_releases_scheduler_reconciliation_turn() {
+async fn non_aged_reconciliation_defers_for_foreground_pressure() {
     let db_path = temp_db_path("reconciliation-foreground-dispatch-release");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -178,11 +188,6 @@ async fn reconciliation_foreground_defer_releases_scheduler_reconciliation_turn(
         .await
         .expect("claim reconciliation representative")
         .expect("representative becomes running");
-    let controller = remote_attempt_admission_for_state(state.as_ref());
-    let turn = controller
-        .reserve_aged_reconciliation_turn()
-        .expect("scheduler reserves the aged reconciliation turn");
-
     assert!(
         run_manual_claimed_job(
             state.clone(),
@@ -193,20 +198,11 @@ async fn reconciliation_foreground_defer_releases_scheduler_reconciliation_turn(
                 claim_generation: claim.claim_generation,
                 _job_execution_gate: None,
             },
-            Some(turn),
+            None,
             false,
         )
         .await,
         "typed foreground defer persists a representative"
-    );
-    assert!(
-        !controller.reconciliation_turn_required(),
-        "a defer before HTTP releases the fairness turn"
-    );
-    drop(
-        controller
-            .reserve_aged_reconciliation_turn()
-            .expect("a deferred reconciliation turn permits later automatic work"),
     );
 
     let statuses: Vec<String> = sqlx::query_scalar(
