@@ -452,6 +452,9 @@ month-tail public metrics scan.
   `KeyStore` only after a pre-acquire check for pool capacity, low foreground arrival rate, and no
   recent SQLite contention. A rejected bulk operation must persist its typed defer without first
   entering the pool.
+- An aged reconciliation turn may override only the foreground-rate heuristic to prevent durable
+  work starvation. It must still pass the same pool-capacity check; a rejection is a typed defer,
+  never a reason to prewarm a lazy pool or consume a foreground-reserved slot.
 - Short queue metadata transactions are control work, not bulk work: give them a fixed `100ms`
   budget, bypass the bulk permit, and rely on their durable representative/stale-recovery contract
   after a transient failure. Background retry loops merely transfer contention into an unbounded

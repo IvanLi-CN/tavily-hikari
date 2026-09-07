@@ -141,7 +141,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   An already-granted aged Main reconciliation turn receives the same one-request exception; it
   still requires two idle-or-allocatable foreground-reserved connections, no recent contention,
   the one bulk permit, a request-scoped lease, and claim-fenced finalization. A non-aged Main run
-  continues to defer above the threshold.
+  continues to defer above the threshold. A failed aged-Main capacity admission is a typed defer:
+  it never prewarms a lazy pool, opens a second connection, or consumes a foreground-reserved slot.
   Its durable `scheduled_jobs.queued_at` fairness anchor survives foreground, lease, read-budget,
   and control defers; an accepted poll or Key cooldown begins a new interval.
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in

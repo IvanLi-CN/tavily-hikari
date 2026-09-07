@@ -48,7 +48,9 @@ stable cursor, so tying its liveness to the main run is unnecessary.
 - An already-granted aged main-reconciliation turn receives the parallel one-request exception to
   the `foreground_rps` heuristic. It remains a bulk SQLite operation: idle foreground capacity,
   recent-contention checks, the one bulk permit, the native source-read deadline, and its claim
-  fence all remain mandatory. A non-aged main run still yields for foreground traffic.
+  fence all remain mandatory. Failed capacity admission is a typed defer and must not prewarm a
+  lazy pool or consume a foreground-reserved connection. A non-aged main run still yields for
+  foreground traffic.
 - The administrator Alerts canonical warm path is independent of this drain. Its indexed Events read
   and cache publication do not consume the Research request turn, alter drain fairness, or change any
   reconciliation outcome.

@@ -76,6 +76,8 @@ reads:
   check; a foreground checkout or waiter produces a typed defer. It stages the three values and
   publishes them atomically at one projection generation; generation changes or partial failures
   discard the staged set. Retry at `5s/5s/30s`.
+  Aged reconciliation scheduling exceptions never transfer to this controller: an Alerts warm
+  slice cannot use them to grow the pool or take a foreground-reserved connection.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
   or falling back to raw CTEs. Their fresh, stale, and cold payload responses must not create synthetic
   foreground SQLite activity, or client retries can indefinitely defer the background owner. A configured

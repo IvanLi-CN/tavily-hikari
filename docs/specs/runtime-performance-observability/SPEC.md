@@ -183,6 +183,9 @@
 - `sqlite_workload_window` aggregates `observability_deferred_write` alongside other operation
   classes. Per-flush defer/retry records remain DEBUG; queue recovery or a persistent stale state
   is emitted only as a sampled state transition.
+- An aged main-reconciliation turn that reaches SQLite capacity still records the ordinary typed
+  admission defer. Its RPS exception never permits pool prewarm, foreground-slot consumption, or
+  a separate capacity metric that could obscure the foreground reservation.
 - Forward proxy / xray startup:
   - `component=forward_proxy event=startup_runtime_begin`
   - `component=forward_proxy event=startup_runtime_snapshot_persisted`

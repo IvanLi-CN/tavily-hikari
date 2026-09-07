@@ -53,7 +53,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   already-granted aged Main or Research turn may bypass that one heuristic for one actual request,
   but still requires SQLite idle capacity, no recent contention, its normal bounded read, the
   request-scoped lease, and claim-fenced finalization. The exception never raises remote
-  concurrency or lets bulk work preempt a foreground pool waiter.
+  concurrency or lets bulk work preempt a foreground pool waiter. A failed aged-Main capacity check
+  returns its typed defer without prewarming a lazy pool or opening a foreground-reserved connection.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read
   calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
   At the same low-frequency window boundary it may sample only configured core/observability DB and

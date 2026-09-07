@@ -154,6 +154,8 @@
   reconciliation run and a normal Research drain defer. An already-granted aged Main or Research
   turn may run one bounded request, but it does not bypass SQLite idle-capacity or contention
   admission, the native read deadline, the request lease, or claim-fenced finalization. After an
+  aged Main capacity rejection, the run returns its typed defer without prewarming a lazy pool or
+  consuming a foreground-reserved connection. After an
   accepted `remote_lease` continuation, that aged reservation
   remains held until the resumed Research run starts HTTP; ordinary automatic remote work may
   prepare locally but cannot claim the released lease. The turn identity, owner and resumable state
