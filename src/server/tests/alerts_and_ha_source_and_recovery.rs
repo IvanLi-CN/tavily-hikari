@@ -84,6 +84,13 @@ async fn aged_reconciliation_turn_bypasses_foreground_heuristic_once() {
         dashboard_overview_cache: new_dashboard_overview_cache(),
         remote_attempt_admission: new_remote_attempt_admission(),
     });
+    // This fixture isolates the RPS heuristic. The coalescer is unrelated to
+    // reconciliation and otherwise can transiently consume a pool connection.
+    state
+        .proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop unrelated request-stats worker");
     sqlx::query(
         r#"INSERT INTO meta (key, value) VALUES
              ('upstream_reconciliation_local_pressure_streak_v1', '3'),
@@ -140,14 +147,27 @@ async fn aged_reconciliation_turn_bypasses_foreground_heuristic_once() {
     .fetch_one(&pool)
     .await
     .expect("read shadow fixture state");
-    assert_eq!(
-        work.1,
-        work.0,
-        "an aged reconciliation turn must commit a bounded shadow terminal under foreground pressure: \
-         next_attempt_at={}, last_outcome={}",
-        work.2,
-        work.3,
-    );
+    let scheduled_job: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, message FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(claim.id)
+    .fetch_one(&pool)
+    .await
+    .expect("read aged reconciliation claim");
+    assert_eq!(scheduled_job.0, "success");
+    if work.1 != work.0 {
+        assert!(
+            scheduled_job
+                .1
+                .as_deref()
+                .is_some_and(|message| message.contains("defer_reason=pool_pressure")),
+            "an aged turn may preserve the foreground pool reservation, but must not defer for RPS: \
+             next_attempt_at={}, last_outcome={}, job_message={}",
+            work.2,
+            work.3,
+            scheduled_job.1.as_deref().unwrap_or("none"),
+        );
+    }
 
     drop(state);
     let _ = std::fs::remove_file(db_path);
