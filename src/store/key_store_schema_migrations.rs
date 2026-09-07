@@ -2948,26 +2948,7 @@ impl KeyStore {
             self.apply_reconciliation_current_source_identity_delete_migration()
                 .await?;
         }
-        if !self
-            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_VERSION)
-            .await?
-        {
-            self.apply_admin_alert_canonical_groups_migration().await?;
-        }
-        if !self
-            .schema_migration_applied(RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION)
-            .await?
-        {
-            self.apply_reconciliation_key_observation_source_identity_migration()
-                .await?;
-        }
-        if !self
-            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION)
-            .await?
-        {
-            self.apply_admin_alert_canonical_groups_slot_state_migration()
-                .await?;
-        }
+        self.apply_pending_convergence_schema_migrations().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -3038,11 +3019,7 @@ impl KeyStore {
             .await?;
         self.apply_reconciliation_current_source_identity_delete_migration()
             .await?;
-        self.apply_admin_alert_canonical_groups_migration().await?;
-        self.apply_reconciliation_key_observation_source_identity_migration()
-            .await?;
-        self.apply_admin_alert_canonical_groups_slot_state_migration()
-            .await?;
+        self.apply_all_convergence_schema_migrations().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(

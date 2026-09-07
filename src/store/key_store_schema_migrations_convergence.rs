@@ -34,6 +34,38 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
 }
 
 impl KeyStore {
+    async fn apply_pending_convergence_schema_migrations(&self) -> Result<(), ProxyError> {
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_migration().await?;
+        }
+        if !self
+            .schema_migration_applied(RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION)
+            .await?
+        {
+            self.apply_reconciliation_key_observation_source_identity_migration()
+                .await?;
+        }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_slot_state_migration()
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_all_convergence_schema_migrations(&self) -> Result<(), ProxyError> {
+        self.apply_admin_alert_canonical_groups_migration().await?;
+        self.apply_reconciliation_key_observation_source_identity_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_slot_state_migration()
+            .await
+    }
+
     async fn validate_convergence_schema_migration_objects(&self) -> Result<(), ProxyError> {
         if self
             .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_VERSION)
