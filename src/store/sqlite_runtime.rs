@@ -797,6 +797,32 @@ impl SqliteRuntime {
         )
     }
 
+    /// Reject a reconciliation run before it reaches a control read that
+    /// could wait on an exhausted pool. The actual preparation still obtains
+    /// the one bulk permit at its own boundary, so this probe never reserves
+    /// foreground capacity or creates a second admission owner.
+    pub(crate) fn preflight_reconciliation_projection_admission(
+        &self,
+        bypass_foreground_pressure: bool,
+    ) -> Result<(), SqliteAdmissionDeferReason> {
+        let operation = SqliteOperation::ReconciliationProjection;
+        if self
+            .inner
+            .maintenance_shutdown
+            .load(AtomicOrdering::Acquire)
+        {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        }
+        if let Some(reason) =
+            self.maintenance_bulk_defer_reason_for(operation, bypass_foreground_pressure)
+        {
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+        Ok(())
+    }
+
     fn try_admit_maintenance_bulk_with_foreground_policy(
         &self,
         operation: SqliteOperation,

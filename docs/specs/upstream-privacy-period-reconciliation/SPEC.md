@@ -119,6 +119,10 @@
   return; uncertainty closes the physical connection. Billed-credit hydrate is the pre-request
   source-read gate; after an observation, settlement reads current ledger state through a bounded
   finalization connection so charges recorded during HTTP are not missed.
+- A claimed run applies the same non-reserving bulk-admission preflight before its first
+  claim-attempt control read. A rejected pool, contention, shutdown, or bulk condition returns the
+  typed defer before raw pool acquisition; the eventual preparation boundary remains the sole bulk
+  permit owner.
 - Administrator Alerts canonical Events reads are outside this reconciliation source contract: they
   use the independent `AdminAlertsCacheWarm` snapshot and projection time index, while reconciliation
   source reads retain their own preparation deadline and claim-fenced continuation.

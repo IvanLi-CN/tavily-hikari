@@ -35,6 +35,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - A read-budget defer stops preparation at that statement boundary. It starts no projection merge
   transaction, advances no cursor, starts no later preparation read or remote request, and existing
   claim-fenced finish-and-enqueue logic records one delayed continuation after 30 seconds.
+- A claimed reconciliation run performs a non-reserving reconciliation-admission preflight before
+  its first claim-attempt control read. A capacity, contention, shutdown, or bulk-permit rejection
+  becomes a typed defer before raw pool acquisition; only the later preparation boundary obtains
+  the bulk permit.
 - `RemoteAttemptAdmissionController` owns one process-local actual-request slot. A lease starts at
   the outbound HTTP boundary and ends after the response or transport error is read; local SQLite
   preparation and durable finalization never hold it.

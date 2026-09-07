@@ -91,6 +91,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   state through a separately bounded finalization connection so charges written during HTTP remain
   visible without moving the native source deadline past the remote boundary. Claim, finish, and
   continuation remain `maintenance control` rather than part of this session.
+- `reconciliation admission preflight`: a non-reserving bulk-admission check that runs before a
+  claimed run's first control read. It returns a typed defer when foreground capacity, contention,
+  shutdown, or the one bulk permit would reject preparation; the later preparation boundary remains
+  the sole owner that acquires the permit.
 - `reconciliation read-budget defer`: the `projection_read_budget` outcome emitted when a
   reconciliation read session reaches its SQLite deadline. It preserves work and billing truth,
   ends local preparation before another source read, projection slice, or remote attempt, records

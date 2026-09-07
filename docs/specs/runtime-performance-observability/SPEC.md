@@ -183,6 +183,8 @@
 - `sqlite_workload_window` aggregates `observability_deferred_write` alongside other operation
   classes. Per-flush defer/retry records remain DEBUG; queue recovery or a persistent stale state
   is emitted only as a sampled state transition.
+- Reconciliation records a preflight rejection as the operation's typed admission defer before any
+  claim-attempt control query. It does not create a raw pool timeout or a second permit owner.
 - An aged main-reconciliation turn that reaches SQLite capacity still records the ordinary typed
   admission defer. Its RPS exception never permits pool prewarm, foreground-slot consumption, or
   a separate capacity metric that could obscure the foreground reservation.

@@ -455,6 +455,9 @@ month-tail public metrics scan.
 - An aged reconciliation turn may override only the foreground-rate heuristic to prevent durable
   work starvation. It must still pass the same pool-capacity check; a rejection is a typed defer,
   never a reason to prewarm a lazy pool or consume a foreground-reserved slot.
+- Run a non-reserving bulk preflight before a claimed reconciliation's first control read. This
+  keeps a saturated pool on the typed-defer path; leave actual bulk-permit ownership at the later
+  preparation boundary so control metadata cannot create a second reservation.
 - Short queue metadata transactions are control work, not bulk work: give them a fixed `100ms`
   budget, bypass the bulk permit, and rely on their durable representative/stale-recovery contract
   after a transient failure. Background retry loops merely transfer contention into an unbounded
