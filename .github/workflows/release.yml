@@ -301,9 +301,11 @@ jobs:
         run: |
           set -euo pipefail
           lower="${GITHUB_REPOSITORY,,}"
-          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
-          echo "LOCAL_SMOKE_IMAGE=tavily-hikari-release-smoke:${GITHUB_RUN_ID}-${{ matrix.arch }}" >> "$GITHUB_ENV"
-          echo "DIGEST_FILE=${RUNNER_TEMP}/release-digests/${{ matrix.arch }}.txt" >> "$GITHUB_ENV"
+          {
+            echo "IMAGE_NAME_LOWER=${lower}"
+            echo "LOCAL_SMOKE_IMAGE=tavily-hikari-release-smoke:${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            echo "DIGEST_FILE=${RUNNER_TEMP}/release-digests/${{ matrix.arch }}.txt"
+          } >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -457,9 +459,11 @@ jobs:
           tar -C "${release_dir}" -czf "${tarball}" "$(basename "${package_root}")"
           (cd "${release_dir}" && sha256sum "$(basename "${tarball}")" > "$(basename "${sha_file}")")
 
-          echo "PACKAGE_ROOT=${package_root}" >> "${GITHUB_ENV}"
-          echo "TARBALL=${tarball}" >> "${GITHUB_ENV}"
-          echo "SHA_FILE=${sha_file}" >> "${GITHUB_ENV}"
+          {
+            echo "PACKAGE_ROOT=${package_root}"
+            echo "TARBALL=${tarball}"
+            echo "SHA_FILE=${sha_file}"
+          } >> "${GITHUB_ENV}"
 
       - name: Smoke packaged binary
         shell: bash
@@ -493,7 +497,7 @@ jobs:
           pid=$!
           trap 'kill "${pid}" >/dev/null 2>&1 || true' EXIT
 
-          for i in {1..60}; do
+          for _ in {1..60}; do
             if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
               break
             fi
@@ -638,9 +642,11 @@ jobs:
           tar -C "${release_dir}" -czf "${tarball}" "$(basename "${package_root}")"
           (cd "${release_dir}" && sha256sum "$(basename "${tarball}")" > "$(basename "${sha_file}")")
 
-          echo "PACKAGE_ROOT=${package_root}" >> "${GITHUB_ENV}"
-          echo "TARBALL=${tarball}" >> "${GITHUB_ENV}"
-          echo "SHA_FILE=${sha_file}" >> "${GITHUB_ENV}"
+          {
+            echo "PACKAGE_ROOT=${package_root}"
+            echo "TARBALL=${tarball}"
+            echo "SHA_FILE=${sha_file}"
+          } >> "${GITHUB_ENV}"
 
       - name: Smoke portable binary
         shell: bash
@@ -674,7 +680,7 @@ jobs:
           pid=$!
           trap 'kill "${pid}" >/dev/null 2>&1 || true' EXIT
 
-          for i in {1..60}; do
+          for _ in {1..60}; do
             if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null; then
               break
             fi
