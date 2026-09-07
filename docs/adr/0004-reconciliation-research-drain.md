@@ -48,6 +48,9 @@ stable cursor, so tying its liveness to the main run is unnecessary.
 - The administrator Alerts canonical warm path is independent of this drain. Its indexed Events read
   and cache publication do not consume the Research request turn, alter drain fairness, or change any
   reconciliation outcome.
+- Main multi-Key observations remain outside the Research cursor. They reuse only exact
+  candidate-global, Key-set, and per-Key source identities, so an unrelated Key revision cannot make
+  the main owner reread a previously accepted Key.
 
 ## Consequences
 

@@ -57,6 +57,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   time index and decodes materialized payloads in Rust; filtered/noncanonical reads keep their existing
   JSON CTE semantics. A production-shaped statement that still exceeds the native deadline requires
   query-plan evidence and a separate projection/index task, never a larger read budget or raw fallback.
+  Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
+  keyset-reads complete projected history in independent bounded slices, applies the existing Rust
+  grouping semantics, and stages a new generation. It atomically switches only when the complete
+  source fence is unchanged; failed or changed fences leave last-good visible and obsolete rows are
+  reclaimed in small write batches. This derived model never enters the HA outbox and does not change
+  filtered Groups semantics.
 
 ## Reconciliation Terms
 
@@ -103,10 +109,14 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
 - `missing eligible upstream key`: a durable nonterminal input condition. It records a fixed
   fifteen-minute retry without incrementing semantic or transport failure state, and administrators
   see only its aggregate count.
-- `partial key observation`: a node-local, generation-scoped successful upstream usage response for
-  one key in a multi-key candidate. It is rebuildable diagnostic state, never a terminal result or
-  HA outbox truth. The engine requests at most two missing keys per run and cannot sum or complete
-  the candidate until every current-generation key is observed.
+- `partial key observation`: a node-local successful upstream usage response for one key in a
+  multi-key candidate. It is reusable only when its candidate-global identity, complete current
+  Key-set identity, and that Key's `request_count`/first-use/last-use identity all match. A single
+  Key source change therefore rereads only that Key; a candidate-global or Key-set change fences
+  every prior observation. Observations without these identities are legacy state and conservatively
+  reread. This is rebuildable diagnostic state, never a terminal result or HA outbox truth. The
+  engine requests at most two missing keys per run and cannot sum or complete the candidate until
+  every current Key is observed.
 - `remote attempt budget`: the typed nonterminal continuation used when a candidate still has missing
   keys after the two-request run cap. It schedules one claim-fenced representative 30 seconds later
   without incrementing semantic, transport, 429, or local-pressure streaks.

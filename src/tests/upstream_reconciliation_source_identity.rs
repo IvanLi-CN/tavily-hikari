@@ -288,3 +288,258 @@ async fn reconciliation_source_key_removal_rederives_identity_and_fences_observa
     drop(reopened);
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn reconciliation_key_source_identity_reuses_unchanged_keys() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(local_ts(2026, 9, 2, 12, 0));
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-key-source-identity"],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let first_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-key-source-identity-a")
+        .await
+        .expect("create first upstream key");
+    let second_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-key-source-identity-b")
+        .await
+        .expect("create second upstream key");
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: "key-source-identity-token".to_string(),
+        period_code: "2026-09-02/S1".to_string(),
+        project_id: "key-source-identity-project".to_string(),
+        billing_subject: "token:key-source-identity-token".to_string(),
+        settlement_mode: "shadow".to_string(),
+        period_start: 100,
+        period_end: 200,
+        pending_research: 0,
+        degraded: false,
+    };
+    let insert_usage = r#"INSERT INTO upstream_reconciliation_usage (
+            token_id, key_id, period_code, project_id, billing_subject, settlement_mode,
+            period_start, period_end, request_count, first_used_at, last_used_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'shadow', ?, ?, 1, 1, 2, 3)"#;
+    for key_id in [&first_key_id, &second_key_id] {
+        sqlx::query(insert_usage)
+            .bind(&candidate.token_id)
+            .bind(key_id)
+            .bind(&candidate.period_code)
+            .bind(&candidate.project_id)
+            .bind(&candidate.billing_subject)
+            .bind(candidate.period_start)
+            .bind(candidate.period_end)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("insert reconciliation source row");
+    }
+    let current_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read initial work generation");
+    proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &candidate,
+            current_generation,
+            &[
+                ReconciliationKeyObservation {
+                    key_id: first_key_id.clone(),
+                    upstream_usage: 7,
+                },
+                ReconciliationKeyObservation {
+                    key_id: second_key_id.clone(),
+                    upstream_usage: 11,
+                },
+            ],
+            Some(ReconciliationWorkFence {
+                work_generation: current_generation,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("persist initial observations");
+
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage SET request_count = request_count + 1 \
+         WHERE token_id = ? AND key_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&first_key_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("change one Key's logical source identity");
+    let next_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reopened work generation");
+    assert_eq!(next_generation, current_generation + 1);
+
+    let observations = proxy
+        .key_store
+        .reconciliation_key_observations(
+            &candidate,
+            next_generation,
+            &[first_key_id.clone(), second_key_id.clone()],
+        )
+        .await
+        .expect("read observations after one Key changes");
+    assert_eq!(
+        observations.get(&second_key_id),
+        Some(&11),
+        "an unchanged Key observation must survive another Key's logical source revision"
+    );
+    assert!(
+        !observations.contains_key(&first_key_id),
+        "the changed Key must be observed again before terminal reconciliation"
+    );
+
+    let third_key_id = proxy
+        .add_or_undelete_key("tvly-reconciliation-key-source-identity-c")
+        .await
+        .expect("create third upstream key");
+    sqlx::query(insert_usage)
+        .bind(&candidate.token_id)
+        .bind(&third_key_id)
+        .bind(&candidate.period_code)
+        .bind(&candidate.project_id)
+        .bind(&candidate.billing_subject)
+        .bind(candidate.period_start)
+        .bind(candidate.period_end)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("add a Key to the logical source set");
+    let key_set_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read work generation after Key set change");
+    assert_eq!(key_set_generation, next_generation + 1);
+    let key_set_changed_observations = proxy
+        .key_store
+        .reconciliation_key_observations(
+            &candidate,
+            key_set_generation,
+            &[
+                first_key_id.clone(),
+                second_key_id.clone(),
+                third_key_id.clone(),
+            ],
+        )
+        .await
+        .expect("read observations after a Key set change");
+    assert!(
+        key_set_changed_observations.is_empty(),
+        "a different Key set must fence every partial observation"
+    );
+
+    let changed_billing_subject = "token:key-source-identity-next";
+    sqlx::query(
+        "UPDATE upstream_reconciliation_usage SET billing_subject = ? \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(changed_billing_subject)
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("change the candidate-global logical source identity");
+    let globally_changed_candidate = UpstreamReconciliationCandidate {
+        billing_subject: changed_billing_subject.to_string(),
+        ..candidate.clone()
+    };
+    let global_generation: i64 = sqlx::query_scalar(
+        "SELECT work_generation FROM upstream_reconciliation_work \
+         WHERE token_id = ? AND period_code = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read work generation after candidate identity change");
+    assert!(
+        global_generation > key_set_generation,
+        "each changed source row may advance the existing work-generation trigger"
+    );
+    let global_changed_observations = proxy
+        .key_store
+        .reconciliation_key_observations(
+            &globally_changed_candidate,
+            global_generation,
+            &[
+                first_key_id.clone(),
+                second_key_id.clone(),
+                third_key_id.clone(),
+            ],
+        )
+        .await
+        .expect("read observations after a candidate-global change");
+    assert!(
+        global_changed_observations.is_empty(),
+        "a changed candidate-global identity must fence every partial observation"
+    );
+
+    proxy
+        .key_store
+        .persist_reconciliation_key_observations(
+            &globally_changed_candidate,
+            global_generation,
+            &[ReconciliationKeyObservation {
+                key_id: third_key_id.clone(),
+                upstream_usage: 17,
+            }],
+            Some(ReconciliationWorkFence {
+                work_generation: global_generation,
+                claimed_job: None,
+            }),
+        )
+        .await
+        .expect("persist a current observation before simulating v31 state");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_key_observations SET candidate_identity = '' \
+         WHERE token_id = ? AND period_code = ? AND key_id = ?",
+    )
+    .bind(&candidate.token_id)
+    .bind(&candidate.period_code)
+    .bind(&third_key_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate a legacy observation without source identity");
+    let legacy_observations = proxy
+        .key_store
+        .reconciliation_key_observations(
+            &globally_changed_candidate,
+            global_generation,
+            &[third_key_id],
+        )
+        .await
+        .expect("read legacy observations safely");
+    assert!(
+        legacy_observations.is_empty(),
+        "observations written before v32 must conservatively re-read their Key"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}

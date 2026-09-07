@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30,
+            25, 26, 27, 28, 29, 30, 31, 32,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -118,6 +118,49 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read reconciliation key observations table");
     assert_eq!(key_observations, 1);
+    let key_observation_identity_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('upstream_reconciliation_key_observations') \
+         WHERE name IN ('candidate_identity', 'key_set_identity', 'key_source_identity')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v32 key-observation source identity columns");
+    assert_eq!(key_observation_identity_columns, 3);
+    let key_observation_identity_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_reconciliation_key_observations_source_identity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v32 key-observation source identity index");
+    assert_eq!(key_observation_identity_index, 1);
+    let key_observation_identity_index_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_reconciliation_key_observations_source_identity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v32 current identity lookup index");
+    assert!(
+        key_observation_identity_index_sql.contains("key_source_identity"),
+        "v32 must index the per-Key logical source identity"
+    );
+    let canonical_groups_state: (i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, source_recent_generation, source_history_generation \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v31 canonical group model state");
+    assert_eq!(canonical_groups_state, (0, -1, -1));
+    let canonical_groups_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'index' \
+         AND name = 'idx_admin_alert_canonical_groups_page'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v31 canonical group model index");
+    assert_eq!(canonical_groups_index, 1);
     let projection_state: (i64, i64, i64) = sqlx::query_as(
         "SELECT batch_size, scanned_rows, completed FROM upstream_reconciliation_projection_state WHERE id = 'local'",
     )
@@ -1453,7 +1496,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30,
+            25, 26, 27, 28, 29, 30, 31, 32,
         ]
     );
 

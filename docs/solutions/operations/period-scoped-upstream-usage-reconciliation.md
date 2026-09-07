@@ -47,10 +47,12 @@ scope only; the existing `period_reconciliation` 429 cooldown remains independen
 transitions are claim-fenced and keep raw upstream details out of durable observations.
 
 For a period that maps to more than one eligible upstream key, persist each successful key observation
-by work generation before requesting another key. Advance that generation only for a logical usage
-revision or current Key-set change, including a removed Key: storage replay, timestamp refresh, and
-an equal logical payload must retain partial observations. Read missing keys in deterministic order
-and cap each main run at two
+with the candidate-global, complete Key-set, and that Key's logical request-count/first-use/last-use
+identity before requesting another key. A generation advance from one Key's logical source change
+must preserve matching observations for every unchanged Key; a candidate-global or Key-set change,
+including a removed Key, invalidates the complete partial set. Storage replay, timestamp refresh, and
+an equal logical payload retain partial observations. Observations predating these identities safely
+reread their Key without historical backfill. Read missing keys in deterministic order and cap each main run at two
 remote requests. If keys remain, write `remote_attempt_budget` and use the current claim to create or
 reuse one durable 30-second continuation; this must not write a semantic failure, transport or 429
 state, local-pressure state, or billing truth. Sum usage and enter the existing compare/active terminal

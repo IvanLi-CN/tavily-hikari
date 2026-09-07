@@ -81,6 +81,9 @@ async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_
     runtime.record_admin_alerts_warm_generation_discard();
     runtime.record_admin_alerts_warm_defer();
     runtime.record_admin_alerts_warm_cold_miss();
+    runtime.record_admin_alerts_canonical_group_build_slice();
+    runtime.record_admin_alerts_canonical_group_publish();
+    runtime.record_admin_alerts_canonical_group_defer();
 
     let window = runtime
         .inner
@@ -90,7 +93,7 @@ async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_
     let formatted = format_admin_alerts_warm_window(window.admin_alerts_warm);
     assert_eq!(
         formatted,
-        "slices=1,publishes=1,generation_discards=1,defers=1,cold_misses=1"
+        "slices=1,publishes=1,generation_discards=1,defers=1,cold_misses=1,canonical_group_build_slices=1,canonical_group_publishes=1,canonical_group_defers=1"
     );
     assert!(!formatted.contains("SELECT"));
     assert!(!formatted.contains("token"));
@@ -105,6 +108,7 @@ async fn sqlite_workload_window_reports_scoped_reconciliation_metrics() {
         Duration::from_millis(42),
         true,
     );
+    runtime.record_reconciliation_key_observation_identity(2, 1);
 
     let telemetry = runtime.operation_telemetry(SqliteOperation::ReconciliationProjection);
     assert_eq!(telemetry.connection_cache_write_pages, 7);
@@ -116,6 +120,8 @@ async fn sqlite_workload_window_reports_scoped_reconciliation_metrics() {
     assert!(formatted.contains("connection_cache_write_pages=7"));
     assert!(formatted.contains("cooperative_read_elapsed_ms=42"));
     assert!(formatted.contains("cooperative_read_deadlines=1"));
+    assert!(formatted.contains("key_observation_reuses=2"));
+    assert!(formatted.contains("key_observation_identity_misses=1"));
     assert!(!formatted.contains("SELECT"));
     assert!(!formatted.contains("token_"));
 }

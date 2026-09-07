@@ -361,6 +361,8 @@ struct ReconciliationReadWindow {
     connection_cache_write_pages: u64,
     connection_cache_write_sampled: bool,
     connection_cache_write_sample_failed: bool,
+    key_observation_reuses: u64,
+    key_observation_identity_misses: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -370,6 +372,9 @@ struct AdminAlertsWarmWindow {
     generation_discards: u64,
     defers: u64,
     cold_misses: u64,
+    canonical_group_build_slices: u64,
+    canonical_group_publishes: u64,
+    canonical_group_defers: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1581,6 +1586,45 @@ impl SqliteRuntime {
         self.record_admin_alerts_warm_event(|metrics| {
             metrics.cold_misses = metrics.cold_misses.saturating_add(1);
         });
+    }
+
+    pub(crate) fn record_admin_alerts_canonical_group_build_slice(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_group_build_slices =
+                metrics.canonical_group_build_slices.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_canonical_group_publish(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_group_publishes = metrics.canonical_group_publishes.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_canonical_group_defer(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_group_defers = metrics.canonical_group_defers.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_reconciliation_key_observation_identity(
+        &self,
+        reused: u64,
+        identity_misses: u64,
+    ) {
+        let mut window = self
+            .inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let metrics = window
+            .reconciliation_reads
+            .entry(ReconciliationReadKind::CandidateHydrate)
+            .or_default();
+        metrics.key_observation_reuses = metrics.key_observation_reuses.saturating_add(reused);
+        metrics.key_observation_identity_misses = metrics
+            .key_observation_identity_misses
+            .saturating_add(identity_misses);
     }
 
     fn record_admin_alerts_warm_event(&self, update: impl FnOnce(&mut AdminAlertsWarmWindow)) {
@@ -3125,7 +3169,7 @@ fn format_operation_window(
                 "unknown".to_string()
             };
             format!(
-                "reconciliation_read/{}:calls={},elapsed_ms={},deadlines={},deferred={},discarded={},connection_cache_write_pages={}",
+                "reconciliation_read/{}:calls={},elapsed_ms={},deadlines={},deferred={},discarded={},connection_cache_write_pages={},key_observation_reuses={},key_observation_identity_misses={}",
                 kind.as_str(),
                 metrics.calls,
                 metrics.elapsed_ms,
@@ -3133,6 +3177,8 @@ fn format_operation_window(
                 metrics.deferred,
                 metrics.discarded_connections,
                 cache_write_pages,
+                metrics.key_observation_reuses,
+                metrics.key_observation_identity_misses,
             )
         }))
         .collect::<Vec<_>>()
@@ -3141,12 +3187,15 @@ fn format_operation_window(
 
 fn format_admin_alerts_warm_window(metrics: AdminAlertsWarmWindow) -> String {
     format!(
-        "slices={},publishes={},generation_discards={},defers={},cold_misses={}",
+        "slices={},publishes={},generation_discards={},defers={},cold_misses={},canonical_group_build_slices={},canonical_group_publishes={},canonical_group_defers={}",
         metrics.slices,
         metrics.publishes,
         metrics.generation_discards,
         metrics.defers,
         metrics.cold_misses,
+        metrics.canonical_group_build_slices,
+        metrics.canonical_group_publishes,
+        metrics.canonical_group_defers,
     )
 }
 

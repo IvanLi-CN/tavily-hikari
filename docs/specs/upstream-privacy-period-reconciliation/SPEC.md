@@ -162,17 +162,21 @@
   accepted claim-fenced commit refreshes the sweep clock. If every eligible due Key is cooling, the
   wake time is the globally earliest eligible cooldown, independent of the current cursor page.
 - When one candidate maps to multiple eligible upstream keys, persist each successful `/usage`
-  response as a local observation keyed by `(token_id, period_code, work_generation, key_id)`. Each
-  run requests at most two missing keys and returns `remote_attempt_budget` with a 30-second
-  continuation while the set is incomplete. Sum usage and enter the existing compare/active terminal
-  path only after all current-generation keys are observed; candidates with an existing partial
-  observation are selected before fresh candidates sharing the same scheduling Key so the partial
-  set can converge. A partial observation never becomes a semantic failure or terminal result.
-  Terminal completion clears these node-local rows, and generation or claim fencing ignores stale
-  observations. A claimed `remote_attempt_budget` defer atomically finishes only its current claim
-  and leaves exactly one 30-second auto continuation; it changes neither billing truth nor
-  semantic, transport, upstream-429, or local-pressure state. The observation table is derived
-  state, not HA outbox truth.
+  response as a local observation keyed by `(token_id, period_code, work_generation, key_id)` plus
+  candidate-global, complete Key-set, and per-Key logical source identities. A work generation may
+  advance for one changed Key without discarding observations whose identities still match; a
+  candidate-global or Key-set identity change invalidates every prior observation. Legacy rows that
+  have no identity are incompatible and reread without a startup backfill. Each run requests at
+  most two missing keys and returns `remote_attempt_budget` with a 30-second continuation while the
+  set is incomplete. Sum usage and enter the existing compare/active terminal path only after all
+  current keys are observed; candidates with an existing partial observation are selected before
+  fresh candidates sharing the same scheduling Key so the partial set can converge. A partial
+  observation never becomes a semantic failure or terminal result. Terminal completion clears these
+  node-local rows, and generation or claim fencing ignores stale observations. A claimed
+  `remote_attempt_budget` defer atomically finishes only its current claim and leaves exactly one
+  30-second auto continuation; it changes neither billing truth nor semantic, transport,
+  upstream-429, or local-pressure state. The observation table is derived state, not HA outbox
+  truth.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）

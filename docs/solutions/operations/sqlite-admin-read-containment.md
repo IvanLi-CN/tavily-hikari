@@ -86,6 +86,11 @@ reads:
   reads retain the JSON CTE contract. A statement that still misses the 250ms native deadline must be
   handled by a separate query-plan-driven projection/index change; increasing the deadline or restoring
   a raw fallback is not an admissible containment.
+- When default Groups aggregation cannot meet that budget from the generic projection CTE, build a
+  local observability read model from complete-history events in source-fenced keyset slices. Reuse
+  the existing Rust grouping algorithm, stage one complete generation, and atomically switch only
+  after the source fence still matches. Keep old or failed generations invisible and reclaim them in
+  small write batches. Do not use the model for filtered queries or replicate it through HA.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

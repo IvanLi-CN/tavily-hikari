@@ -452,6 +452,127 @@ async fn alert_projection_serves_admin_events_and_groups_after_full_coverage() {
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
+    let db_path = temp_db_path("alert-canonical-groups-generation-fence");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_000;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-generation-fence".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+
+    let expected = proxy
+        .key_store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsRead,
+        )
+        .await
+        .expect("read existing default Groups semantics");
+    let groups = proxy
+        .key_store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("build canonical groups model from complete projection");
+    assert_eq!(groups.total, 1);
+    assert_eq!(groups.items.len(), 1);
+    assert_eq!(
+        groups, expected,
+        "the canonical model preserves Groups semantics"
+    );
+    let state: (i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, source_recent_generation, source_history_generation \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read canonical groups state");
+    assert!(state.0 > 0, "the complete Groups model must be published");
+    assert_eq!(
+        (state.1, state.2),
+        proxy
+            .admin_alerts_canonical_warm_projection_fence()
+            .await
+            .expect("read source fence"),
+        "a published Groups generation must record the exact projection fence"
+    );
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state \
+         SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance source generation");
+    let rebuilt = proxy
+        .key_store
+        .fetch_admin_alert_groups_page_for_operation(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            1,
+            20,
+            SqliteOperation::AdminAlertsCacheWarm,
+        )
+        .await
+        .expect("rebuild canonical groups model after source generation change");
+    assert_eq!(rebuilt.total, 1);
+    let rebuilt_state: (i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, source_recent_generation, source_history_generation \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rebuilt canonical groups state");
+    assert!(rebuilt_state.0 > state.0);
+    assert_eq!(
+        (rebuilt_state.1, rebuilt_state.2),
+        proxy
+            .admin_alerts_canonical_warm_projection_fence()
+            .await
+            .expect("read rebuilt source fence")
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn alert_projection_keeps_dashboard_tail_complete_while_history_catches_up() {
     let db_path = temp_db_path("alert-projection-independent-history");
     let db_string = db_path.to_string_lossy().to_string();
