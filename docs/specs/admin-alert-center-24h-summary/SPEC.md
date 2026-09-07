@@ -35,8 +35,9 @@
   惰性建立连接；HTTP 对 canonical key 只读 exact-key
   cache：同 generation 为 fresh，generation 落后但未过期为 stale，cold/过期为
   `503 Retry-After: 1`，绝不触发重建。
-  任何已 aged 的 reconciliation 调度例外也不适用于该 warm controller；它不得因别的维护工作
-  获得 RPS 例外而预热、扩张或占用前台保留连接。
+  每个 warm slice 在开始时重新检查前台速率与 SQLite contention；任何已 aged 的
+  reconciliation 调度例外也不适用于该 warm controller。它不得因别的维护工作获得 RPS
+  例外而预热、扩张或占用前台保留连接。
   默认 Events `1/20` 的 canonical slice 直接从投影表的
   `(occurred_at DESC, row_sort_id DESC)` 索引读取计数和页面，并在 Rust 解码已物化的
   `payload_json`；只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状
