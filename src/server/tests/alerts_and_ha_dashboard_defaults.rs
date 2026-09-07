@@ -2,7 +2,55 @@ use super::*;
 use super::core_support_and_parsing::*;
 use super::linuxdo_oauth_and_admin_keys::*;
 use super::upstream_support_and_manual_jobs::*;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use tavily_hikari::SqliteAdmissionOutcome;
+use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
+
+#[derive(Clone)]
+struct AlertPerfLogWriter {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl AlertPerfLogWriter {
+    fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                buffer: Arc::clone(&buffer),
+            },
+            buffer,
+        )
+    }
+}
+
+struct AlertPerfLogWriterGuard {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl<'a> MakeWriter<'a> for AlertPerfLogWriter {
+    type Writer = AlertPerfLogWriterGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        AlertPerfLogWriterGuard {
+            buffer: Arc::clone(&self.buffer),
+        }
+    }
+}
+
+impl Write for AlertPerfLogWriterGuard {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer
+            .lock()
+            .expect("alert perf log buffer lock")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[tokio::test]
 async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
@@ -797,14 +845,37 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         "canonical Events count must use a covering time index: {count_plan}"
     );
 
+    let (writer, log_buffer) = AlertPerfLogWriter::new();
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("info"))
+            .with_writer(writer)
+            .json()
+            .flatten_event(true)
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_target(true)
+            .finish(),
+    );
+    let log_guard = tracing::dispatcher::set_default(&dispatch);
     let events = proxy
         .admin_alert_events_page_for_cache_warm(1, 20)
         .await
         .expect("indexed canonical event page");
+    drop(log_guard);
     assert_eq!(events.total, 1);
     assert_eq!(events.items.len(), 1);
     assert_eq!(events.items[0].id, "auth_token_log:alert-source-1");
     assert_eq!(events.items[0].alert_type, "upstream_rate_limited_429");
+    let logs = String::from_utf8(log_buffer.lock().expect("alert perf log buffer lock").clone())
+        .expect("utf8 alert perf logs");
+    assert!(
+        logs.lines().any(|line| {
+            line.contains("\"event\":\"alerts_projection_indexed\"")
+                && line.contains("\"phase\":\"canonical_events_indexed\"")
+        }),
+        "canonical warm call must emit its indexed execution phase: {logs}"
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
