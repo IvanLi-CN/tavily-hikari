@@ -223,57 +223,125 @@ impl KeyStore {
                     .fetch_optional(&mut **tx)
                     .await?
                     .unwrap_or_default();
-                    let active_uses_reusable_slot = if matches!(active_generation, 1 | 2) {
-                        1
+                    let reusable_slot_active = matches!(active_generation, 1 | 2);
+                    if reusable_slot_active {
+                        let legacy_deleted = sqlx::query(
+                            r#"DELETE FROM observability.admin_alert_canonical_groups
+                                 WHERE rowid IN (
+                                     SELECT rowid
+                                       FROM observability.admin_alert_canonical_groups
+                                      WHERE build_generation > 2
+                                      ORDER BY build_generation ASC, position ASC
+                                      LIMIT 25
+                                 )"#,
+                        )
+                        .execute(&mut **tx)
+                        .await?
+                        .rows_affected();
+                        if legacy_deleted == 0 {
+                            let inactive_generation = if active_generation == 1 { 2 } else { 1 };
+                            let inactive_deleted = sqlx::query(
+                                r#"DELETE FROM observability.admin_alert_canonical_groups
+                                     WHERE rowid IN (
+                                         SELECT rowid
+                                           FROM observability.admin_alert_canonical_groups
+                                          WHERE build_generation = ?
+                                          ORDER BY position ASC
+                                          LIMIT 25
+                                     )"#,
+                            )
+                            .bind(inactive_generation)
+                            .execute(&mut **tx)
+                            .await?
+                            .rows_affected();
+                            if inactive_deleted == 0 {
+                                sqlx::query(
+                                    r#"DELETE FROM observability.admin_alert_canonical_groups
+                                         WHERE rowid IN (
+                                             SELECT rowid
+                                               FROM observability.admin_alert_canonical_groups
+                                              WHERE build_generation = ? AND position > ?
+                                              ORDER BY position ASC
+                                              LIMIT 25
+                                         )"#,
+                                )
+                                .bind(active_generation)
+                                .bind(active_row_count)
+                                .execute(&mut **tx)
+                                .await?;
+                            }
+                        }
+                        let inactive_generation = if active_generation == 1 { 2 } else { 1 };
+                        let legacy_remaining = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
+                             WHERE build_generation > 2)",
+                        )
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        let inactive_remaining = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
+                             WHERE build_generation = ?)",
+                        )
+                        .bind(inactive_generation)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        let active_tail_remaining = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
+                             WHERE build_generation = ? AND position > ?)",
+                        )
+                        .bind(active_generation)
+                        .bind(active_row_count)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        Ok::<_, ProxyError>(
+                            legacy_remaining || inactive_remaining || active_tail_remaining,
+                        )
                     } else {
-                        0
-                    };
-                    sqlx::query(
-                        r#"DELETE FROM observability.admin_alert_canonical_groups
-                             WHERE rowid IN (
-                                 SELECT rowid
-                                   FROM observability.admin_alert_canonical_groups
-                                  WHERE (? = 1 AND (
-                                             (build_generation = ? AND position > ?)
-                                             OR build_generation NOT IN (1, 2)
-                                         ))
-                                     OR (? = 0 AND build_generation <> ?)
-                                  ORDER BY CASE
-                                               WHEN ? = 1 AND build_generation NOT IN (1, 2) THEN 0
-                                               ELSE 1
-                                           END,
-                                           build_generation ASC,
-                                           position ASC
-                                  LIMIT 25
-                             )"#,
-                    )
-                    .bind(active_uses_reusable_slot)
-                    .bind(active_generation)
-                    .bind(active_row_count)
-                    .bind(active_uses_reusable_slot)
-                    .bind(active_generation)
-                    .bind(active_uses_reusable_slot)
-                    .execute(&mut **tx)
-                    .await?;
-                    let remaining = sqlx::query_scalar::<_, bool>(
-                        r#"SELECT EXISTS(
-                             SELECT 1
-                               FROM observability.admin_alert_canonical_groups
-                              WHERE (? = 1 AND (
-                                         (build_generation = ? AND position > ?)
-                                         OR build_generation NOT IN (1, 2)
-                                     ))
-                                 OR (? = 0 AND build_generation <> ?)
-                         )"#,
-                    )
-                    .bind(active_uses_reusable_slot)
-                    .bind(active_generation)
-                    .bind(active_row_count)
-                    .bind(active_uses_reusable_slot)
-                    .bind(active_generation)
-                    .fetch_one(&mut **tx)
-                    .await?;
-                    Ok::<_, ProxyError>(remaining)
+                        let retired_before_active = sqlx::query(
+                            r#"DELETE FROM observability.admin_alert_canonical_groups
+                                 WHERE rowid IN (
+                                     SELECT rowid
+                                       FROM observability.admin_alert_canonical_groups
+                                      WHERE build_generation < ?
+                                      ORDER BY build_generation ASC, position ASC
+                                      LIMIT 25
+                                 )"#,
+                        )
+                        .bind(active_generation)
+                        .execute(&mut **tx)
+                        .await?
+                        .rows_affected();
+                        if retired_before_active == 0 {
+                            sqlx::query(
+                                r#"DELETE FROM observability.admin_alert_canonical_groups
+                                     WHERE rowid IN (
+                                         SELECT rowid
+                                           FROM observability.admin_alert_canonical_groups
+                                          WHERE build_generation > ?
+                                          ORDER BY build_generation ASC, position ASC
+                                          LIMIT 25
+                                     )"#,
+                            )
+                            .bind(active_generation)
+                            .execute(&mut **tx)
+                            .await?;
+                        }
+                        let retired_before_remaining = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
+                             WHERE build_generation < ?)",
+                        )
+                        .bind(active_generation)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        let retired_after_remaining = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
+                             WHERE build_generation > ?)",
+                        )
+                        .bind(active_generation)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        Ok::<_, ProxyError>(retired_before_remaining || retired_after_remaining)
+                    }
                 })
             })
             .await

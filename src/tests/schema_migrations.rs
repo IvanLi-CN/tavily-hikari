@@ -340,6 +340,46 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
             .await
             .expect("read v33 ledger record");
     assert_eq!(v33_recorded, 1);
+    for (name, query) in [
+        (
+            "legacy range",
+            "EXPLAIN QUERY PLAN SELECT rowid \
+             FROM observability.admin_alert_canonical_groups \
+             WHERE build_generation > 2 \
+             ORDER BY build_generation ASC, position ASC LIMIT 25",
+        ),
+        (
+            "inactive slot",
+            "EXPLAIN QUERY PLAN SELECT rowid \
+             FROM observability.admin_alert_canonical_groups \
+             WHERE build_generation = 2 ORDER BY position ASC LIMIT 25",
+        ),
+        (
+            "active tail",
+            "EXPLAIN QUERY PLAN SELECT rowid \
+             FROM observability.admin_alert_canonical_groups \
+             WHERE build_generation = 1 AND position > 1 \
+             ORDER BY position ASC LIMIT 25",
+        ),
+    ] {
+        let plan_rows = sqlx::query_as::<_, (i64, i64, i64, String)>(query)
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("explain bounded canonical groups reclaim");
+        let plan = plan_rows
+            .into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("SEARCH"),
+            "{name} reclaim must seek the canonical groups primary key: {plan}"
+        );
+        assert!(
+            !plan.contains("USE TEMP B-TREE"),
+            "{name} reclaim must not sort an unbounded candidate set: {plan}"
+        );
+    }
     assert!(
         proxy
             .key_store
