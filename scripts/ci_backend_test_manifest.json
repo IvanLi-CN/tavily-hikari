@@ -926,6 +926,7 @@
         "server::tests::alerts_and_ha_source_and_recovery::ha_",
         "server::tests::alerts_and_ha_source_and_recovery::request_logs_gc_",
         "server::tests::alerts_and_ha_source_and_recovery::aged_",
+        "server::tests::alerts_and_ha_source_and_recovery::non_aged_reconciliation_",
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_research_",
         "server::tests::alerts_and_ha_source_and_recovery::remote_attempt_",
         "server::tests::alerts_and_ha_source_and_recovery::reconciliation_",
