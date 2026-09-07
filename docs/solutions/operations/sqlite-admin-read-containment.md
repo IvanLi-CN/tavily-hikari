@@ -90,7 +90,8 @@ reads:
   local observability read model from complete-history events in source-fenced keyset slices. Reuse
   the existing Rust grouping algorithm, stage one complete generation, and atomically switch only
   after the source fence still matches. Keep old or failed generations invisible and reclaim them in
-  small write batches. Do not use the model for filtered queries or replicate it through HA.
+  small background write batches without gating active-generation publication. Do not use the model
+  for filtered queries or replicate it through HA.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

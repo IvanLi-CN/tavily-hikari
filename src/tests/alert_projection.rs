@@ -573,7 +573,7 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_model_reclaims_retired_generations_before_rebuild() {
+async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_retired_generations() {
     let db_path = temp_db_path("alert-canonical-groups-generation-reclaim");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_000;
@@ -617,8 +617,8 @@ async fn admin_alerts_canonical_groups_model_reclaims_retired_generations_before
     .expect("read active generation");
 
     // Model rows written before a source-fence rejection are indistinguishable from these
-    // retired rows. More than two cleanup batches proves that a later warm tick keeps
-    // reclaiming instead of publishing another generation over the stale staging data.
+    // retired rows. A live active generation must remain readable while the separate
+    // background reclaimer drains those rows in bounded batches.
     for position in 1..=51_i64 {
         sqlx::query(
             r#"INSERT INTO observability.admin_alert_canonical_groups (
@@ -639,7 +639,7 @@ async fn admin_alerts_canonical_groups_model_reclaims_retired_generations_before
     }
 
     for remaining_after_batch in [26_i64, 1_i64] {
-        let error = proxy
+        let served = proxy
             .key_store
             .fetch_admin_alert_groups_page_for_operation(
                 None,
@@ -654,11 +654,14 @@ async fn admin_alerts_canonical_groups_model_reclaims_retired_generations_before
                 SqliteOperation::AdminAlertsCacheWarm,
             )
             .await
-            .expect_err("retired rows must be reclaimed before another canonical read");
-        assert!(matches!(
-            error,
-            ProxyError::Deferred { ref reason, .. } if reason == "groups_generation_reclaim_pending"
-        ));
+            .expect("retired rows must not block the active canonical model");
+        assert_eq!(served, active);
+        let has_more = proxy
+            .key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+            .expect("reclaim one retired generation batch");
+        assert!(has_more);
         let remaining: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
              WHERE build_generation != ?",
@@ -670,6 +673,12 @@ async fn admin_alerts_canonical_groups_model_reclaims_retired_generations_before
         assert_eq!(remaining, remaining_after_batch);
     }
 
+    let has_more = proxy
+        .key_store
+        .reclaim_admin_alert_canonical_groups_generations()
+        .await
+        .expect("reclaim final retired generation batch");
+    assert!(!has_more);
     let reclaimed = proxy
         .key_store
         .fetch_admin_alert_groups_page_for_operation(

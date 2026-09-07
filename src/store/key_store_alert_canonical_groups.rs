@@ -5,17 +5,6 @@ impl KeyStore {
     async fn fetch_admin_alert_canonical_groups_page(
         &self,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
-        // Retired and failed staged generations are never visible to readers. Drain one
-        // bounded batch before building another generation so repeated fence changes cannot
-        // make the local model grow faster than its background reclaimer can remove rows.
-        if self.reclaim_admin_alert_canonical_groups_generations().await? {
-            self.sqlite_runtime
-                .record_admin_alerts_canonical_group_defer();
-            return Err(ProxyError::Deferred {
-                operation: "admin_alerts_cache_warm",
-                reason: "groups_generation_reclaim_pending".to_string(),
-            });
-        }
         let source_fence = self.admin_alerts_canonical_warm_projection_fence().await?;
         if !self
             .admin_alert_canonical_groups_model_is_current(source_fence)
@@ -216,7 +205,9 @@ impl KeyStore {
         Ok(generation)
     }
 
-    async fn reclaim_admin_alert_canonical_groups_generations(&self) -> Result<bool, ProxyError> {
+    pub(crate) async fn reclaim_admin_alert_canonical_groups_generations(
+        &self,
+    ) -> Result<bool, ProxyError> {
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, |tx| {
                 Box::pin(async move {

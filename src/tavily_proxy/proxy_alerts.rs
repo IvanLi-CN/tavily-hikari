@@ -79,6 +79,15 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn reclaim_admin_alert_canonical_groups_generations(
+        &self,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+    }
+
+    #[doc(hidden)]
     pub async fn prewarm_admin_alerts_cache_capacity(&self) -> Result<(), ProxyError> {
         self.key_store
             .sqlite_runtime
