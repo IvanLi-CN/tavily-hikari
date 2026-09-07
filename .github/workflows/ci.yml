@@ -58,7 +58,7 @@ jobs:
         run: python3 scripts/ci_backend_tests.py verify-web-assets --root web/dist
 
       - name: Upload web assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: web/dist
@@ -94,7 +94,7 @@ jobs:
           bash scripts/check-version-layer-reuse.sh
 
       - name: Upload version layer B image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: version-layer-image-b
           path: ${{ runner.temp }}/version-layer-image-b.tar.gz
@@ -137,7 +137,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download web assets artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: web/dist
@@ -237,7 +237,7 @@ jobs:
         run: python3 scripts/test_ci_backend_tests.py
 
       - name: Upload backend test artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-test-artifacts
           path: /tmp/backend-test-artifacts
@@ -261,10 +261,10 @@ jobs:
         lane: ${{ fromJson(needs.backend-shard-plan.outputs.lane-matrix) }}
     steps:
       - name: Checkout source tree
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download backend test artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: backend-test-artifacts
           path: /tmp/backend-test-artifacts
@@ -337,7 +337,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download version layer B image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: version-layer-image-b
           path: ${{ runner.temp }}/version-layer-image-b
@@ -456,7 +456,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download web assets artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: web-dist
           path: web/dist

@@ -224,7 +224,7 @@ jobs:
           bun run build
 
       - name: Upload web assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-web-dist
           path: web/dist
@@ -258,7 +258,7 @@ jobs:
           ref: ${{ env.RELEASE_HEAD_SHA }}
 
       - name: Download web assets artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-web-dist
           path: web/dist
@@ -423,7 +423,7 @@ jobs:
           ref: ${{ env.RELEASE_HEAD_SHA }}
 
       - name: Download web assets artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-web-dist
           path: web/dist
@@ -565,7 +565,7 @@ jobs:
           ref: ${{ env.RELEASE_HEAD_SHA }}
 
       - name: Download web assets artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-web-dist
           path: web/dist
