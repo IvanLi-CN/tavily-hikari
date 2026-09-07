@@ -2,53 +2,55 @@ use super::*;
 use super::core_support_and_parsing::*;
 use super::linuxdo_oauth_and_admin_keys::*;
 use super::upstream_support_and_manual_jobs::*;
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tavily_hikari::SqliteAdmissionOutcome;
-use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
+use tracing::{Event, Subscriber, field};
+use tracing_subscriber::{layer::{Context, Layer, SubscriberExt}, registry::LookupSpan};
 
 #[derive(Clone)]
-struct AlertPerfLogWriter {
-    buffer: Arc<Mutex<Vec<u8>>>,
+struct AlertPerfEventLayer {
+    events: Arc<Mutex<Vec<(String, String)>>>,
 }
 
-impl AlertPerfLogWriter {
-    fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                buffer: Arc::clone(&buffer),
-            },
-            buffer,
-        )
-    }
-}
-
-struct AlertPerfLogWriterGuard {
-    buffer: Arc<Mutex<Vec<u8>>>,
-}
-
-impl<'a> MakeWriter<'a> for AlertPerfLogWriter {
-    type Writer = AlertPerfLogWriterGuard;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        AlertPerfLogWriterGuard {
-            buffer: Arc::clone(&self.buffer),
+impl<S> Layer<S> for AlertPerfEventLayer
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let mut visitor = AlertPerfEventVisitor::default();
+        event.record(&mut visitor);
+        if let (Some(event_name), Some(phase)) = (visitor.event, visitor.phase) {
+            self.events
+                .lock()
+                .expect("alert perf event lock")
+                .push((event_name, phase));
         }
     }
 }
 
-impl Write for AlertPerfLogWriterGuard {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer
-            .lock()
-            .expect("alert perf log buffer lock")
-            .extend_from_slice(buf);
-        Ok(buf.len())
+#[derive(Default)]
+struct AlertPerfEventVisitor {
+    event: Option<String>,
+    phase: Option<String>,
+}
+
+impl field::Visit for AlertPerfEventVisitor {
+    fn record_debug(&mut self, field: &field::Field, value: &dyn std::fmt::Debug) {
+        self.record(field, format!("{value:?}").trim_matches('"').to_string());
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    fn record_str(&mut self, field: &field::Field, value: &str) {
+        self.record(field, value.to_string());
+    }
+}
+
+impl AlertPerfEventVisitor {
+    fn record(&mut self, field: &field::Field, value: String) {
+        match field.name() {
+            "event" => self.event = Some(value),
+            "phase" => self.phase = Some(value),
+            _ => {}
+        }
     }
 }
 
@@ -845,19 +847,11 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         "canonical Events count must use a covering time index: {count_plan}"
     );
 
-    let (writer, log_buffer) = AlertPerfLogWriter::new();
-    let dispatch = tracing::Dispatch::new(
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("info"))
-            .with_writer(writer)
-            .json()
-            .flatten_event(true)
-            .with_current_span(false)
-            .with_span_list(false)
-            .with_target(true)
-            .finish(),
-    );
-    let log_guard = tracing::dispatcher::set_default(&dispatch);
+    let log_events = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(AlertPerfEventLayer {
+        events: Arc::clone(&log_events),
+    });
+    let log_guard = tracing::subscriber::set_default(subscriber);
     let events = proxy
         .admin_alert_events_page_for_cache_warm(1, 20)
         .await
@@ -867,14 +861,12 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     assert_eq!(events.items.len(), 1);
     assert_eq!(events.items[0].id, "auth_token_log:alert-source-1");
     assert_eq!(events.items[0].alert_type, "upstream_rate_limited_429");
-    let logs = String::from_utf8(log_buffer.lock().expect("alert perf log buffer lock").clone())
-        .expect("utf8 alert perf logs");
+    let logs = log_events.lock().expect("alert perf event lock");
     assert!(
-        logs.lines().any(|line| {
-            line.contains("\"event\":\"alerts_projection_indexed\"")
-                && line.contains("\"phase\":\"canonical_events_indexed\"")
+        logs.iter().any(|(event, phase)| {
+            event == "alerts_projection_indexed" && phase == "canonical_events_indexed"
         }),
-        "canonical warm call must emit its indexed execution phase: {logs}"
+        "canonical warm call must emit its indexed execution phase: {logs:?}"
     );
 
     let _ = std::fs::remove_file(db_path);
