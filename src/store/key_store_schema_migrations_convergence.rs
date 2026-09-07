@@ -1,14 +1,19 @@
 const ADMIN_ALERT_CANONICAL_GROUPS_VERSION: i64 = 31;
 const ADMIN_ALERT_CANONICAL_GROUPS_NAME: &str = "admin-alert-canonical-groups-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_CHECKSUM: &str =
-    "sha256:224a57029dc376a13f0c53ed7296c4413ec1f44c15a6c0d378f4f8a7c6ad2b51";
+    "sha256:15dc6c4d56ff4d14a71c1af66f086757a1bc0c97c42b1e69e970f0f03c1e4afe";
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION: i64 = 32;
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_NAME: &str =
     "reconciliation-key-observation-source-identity-v1";
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_CHECKSUM: &str =
     "sha256:298f687879854438c25978d82fd424baa0d0da16b2e0e5c9cfefc99d1297e493";
+const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION: i64 = 33;
+const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME: &str =
+    "admin-alert-canonical-groups-slot-state-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM: &str =
+    "sha256:cb1bb8cc4d9d50b1812430082bff5dfb4d49b18d9a669d7f10e91388c782cff5";
 
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 2] {
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 3] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -19,6 +24,11 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION,
             RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_NAME,
             RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM,
         ),
     ]
 }
@@ -32,11 +42,8 @@ impl KeyStore {
                 .schema_object_exists("observability", "admin_alert_canonical_groups")
                 .await?
                 || !self
-                    .schema_object_exists("observability", "admin_alert_canonical_groups_state")
-                    .await?
-                || !self
-                    .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
-                    .await?
+                .schema_object_exists("observability", "admin_alert_canonical_groups_state")
+                .await?
                 || !self
                     .schema_named_object_exists(
                         "observability",
@@ -47,6 +54,17 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 31".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION)
+            .await?
+            && !self
+                .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
+                .await?
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 33".to_string(),
             ));
         }
         if self
@@ -91,24 +109,12 @@ impl KeyStore {
             r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_groups_state (
                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                 active_generation INTEGER NOT NULL DEFAULT 0,
-                active_row_count INTEGER NOT NULL DEFAULT 0,
                 source_recent_generation INTEGER NOT NULL DEFAULT -1,
                 source_history_generation INTEGER NOT NULL DEFAULT -1
             )"#,
         )
         .execute(&self.pool)
         .await?;
-        if !self
-            .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
-            .await?
-        {
-            sqlx::query(
-                "ALTER TABLE observability.admin_alert_canonical_groups_state \
-                 ADD COLUMN active_row_count INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
-        }
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_groups (
                 build_generation INTEGER NOT NULL,
@@ -141,6 +147,40 @@ impl KeyStore {
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_slot_state_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if !self
+            .table_column_exists("admin_alert_canonical_groups_state", "active_row_count")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN active_row_count INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_row_count = (
+                      SELECT COUNT(*)
+                        FROM observability.admin_alert_canonical_groups
+                       WHERE build_generation =
+                           observability.admin_alert_canonical_groups_state.active_generation
+                  )
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM,
         )
         .await
     }

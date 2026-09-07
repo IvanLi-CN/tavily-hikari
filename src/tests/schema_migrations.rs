@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32,
+            25, 26, 27, 28, 29, 30, 31, 32, 33,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -257,6 +257,83 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .expect_err("checksum drift must reject startup");
     assert!(error.to_string().contains("checksum mismatch"));
 
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift() {
+    let db_path = temp_db_path("canonical-groups-slot-state-v33");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-canonical-groups-slot-state-v33".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 1 WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy active generation");
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_groups \
+         (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
+         VALUES (1, 1, 1, 1, 'legacy', 'legacy-group', '{}')",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy canonical group row");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 33")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate a v31/v32 ledger");
+    sqlx::query(
+        "ALTER TABLE observability.admin_alert_canonical_groups_state \
+         DROP COLUMN active_row_count",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("simulate the immutable v31 state schema");
+
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("upgrade the v31 canonical groups state"),
+        "an existing v31 database must not request full bootstrap"
+    );
+    let v31_checksum: String =
+        sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 31")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read preserved v31 checksum");
+    assert_eq!(
+        v31_checksum,
+        "sha256:15dc6c4d56ff4d14a71c1af66f086757a1bc0c97c42b1e69e970f0f03c1e4afe"
+    );
+    let active_row_count: i64 = sqlx::query_scalar(
+        "SELECT active_row_count FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read v33 initialized row count");
+    assert_eq!(active_row_count, 1);
+    let v33_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 33)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v33 ledger record");
+    assert_eq!(v33_recorded, 1);
+
+    drop(proxy);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
@@ -1496,7 +1573,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32,
+            25, 26, 27, 28, 29, 30, 31, 32, 33,
         ]
     );
 
