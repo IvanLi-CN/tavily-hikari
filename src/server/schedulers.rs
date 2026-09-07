@@ -2673,12 +2673,13 @@ async fn run_manual_claimed_job(
         "upstream_reconciliation" => {
             drop(_job_execution_gate);
             let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
-            let foreground_rps = state.proxy.foreground_activity_rps();
-            let aged_main_turn = reconciliation_turn
-                .as_ref()
-                .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::Main);
-            if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS && !aged_main_turn {
-                let deferred = defer_reconciliation_for_sqlite_admission(
+            let aged_main_turn = reconciliation_turn.as_ref().is_some_and(|turn| {
+                turn.kind() == ReconciliationTurnKind::Main
+            });
+            if state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS
+                && !aged_main_turn
+            {
+                return defer_reconciliation_for_sqlite_admission(
                     &state,
                     job_id,
                     claim_generation,
@@ -2686,7 +2687,6 @@ async fn run_manual_claimed_job(
                     state.proxy.backend_time().now_ts().saturating_add(30),
                 )
                 .await;
-                return deferred;
             }
             match state
                 .proxy
@@ -2694,9 +2694,7 @@ async fn run_manual_claimed_job(
                 .await
             {
                 Ok(()) => {}
-                Err(ProxyError::StaleClaim { .. }) => {
-                    return false;
-                }
+                Err(ProxyError::StaleClaim { .. }) => return false,
                 Err(error) if tavily_hikari::is_transient_sqlite_write_error(&error) => {
                     tracing::debug!(
                         component = "reconciliation",
@@ -2716,10 +2714,7 @@ async fn run_manual_claimed_job(
                     .await;
                     return deferred;
                 }
-                Err(error) => {
-                    let finished = finish(state, "error", error.to_string()).await;
-                    return finished;
-                }
+                Err(error) => return finish(state, "error", error.to_string()).await,
             }
             let run_result = state
                 .proxy

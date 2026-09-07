@@ -771,12 +771,7 @@ impl TavilyProxy {
         };
         let mut local_admission_outcome = admit_local_projection();
         if !aged_main_turn
-            && matches!(
-            local_admission_outcome,
-            SqliteAdmissionOutcome::Deferred {
-                reason: "pool_pressure"
-            }
-        )
+            && matches!(local_admission_outcome, SqliteAdmissionOutcome::Deferred { reason: "pool_pressure" })
         {
             if let Err(error) = self
                 .prewarm_upstream_reconciliation_projection_capacity()
@@ -2988,12 +2983,8 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn ensure_upstream_reconciliation_research_drain_job(
-        &self,
-    ) -> Result<(), ProxyError> {
-        self.key_store
-            .ensure_upstream_reconciliation_research_drain_job()
-            .await
+    pub async fn ensure_upstream_reconciliation_research_drain_job(&self) -> Result<(), ProxyError> {
+        self.key_store.ensure_upstream_reconciliation_research_drain_job().await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3120,12 +3111,8 @@ impl TavilyProxy {
             .await
     }
 
-    pub async fn ensure_upstream_reconciliation_representative_job(
-        &self,
-    ) -> Result<(), ProxyError> {
-        self.key_store
-            .ensure_upstream_reconciliation_representative_job()
-            .await
+    pub async fn ensure_upstream_reconciliation_representative_job(&self) -> Result<(), ProxyError> {
+        self.key_store.ensure_upstream_reconciliation_representative_job().await
     }
 
     pub async fn record_upstream_reconciliation_budget_exhausted(
