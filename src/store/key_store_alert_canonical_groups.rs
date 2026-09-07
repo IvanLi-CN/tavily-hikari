@@ -223,17 +223,23 @@ impl KeyStore {
                     .fetch_optional(&mut **tx)
                     .await?
                     .unwrap_or_default();
-                    let reclaim_retired_legacy_slots =
-                        if matches!(active_generation, 1 | 2) { 1 } else { 0 };
+                    let active_uses_reusable_slot = if matches!(active_generation, 1 | 2) {
+                        1
+                    } else {
+                        0
+                    };
                     sqlx::query(
                         r#"DELETE FROM observability.admin_alert_canonical_groups
                              WHERE rowid IN (
                                  SELECT rowid
                                    FROM observability.admin_alert_canonical_groups
-                                  WHERE (build_generation = ? AND position > ?)
-                                     OR (? = 1 AND build_generation NOT IN (1, 2))
+                                  WHERE (? = 1 AND (
+                                             (build_generation = ? AND position > ?)
+                                             OR build_generation NOT IN (1, 2)
+                                         ))
+                                     OR (? = 0 AND build_generation <> ?)
                                   ORDER BY CASE
-                                               WHEN build_generation NOT IN (1, 2) THEN 0
+                                               WHEN ? = 1 AND build_generation NOT IN (1, 2) THEN 0
                                                ELSE 1
                                            END,
                                            build_generation ASC,
@@ -241,22 +247,30 @@ impl KeyStore {
                                   LIMIT 25
                              )"#,
                     )
+                    .bind(active_uses_reusable_slot)
                     .bind(active_generation)
                     .bind(active_row_count)
-                    .bind(reclaim_retired_legacy_slots)
+                    .bind(active_uses_reusable_slot)
+                    .bind(active_generation)
+                    .bind(active_uses_reusable_slot)
                     .execute(&mut **tx)
                     .await?;
                     let remaining = sqlx::query_scalar::<_, bool>(
                         r#"SELECT EXISTS(
                              SELECT 1
                                FROM observability.admin_alert_canonical_groups
-                              WHERE (build_generation = ? AND position > ?)
-                                 OR (? = 1 AND build_generation NOT IN (1, 2))
+                              WHERE (? = 1 AND (
+                                         (build_generation = ? AND position > ?)
+                                         OR build_generation NOT IN (1, 2)
+                                     ))
+                                 OR (? = 0 AND build_generation <> ?)
                          )"#,
                     )
+                    .bind(active_uses_reusable_slot)
                     .bind(active_generation)
                     .bind(active_row_count)
-                    .bind(reclaim_retired_legacy_slots)
+                    .bind(active_uses_reusable_slot)
+                    .bind(active_generation)
                     .fetch_one(&mut **tx)
                     .await?;
                     Ok::<_, ProxyError>(remaining)

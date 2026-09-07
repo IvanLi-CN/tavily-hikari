@@ -281,18 +281,21 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed legacy active generation");
-    for position in 1..=26_i64 {
-        sqlx::query(
-            "INSERT INTO observability.admin_alert_canonical_groups \
-             (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
-             VALUES (7, ?, ?, 1, 'legacy', ?, '{}')",
-        )
-        .bind(position)
-        .bind(position)
-        .bind(format!("legacy-group-{position}"))
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("seed legacy canonical group row");
+    for generation in [6_i64, 7] {
+        for position in 1..=26_i64 {
+            sqlx::query(
+                "INSERT INTO observability.admin_alert_canonical_groups \
+                 (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
+                 VALUES (?, ?, ?, 1, 'legacy', ?, '{}')",
+            )
+            .bind(generation)
+            .bind(position)
+            .bind(position)
+            .bind(format!("legacy-{generation}-group-{position}"))
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("seed legacy canonical group row");
+        }
     }
     sqlx::query("DELETE FROM schema_migrations WHERE version = 33")
         .execute(&proxy.key_store.pool)
@@ -337,6 +340,38 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
             .await
             .expect("read v33 ledger record");
     assert_eq!(v33_recorded, 1);
+    assert!(
+        proxy
+            .key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+            .expect("reclaim the first legacy retired-generation batch"),
+        "one 25-row batch must leave the final retired legacy row for the next slice"
+    );
+    assert!(
+        !proxy
+            .key_store
+            .reclaim_admin_alert_canonical_groups_generations()
+            .await
+            .expect("finish reclaiming legacy retired generations"),
+        "the active legacy generation must stay available while older generations drain"
+    );
+    let retired_legacy_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+         WHERE build_generation = 6",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count retired legacy rows");
+    assert_eq!(retired_legacy_rows, 0);
+    let active_legacy_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+         WHERE build_generation = 7",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count active legacy rows");
+    assert_eq!(active_legacy_rows, 26);
 
     sqlx::query(
         "INSERT INTO observability.admin_alert_canonical_groups \
