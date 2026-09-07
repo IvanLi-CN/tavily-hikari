@@ -2720,6 +2720,7 @@ impl KeyStore {
 
 include!("key_store_bootstrap.rs");
 include!("key_store_schema_migrations.rs");
+include!("key_store_schema_migrations_convergence.rs");
 include!("key_store_bootstrap_legacy.rs");
 include!("key_store_ha_schema.rs");
 include!("key_store_quota_schema_semantic_migration.rs");
@@ -2753,6 +2754,7 @@ include!("key_store_request_log_body_retention.rs");
 include!("key_store_token_logs.rs");
 include!("key_store_alert_models.rs");
 include!("key_store_alerts.rs");
+include!("key_store_alert_canonical_groups.rs");
 include!("key_store_alert_group_records.rs");
 include!("key_store_alert_events_cte.rs");
 include!("key_store_alert_projection.rs");
