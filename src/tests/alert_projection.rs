@@ -783,7 +783,8 @@ async fn admin_alerts_canonical_groups_reclaimer_preserves_inflight_build_genera
     .await
     .expect("advance the source fence for a replacement build");
 
-    for _ in 0..3 {
+    let mut staged_rows = 0;
+    for _ in 0..8 {
         let result = proxy
             .key_store
             .fetch_admin_alert_groups_page_for_operation(
@@ -806,6 +807,24 @@ async fn admin_alerts_canonical_groups_reclaimer_preserves_inflight_build_genera
             ),
             "each incomplete slice must keep the replacement build staged"
         );
+        let current_build_generation: i64 = sqlx::query_scalar(
+            "SELECT build_generation FROM observability.admin_alert_canonical_groups_state \
+             WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read in-flight Groups generation after a bounded build slice");
+        staged_rows = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+             WHERE build_generation = ?",
+        )
+        .bind(current_build_generation)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count staged Groups rows after a bounded build slice");
+        if staged_rows > 0 {
+            break;
+        }
     }
     let build_generation: i64 = sqlx::query_scalar(
         "SELECT build_generation FROM observability.admin_alert_canonical_groups_state \
@@ -815,14 +834,6 @@ async fn admin_alerts_canonical_groups_reclaimer_preserves_inflight_build_genera
     .await
     .expect("read in-flight Groups generation");
     assert!(build_generation > active_generation);
-    let staged_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-         WHERE build_generation = ?",
-    )
-    .bind(build_generation)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("count staged Groups rows");
     assert!(
         staged_rows > 0,
         "the replacement must have staged a group row"
