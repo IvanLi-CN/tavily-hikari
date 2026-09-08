@@ -54,11 +54,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   remote jobs may still prepare locally but cannot reclaim the released request lease.
 - `foreground_rps` remains a foreground-protection heuristic, not a SQLite-capacity signal. A
   normal main reconciliation run and normal Research drain defer above the threshold. An
-  already-granted aged Main or Research turn may bypass that one heuristic for one actual request,
-  but still requires SQLite idle capacity, no recent contention, its normal bounded read, the
-  request-scoped lease, and claim-fenced finalization. The exception never raises remote
-  concurrency or lets bulk work preempt a foreground pool waiter. A failed aged-Main capacity check
-  returns its typed defer without prewarming a lazy pool or opening a foreground-reserved connection.
+  already-granted aged turn can reserve one actual remote request, but that reservation never
+  changes local SQLite admission: every source read and finalization still requires normal idle
+  capacity, no recent contention, its bounded read, and a claim fence. The exception never raises
+  remote concurrency, lets bulk work preempt a foreground pool waiter, or prewarms a lazy pool.
 - `sqlite_workload_window` records connection-local `CACHE_WRITE` page deltas and cooperative-read
   calls, elapsed time, deadlines, defers, and discarded connections per reconciliation read kind.
   At the same low-frequency window boundary it may sample only configured core/observability DB and
@@ -128,19 +127,24 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   all three values behind one projection-generation fence and publishes them together. A deferred
   warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
   HTTP to trigger a rebuild.
-- The canonical Events page is the bounded exception to the general filtered read builder: it uses the
-  immutable canonical snapshot's time index for `COUNT(*)` and the first twenty rows, then decodes the
-  stored event payload in Rust. Its snapshot is populated from projection rows through independently
-  bounded keyset slices. Any remaining >250ms source-read evidence must be presented as a query plan
-  before a later projection/index change; this ADR does not authorize a larger deadline or raw fallback.
+- The canonical Events page is the bounded exception to the general filtered read builder: it reads
+  `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
+  stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per
+  accepted slice into a local facet model, then checkpoint each sorted facet payload every 250 rows;
+  retries resume both durable cursors rather than issuing a JSON CTE per facet or rereading prior
+  snapshot rows. Exact derived payloads advance durable output cursors without truncation or a
+  size-based terminal stop. Any remaining >250ms source-read evidence must be presented as a query plan before a later
+  projection/index change; this ADR does not authorize a larger deadline or raw fallback.
 - The canonical Groups page is served from a local observability read model. A build captures one
   immutable projection revision and a fixed source-row membership boundary, then uses independently
-  admitted rowid/keyset read slices to stage events and existing Rust grouping semantics. Projection
-  writes preserve a pre-snapshot row once when they advance during that build, so catalog, Events,
-  and Groups can publish one complete snapshot even if a newer revision has arrived. Partition
-  aggregation stores its accepted cursor and partial state between bounded reads; it never fetches a
-  complete unbounded logical partition in one SQLite statement. Such a payload is cache-stale, not
-  mixed; the next warm pursues the newer revision. Incomplete staging is never visible, and short
+  admitted rowid/keyset read slices and existing Rust grouping semantics. Projection writes preserve a
+  pre-snapshot row once when they advance during that build. A source-fence change rejects and discards
+  the staged generation before publication, so catalog, Events, and Groups never publish a mixed or
+  stale replacement. No state row repeatedly serializes an accumulating partition payload: each
+  accepted partition slice persists one bounded event fragment and the final reduction advances a
+  durable fragment cursor. The exact reduction remains resumable without truncating nested events. The
+  two model slots are cleared in short slices before
+  reuse, and only a complete final payload is staged. Incomplete staging is never visible, and short
   background transactions reclaim only obsolete generations, never the active or in-flight build.
   This sidecar-derived model is not HA truth.
 - Multi-Key reconciliation observations are reusable only when candidate-global, Key-set, and per-Key

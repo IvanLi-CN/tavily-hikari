@@ -519,12 +519,9 @@ impl ReconciliationEngine {
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
-            let after_aged_turn = reconciliation_turn
-                .as_ref()
-                .is_some_and(|turn| turn.kind() == crate::ReconciliationTurnKind::Main);
             if let Err(reason) = proxy
                 .key_store
-                .preflight_upstream_reconciliation_projection(after_aged_turn)
+                .preflight_upstream_reconciliation_projection()
             {
                 return Ok(Self::deferred(&proxy, reason.as_str()));
             }

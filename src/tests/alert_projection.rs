@@ -573,6 +573,83 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_moves() {
+    let db_path = temp_db_path("alert-canonical-groups-inflight-source-fence");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_100;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-inflight-source-fence".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-inflight-fence", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let _active = warm_canonical_alert_groups_until_published(&proxy).await;
+    let active_generation: i64 = sqlx::query_scalar(
+        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read active generation");
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("start a replacement build");
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the replacement starts with a bounded copy slice");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("move the source fence while the build is staged");
+    let replaced = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("a staged build must not publish after its fence moves");
+    assert!(matches!(
+        replaced,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
+    ));
+    let state: (i64, i64) = sqlx::query_as(
+        "SELECT active_generation, build_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read discarded state");
+    assert_eq!(state.0, active_generation, "last-good remains readable");
+    assert_eq!(state.1, 0, "the mixed staged generation is discarded");
+
+    let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(rebuilt.total, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_retired_generations() {
     let db_path = temp_db_path("alert-canonical-groups-generation-reclaim");
     let db_string = db_path.to_string_lossy().to_string();
@@ -776,7 +853,8 @@ async fn admin_alerts_canonical_groups_reclaimer_preserves_inflight_build_genera
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_aggregate_partition_resumes_in_bounded_slices() {
+async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_without_state_growth()
+{
     let db_path = temp_db_path("alert-canonical-groups-partition-slices");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_750;
@@ -841,32 +919,116 @@ async fn admin_alerts_canonical_groups_aggregate_partition_resumes_in_bounded_sl
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
         .await
-        .expect_err("the first aggregate slice must not read the whole partition");
+        .expect_err("the completed partition still needs a separate publish slice");
     assert!(matches!(
         first,
         ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
-    let after_first: (i64, String, i64) = sqlx::query_as(
-        "SELECT build_partition_cursor_occurred_at, build_partition_events_json, \
-                (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups WHERE build_generation = 2) \
+    let (first_cursor, first_complete, first_fragment_position): (i64, bool, i64) = sqlx::query_as(
+        "SELECT build_partition_cursor_occurred_at, build_partition_source_complete, \
+                build_partition_fragment_next_position \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read the first aggregate checkpoint");
-    assert_eq!(after_first.0, now + 249);
+    .expect("read the first durable aggregate checkpoint");
     assert_eq!(
-        serde_json::from_str::<Vec<AlertEventRecord>>(&after_first.1)
-            .expect("decode bounded aggregate checkpoint")
-            .len(),
-        250
+        (first_cursor, first_complete, first_fragment_position),
+        (now + 249, false, 2),
+        "the first accepted slice must durably advance exactly one bounded fragment"
     );
-    assert_eq!(after_first.2, 0);
+    let first_fragment_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments \
+         WHERE build_generation = 2 AND partition_key = 'partition'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count persisted aggregate fragments");
+    assert_eq!(first_fragment_count, 1);
+
+    let second = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the next source slice must remain independently resumable");
+    assert!(matches!(
+        second,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let (second_cursor, second_complete, second_fragment_position): (i64, bool, i64) =
+        sqlx::query_as(
+            "SELECT build_partition_cursor_occurred_at, build_partition_source_complete, \
+                    build_partition_fragment_next_position \
+             FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read the second durable aggregate checkpoint");
+    assert_eq!(
+        (second_cursor, second_complete, second_fragment_position),
+        (now + 499, false, 3),
+        "the next call resumes after the accepted first slice instead of rescanning it"
+    );
+
+    let third = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the final source fragment must commit before reduction starts");
+    assert!(matches!(
+        third,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let source_complete: (bool, i64) = sqlx::query_as(
+        "SELECT build_partition_source_complete, build_partition_finalize_fragment_position \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the source-complete aggregate checkpoint");
+    assert_eq!(source_complete, (true, 1));
+
+    let first_reduction = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the first reduction fragment must persist independently");
+    assert!(matches!(
+        first_reduction,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let first_reduction_checkpoint: (i64, String) = sqlx::query_as(
+        "SELECT build_partition_finalize_fragment_position, build_partition_events_json \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the persisted reduction cursor");
+    assert_eq!(first_reduction_checkpoint.0, 2);
+    assert_ne!(first_reduction_checkpoint.1, "[]");
+
+    let second_reduction = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the next reduction fragment must resume from its durable cursor");
+    assert!(matches!(
+        second_reduction,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let second_reduction_cursor: i64 = sqlx::query_scalar(
+        "SELECT build_partition_finalize_fragment_position \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the resumed reduction cursor");
+    assert_eq!(second_reduction_cursor, 3);
 
     let groups = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(
         groups.total, 1,
-        "the final slice must preserve complete Groups semantics"
+        "the complete partition preserves Groups semantics"
     );
 
     drop(proxy);
@@ -1081,13 +1243,13 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
         .await
         .expect("inspect the fenced canonical model");
         assert!(
-            active_slot > active_generation + source_change as i64,
-            "each replacement must own a new immutable build generation"
+            matches!(active_slot, 1 | 2),
+            "each replacement must reuse one of the two bounded model slots"
         );
         assert_eq!(active_row_count, rebuilt.total);
         assert!(
-            retained_rows >= 327,
-            "retired rows remain available to bounded cleanup"
+            retained_rows <= rebuilt.total.saturating_mul(2),
+            "reused slots must not retain a full backlog of retired snapshots"
         );
         if source_change < 2 {
             sqlx::query(

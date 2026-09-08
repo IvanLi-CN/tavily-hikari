@@ -747,7 +747,7 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
 }
 
 #[tokio::test]
-async fn aged_reconciliation_turn_preserves_foreground_pool_reservation() {
+async fn reconciliation_preserves_foreground_pool_reservation() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
             .min_connections(1)
@@ -774,8 +774,8 @@ async fn aged_reconciliation_turn_preserves_foreground_pool_reservation() {
 
     assert_eq!(
         runtime
-            .try_admit_reconciliation_projection_after_aged_turn()
-            .expect_err("an aged turn must not consume foreground-reserved capacity"),
+            .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+            .expect_err("reconciliation must not consume foreground-reserved capacity"),
         SqliteAdmissionDeferReason::PoolPressure
     );
     assert_eq!(runtime.inner.pool.size(), 2);

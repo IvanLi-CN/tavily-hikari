@@ -156,7 +156,7 @@
   30-second continuation; `remote_lease` schedules one five-second continuation. They advance no
   cursor or retry streak. Above five instance-local foreground requests per second, a normal main
   reconciliation run and a normal Research drain defer. An already-granted aged Main or Research
-  turn may run one bounded request, but it does not bypass SQLite idle-capacity or contention
+  turn reserves one actual remote request; it never changes local SQLite idle-capacity or contention
   admission, the native read deadline, the request lease, or claim-fenced finalization. After an
   aged Main capacity rejection, the run returns its typed defer without prewarming a lazy pool or
   consuming a foreground-reserved connection. After an

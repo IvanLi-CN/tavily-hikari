@@ -25,7 +25,6 @@ impl AlertEventFilters<'_> {
 enum AlertReadSource {
     Raw,
     Projected,
-    CanonicalSnapshot(i64),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

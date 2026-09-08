@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -191,6 +191,49 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read v34 canonical Groups partition scan index");
     assert_eq!(canonical_partition_scan_index, 1);
+    let bounded_build_objects: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'table' \
+         AND name IN ('admin_alert_canonical_group_fragments', \
+                      'admin_alert_canonical_catalog_state', \
+                      'admin_alert_canonical_catalog_facets')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v35 bounded canonical build tables");
+    assert_eq!(bounded_build_objects, 3);
+    let bounded_build_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('admin_alert_canonical_groups_state') \
+         WHERE name IN ('build_partition_source_complete', \
+                        'build_partition_fragment_next_position')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v35 bounded canonical build state columns");
+    assert_eq!(bounded_build_columns, 2);
+    let finalize_cursor_objects: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'table' \
+         AND name = 'admin_alert_canonical_catalog_payloads'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v36 canonical catalog payload table");
+    assert_eq!(finalize_cursor_objects, 1);
+    let finalize_payload_status: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('admin_alert_canonical_catalog_payloads') \
+         WHERE name = 'payload_status'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v36 canonical catalog payload status");
+    assert_eq!(finalize_payload_status, 1);
+    let finalize_cursor_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('admin_alert_canonical_groups_state') \
+         WHERE name = 'build_partition_finalize_fragment_position'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v36 canonical Groups finalize cursor");
+    assert_eq!(finalize_cursor_column, 1);
     let projection_state: (i64, i64, i64) = sqlx::query_as(
         "SELECT batch_size, scanned_rows, completed FROM upstream_reconciliation_projection_state WHERE id = 'local'",
     )
@@ -486,6 +529,129 @@ async fn canonical_groups_snapshot_migration_invalidates_v33_active_generation()
     .await
     .expect("count retired legacy rows");
     assert_eq!(legacy_rows, 0);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn canonical_groups_finalize_cursor_migration_recovers_after_interrupted_ledger_write() {
+    let db_path = temp_db_path("canonical-groups-finalize-cursor-v36-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-canonical-groups-finalize-cursor-v36-retry".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create current database");
+
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 1, active_row_count = 1, build_generation = 2, \
+             build_phase = 'aggregating' WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed in-flight derived state");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 36")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate interruption after finalization-cursor DDL");
+
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("retry the interrupted finalization-cursor migration"),
+        "an existing database must not request full bootstrap"
+    );
+    let state: (i64, i64, String) = sqlx::query_as(
+        "SELECT active_generation, build_generation, build_phase \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read invalidated derived state");
+    assert_eq!(state, (1, 0, "idle".to_string()));
+    let v36_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 36)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v36 ledger record");
+    assert_eq!(v36_recorded, 1);
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("warm restart leaves v36 DDL untouched"),
+        "the recorded migration must be a no-op on a warm restart"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn canonical_payload_resume_migration_reopens_legacy_payload_stops() {
+    let db_path = temp_db_path("canonical-payload-resume-v37-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-canonical-payload-resume-v37-retry".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create current database");
+
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET build_generation = 2, build_phase = 'payload_budget_exceeded' WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy Groups payload stop");
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_catalog_payloads \
+         (build_generation, facet_kind, payload_status) VALUES (2, 'token', 'payload_budget_exceeded')",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy catalog payload stop");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 37")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate interruption before v37 ledger write");
+
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("resume legacy canonical payloads"),
+        "an existing database must not request full bootstrap"
+    );
+    let groups_phase: String = sqlx::query_scalar(
+        "SELECT build_phase FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read resumed Groups phase");
+    assert_eq!(groups_phase, "aggregating");
+    let catalog_status: String = sqlx::query_scalar(
+        "SELECT payload_status FROM observability.admin_alert_canonical_catalog_payloads \
+         WHERE build_generation = 2 AND facet_kind = 'token'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read resumed catalog status");
+    assert_eq!(catalog_status, "building");
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);

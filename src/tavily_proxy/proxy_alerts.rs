@@ -357,6 +357,13 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn admin_default_projected_alert_events_page_for_canonical_warm(
+        &self,
+    ) -> Result<PaginatedAlertEvents, ProxyError> {
+        self.key_store.fetch_default_projected_alert_events_page().await
+    }
+
+    #[doc(hidden)]
     pub async fn admin_alert_canonical_groups_page_for_warm(
         &self,
     ) -> Result<(PaginatedAlertGroups, i64, i64, i64), ProxyError> {

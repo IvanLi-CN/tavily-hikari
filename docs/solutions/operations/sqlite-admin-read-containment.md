@@ -85,20 +85,25 @@ reads:
   passkey session lookup and a noncanonical exact-key bounded-read fallback each record their real
   foreground SQLite work.
 - The default Events `1/20` warm slice reads `COUNT(*)` and the indexed page directly from the
-  immutable canonical snapshot and decodes its materialized `payload_json` in Rust. The snapshot is
-  populated from projection rows through independently bounded keyset slices. Filtered reads retain the
-  JSON CTE contract. A statement that still misses the 250ms native deadline must be handled by a
-  separate query-plan-driven projection/index change; increasing the deadline or restoring a raw fallback
-  is not an admissible containment.
+  projection time index and decodes its materialized `payload_json` in Rust. Catalog facets checkpoint
+  fifty immutable Groups-event rows per accepted indexed slice into a local facet model, then use a
+  durable 250-row output cursor per facet, so a defer resumes rather than executes a JSON CTE or
+  rereads prior rows. Exact derived payloads advance durable output cursors without truncation or an
+  arbitrary size-based terminal stop. Filtered reads retain the JSON CTE contract. A statement that still
+  misses its fixed native deadline must be handled by a separate query-plan-driven projection change;
+  increasing the deadline or restoring a raw fallback is not an admissible containment.
 - When default Groups aggregation cannot meet that budget from the generic projection CTE, build a
   local observability read model from complete-history events in source-fenced bounded membership
   slices. Capture a projection revision and source-row upper bound before the first slice; projection
   writers retain the pre-update event once for that build, so later writes cannot extend its immutable
-  source set. Persist each accepted per-partition cursor and accumulator between bounded reads instead
-  of fetching an entire logical partition. Publish only a complete staged generation, and reclaim
-  obsolete event, override, and group generations in small write batches while excluding the active
-  and in-flight build generations. Do not use the model for filtered queries or replicate it through
-  HA.
+  source set. Every source statement is independently bounded; persist one bounded event fragment and
+  a durable final-reduction cursor per accepted slice instead of an ever-growing JSON accumulator.
+  Exact partition results remain resumable through their staged source and reduction cursors without
+  truncating nested events. A source-fence change discards the staged generation instead of publishing it
+  as stale. Reuse only the inactive one of two model slots after
+  clearing it in small write slices. Reclaim obsolete event, override, and group generations in small write
+  batches while excluding the active and in-flight build generations. Do not use the model for filtered
+  queries or replicate it through HA.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

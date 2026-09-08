@@ -73,9 +73,10 @@
   not grow. `upstream429` remains a rate-limited settlement bucket and is not evidence of Research
   convergence or non-convergence.
 - Multi-key candidate observation is durable across runs and restarts. Successful key responses are
-  stored by `(token_id, period_code, work_generation, key_id)` in a local derived table; source
-  generation advances only for a logical usage revision or current Key-set change, so storage replay,
-  timestamp refresh, and equal logical payloads retain partial observations. Each run fills at most two
+  stored by `(token_id, period_code, work_generation, key_id)` in a local derived table together with
+  candidate-global, Key-set, and per-Key logical source identities. A single Key usage change only
+  invalidates that Key's observation; a candidate-global or Key-set change invalidates all observations.
+  Storage replay, timestamp refresh, and equal logical payloads retain partial observations. Each run fills at most two
   missing keys in deterministic order and records `remote_attempt_budget` for one claim-fenced
   30-second continuation until the full current-generation key set is present. Only then can the
   existing compare/active settlement path terminalize the work; terminal completion removes the local
@@ -119,8 +120,8 @@
   stale-job watchdog, and safe main completion ensure the unique Research drain representative.
 - The remote-attempt controller now gives an aged Research drain the same 120-second automatic
   liveness turn as main reconciliation, ordered by oldest eligibility with main winning an exact
-  tie. The aged exception bypasses only the instance-local `foreground_rps` heuristic for one poll;
-  it retains the native SQLite read deadline, one request-scoped remote lease, and claim fence.
+  tie. The aged turn reserves one actual remote poll; its local preparation still retains normal
+  SQLite admission, the native read deadline, one request-scoped remote lease, and claim fence.
 - Research preserves its durable queue-time fairness anchor through foreground, lease, read-budget,
   and control defer continuations. An accepted poll or a Key cooldown starts a new interval.
 - Research distinguishes `foreground_pressure`, `remote_lease`, `read_budget`, and `control_defer`.

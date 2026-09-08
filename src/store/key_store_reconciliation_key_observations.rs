@@ -53,29 +53,13 @@ impl KeyStore {
         if key_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+        let source_identity = self
+            .reconciliation_key_observation_source_identity(candidate)
+            .await?;
         let mut session = self
             .sqlite_runtime
             .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
             .await?;
-        let source_rows_result = self
-            .reconciliation_key_observation_source_rows(&mut session, candidate)
-            .await;
-        let source_rows = match source_rows_result {
-            Ok(rows) => rows,
-            Err(error) => {
-                return match session
-                    .complete_query_or_defer::<Vec<(String, i64, i64, i64)>>(Err(error))
-                    .await
-                {
-                    Ok(_) => unreachable!("a failed SQLite source read cannot complete"),
-                    Err(error) => Err(error),
-                };
-            }
-        };
-        let source_identity = Self::reconciliation_key_observation_source_identity_from_rows(
-            candidate,
-            source_rows,
-        );
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT key_id, upstream_usage, key_source_identity \
              FROM upstream_reconciliation_key_observations WHERE token_id = ",
@@ -137,6 +121,13 @@ impl KeyStore {
         if observations.is_empty() {
             return Ok(ReconciliationKeyObservationPersistOutcome::Persisted);
         }
+        // Derive the identity before BEGIN IMMEDIATE. A source read is subject
+        // to the reconciliation read budget and must never hold the writer.
+        // The claim/generation fence below rejects an identity made stale in
+        // the short interval before the durable observation commit.
+        let source_identity = self
+            .reconciliation_key_observation_source_identity(candidate)
+            .await?;
         let mut tx = self
             .sqlite_runtime
             .begin_immediate(SqliteOperation::ReconciliationProjection)
@@ -159,12 +150,6 @@ impl KeyStore {
             tx.rollback().await?;
             return Ok(ReconciliationKeyObservationPersistOutcome::StaleClaim);
         }
-        let source_identity = self
-            .reconciliation_key_observation_source_rows(&mut tx, candidate)
-            .await
-            .map(|rows| {
-                Self::reconciliation_key_observation_source_identity_from_rows(candidate, rows)
-            })?;
         // Retain obsolete observations until terminal completion. The source
         // identities below, rather than work_generation alone, control reuse.
         for observation in observations {
@@ -211,6 +196,23 @@ impl KeyStore {
         .bind(&candidate.period_code)
         .fetch_all(connection)
         .await
+    }
+
+    async fn reconciliation_key_observation_source_identity(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+    ) -> Result<ReconciliationKeyObservationSourceIdentity, ProxyError> {
+        let mut session = self
+            .sqlite_runtime
+            .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
+            .await?;
+        let rows_result = self
+            .reconciliation_key_observation_source_rows(&mut session, candidate)
+            .await;
+        let rows = session.complete_query_or_defer(rows_result).await?;
+        Ok(Self::reconciliation_key_observation_source_identity_from_rows(
+            candidate, rows,
+        ))
     }
 
     fn reconciliation_key_observation_source_identity_from_rows(

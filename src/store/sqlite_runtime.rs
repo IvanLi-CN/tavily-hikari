@@ -372,7 +372,10 @@ struct AdminAlertsWarmWindow {
     generation_discards: u64,
     defers: u64,
     cold_misses: u64,
+    canonical_events_indexed_reads: u64,
+    canonical_catalog_payload_slices: u64,
     canonical_group_build_slices: u64,
+    canonical_group_reduction_slices: u64,
     canonical_group_publishes: u64,
     canonical_group_defers: u64,
 }
@@ -781,20 +784,7 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.try_admit_maintenance_bulk_with_foreground_policy(operation, false)
-    }
-
-    /// An aged reconciliation fairness turn may bypass the request-rate
-    /// heuristic once. It still needs the normal idle-capacity, contention,
-    /// shutdown, and single-bulk-permit protections before it can prepare a
-    /// request.
-    pub(crate) fn try_admit_reconciliation_projection_after_aged_turn(
-        &self,
-    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.try_admit_maintenance_bulk_with_foreground_policy(
-            SqliteOperation::ReconciliationProjection,
-            true,
-        )
+        self.try_admit_maintenance_bulk_with_foreground_policy(operation)
     }
 
     /// Reject a reconciliation run before it reaches a control read that
@@ -803,7 +793,6 @@ impl SqliteRuntime {
     /// foreground capacity or creates a second admission owner.
     pub(crate) fn preflight_reconciliation_projection_admission(
         &self,
-        bypass_foreground_pressure: bool,
     ) -> Result<(), SqliteAdmissionDeferReason> {
         let operation = SqliteOperation::ReconciliationProjection;
         if self
@@ -814,9 +803,7 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        if let Some(reason) =
-            self.maintenance_bulk_defer_reason_for(operation, bypass_foreground_pressure)
-        {
+        if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
             self.record_deferred(operation, reason);
             return Err(reason);
         }
@@ -826,7 +813,6 @@ impl SqliteRuntime {
     fn try_admit_maintenance_bulk_with_foreground_policy(
         &self,
         operation: SqliteOperation,
-        bypass_foreground_pressure: bool,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
         if self
@@ -837,7 +823,7 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        let reason = self.maintenance_bulk_defer_reason_for(operation, bypass_foreground_pressure);
+        let reason = self.maintenance_bulk_defer_reason_for(operation);
         if let Some(reason) = reason {
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -1050,10 +1036,9 @@ impl SqliteRuntime {
     fn maintenance_bulk_defer_reason_for(
         &self,
         operation: SqliteOperation,
-        bypass_foreground_pressure: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
         let foreground_rps = self.foreground_activity_rps();
-        if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+        if foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() && !operation.probes_recent_contention() {
             Some(SqliteAdmissionDeferReason::RecentContention)
@@ -1636,10 +1621,31 @@ impl SqliteRuntime {
         });
     }
 
+    pub(crate) fn record_admin_alerts_canonical_events_indexed_read(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_events_indexed_reads =
+                metrics.canonical_events_indexed_reads.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_canonical_catalog_payload_slice(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_catalog_payload_slices =
+                metrics.canonical_catalog_payload_slices.saturating_add(1);
+        });
+    }
+
     pub(crate) fn record_admin_alerts_canonical_group_build_slice(&self) {
         self.record_admin_alerts_warm_event(|metrics| {
             metrics.canonical_group_build_slices =
                 metrics.canonical_group_build_slices.saturating_add(1);
+        });
+    }
+
+    pub(crate) fn record_admin_alerts_canonical_group_reduction_slice(&self) {
+        self.record_admin_alerts_warm_event(|metrics| {
+            metrics.canonical_group_reduction_slices =
+                metrics.canonical_group_reduction_slices.saturating_add(1);
         });
     }
 
@@ -1986,6 +1992,16 @@ impl KeyStore {
         self.sqlite_runtime
             .record_deferred(SqliteOperation::AdminAlertsCacheWarm, reason);
         Some(reason.as_str())
+    }
+
+    pub(crate) fn ensure_admin_alerts_cache_warm_write_admitted(&self) -> Result<(), ProxyError> {
+        if let Some(reason) = self.admin_alerts_cache_warm_defer_reason() {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: reason.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
@@ -3243,13 +3259,16 @@ fn format_operation_window(
 
 fn format_admin_alerts_warm_window(metrics: AdminAlertsWarmWindow) -> String {
     format!(
-        "slices={},publishes={},generation_discards={},defers={},cold_misses={},canonical_group_build_slices={},canonical_group_publishes={},canonical_group_defers={}",
+        "slices={},publishes={},generation_discards={},defers={},cold_misses={},canonical_events_indexed_reads={},canonical_catalog_payload_slices={},canonical_group_build_slices={},canonical_group_reduction_slices={},canonical_group_publishes={},canonical_group_defers={}",
         metrics.slices,
         metrics.publishes,
         metrics.generation_discards,
         metrics.defers,
         metrics.cold_misses,
+        metrics.canonical_events_indexed_reads,
+        metrics.canonical_catalog_payload_slices,
         metrics.canonical_group_build_slices,
+        metrics.canonical_group_reduction_slices,
         metrics.canonical_group_publishes,
         metrics.canonical_group_defers,
     )

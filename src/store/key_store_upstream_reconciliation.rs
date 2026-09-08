@@ -149,19 +149,10 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
     }
 
-    pub(crate) fn try_admit_upstream_reconciliation_projection_after_aged_turn(
-        &self,
-    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.sqlite_runtime
-            .try_admit_reconciliation_projection_after_aged_turn()
-    }
-
     pub(crate) fn preflight_upstream_reconciliation_projection(
         &self,
-        after_aged_turn: bool,
     ) -> Result<(), SqliteAdmissionDeferReason> {
-        self.sqlite_runtime
-            .preflight_reconciliation_projection_admission(after_aged_turn)
+        self.sqlite_runtime.preflight_reconciliation_projection_admission()
     }
 
     pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity(

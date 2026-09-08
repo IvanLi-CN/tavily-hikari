@@ -787,9 +787,6 @@ impl KeyStore {
         match source {
             AlertReadSource::Raw => Self::push_alert_events_cte(query, filters),
             AlertReadSource::Projected => Self::push_projected_alert_events_cte(query, filters),
-            AlertReadSource::CanonicalSnapshot(build_generation) => {
-                Self::push_canonical_snapshot_alert_events_cte(query, filters, *build_generation)
-            }
         }
     }
 
@@ -1266,7 +1263,7 @@ impl KeyStore {
         })
     }
 
-    async fn fetch_default_projected_alert_events_page(
+    pub(crate) async fn fetch_default_projected_alert_events_page(
         &self,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
         let started = Instant::now();
@@ -1313,6 +1310,8 @@ impl KeyStore {
         let finish_result = session.finish().await;
         finish_result?;
         let value = result?;
+        self.sqlite_runtime
+            .record_admin_alerts_canonical_events_indexed_read();
         emit_perf_log(
             DbLogStatus::Info,
             "admin_read",
@@ -2523,7 +2522,7 @@ impl KeyStore {
             AlertReadSource::Raw => {
                 self.fetch_alert_group_projection_page(filters, page, per_page).await?
             }
-            AlertReadSource::Projected | AlertReadSource::CanonicalSnapshot(_) => {
+            AlertReadSource::Projected => {
                 self.fetch_projected_alert_group_page(filters, page, per_page)
                     .await?
             }
@@ -2721,12 +2720,679 @@ impl KeyStore {
         &self,
         build_generation: i64,
     ) -> Result<AlertCatalog, ProxyError> {
-        self.fetch_alert_catalog_from_source(
-            AlertReadSource::CanonicalSnapshot(build_generation),
-            None,
-            SqliteOperation::AdminAlertsCacheWarm,
+        self.fetch_admin_alert_catalog_from_canonical_snapshot(build_generation)
+            .await
+    }
+
+    async fn fetch_admin_alert_catalog_from_canonical_snapshot(
+        &self,
+        build_generation: i64,
+    ) -> Result<AlertCatalog, ProxyError> {
+        self.advance_admin_alert_canonical_catalog_snapshot(build_generation)
+            .await?;
+        self.advance_admin_alert_canonical_catalog_payload(build_generation)
+            .await?;
+        self.read_admin_alert_canonical_catalog_snapshot(build_generation)
+            .await
+    }
+
+    #[allow(dead_code)]
+    async fn fetch_admin_alert_catalog_from_canonical_snapshot_legacy(
+        &self,
+        build_generation: i64,
+    ) -> Result<AlertCatalog, ProxyError> {
+        const CATALOG_READ_SLICE_ROWS: i64 = 250;
+
+        let mut cursor = (i64::MAX, "\u{10ffff}".to_string());
+        let mut request_kinds = HashMap::<String, (String, i64)>::new();
+        let mut users = HashMap::<(String, String), i64>::new();
+        let mut tokens = HashMap::<String, i64>::new();
+        let mut keys = HashMap::<String, i64>::new();
+        let mut type_counts = HashMap::<String, i64>::new();
+
+        loop {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let rows_result = sqlx::query(
+                "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+                 FROM observability.admin_alert_canonical_group_events \
+                 WHERE build_generation = ? \
+                   AND (occurred_at < ? OR (occurred_at = ? AND row_sort_id < ?)) \
+                 ORDER BY occurred_at DESC, row_sort_id DESC LIMIT ?",
+            )
+            .bind(build_generation)
+            .bind(cursor.0)
+            .bind(cursor.0)
+            .bind(&cursor.1)
+            .bind(CATALOG_READ_SLICE_ROWS)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(rows_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let rows = rows?;
+            let complete = rows.len() < CATALOG_READ_SLICE_ROWS as usize;
+            if let Some(last) = rows.last() {
+                cursor = (last.try_get("occurred_at")?, last.try_get("row_sort_id")?);
+            }
+            for row in rows {
+                let projection = Self::decode_default_alert_event_projection_row(row)?;
+                let alert_type = projection.alert_type.trim();
+                if !alert_type.is_empty() {
+                    *type_counts.entry(alert_type.to_string()).or_default() += 1;
+                }
+                if let Some(request_kind) = projection.request_kind_key.as_deref() {
+                    let key = request_kind.trim();
+                    if !key.is_empty() && key != "unknown" {
+                        let label = projection
+                            .request_kind_label
+                            .as_deref()
+                            .unwrap_or(key)
+                            .to_string();
+                        let entry = request_kinds
+                            .entry(key.to_string())
+                            .or_insert_with(|| (label.clone(), 0));
+                        if label < entry.0 {
+                            entry.0 = label;
+                        }
+                        entry.1 += 1;
+                    }
+                }
+                if let Some(user_id) = projection.user_id {
+                    let label = projection
+                        .user_display_name
+                        .or(projection.user_username)
+                        .filter(|label| !label.trim().is_empty())
+                        .unwrap_or_else(|| user_id.clone());
+                    *users
+                        .entry((user_id, label))
+                        .or_default() += 1;
+                }
+                if let Some(token_id) = projection.token_id {
+                    *tokens.entry(token_id).or_default() += 1;
+                }
+                if let Some(key_id) = projection.key_id {
+                    *keys.entry(key_id).or_default() += 1;
+                }
+            }
+            if complete {
+                break;
+            }
+            tokio::task::yield_now().await;
+            if let Some(reason) = self.admin_alerts_cache_warm_defer_reason() {
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: reason.to_string(),
+                });
+            }
+        }
+
+        let mut types = default_alert_type_counts();
+        for item in &mut types {
+            item.count = type_counts.remove(&item.alert_type).unwrap_or_default();
+        }
+        let mut request_kind_options = request_kinds
+            .into_iter()
+            .map(|(key, (label, count))| TokenRequestKindOption {
+                protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                billing_group: token_request_kind_billing_group(&key).to_string(),
+                key,
+                label,
+                count,
+            })
+            .collect::<Vec<_>>();
+        request_kind_options.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.label.cmp(&right.label))
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        let facet_options = |values: HashMap<String, i64>| {
+            let mut values = values
+                .into_iter()
+                .map(|(value, count)| AlertFacetOption {
+                    label: value.clone(),
+                    value,
+                    count,
+                })
+                .collect::<Vec<_>>();
+            values.sort_by(|left, right| {
+                right
+                    .count
+                    .cmp(&left.count)
+                    .then_with(|| left.label.cmp(&right.label))
+                    .then_with(|| left.value.cmp(&right.value))
+            });
+            values
+        };
+        let mut user_options = users
+            .into_iter()
+            .map(|((value, label), count)| AlertFacetOption {
+                value,
+                label,
+                count,
+            })
+            .collect::<Vec<_>>();
+        user_options.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.label.cmp(&right.label))
+                .then_with(|| left.value.cmp(&right.value))
+        });
+        Ok(AlertCatalog {
+            retention_days: self
+                .effective_auth_token_log_retention_days_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?,
+            types: types
+                .into_iter()
+                .map(|item| LogFacetOption {
+                    value: item.alert_type,
+                    count: item.count,
+                })
+                .collect(),
+            request_kind_options,
+            users: user_options,
+            tokens: facet_options(tokens),
+            keys: facet_options(keys),
+        })
+    }
+
+    async fn advance_admin_alert_canonical_catalog_snapshot(
+        &self,
+        build_generation: i64,
+    ) -> Result<(), ProxyError> {
+        const CATALOG_BUILD_SLICE_ROWS: i64 = 50;
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let state_result = sqlx::query_as::<_, (i64, i64, String, bool)>(
+            "SELECT build_generation, cursor_occurred_at, cursor_row_sort_id, source_complete \
+             FROM observability.admin_alert_canonical_catalog_state WHERE singleton = 1",
         )
-        .await
+        .fetch_optional(&mut *session)
+        .await;
+        let state = session.query(state_result).await?;
+        let finish = session.finish().await;
+        finish?;
+        let Some((state_generation, cursor_occurred_at, cursor_row_sort_id, source_complete)) = state else {
+            return Err(ProxyError::Other(
+                "canonical alert catalog state is unavailable".to_string(),
+            ));
+        };
+        if state_generation != build_generation {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_snapshot_replaced".to_string(),
+            });
+        }
+        if source_complete {
+            return Ok(());
+        }
+
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let rows_result = sqlx::query(
+            "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+             FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = ? \
+               AND (occurred_at > ? OR (occurred_at = ? AND row_sort_id > ?)) \
+             ORDER BY occurred_at ASC, row_sort_id ASC LIMIT ?",
+        )
+        .bind(build_generation)
+        .bind(cursor_occurred_at)
+        .bind(cursor_occurred_at)
+        .bind(&cursor_row_sort_id)
+        .bind(CATALOG_BUILD_SLICE_ROWS)
+        .fetch_all(&mut *session)
+        .await;
+        let rows = session.query(rows_result).await;
+        let finish = session.finish().await;
+        finish?;
+        let rows = rows?;
+        let complete = rows.len() < CATALOG_BUILD_SLICE_ROWS as usize;
+        let next_cursor = rows
+            .last()
+            .map(|row| {
+                Ok::<_, sqlx::Error>((
+                    row.try_get::<i64, _>("occurred_at")?,
+                    row.try_get::<String, _>("row_sort_id")?,
+                ))
+            })
+            .transpose()?
+            .unwrap_or((cursor_occurred_at, cursor_row_sort_id.clone()));
+        let mut facets = HashMap::<(String, String, String, String), i64>::new();
+        for row in rows {
+            let projection = Self::decode_default_alert_event_projection_row(row)?;
+            let insert = |kind: &str,
+                          identity: String,
+                          value: String,
+                          label: String,
+                          facets: &mut HashMap<(String, String, String, String), i64>| {
+                if !value.trim().is_empty() {
+                    *facets
+                        .entry((kind.to_string(), identity, value, label))
+                        .or_default() += 1;
+                }
+            };
+            insert(
+                "type",
+                projection.alert_type.trim().to_string(),
+                projection.alert_type.trim().to_string(),
+                projection.alert_type.trim().to_string(),
+                &mut facets,
+            );
+            if let Some(request_kind) = projection.request_kind_key.as_deref() {
+                let key = request_kind.trim();
+                if !key.is_empty() && key != "unknown" {
+                    insert(
+                        "request_kind",
+                        key.to_string(),
+                        key.to_string(),
+                        projection
+                            .request_kind_label
+                            .as_deref()
+                            .unwrap_or(key)
+                            .to_string(),
+                        &mut facets,
+                    );
+                }
+            }
+            if let Some(user_id) = projection.user_id {
+                let label = projection
+                    .user_display_name
+                    .or(projection.user_username)
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or_else(|| user_id.clone());
+                insert(
+                    "user",
+                    format!("{user_id}\u{001f}{label}"),
+                    user_id,
+                    label,
+                    &mut facets,
+                );
+            }
+            if let Some(token_id) = projection.token_id {
+                insert(
+                    "token",
+                    token_id.clone(),
+                    token_id.clone(),
+                    token_id,
+                    &mut facets,
+                );
+            }
+            if let Some(key_id) = projection.key_id {
+                insert(
+                    "key",
+                    key_id.clone(),
+                    key_id.clone(),
+                    key_id,
+                    &mut facets,
+                );
+            }
+        }
+        let facets = facets.into_iter().collect::<Vec<_>>();
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let advanced = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        r#"UPDATE observability.admin_alert_canonical_catalog_state
+                              SET cursor_occurred_at = ?, cursor_row_sort_id = ?, source_complete = ?
+                            WHERE singleton = 1 AND build_generation = ?
+                              AND cursor_occurred_at = ? AND cursor_row_sort_id = ?
+                              AND ? = (SELECT active_generation
+                                         FROM observability.admin_alert_canonical_groups_state
+                                        WHERE singleton = 1)"#,
+                    )
+                    .bind(next_cursor.0)
+                    .bind(next_cursor.1)
+                    .bind(complete)
+                    .bind(build_generation)
+                    .bind(cursor_occurred_at)
+                    .bind(cursor_row_sort_id)
+                    .bind(build_generation)
+                        .execute(&mut **tx)
+                        .await?;
+                    if changed.rows_affected() != 1 {
+                        return Ok::<_, ProxyError>(false);
+                    }
+                    for ((facet_kind, facet_identity, facet_value, facet_label), item_count) in facets {
+                        sqlx::query(
+                            r#"INSERT INTO observability.admin_alert_canonical_catalog_facets
+                                   (build_generation, facet_kind, facet_identity, facet_value, facet_label, item_count)
+                               VALUES (?, ?, ?, ?, ?, ?)
+                               ON CONFLICT(build_generation, facet_kind, facet_identity)
+                               DO UPDATE SET item_count = item_count + excluded.item_count,
+                                             facet_label = MIN(facet_label, excluded.facet_label)"#,
+                        )
+                        .bind(build_generation)
+                        .bind(facet_kind)
+                        .bind(facet_identity)
+                        .bind(facet_value)
+                        .bind(facet_label)
+                        .bind(item_count)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                    Ok::<_, ProxyError>(true)
+                })
+            })
+            .await?;
+        if !advanced {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_snapshot_replaced".to_string(),
+            });
+        }
+        self.record_admin_alerts_warm_slice();
+        if complete {
+            Ok(())
+        } else {
+            Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_build_in_progress".to_string(),
+            })
+        }
+    }
+
+    async fn advance_admin_alert_canonical_catalog_payload(
+        &self,
+        build_generation: i64,
+    ) -> Result<(), ProxyError> {
+        const CATALOG_FACET_KINDS: [&str; 5] = ["type", "request_kind", "user", "token", "key"];
+        const CATALOG_PAYLOAD_SLICE_ROWS: i64 = 250;
+
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let state_result = sqlx::query_as::<_, (i64, bool)>(
+            "SELECT build_generation, source_complete \
+             FROM observability.admin_alert_canonical_catalog_state WHERE singleton = 1",
+        )
+        .fetch_optional(&mut *session)
+        .await;
+        let payloads_result = sqlx::query_as::<_, (String, String)>(
+            "SELECT facet_kind, payload_status \
+             FROM observability.admin_alert_canonical_catalog_payloads \
+             WHERE build_generation = ?",
+        )
+        .bind(build_generation)
+        .fetch_all(&mut *session)
+        .await;
+        let state = session.query(state_result).await?;
+        let payloads = session.query(payloads_result).await?;
+        session.finish().await?;
+
+        let Some((state_generation, source_complete)) = state else {
+            return Err(ProxyError::Other(
+                "canonical alert catalog state is unavailable".to_string(),
+            ));
+        };
+        if state_generation != build_generation {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_snapshot_replaced".to_string(),
+            });
+        }
+        if !source_complete {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_build_in_progress".to_string(),
+            });
+        }
+
+        let payload_statuses = payloads.into_iter().collect::<HashMap<_, _>>();
+        let Some(facet_kind) = CATALOG_FACET_KINDS
+            .into_iter()
+            .find(|kind| payload_statuses.get(*kind).is_none_or(|status| status != "complete"))
+        else {
+            return Ok(());
+        };
+
+        let Some((cursor_item_count, cursor_label, cursor_value, payload_json, payload_status)) = self
+            .read_admin_alert_canonical_catalog_payload_state(build_generation, facet_kind)
+            .await?
+        else {
+            self.ensure_admin_alerts_cache_warm_write_admitted()?;
+            let inserted = self
+                .sqlite_runtime
+                .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                    Box::pin(async move {
+                        let changed = sqlx::query(
+                            "INSERT OR IGNORE INTO observability.admin_alert_canonical_catalog_payloads \
+                             (build_generation, facet_kind) \
+                             SELECT ?, ? WHERE ? = (SELECT active_generation \
+                                                     FROM observability.admin_alert_canonical_groups_state \
+                                                    WHERE singleton = 1)",
+                        )
+                        .bind(build_generation)
+                        .bind(facet_kind)
+                        .bind(build_generation)
+                        .execute(&mut **tx)
+                        .await?;
+                        Ok::<_, ProxyError>(changed.rows_affected() == 1)
+                    })
+                })
+                .await?;
+            if !inserted {
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "catalog_snapshot_replaced".to_string(),
+                });
+            }
+            self.record_admin_alerts_warm_slice();
+            self.sqlite_runtime
+                .record_admin_alerts_canonical_catalog_payload_slice();
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_payload_build_in_progress".to_string(),
+            });
+        };
+        if payload_status == "complete" {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_payload_build_in_progress".to_string(),
+            });
+        }
+
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let rows_result = sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT facet_value, facet_label, item_count \
+             FROM observability.admin_alert_canonical_catalog_facets \
+             WHERE build_generation = ? AND facet_kind = ? \
+               AND (item_count < ? OR (item_count = ? AND \
+                    (facet_label > ? OR (facet_label = ? AND facet_value > ?)))) \
+             ORDER BY item_count DESC, facet_label ASC, facet_value ASC LIMIT ?",
+        )
+        .bind(build_generation)
+        .bind(facet_kind)
+        .bind(cursor_item_count)
+        .bind(cursor_item_count)
+        .bind(&cursor_label)
+        .bind(&cursor_label)
+        .bind(&cursor_value)
+        .bind(CATALOG_PAYLOAD_SLICE_ROWS)
+        .fetch_all(&mut *session)
+        .await;
+        let rows = session.query(rows_result).await?;
+        session.finish().await?;
+        let complete = rows.len() < CATALOG_PAYLOAD_SLICE_ROWS as usize;
+        let next_cursor = rows
+            .last()
+            .map(|(value, label, count)| (*count, label.clone(), value.clone()))
+            .unwrap_or((cursor_item_count, cursor_label.clone(), cursor_value.clone()));
+        let mut payload = serde_json::from_str::<Vec<(String, String, i64)>>(&payload_json)
+            .map_err(|_| ProxyError::Other("invalid canonical alert catalog payload".to_string()))?;
+        payload.extend(rows);
+        let next_payload_json = serde_json::to_string(&payload)
+            .map_err(|error| ProxyError::Other(format!("serialize canonical alert catalog payload: {error}")))?;
+        let next_status = if complete {
+            "complete"
+        } else {
+            "building"
+        };
+        let facet_kind = facet_kind.to_string();
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let advanced = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_catalog_payloads \
+                         SET cursor_item_count = ?, cursor_label = ?, cursor_value = ?, \
+                             payload_json = ?, payload_status = ? \
+                         WHERE build_generation = ? AND facet_kind = ? \
+                           AND cursor_item_count = ? AND cursor_label = ? AND cursor_value = ? \
+                           AND payload_status = 'building' \
+                           AND ? = (SELECT active_generation \
+                                      FROM observability.admin_alert_canonical_groups_state \
+                                     WHERE singleton = 1)",
+                    )
+                    .bind(next_cursor.0)
+                    .bind(next_cursor.1)
+                    .bind(next_cursor.2)
+                    .bind(next_payload_json)
+                    .bind(next_status)
+                    .bind(build_generation)
+                    .bind(facet_kind)
+                    .bind(cursor_item_count)
+                    .bind(cursor_label)
+                    .bind(cursor_value)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(changed.rows_affected() == 1)
+                })
+            })
+            .await?;
+        if !advanced {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_snapshot_replaced".to_string(),
+            });
+        }
+        self.record_admin_alerts_warm_slice();
+        self.sqlite_runtime
+            .record_admin_alerts_canonical_catalog_payload_slice();
+        Err(ProxyError::Deferred {
+            operation: "admin_alerts_cache_warm",
+            reason: "catalog_payload_build_in_progress".to_string(),
+        })
+    }
+
+    async fn read_admin_alert_canonical_catalog_payload_state(
+        &self,
+        build_generation: i64,
+        facet_kind: &str,
+    ) -> Result<Option<(i64, String, String, String, String)>, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let result = sqlx::query_as::<_, (i64, String, String, String, String)>(
+            "SELECT cursor_item_count, cursor_label, cursor_value, payload_json, payload_status \
+             FROM observability.admin_alert_canonical_catalog_payloads \
+             WHERE build_generation = ? AND facet_kind = ?",
+        )
+        .bind(build_generation)
+        .bind(facet_kind)
+        .fetch_optional(&mut *session)
+        .await;
+        let state = session.query(result).await?;
+        session.finish().await?;
+        Ok(state)
+    }
+
+    async fn read_admin_alert_canonical_catalog_snapshot(
+        &self,
+        build_generation: i64,
+    ) -> Result<AlertCatalog, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let payloads_result = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT facet_kind, payload_json, payload_status \
+             FROM observability.admin_alert_canonical_catalog_payloads \
+             WHERE build_generation = ?",
+        )
+        .bind(build_generation)
+        .fetch_all(&mut *session)
+        .await;
+        let payloads = session.query(payloads_result).await?;
+        session.finish().await?;
+        let mut decoded_payloads = HashMap::<String, Vec<(String, String, i64)>>::new();
+        for (facet_kind, payload_json, payload_status) in payloads {
+            if payload_status != "complete" {
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "catalog_payload_build_in_progress".to_string(),
+                });
+            }
+            let payload = serde_json::from_str(&payload_json).map_err(|_| {
+                ProxyError::Other("invalid canonical alert catalog payload".to_string())
+            })?;
+            decoded_payloads.insert(facet_kind, payload);
+        }
+        let mut payload = |facet_kind: &str| {
+            decoded_payloads.remove(facet_kind).ok_or_else(|| ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "catalog_payload_build_in_progress".to_string(),
+            })
+        };
+        let type_rows = payload("type")?;
+        let request_kind_rows = payload("request_kind")?;
+        let user_rows = payload("user")?;
+        let token_rows = payload("token")?;
+        let key_rows = payload("key")?;
+        let type_counts = type_rows
+            .into_iter()
+            .map(|(value, _, count)| (value, count))
+            .collect::<HashMap<_, _>>();
+        let mut types = default_alert_type_counts();
+        for item in &mut types {
+            item.count = type_counts.get(&item.alert_type).copied().unwrap_or_default();
+        }
+        let request_kind_options = request_kind_rows
+            .into_iter()
+            .map(|(key, label, count)| TokenRequestKindOption {
+                protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                billing_group: token_request_kind_billing_group(&key).to_string(),
+                key,
+                label,
+                count,
+            })
+            .collect();
+        let facet_options = |rows: Vec<(String, String, i64)>| {
+            rows.into_iter()
+                .map(|(value, label, count)| AlertFacetOption { value, label, count })
+                .collect()
+        };
+        Ok(AlertCatalog {
+            retention_days: self
+                .effective_auth_token_log_retention_days_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?,
+            types: types
+                .into_iter()
+                .map(|item| LogFacetOption {
+                    value: item.alert_type,
+                    count: item.count,
+                })
+                .collect(),
+            request_kind_options,
+            users: facet_options(user_rows),
+            tokens: facet_options(token_rows),
+            keys: facet_options(key_rows),
+        })
     }
 
     async fn fetch_alert_catalog_from_source(

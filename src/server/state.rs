@@ -449,10 +449,11 @@ fn publish_admin_alerts_canonical_into_cache(
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
 ) -> bool {
-    // A canonical snapshot may complete while projection advances again. It
-    // is still a complete immutable last-good payload, merely stale until the
-    // next warm catches up. Reject only an impossible future generation.
-    if cache.alert_projection_generation < generation {
+    // The controller validates the durable projection fence before this
+    // atomic cache publish. The in-memory generation must still match that
+    // attempt too; otherwise a concurrent projection update would mix a
+    // newly-read Events page with an older Catalog/Groups snapshot.
+    if cache.alert_projection_generation != generation {
         return false;
     }
     for (key, value) in [
@@ -543,7 +544,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
-                let (groups, build_generation, _recent_generation, _history_generation) =
+                let (groups, build_generation, recent_generation, history_generation) =
                     admin_alerts_canonical_groups_for_warm(state.as_ref()).await?;
                 state.proxy.record_admin_alerts_warm_slice();
                 let catalog = state
@@ -558,10 +559,21 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 state.proxy.record_admin_alerts_warm_slice();
                 let events = state
                     .proxy
-                    .admin_alert_events_page_for_canonical_snapshot(build_generation, 1, 20)
+                    .admin_default_projected_alert_events_page_for_canonical_warm()
                     .await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
+                }
+                if state
+                    .proxy
+                    .admin_alerts_canonical_warm_projection_fence()
+                    .await?
+                    != (recent_generation, history_generation)
+                {
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "groups_source_fence_changed".to_string(),
+                    });
                 }
                 state.proxy.record_admin_alerts_warm_slice();
                 #[cfg(test)]
@@ -604,18 +616,24 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     break;
                 }
                 Err(tavily_hikari::ProxyError::Deferred { reason, .. })
-                    if reason == "groups_build_in_progress" =>
+                    if reason == "groups_build_in_progress"
+                        || reason == "catalog_build_in_progress"
+                        || reason == "catalog_payload_build_in_progress" =>
                 {
-                    // A Groups snapshot committed one bounded slice. This is
-                    // forward progress, not a failed warm attempt: immediately
-                    // start the next independently-admitted slice so a large
-                    // complete projection does not stretch into the retry
-                    // backoff schedule.
+                    // Groups and Catalog each commit one bounded slice before
+                    // asking the controller for the next independently-admitted
+                    // slice. This is forward progress, not a failed warm attempt.
                     snapshot_cache_generation.get_or_insert(generation);
                     tokio::task::yield_now().await;
                 }
                 Err(tavily_hikari::ProxyError::Deferred { reason, .. })
                     if reason == "groups_build_replaced" =>
+                {
+                    snapshot_cache_generation = None;
+                    tokio::task::yield_now().await;
+                }
+                Err(tavily_hikari::ProxyError::Deferred { reason, .. })
+                    if reason == "groups_source_fence_changed" =>
                 {
                     snapshot_cache_generation = None;
                     tokio::task::yield_now().await;
@@ -1236,13 +1254,13 @@ mod admin_alerts_prewarm_tests {
     }
 
     #[test]
-    fn canonical_publish_keeps_a_complete_older_snapshot_as_last_good() {
+    fn canonical_publish_rejects_a_snapshot_after_projection_advance() {
         let mut cache = DashboardOverviewCacheState {
             alert_projection_generation: 2,
             ..Default::default()
         };
 
-        assert!(publish_admin_alerts_canonical_into_cache(
+        assert!(!publish_admin_alerts_canonical_into_cache(
             &mut cache,
             1,
             123,
@@ -1251,20 +1269,19 @@ mod admin_alerts_prewarm_tests {
             empty_events(),
             empty_groups(),
         ));
+        assert!(cache.admin_alerts.entries.is_empty(), "a stale build must not publish any key");
         assert!(
-            cache.admin_alerts.entries.iter().all(|entry| entry.generation == 1),
-            "a complete immutable snapshot remains a coherent stale last-good value"
+            publish_admin_alerts_canonical_into_cache(
+                &mut cache,
+                2,
+                124,
+                tokio::time::Instant::now(),
+                empty_catalog(),
+                empty_events(),
+                empty_groups(),
+            ),
+            "only a snapshot that matches the current projection generation may publish"
         );
-
-        assert!(publish_admin_alerts_canonical_into_cache(
-            &mut cache,
-            2,
-            124,
-            tokio::time::Instant::now(),
-            empty_catalog(),
-            empty_events(),
-            empty_groups(),
-        ));
         assert_eq!(cache.admin_alerts.entries.len(), 3);
         assert!(cache
             .admin_alerts

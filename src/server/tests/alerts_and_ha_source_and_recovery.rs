@@ -4,7 +4,7 @@ use super::*;
 use futures_util::FutureExt;
 
 #[tokio::test]
-async fn aged_reconciliation_turn_bypasses_foreground_heuristic_once() {
+async fn aged_reconciliation_turn_still_defers_for_foreground_pressure() {
     let db_path = temp_db_path("reconciliation-low-pressure-recovery");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -155,19 +155,18 @@ async fn aged_reconciliation_turn_bypasses_foreground_heuristic_once() {
     .await
     .expect("read aged reconciliation claim");
     assert_eq!(scheduled_job.0, "success");
-    if work.1 != work.0 {
-        assert!(
-            scheduled_job
-                .1
-                .as_deref()
-                .is_some_and(|message| message.contains("defer_reason=pool_pressure")),
-            "an aged turn may preserve the foreground pool reservation, but must not defer for RPS: \
-             next_attempt_at={}, last_outcome={}, job_message={}",
-            work.2,
-            work.3,
-            scheduled_job.1.as_deref().unwrap_or("none"),
-        );
-    }
+    assert_ne!(work.1, work.0, "foreground pressure must defer local preparation");
+    assert!(
+        scheduled_job
+            .1
+            .as_deref()
+            .is_some_and(|message| message.contains("defer_reason=foreground_pressure")),
+        "an aged remote turn must not bypass local SQLite foreground protection: \
+         next_attempt_at={}, last_outcome={}, job_message={}",
+        work.2,
+        work.3,
+        scheduled_job.1.as_deref().unwrap_or("none"),
+    );
 
     drop(state);
     let _ = std::fs::remove_file(db_path);

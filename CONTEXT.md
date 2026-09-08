@@ -53,22 +53,25 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
   These cache-only payload responses do not count as synthetic SQLite foreground activity. A configured
   passkey session lookup and a noncanonical bounded-read fallback are each real foreground work.
-  The default Events `1/20` warm slice reads count and page rows through the immutable canonical
-  snapshot's time index and decodes materialized payloads in Rust; the snapshot itself is populated
-  from the projection through independently bounded keyset slices. Filtered/noncanonical reads keep
-  their existing JSON CTE semantics. A production-shaped statement that still exceeds the native
-  deadline requires query-plan evidence and a separate projection/index task, never a larger read
-  budget or raw fallback.
+  The default Events `1/20` warm slice reads count and page rows directly through the projection's
+  time index and decodes materialized payloads in Rust. Catalog facets checkpoint 50 immutable Groups
+  snapshot rows at a time into a local facet model; each sorted facet payload also advances through a
+  durable 250-row output cursor. Retries resume those cursors rather than issuing a JSON CTE or
+  rescanning prior rows. Exact derived payloads use durable output cursors and must not be truncated or
+  turned into a permanent defer because of an arbitrary size threshold. Filtered/noncanonical reads keep
+  their existing JSON CTE semantics. A production-shaped statement that exceeds its native read deadline
+  requires query-plan evidence and a separate projection task, never a larger read budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
   atomically captures a complete projection revision, source fence, and fixed source-row membership
   boundary. Source rows are copied by that bounded rowid range, so later projection writes cannot
   extend a build's final scan. A projection write that advances during a build retains the previous row
-  once for that snapshot. Groups aggregation keeps an accepted per-partition event cursor and state,
-  processing at most one bounded read slice before it can resume. A completed catalog/events/groups
-  set can therefore atomically publish as stale rather than being discarded at the final fence check.
+  once for that snapshot. Each partition checkpoints one bounded event fragment and a durable final
+  reduction cursor before moving to the next slice; a changed source fence discards the staged generation
+  before publication, so it never publishes a cross-generation or stale replacement. The exact reduction
+  stays resumable through its durable source and reduction cursors without truncating nested events. The
+  two model slots are cleared in short slices before reuse.
   Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
-  generations. This derived model never enters the HA outbox and does not change filtered Groups
-  semantics.
+  generations. This derived model never enters the HA outbox and does not change filtered Groups semantics.
 
 ## Reconciliation Terms
 
@@ -144,15 +147,13 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   request starts; ordinary automatic remote work may prepare locally but cannot acquire its lease.
 - `foreground_rps`: the instance-local recent request-rate heuristic used to protect foreground
   traffic. It is not a CPU, SQLite-pool, cgroup, or host-load metric. A non-aged Research drain
-  defers above five requests per second; an aged Research turn bypasses only this heuristic for
-  one bounded poll and still requires SQLite admission, the request lease, and a claim fence.
-  An already-granted aged Main reconciliation turn receives the same one-request exception; it
-  still requires two idle-or-allocatable foreground-reserved connections, no recent contention,
-  the one bulk permit, a request-scoped lease, and claim-fenced finalization. A non-aged Main run
-  continues to defer above the threshold. A failed aged-Main capacity admission is a typed defer:
-  it never prewarms a lazy pool, opens a second connection, or consumes a foreground-reserved slot.
-  Its durable `scheduled_jobs.queued_at` fairness anchor survives foreground, lease, read-budget,
-  and control defers; an accepted poll or Key cooldown begins a new interval.
+  defers above five requests per second; an aged Research turn may use its reserved turn only when it
+  reaches one actual outbound request. The reservation never changes local SQLite admission: all
+  candidate reads, projection work, and finalization still follow the normal idle-capacity,
+  contention, native-deadline, and claim-fence rules. Aged Main priority is likewise a remote
+  scheduling concern, not a local read exception. Its durable `scheduled_jobs.queued_at` fairness
+  anchor survives foreground, lease, read-budget, and control defers; an accepted poll or Key
+  cooldown begins a new interval.
 - `research selection page`: an indexed, due-only page of at most 80 Research rows, hydrated in
   bounded batches with a four-per-key and 20-row sweep cap. Its stable keyset cursor advances only
   after claim-fenced acceptance of an actually processed candidate; read pressure or cancellation
