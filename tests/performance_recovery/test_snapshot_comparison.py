@@ -107,6 +107,17 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("upstream_reconciliation_control_state", COMPARISON)
         self.assertIn("the persisted legacy switch above produces compare mode", COMPARISON)
 
+    def test_shadow_reconciliation_fixture_uses_the_newest_eligible_window(self) -> None:
+        self.assertIn(
+            "Keep the clone-only fixture at the newest legal reconciliation boundary.",
+            COMPARISON,
+        )
+        shadow_fixture = COMPARISON.split(
+            "'testbox-reconciliation-shadow-token'", 1
+        )[1].split("'testbox-reconciliation-research-token'", 1)[0]
+        self.assertIn("unixepoch() - 1800, unixepoch() - 600, 1,", shadow_fixture)
+        self.assertNotIn("unixepoch() - 1800, unixepoch() - 601, 1,", shadow_fixture)
+
     def test_docker_context_allows_the_test_toolchain_input(self) -> None:
         self.assertIn("!rust-toolchain.toml", DOCKERIGNORE)
         self.assertIn("build.rs|rust-toolchain.toml|src", DOCKERFILE)
