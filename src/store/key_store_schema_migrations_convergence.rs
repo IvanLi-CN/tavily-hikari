@@ -16,7 +16,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION: i64 = 34;
 const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_NAME: &str =
     "admin-alert-canonical-groups-snapshot-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_CHECKSUM: &str =
-    "sha256:7ab2c185f2a78ba6a61582f96c94317d7c240760ab77e8d0f8d8dbe3ddff08ce";
+    "sha256:1619f39f9263aeb4bd42223d75a74a8137c0041e8cc51155d96792fa12bea9ce";
 
 fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 4] {
     [
@@ -168,6 +168,25 @@ impl KeyStore {
                     .await?
                 || !self
                     .table_column_exists("admin_alert_canonical_groups_state", "build_generation")
+                    .await?
+                || !self
+                    .table_column_exists(
+                        "admin_alert_canonical_groups_state",
+                        "build_source_rowid_upper_bound",
+                    )
+                    .await?
+                || !self
+                    .table_column_exists(
+                        "admin_alert_canonical_groups_state",
+                        "build_partition_events_json",
+                    )
+                    .await?
+                || !self
+                    .schema_named_object_exists(
+                        "observability",
+                        "index",
+                        "idx_admin_alert_canonical_group_events_partition_scan",
+                    )
                     .await?)
         {
             return Err(ProxyError::Other(
@@ -324,6 +343,16 @@ impl KeyStore {
                  ADD COLUMN build_cursor_row_sort_id TEXT NOT NULL DEFAULT ''",
             ),
             (
+                "build_source_rowid_upper_bound",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_source_rowid_upper_bound INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "build_cursor_source_rowid",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_cursor_source_rowid INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
                 "build_phase",
                 "ALTER TABLE observability.admin_alert_canonical_groups_state \
                  ADD COLUMN build_phase TEXT NOT NULL DEFAULT 'idle'",
@@ -332,6 +361,26 @@ impl KeyStore {
                 "build_partition_key",
                 "ALTER TABLE observability.admin_alert_canonical_groups_state \
                  ADD COLUMN build_partition_key TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "build_partition_after_key",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_partition_after_key TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "build_partition_cursor_occurred_at",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_partition_cursor_occurred_at INTEGER NOT NULL DEFAULT -9223372036854775808",
+            ),
+            (
+                "build_partition_cursor_row_sort_id",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_partition_cursor_row_sort_id TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "build_partition_events_json",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_partition_events_json TEXT NOT NULL DEFAULT '[]'",
             ),
             (
                 "build_next_position",
@@ -373,6 +422,12 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_events_partition_scan \
+             ON admin_alert_canonical_group_events(build_generation, partition_key, occurred_at, row_sort_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_overrides (
                 build_generation INTEGER NOT NULL,
                 source_kind TEXT NOT NULL,
@@ -382,6 +437,30 @@ impl KeyStore {
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY(build_generation, source_kind, source_id)
             )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        // v31-v33 stored only serialized Groups rows. Those rows do not have a
+        // corresponding immutable event snapshot, so treating their source
+        // fence as current would let Catalog/Events and Groups publish mixed
+        // generations after this additive upgrade. The model is derived and
+        // rebuildable; invalidate it once when v34 is first recorded.
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_generation = 0, active_row_count = 0,
+                      active_projection_revision = -1,
+                      source_recent_generation = -1, source_history_generation = -1,
+                      build_generation = 0, build_projection_revision = -1,
+                      build_source_recent_generation = -1,
+                      build_source_history_generation = -1,
+                      build_cursor_occurred_at = -9223372036854775808,
+                      build_cursor_row_sort_id = '', build_source_rowid_upper_bound = 0,
+                      build_cursor_source_rowid = 0, build_phase = 'idle',
+                      build_partition_key = '', build_partition_after_key = '',
+                      build_partition_cursor_occurred_at = -9223372036854775808,
+                      build_partition_cursor_row_sort_id = '',
+                      build_partition_events_json = '[]', build_next_position = 1
+                WHERE singleton = 1"#,
         )
         .execute(&self.pool)
         .await?;

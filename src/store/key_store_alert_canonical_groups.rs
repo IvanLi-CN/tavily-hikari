@@ -16,9 +16,13 @@ struct AdminAlertCanonicalGroupsState {
     build_generation: i64,
     build_projection_revision: i64,
     build_source_fence: (i64, i64),
-    build_cursor: (i64, String),
+    build_source_rowid_upper_bound: i64,
+    build_cursor_source_rowid: i64,
     build_phase: String,
     build_partition_key: String,
+    build_partition_after_key: String,
+    build_partition_cursor: (i64, String),
+    build_partition_events_json: String,
     build_next_position: i64,
 }
 
@@ -94,8 +98,11 @@ impl KeyStore {
                        source_recent_generation, source_history_generation,
                        build_generation, build_projection_revision,
                        build_source_recent_generation, build_source_history_generation,
-                       build_cursor_occurred_at, build_cursor_row_sort_id, build_phase,
-                       build_partition_key, build_next_position
+                       build_phase,
+                       build_source_rowid_upper_bound, build_cursor_source_rowid,
+                       build_partition_key, build_partition_after_key,
+                       build_partition_cursor_occurred_at, build_partition_cursor_row_sort_id,
+                       build_partition_events_json, build_next_position
                   FROM observability.admin_alert_canonical_groups_state
                  WHERE singleton = 1"#,
         )
@@ -120,12 +127,16 @@ impl KeyStore {
                 row.try_get("build_source_recent_generation")?,
                 row.try_get("build_source_history_generation")?,
             ),
-            build_cursor: (
-                row.try_get("build_cursor_occurred_at")?,
-                row.try_get("build_cursor_row_sort_id")?,
-            ),
+            build_source_rowid_upper_bound: row.try_get("build_source_rowid_upper_bound")?,
+            build_cursor_source_rowid: row.try_get("build_cursor_source_rowid")?,
             build_phase: row.try_get("build_phase")?,
             build_partition_key: row.try_get("build_partition_key")?,
+            build_partition_after_key: row.try_get("build_partition_after_key")?,
+            build_partition_cursor: (
+                row.try_get("build_partition_cursor_occurred_at")?,
+                row.try_get("build_partition_cursor_row_sort_id")?,
+            ),
+            build_partition_events_json: row.try_get("build_partition_events_json")?,
             build_next_position: row.try_get("build_next_position")?,
         })
     }
@@ -136,13 +147,15 @@ impl KeyStore {
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, |tx| {
                 Box::pin(async move {
-                    let (revision, recent, history, active, building) = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+                    let (revision, recent, history, active, building, source_rowid_upper_bound) = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64)>(
                         r#"SELECT
                                (SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1),
                                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
                                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state),
                                active_generation,
-                               build_generation
+                               build_generation,
+                               (SELECT COALESCE(MAX(rowid), 0)
+                                  FROM observability.dashboard_alert_projection_events)
                             FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1"#,
                     )
                     .fetch_one(&mut **tx)
@@ -169,14 +182,19 @@ impl KeyStore {
                               SET build_generation = ?, build_projection_revision = ?,
                                   build_source_recent_generation = ?, build_source_history_generation = ?,
                                   build_cursor_occurred_at = -9223372036854775808,
-                                  build_cursor_row_sort_id = '', build_phase = 'copying',
-                                  build_partition_key = '', build_next_position = 1
+                                  build_cursor_row_sort_id = '', build_source_rowid_upper_bound = ?,
+                                  build_cursor_source_rowid = 0, build_phase = 'copying',
+                                  build_partition_key = '', build_partition_after_key = '',
+                                  build_partition_cursor_occurred_at = -9223372036854775808,
+                                  build_partition_cursor_row_sort_id = '',
+                                  build_partition_events_json = '[]', build_next_position = 1
                             WHERE singleton = 1"#,
                     )
                     .bind(build_generation)
                     .bind(revision)
                     .bind(recent)
                     .bind(history)
+                    .bind(source_rowid_upper_bound)
                     .execute(&mut **tx)
                     .await?;
                     Ok(AdminAlertsCanonicalSnapshot {
@@ -222,32 +240,24 @@ impl KeyStore {
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
         let query_result = sqlx::query(
-            r#"WITH snapshot_events AS (
-                    SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json
-                      FROM observability.dashboard_alert_projection_events
-                     WHERE projection_revision <= ?
-                    UNION ALL
-                    SELECT override.source_kind, override.source_id, override.occurred_at,
-                           override.row_sort_id, override.payload_json
-                      FROM observability.admin_alert_canonical_group_overrides AS override
-                      JOIN observability.dashboard_alert_projection_events AS current
-                        ON current.source_kind = override.source_kind
-                       AND current.source_id = override.source_id
-                     WHERE override.build_generation = ?
-                       AND current.projection_revision > ?
-                )
-                SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json
-                  FROM snapshot_events
-                 WHERE occurred_at > ? OR (occurred_at = ? AND row_sort_id > ?)
-                 ORDER BY occurred_at ASC, row_sort_id ASC
+            r#"SELECT current.rowid AS source_rowid,
+                       COALESCE(override.source_kind, current.source_kind) AS source_kind,
+                       COALESCE(override.source_id, current.source_id) AS source_id,
+                       COALESCE(override.occurred_at, current.occurred_at) AS occurred_at,
+                       COALESCE(override.row_sort_id, current.row_sort_id) AS row_sort_id,
+                       COALESCE(override.payload_json, current.payload_json) AS payload_json
+                  FROM observability.dashboard_alert_projection_events AS current
+                  LEFT JOIN observability.admin_alert_canonical_group_overrides AS override
+                    ON override.build_generation = ?
+                   AND override.source_kind = current.source_kind
+                   AND override.source_id = current.source_id
+                 WHERE current.rowid > ? AND current.rowid <= ?
+                 ORDER BY current.rowid ASC
                  LIMIT ?"#,
         )
-        .bind(snapshot.projection_revision)
         .bind(snapshot.build_generation)
-        .bind(snapshot.projection_revision)
-        .bind(state.build_cursor.0)
-        .bind(state.build_cursor.0)
-        .bind(&state.build_cursor.1)
+        .bind(state.build_cursor_source_rowid)
+        .bind(state.build_source_rowid_upper_bound)
         .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
         .fetch_all(&mut *session)
         .await;
@@ -255,13 +265,11 @@ impl KeyStore {
         let finish = session.finish().await;
         finish?;
         let rows = rows?;
-        let next_cursor = rows
+        let next_cursor_source_rowid = rows
             .last()
-            .map(|row| {
-                Ok::<_, sqlx::Error>((row.try_get("occurred_at")?, row.try_get("row_sort_id")?))
-            })
+            .map(|row| row.try_get::<i64, _>("source_rowid"))
             .transpose()?
-            .unwrap_or(state.build_cursor);
+            .unwrap_or(state.build_cursor_source_rowid);
         let row_count = rows.len();
         let staged = rows
             .into_iter()
@@ -317,13 +325,12 @@ impl KeyStore {
                 Box::pin(async move {
                     let changed = sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
-                              SET build_cursor_occurred_at = ?, build_cursor_row_sort_id = ?,
+                              SET build_cursor_source_rowid = ?,
                                   build_phase = CASE WHEN ? THEN 'aggregating' ELSE 'copying' END
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?"#,
                     )
-                    .bind(next_cursor.0)
-                    .bind(next_cursor.1)
+                    .bind(next_cursor_source_rowid)
                     .bind(complete)
                     .bind(snapshot.build_generation)
                     .bind(snapshot.projection_revision)
@@ -349,44 +356,66 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
+        if state.build_partition_key.is_empty() {
+            return self
+                .select_admin_alert_canonical_groups_partition(snapshot, state)
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
-        let partition_result = sqlx::query_scalar::<_, String>(
-            "SELECT partition_key FROM observability.admin_alert_canonical_group_events \
-             WHERE build_generation = ? AND partition_key > '' AND partition_key > ? \
-             ORDER BY partition_key ASC LIMIT 1",
-        )
-        .bind(snapshot.build_generation)
-        .bind(&state.build_partition_key)
-        .fetch_optional(&mut *session)
-        .await;
-        let partition = session.query(partition_result).await?;
-        let Some(partition) = partition else {
-            let finish = session.finish().await;
-            finish?;
-            return self.publish_admin_alert_canonical_groups_snapshot(snapshot, state.build_next_position - 1).await;
-        };
         let rows_result = sqlx::query(
             "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
              FROM observability.admin_alert_canonical_group_events \
              WHERE build_generation = ? AND partition_key = ? \
-             ORDER BY occurred_at DESC, row_sort_id DESC",
+               AND (occurred_at > ? OR (occurred_at = ? AND row_sort_id > ?)) \
+             ORDER BY occurred_at ASC, row_sort_id ASC LIMIT ?",
         )
         .bind(snapshot.build_generation)
-        .bind(&partition)
+        .bind(&state.build_partition_key)
+        .bind(state.build_partition_cursor.0)
+        .bind(state.build_partition_cursor.0)
+        .bind(&state.build_partition_cursor.1)
+        .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
         .fetch_all(&mut *session)
         .await;
         let rows = session.query(rows_result).await;
         let finish = session.finish().await;
         finish?;
-        let events = rows?
+        let rows = rows?;
+        let next_cursor = rows
+            .last()
+            .map(|row| {
+                Ok::<_, sqlx::Error>((row.try_get("occurred_at")?, row.try_get("row_sort_id")?))
+            })
+            .transpose()?
+            .unwrap_or_else(|| state.build_partition_cursor.clone());
+        let complete = rows.len() < ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
+        let mut events = serde_json::from_str::<Vec<AlertEventRecord>>(
+            &state.build_partition_events_json,
+        )
+        .map_err(|_| ProxyError::Other("invalid canonical Groups partition state".to_string()))?;
+        events.extend(
+            rows
             .into_iter()
             .map(Self::decode_default_alert_event_projection_row)
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .filter_map(Self::build_alert_event_from_projection)
-            .collect();
+            .filter_map(Self::build_alert_event_from_projection),
+        );
+        if !complete {
+            let events_json = serde_json::to_string(&events).map_err(|error| {
+                ProxyError::Other(format!("serialize canonical Groups partition state: {error}"))
+            })?;
+            return self
+                .accept_admin_alert_canonical_groups_partition_slice(
+                    snapshot,
+                    &state,
+                    next_cursor,
+                    events_json,
+                )
+                .await;
+        }
         let groups = build_group_records_from_events(events).top_level_items;
         let staged = groups
             .into_iter()
@@ -433,12 +462,16 @@ impl KeyStore {
                 .await?;
         }
         let next_position = state.build_next_position + staged.len() as i64;
+        let partition = state.build_partition_key.clone();
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
                     let changed = sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
-                              SET build_partition_key = ?, build_next_position = ?
+                              SET build_partition_key = '', build_partition_after_key = ?,
+                                  build_partition_cursor_occurred_at = -9223372036854775808,
+                                  build_partition_cursor_row_sort_id = '',
+                                  build_partition_events_json = '[]', build_next_position = ?
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ? AND build_phase = 'aggregating'"#,
                     )
@@ -446,6 +479,107 @@ impl KeyStore {
                     .bind(next_position)
                     .bind(snapshot.build_generation)
                     .bind(snapshot.projection_revision)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(changed.rows_affected() == 1)
+                })
+            })
+            .await?
+            .then_some(())
+            .ok_or_else(|| ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_build_replaced".to_string(),
+            })?;
+        self.record_admin_alerts_warm_slice();
+        self.sqlite_runtime
+            .record_admin_alerts_canonical_group_build_slice();
+        Ok(())
+    }
+
+    async fn select_admin_alert_canonical_groups_partition(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        state: AdminAlertCanonicalGroupsState,
+    ) -> Result<(), ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let result = sqlx::query_scalar::<_, String>(
+            "SELECT partition_key FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = ? AND partition_key > '' AND partition_key > ? \
+             ORDER BY partition_key ASC LIMIT 1",
+        )
+        .bind(snapshot.build_generation)
+        .bind(&state.build_partition_after_key)
+        .fetch_optional(&mut *session)
+        .await;
+        let partition = session.query(result).await?;
+        let finish = session.finish().await;
+        finish?;
+        let Some(partition) = partition else {
+            return self
+                .publish_admin_alert_canonical_groups_snapshot(snapshot, state.build_next_position - 1)
+                .await;
+        };
+        self.sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        r#"UPDATE observability.admin_alert_canonical_groups_state
+                              SET build_partition_key = ?,
+                                  build_partition_cursor_occurred_at = -9223372036854775808,
+                                  build_partition_cursor_row_sort_id = '',
+                                  build_partition_events_json = '[]'
+                            WHERE singleton = 1 AND build_generation = ?
+                              AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_partition_key = ''"#,
+                    )
+                    .bind(partition)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(changed.rows_affected() == 1)
+                })
+            })
+            .await?
+            .then_some(())
+            .ok_or_else(|| ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_build_replaced".to_string(),
+            })?;
+        self.record_admin_alerts_warm_slice();
+        self.sqlite_runtime
+            .record_admin_alerts_canonical_group_build_slice();
+        Ok(())
+    }
+
+    async fn accept_admin_alert_canonical_groups_partition_slice(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        state: &AdminAlertCanonicalGroupsState,
+        next_cursor: (i64, String),
+        events_json: String,
+    ) -> Result<(), ProxyError> {
+        let partition = state.build_partition_key.clone();
+        self.sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        r#"UPDATE observability.admin_alert_canonical_groups_state
+                              SET build_partition_cursor_occurred_at = ?,
+                                  build_partition_cursor_row_sort_id = ?,
+                                  build_partition_events_json = ?
+                            WHERE singleton = 1 AND build_generation = ?
+                              AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_partition_key = ?"#,
+                    )
+                    .bind(next_cursor.0)
+                    .bind(next_cursor.1)
+                    .bind(events_json)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(partition)
                     .execute(&mut **tx)
                     .await?;
                     Ok::<_, ProxyError>(changed.rows_affected() == 1)
@@ -477,8 +611,13 @@ impl KeyStore {
                               SET active_generation = ?, active_row_count = ?,
                                   active_projection_revision = ?, source_recent_generation = ?,
                                   source_history_generation = ?, build_generation = 0,
-                                  build_projection_revision = -1, build_phase = 'idle',
-                                  build_partition_key = '', build_next_position = 1
+                                  build_projection_revision = -1,
+                                  build_source_rowid_upper_bound = 0,
+                                  build_cursor_source_rowid = 0, build_phase = 'idle',
+                                  build_partition_key = '', build_partition_after_key = '',
+                                  build_partition_cursor_occurred_at = -9223372036854775808,
+                                  build_partition_cursor_row_sort_id = '',
+                                  build_partition_events_json = '[]', build_next_position = 1
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?"#,
                     )
@@ -572,12 +711,13 @@ impl KeyStore {
                             r#"DELETE FROM observability.admin_alert_canonical_groups
                                  WHERE rowid IN (
                                      SELECT rowid
-                                       FROM observability.admin_alert_canonical_groups
-                                      WHERE build_generation > 2
+                                      FROM observability.admin_alert_canonical_groups
+                                      WHERE build_generation > 2 AND build_generation <> ?
                                       ORDER BY build_generation ASC, position ASC
                                       LIMIT 25
                                  )"#,
                         )
+                        .bind(build_generation)
                         .execute(&mut **tx)
                         .await?
                         .rows_affected();
@@ -587,13 +727,14 @@ impl KeyStore {
                                 r#"DELETE FROM observability.admin_alert_canonical_groups
                                      WHERE rowid IN (
                                          SELECT rowid
-                                           FROM observability.admin_alert_canonical_groups
-                                          WHERE build_generation = ?
+                                          FROM observability.admin_alert_canonical_groups
+                                          WHERE build_generation = ? AND build_generation <> ?
                                           ORDER BY position ASC
                                           LIMIT 25
                                      )"#,
                             )
                             .bind(inactive_generation)
+                            .bind(build_generation)
                             .execute(&mut **tx)
                             .await?
                             .rows_affected();
@@ -603,12 +744,14 @@ impl KeyStore {
                                          WHERE rowid IN (
                                              SELECT rowid
                                                FROM observability.admin_alert_canonical_groups
-                                              WHERE build_generation = ? AND position > ?
+                                              WHERE build_generation = ? AND build_generation <> ?
+                                                AND position > ?
                                               ORDER BY position ASC
                                               LIMIT 25
                                          )"#,
                                 )
                                 .bind(active_generation)
+                                .bind(build_generation)
                                 .bind(active_row_count)
                                 .execute(&mut **tx)
                                 .await?;
@@ -617,22 +760,25 @@ impl KeyStore {
                         let inactive_generation = if active_generation == 1 { 2 } else { 1 };
                         let legacy_remaining = sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
-                             WHERE build_generation > 2)",
+                             WHERE build_generation > 2 AND build_generation <> ?)",
                         )
+                        .bind(build_generation)
                         .fetch_one(&mut **tx)
                         .await?;
                         let inactive_remaining = sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
-                             WHERE build_generation = ?)",
+                             WHERE build_generation = ? AND build_generation <> ?)",
                         )
                         .bind(inactive_generation)
+                        .bind(build_generation)
                         .fetch_one(&mut **tx)
                         .await?;
                         let active_tail_remaining = sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
-                             WHERE build_generation = ? AND position > ?)",
+                             WHERE build_generation = ? AND build_generation <> ? AND position > ?)",
                         )
                         .bind(active_generation)
+                        .bind(build_generation)
                         .bind(active_row_count)
                         .fetch_one(&mut **tx)
                         .await?;
@@ -647,13 +793,14 @@ impl KeyStore {
                             r#"DELETE FROM observability.admin_alert_canonical_groups
                                  WHERE rowid IN (
                                      SELECT rowid
-                                       FROM observability.admin_alert_canonical_groups
-                                      WHERE build_generation < ?
+                                      FROM observability.admin_alert_canonical_groups
+                                      WHERE build_generation < ? AND build_generation <> ?
                                       ORDER BY build_generation ASC, position ASC
                                       LIMIT 25
                                  )"#,
                         )
                         .bind(active_generation)
+                        .bind(build_generation)
                         .execute(&mut **tx)
                         .await?
                         .rows_affected();
@@ -663,27 +810,30 @@ impl KeyStore {
                                      WHERE rowid IN (
                                          SELECT rowid
                                            FROM observability.admin_alert_canonical_groups
-                                          WHERE build_generation > ?
+                                          WHERE build_generation > ? AND build_generation <> ?
                                           ORDER BY build_generation ASC, position ASC
                                           LIMIT 25
                                      )"#,
                             )
                             .bind(active_generation)
+                            .bind(build_generation)
                             .execute(&mut **tx)
                             .await?;
                         }
                         let retired_before_remaining = sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
-                             WHERE build_generation < ?)",
+                             WHERE build_generation < ? AND build_generation <> ?)",
                         )
                         .bind(active_generation)
+                        .bind(build_generation)
                         .fetch_one(&mut **tx)
                         .await?;
                         let retired_after_remaining = sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups \
-                             WHERE build_generation > ?)",
+                             WHERE build_generation > ? AND build_generation <> ?)",
                         )
                         .bind(active_generation)
+                        .bind(build_generation)
                         .fetch_one(&mut **tx)
                         .await?;
                         Ok::<_, ProxyError>(

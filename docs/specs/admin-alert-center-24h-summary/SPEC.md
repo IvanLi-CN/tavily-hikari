@@ -44,11 +44,13 @@
   查询才保留 JSON CTE 语义。若该直接页在生产形状快照上仍超过 `250ms`，必须先提交
   `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高读预算或恢复 raw fallback。
   默认 Groups `1/20` 使用本机 observability 的 canonical-groups read model，而不在 warm
-  路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision 和 source
-  fence，以 keyset slices 暂存该 revision 的事件、复用既有 Rust grouping 语义，并在全部 slice
-  成功后切换 active generation。投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot
-  值；因此已完成的 snapshot 可作为 stale last-good 原子发布，而不是因最终 fence 改变而无限丢弃。
-  staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台回收，绝不参与 HTTP。
+  路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence
+  与固定 source-row membership boundary，以 rowid/keyset slices 暂存该 snapshot 的事件、复用既有
+  Rust grouping 语义，并在全部 slice 成功后切换 active generation。投影在 build 期间推进时，会在同一
+  短事务保存受影响行的 pre-snapshot 值；分区聚合以持久化 event cursor/state 续跑，任何单条 SQLite
+  statement 都不得 materialize 完整无界 partition。因此已完成的 snapshot 可作为 stale last-good
+  原子发布，而不是因最终 fence 改变而无限丢弃。staged rows、旧 event/override/group generation 仅以
+  不阻塞发布的小批次后台回收，且永远排除 active 与 in-flight build generation，绝不参与 HTTP。
   该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
   Canonical HTTP 的 fresh、stale 与 cold payload 响应不计入 synthetic SQLite 前台活动；已配置
   passkey 的 session lookup 与实际进入 bounded database fallback 的 noncanonical 读取仍计量；

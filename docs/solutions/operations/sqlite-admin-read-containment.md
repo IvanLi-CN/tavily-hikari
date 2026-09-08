@@ -91,12 +91,14 @@ reads:
   separate query-plan-driven projection/index change; increasing the deadline or restoring a raw fallback
   is not an admissible containment.
 - When default Groups aggregation cannot meet that budget from the generic projection CTE, build a
-  local observability read model from complete-history events in source-fenced keyset slices. Capture a
-  projection revision before the first slice; projection writers retain the pre-update event once for
-  that build, so every slice reads the same immutable snapshot despite later writes. Reuse the existing
-  Rust grouping algorithm, publish only a complete staged generation, and reclaim obsolete event,
-  override, and group generations in small write batches without gating publication. Do not use the
-  model for filtered queries or replicate it through HA.
+  local observability read model from complete-history events in source-fenced bounded membership
+  slices. Capture a projection revision and source-row upper bound before the first slice; projection
+  writers retain the pre-update event once for that build, so later writes cannot extend its immutable
+  source set. Persist each accepted per-partition cursor and accumulator between bounded reads instead
+  of fetching an entire logical partition. Publish only a complete staged generation, and reclaim
+  obsolete event, override, and group generations in small write batches while excluding the active
+  and in-flight build generations. Do not use the model for filtered queries or replicate it through
+  HA.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

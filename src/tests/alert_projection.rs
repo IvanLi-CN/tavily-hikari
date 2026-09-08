@@ -670,6 +670,345 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_reclaimer_preserves_inflight_build_generation() {
+    let db_path = temp_db_path("alert-canonical-groups-inflight-reclaim");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_500;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-inflight-reclaim".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-inflight-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let active = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(active.total, 1);
+    let active_generation: i64 = sqlx::query_scalar(
+        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read published Groups generation");
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state \
+         SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the source fence for a replacement build");
+
+    for _ in 0..3 {
+        let result = proxy
+            .key_store
+            .fetch_admin_alert_groups_page_for_operation(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                1,
+                20,
+                SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(ProxyError::Deferred { reason, .. }) if reason == "groups_build_in_progress"
+            ),
+            "each incomplete slice must keep the replacement build staged"
+        );
+    }
+    let build_generation: i64 = sqlx::query_scalar(
+        "SELECT build_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read in-flight Groups generation");
+    assert!(build_generation > active_generation);
+    let staged_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+         WHERE build_generation = ?",
+    )
+    .bind(build_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count staged Groups rows");
+    assert!(
+        staged_rows > 0,
+        "the replacement must have staged a group row"
+    );
+
+    proxy
+        .key_store
+        .reclaim_admin_alert_canonical_groups_generations()
+        .await
+        .expect("reclaim retired Groups generations while a build is in flight");
+    let retained_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+         WHERE build_generation = ?",
+    )
+    .bind(build_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count retained in-flight Groups rows");
+    assert_eq!(retained_rows, staged_rows);
+
+    let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(rebuilt, active, "reclaim cannot publish a partial build");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admin_alerts_canonical_groups_aggregate_partition_resumes_in_bounded_slices() {
+    let db_path = temp_db_path("alert-canonical-groups-partition-slices");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_750;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-partition-slices".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-partition-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let payload_json: String = sqlx::query_scalar(
+        "SELECT payload_json FROM observability.dashboard_alert_projection_events LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read a valid projected event payload");
+    let source_fence = proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read source fence");
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET active_generation = 1, active_row_count = 0,
+                  build_generation = 2, build_projection_revision = 1,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_phase = 'aggregating', build_partition_key = 'partition',
+                  build_partition_after_key = '',
+                  build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '',
+                  build_partition_events_json = '[]', build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(source_fence.0)
+    .bind(source_fence.1)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a resumable aggregate build");
+    for index in 0..501_i64 {
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_events
+                   (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                    partition_key, payload_json)
+               VALUES (2, 'auth_token_log', ?, ?, ?, 'partition', ?)"#,
+        )
+        .bind(format!("partition-source-{index}"))
+        .bind(now + index)
+        .bind(format!("partition:{index:020}"))
+        .bind(&payload_json)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed an aggregate partition event");
+    }
+
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the first aggregate slice must not read the whole partition");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let after_first: (i64, String, i64) = sqlx::query_as(
+        "SELECT build_partition_cursor_occurred_at, build_partition_events_json, \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups WHERE build_generation = 2) \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the first aggregate checkpoint");
+    assert_eq!(after_first.0, now + 249);
+    assert_eq!(
+        serde_json::from_str::<Vec<AlertEventRecord>>(&after_first.1)
+            .expect("decode bounded aggregate checkpoint")
+            .len(),
+        250
+    );
+    assert_eq!(after_first.2, 0);
+
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(
+        groups.total, 1,
+        "the final slice must preserve complete Groups semantics"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
+    let db_path = temp_db_path("alert-canonical-groups-fixed-membership");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_900;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-fixed-membership".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-membership-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let payload_json: String = sqlx::query_scalar(
+        "SELECT payload_json FROM observability.dashboard_alert_projection_events LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read a valid projected event payload");
+    for index in 0..300_i64 {
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                   (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
+                    projection_revision)
+               VALUES ('auth_token_log', ?, ?, ?, ?, ?, 1)"#,
+        )
+        .bind(format!("membership-before-{index}"))
+        .bind(now + index)
+        .bind(format!("membership-before:{index:020}"))
+        .bind(&payload_json)
+        .bind(now)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed a source member before snapshot capture");
+    }
+
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the first source page must leave a multi-page build in progress");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let source_rowid_upper_bound: i64 = sqlx::query_scalar(
+        "SELECT build_source_rowid_upper_bound \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read captured source membership bound");
+    for index in 0..1_000_i64 {
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                   (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
+                    projection_revision)
+               VALUES ('auth_token_log', ?, ?, ?, ?, ?, 2)"#,
+        )
+        .bind(format!("membership-after-{index}"))
+        .bind(now + 10_000 + index)
+        .bind(format!("membership-after:{index:020}"))
+        .bind(&payload_json)
+        .bind(now)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed a post-snapshot source row");
+    }
+    let latest_rowid: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(rowid), 0) FROM observability.dashboard_alert_projection_events",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read post-snapshot source tail");
+    assert!(latest_rowid > source_rowid_upper_bound);
+    let copy_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"EXPLAIN QUERY PLAN
+           SELECT current.rowid
+             FROM observability.dashboard_alert_projection_events AS current
+            WHERE current.rowid > 0 AND current.rowid <= ?
+            ORDER BY current.rowid ASC LIMIT 250"#,
+    )
+    .bind(source_rowid_upper_bound)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("explain fixed-membership source copy")
+    .into_iter()
+    .map(|(_, _, _, detail)| detail)
+    .collect::<Vec<_>>()
+    .join("\n");
+    assert!(
+        copy_plan.contains("USING INTEGER PRIMARY KEY"),
+        "fixed-membership copy must seek its bounded rowid range: {copy_plan}"
+    );
+    assert!(
+        !copy_plan.contains("USE TEMP B-TREE"),
+        "fixed-membership copy must not sort a post-snapshot tail: {copy_plan}"
+    );
+
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(groups.total, 1);
+    let active_generation: i64 = sqlx::query_scalar(
+        "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read published Groups generation");
+    let staged_event_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events \
+         WHERE build_generation = ?",
+    )
+    .bind(active_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count immutable snapshot members");
+    assert_eq!(
+        staged_event_count, 301,
+        "rows inserted after the captured membership bound cannot extend the build"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_waiting_for_reclaim() {
     let db_path = temp_db_path("alert-canonical-groups-replacement-backlog");
     let db_string = db_path.to_string_lossy().to_string();

@@ -60,13 +60,15 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   deadline requires query-plan evidence and a separate projection/index task, never a larger read
   budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
-  atomically captures a complete projection revision and source fence, keyset-reads that immutable
-  snapshot in independently bounded slices, and applies the existing Rust grouping semantics. A
-  projection write that advances during a build retains the previous row once for that snapshot, so a
-  completed catalog/events/groups set can atomically publish as stale rather than being discarded at
-  the final fence check. Incomplete staging never reaches HTTP; obsolete event, override, and group
-  generations are reclaimed in small background write batches without gating publication. This derived
-  model never enters the HA outbox and does not change filtered Groups semantics.
+  atomically captures a complete projection revision, source fence, and fixed source-row membership
+  boundary. Source rows are copied by that bounded rowid range, so later projection writes cannot
+  extend a build's final scan. A projection write that advances during a build retains the previous row
+  once for that snapshot. Groups aggregation keeps an accepted per-partition event cursor and state,
+  processing at most one bounded read slice before it can resume. A completed catalog/events/groups
+  set can therefore atomically publish as stale rather than being discarded at the final fence check.
+  Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
+  generations. This derived model never enters the HA outbox and does not change filtered Groups
+  semantics.
 
 ## Reconciliation Terms
 

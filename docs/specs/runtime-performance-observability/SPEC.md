@@ -62,8 +62,9 @@
   `remote_attempt_budget` defers, resumed runs, and terminal completions. They expose counts only;
   token ids, key ids, SQL, and upstream response content remain private.
 - The same 60-second window separately aggregates canonical Events indexed reads, canonical Groups
-  snapshot/build slices, publishes, defers, and Key-observation identity reuses/misses. These counters
-  describe source-fence progress only; they never emit a Key, token, source identity, SQL, or payload.
+  fixed-membership copy/partition build slices, publishes, defers, and Key-observation identity
+  reuses/misses. These counters describe source-fence progress only; they never emit a Key, token,
+  source identity, SQL, or payload.
 - Dashboard read-model invalidation is a durable business-write signal, not only a request-statistics
   signal. A successful quota or other overview-visible write advances the shared dirty generation;
   the read model coalesces dirty rebuilds to at most once per ten seconds and uses a sixty-second

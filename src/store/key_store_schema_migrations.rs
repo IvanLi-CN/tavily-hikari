@@ -3027,7 +3027,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 33_i64,
+            migration_count = 34_i64,
         );
         Ok(())
     }

@@ -134,12 +134,15 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   bounded keyset slices. Any remaining >250ms source-read evidence must be presented as a query plan
   before a later projection/index change; this ADR does not authorize a larger deadline or raw fallback.
 - The canonical Groups page is served from a local observability read model. A build captures one
-  immutable projection revision, then uses independently admitted keyset read slices to stage events
-  and existing Rust grouping semantics. Projection writes preserve a pre-snapshot row once when they
-  advance during that build, so catalog, Events, and Groups can publish one complete snapshot even if
-  a newer revision has arrived. Such a payload is cache-stale, not mixed; the next warm pursues the
-  newer revision. Incomplete staging is never visible, and short background transactions reclaim
-  obsolete event, override, and group generations. This sidecar-derived model is not HA truth.
+  immutable projection revision and a fixed source-row membership boundary, then uses independently
+  admitted rowid/keyset read slices to stage events and existing Rust grouping semantics. Projection
+  writes preserve a pre-snapshot row once when they advance during that build, so catalog, Events,
+  and Groups can publish one complete snapshot even if a newer revision has arrived. Partition
+  aggregation stores its accepted cursor and partial state between bounded reads; it never fetches a
+  complete unbounded logical partition in one SQLite statement. Such a payload is cache-stale, not
+  mixed; the next warm pursues the newer revision. Incomplete staging is never visible, and short
+  background transactions reclaim only obsolete generations, never the active or in-flight build.
+  This sidecar-derived model is not HA truth.
 - Multi-Key reconciliation observations are reusable only when candidate-global, Key-set, and per-Key
   logical source identities all match. A single changed Key rereads only that Key; global or Key-set
   changes fence all observations. This refines a local read optimization only and leaves claim fences,

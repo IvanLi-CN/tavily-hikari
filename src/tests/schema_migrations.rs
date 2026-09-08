@@ -174,12 +174,23 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     let canonical_snapshot_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('admin_alert_canonical_groups_state') \
          WHERE name IN ('active_projection_revision', 'build_generation', \
-                        'build_projection_revision', 'build_cursor_occurred_at', 'build_phase')",
+                        'build_projection_revision', 'build_cursor_occurred_at', 'build_phase', \
+                        'build_source_rowid_upper_bound', 'build_cursor_source_rowid', \
+                        'build_partition_after_key', 'build_partition_cursor_occurred_at', \
+                        'build_partition_cursor_row_sort_id', 'build_partition_events_json')",
     )
     .fetch_one(&pool)
     .await
     .expect("read v34 canonical snapshot state columns");
-    assert_eq!(canonical_snapshot_columns, 5);
+    assert_eq!(canonical_snapshot_columns, 11);
+    let canonical_partition_scan_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'index' \
+         AND name = 'idx_admin_alert_canonical_group_events_partition_scan'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v34 canonical Groups partition scan index");
+    assert_eq!(canonical_partition_scan_index, 1);
     let projection_state: (i64, i64, i64) = sqlx::query_as(
         "SELECT batch_size, scanned_rows, completed FROM upstream_reconciliation_projection_state WHERE id = 'local'",
     )
@@ -282,11 +293,11 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
 }
 
 #[tokio::test]
-async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift() {
-    let db_path = temp_db_path("canonical-groups-slot-state-v33");
+async fn canonical_groups_snapshot_migration_invalidates_v33_active_generation() {
+    let db_path = temp_db_path("canonical-groups-snapshot-v34");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
-        vec!["tvly-canonical-groups-slot-state-v33".to_string()],
+        vec!["tvly-canonical-groups-snapshot-v34".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
     )
@@ -316,25 +327,18 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
             .expect("seed legacy canonical group row");
         }
     }
-    sqlx::query("DELETE FROM schema_migrations WHERE version = 33")
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 34")
         .execute(&proxy.key_store.pool)
         .await
-        .expect("simulate a v31/v32 ledger");
-    sqlx::query(
-        "ALTER TABLE observability.admin_alert_canonical_groups_state \
-         DROP COLUMN active_row_count",
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate the immutable v31 state schema");
+        .expect("simulate a v33 ledger without snapshot state");
 
     assert!(
         !proxy
             .key_store
             .prepare_versioned_schema()
             .await
-            .expect("upgrade the v31 canonical groups state"),
-        "an existing v31 database must not request full bootstrap"
+            .expect("upgrade the v33 canonical groups state"),
+        "an existing v33 database must not request full bootstrap"
     );
     let v31_checksum: String =
         sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 31")
@@ -345,20 +349,31 @@ async fn canonical_groups_slot_state_migration_upgrades_v31_without_ledger_drift
         v31_checksum,
         "sha256:15dc6c4d56ff4d14a71c1af66f086757a1bc0c97c42b1e69e970f0f03c1e4afe"
     );
-    let active_row_count: i64 = sqlx::query_scalar(
-        "SELECT active_row_count FROM observability.admin_alert_canonical_groups_state \
-         WHERE singleton = 1",
+    let upgraded_state: (i64, i64, i64) = sqlx::query_as(
+        "SELECT active_generation, active_row_count, active_projection_revision \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read v33 initialized row count");
-    assert_eq!(active_row_count, 26);
-    let v33_recorded: i64 =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 33)")
+    .expect("read invalidated v33 active generation");
+    assert_eq!(
+        upgraded_state,
+        (0, 0, -1),
+        "v34 must not pair a legacy Groups generation with empty snapshot Events"
+    );
+    let v34_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 34)")
             .fetch_one(&proxy.key_store.pool)
             .await
-            .expect("read v33 ledger record");
-    assert_eq!(v33_recorded, 1);
+            .expect("read v34 ledger record");
+    assert_eq!(v34_recorded, 1);
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 7, active_row_count = 26 WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("restore legacy rows as retired-generation reclaim input");
     for (name, query) in [
         (
             "legacy range",
