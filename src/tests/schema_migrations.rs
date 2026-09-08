@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -161,6 +161,25 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .await
     .expect("read v31 canonical group model index");
     assert_eq!(canonical_groups_index, 1);
+    let canonical_snapshot_objects: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.sqlite_master WHERE type = 'table' \
+         AND name IN ('admin_alert_canonical_group_events', \
+                      'admin_alert_canonical_group_overrides', \
+                      'dashboard_alert_projection_revision_state')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v34 canonical snapshot tables");
+    assert_eq!(canonical_snapshot_objects, 3);
+    let canonical_snapshot_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('admin_alert_canonical_groups_state') \
+         WHERE name IN ('active_projection_revision', 'build_generation', \
+                        'build_projection_revision', 'build_cursor_occurred_at', 'build_phase')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v34 canonical snapshot state columns");
+    assert_eq!(canonical_snapshot_columns, 5);
     let projection_state: (i64, i64, i64) = sqlx::query_as(
         "SELECT batch_size, scanned_rows, completed FROM upstream_reconciliation_projection_state WHERE id = 'local'",
     )

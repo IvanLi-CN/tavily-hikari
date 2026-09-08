@@ -53,18 +53,20 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
   These cache-only payload responses do not count as synthetic SQLite foreground activity. A configured
   passkey session lookup and a noncanonical bounded-read fallback are each real foreground work.
-  The default Events `1/20` warm slice reads count and page rows directly through the projection
-  time index and decodes materialized payloads in Rust; filtered/noncanonical reads keep their existing
-  JSON CTE semantics. A production-shaped statement that still exceeds the native deadline requires
-  query-plan evidence and a separate projection/index task, never a larger read budget or raw fallback.
+  The default Events `1/20` warm slice reads count and page rows through the immutable canonical
+  snapshot's time index and decodes materialized payloads in Rust; the snapshot itself is populated
+  from the projection through independently bounded keyset slices. Filtered/noncanonical reads keep
+  their existing JSON CTE semantics. A production-shaped statement that still exceeds the native
+  deadline requires query-plan evidence and a separate projection/index task, never a larger read
+  budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
-  keyset-reads complete projected history in independent bounded slices, applies the existing Rust
-  grouping semantics, and stages a new generation. It atomically switches only when the complete
-  source fence is unchanged; failed or changed fences leave last-good visible and obsolete rows are
-  uses two reusable staging slots. A source-fenced replacement writes the non-active slot, then atomically
-  switches its generation and row-count; obsolete tails are reclaimed in small background write batches
-  without gating publication. This derived model never enters the HA outbox and does not change filtered
-  Groups semantics.
+  atomically captures a complete projection revision and source fence, keyset-reads that immutable
+  snapshot in independently bounded slices, and applies the existing Rust grouping semantics. A
+  projection write that advances during a build retains the previous row once for that snapshot, so a
+  completed catalog/events/groups set can atomically publish as stale rather than being discarded at
+  the final fence check. Incomplete staging never reaches HTTP; obsolete event, override, and group
+  generations are reclaimed in small background write batches without gating publication. This derived
+  model never enters the HA outbox and does not change filtered Groups semantics.
 
 ## Reconciliation Terms
 

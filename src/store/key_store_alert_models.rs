@@ -21,10 +21,11 @@ impl AlertEventFilters<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum AlertReadSource {
     Raw,
     Projected,
+    CanonicalSnapshot(i64),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

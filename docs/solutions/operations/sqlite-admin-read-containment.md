@@ -74,8 +74,9 @@ reads:
   when one bounded read slot is available, foreground activity is at most `5 rps`, and recent
   contention is clear. It does not reserve two idle connections or grow a lazy pool before the
   check; a foreground checkout or waiter produces a typed defer. It stages the three values and
-  publishes them atomically at one projection generation; generation changes or partial failures
-  discard the staged set. Retry at `5s/5s/30s`.
+  publishes them atomically from one immutable projection snapshot. A newer projection revision
+  makes that complete cache entry stale rather than mixed; only an incomplete or failed snapshot is
+  discarded. Retry true defers at `5s/5s/30s`.
   Aged reconciliation scheduling exceptions never transfer to this controller: an Alerts warm
   slice cannot use them to grow the pool or take a foreground-reserved connection.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
@@ -83,19 +84,19 @@ reads:
   foreground SQLite activity, or client retries can indefinitely defer the background owner. A configured
   passkey session lookup and a noncanonical exact-key bounded-read fallback each record their real
   foreground SQLite work.
-- The default Events `1/20` warm slice reads `COUNT(*)` and the indexed page directly from
-  `dashboard_alert_projection_events` and decodes its materialized `payload_json` in Rust. Filtered
-  reads retain the JSON CTE contract. A statement that still misses the 250ms native deadline must be
-  handled by a separate query-plan-driven projection/index change; increasing the deadline or restoring
-  a raw fallback is not an admissible containment.
+- The default Events `1/20` warm slice reads `COUNT(*)` and the indexed page directly from the
+  immutable canonical snapshot and decodes its materialized `payload_json` in Rust. The snapshot is
+  populated from projection rows through independently bounded keyset slices. Filtered reads retain the
+  JSON CTE contract. A statement that still misses the 250ms native deadline must be handled by a
+  separate query-plan-driven projection/index change; increasing the deadline or restoring a raw fallback
+  is not an admissible containment.
 - When default Groups aggregation cannot meet that budget from the generic projection CTE, build a
-  local observability read model from complete-history events in source-fenced keyset slices. Reuse
-  the existing Rust grouping algorithm, stage one complete generation, and atomically switch only
-  after the source fence still matches. Keep old or failed generations invisible and reclaim them in
-  two reusable staging slots and publish the active row count with the source fence; this bounds retained
-  rows even under repeated source-fence changes. Trim only obsolete active-slot tails in small background
-  write batches without gating publication. Do not use the model for filtered queries or replicate it
-  through HA.
+  local observability read model from complete-history events in source-fenced keyset slices. Capture a
+  projection revision before the first slice; projection writers retain the pre-update event once for
+  that build, so every slice reads the same immutable snapshot despite later writes. Reuse the existing
+  Rust grouping algorithm, publish only a complete staged generation, and reclaim obsolete event,
+  override, and group generations in small write batches without gating publication. Do not use the
+  model for filtered queries or replicate it through HA.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

@@ -12,8 +12,13 @@ const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME: &str =
     "admin-alert-canonical-groups-slot-state-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM: &str =
     "sha256:cb1bb8cc4d9d50b1812430082bff5dfb4d49b18d9a669d7f10e91388c782cff5";
+const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION: i64 = 34;
+const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_NAME: &str =
+    "admin-alert-canonical-groups-snapshot-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_CHECKSUM: &str =
+    "sha256:7ab2c185f2a78ba6a61582f96c94317d7c240760ab77e8d0f8d8dbe3ddff08ce";
 
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 3] {
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 4] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -29,6 +34,11 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_CHECKSUM,
         ),
     ]
 }
@@ -55,6 +65,13 @@ impl KeyStore {
             self.apply_admin_alert_canonical_groups_slot_state_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_snapshot_migration()
+                .await?;
+        }
         Ok(())
     }
 
@@ -63,6 +80,8 @@ impl KeyStore {
         self.apply_reconciliation_key_observation_source_identity_migration()
             .await?;
         self.apply_admin_alert_canonical_groups_slot_state_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_snapshot_migration()
             .await
     }
 
@@ -130,6 +149,29 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 32".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION)
+            .await?
+            && (!self
+                .schema_object_exists("observability", "admin_alert_canonical_group_events")
+                .await?
+                || !self
+                    .schema_object_exists("observability", "admin_alert_canonical_group_overrides")
+                    .await?
+                || !self
+                    .schema_object_exists("observability", "dashboard_alert_projection_revision_state")
+                    .await?
+                || !self
+                    .table_column_exists("dashboard_alert_projection_events", "projection_revision")
+                    .await?
+                || !self
+                    .table_column_exists("admin_alert_canonical_groups_state", "build_generation")
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 34".to_string(),
             ));
         }
         Ok(())
@@ -213,6 +255,140 @@ impl KeyStore {
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_snapshot_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        if !self
+            .table_column_exists("dashboard_alert_projection_events", "projection_revision")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_alert_projection_events \
+                 ADD COLUMN projection_revision INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.dashboard_alert_projection_revision_state (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                revision INTEGER NOT NULL DEFAULT 0
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO observability.dashboard_alert_projection_revision_state(singleton) \
+             VALUES (1) ON CONFLICT(singleton) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        for (column, definition) in [
+            (
+                "active_projection_revision",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN active_projection_revision INTEGER NOT NULL DEFAULT -1",
+            ),
+            (
+                "build_generation",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_generation INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "build_projection_revision",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_projection_revision INTEGER NOT NULL DEFAULT -1",
+            ),
+            (
+                "build_source_recent_generation",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_source_recent_generation INTEGER NOT NULL DEFAULT -1",
+            ),
+            (
+                "build_source_history_generation",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_source_history_generation INTEGER NOT NULL DEFAULT -1",
+            ),
+            (
+                "build_cursor_occurred_at",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_cursor_occurred_at INTEGER NOT NULL DEFAULT -9223372036854775808",
+            ),
+            (
+                "build_cursor_row_sort_id",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_cursor_row_sort_id TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "build_phase",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_phase TEXT NOT NULL DEFAULT 'idle'",
+            ),
+            (
+                "build_partition_key",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_partition_key TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "build_next_position",
+                "ALTER TABLE observability.admin_alert_canonical_groups_state \
+                 ADD COLUMN build_next_position INTEGER NOT NULL DEFAULT 1",
+            ),
+        ] {
+            if !self
+                .table_column_exists("admin_alert_canonical_groups_state", column)
+                .await?
+            {
+                sqlx::query(definition).execute(&self.pool).await?;
+            }
+        }
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_events (
+                build_generation INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                row_sort_id TEXT NOT NULL,
+                partition_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(build_generation, source_kind, source_id)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_events_time \
+             ON admin_alert_canonical_group_events(build_generation, occurred_at, row_sort_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_events_partition \
+             ON admin_alert_canonical_group_events(build_generation, partition_key, occurred_at DESC, row_sort_id DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_overrides (
+                build_generation INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                row_sort_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(build_generation, source_kind, source_id)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_SNAPSHOT_CHECKSUM,
         )
         .await
     }

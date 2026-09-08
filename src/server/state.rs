@@ -449,7 +449,10 @@ fn publish_admin_alerts_canonical_into_cache(
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
 ) -> bool {
-    if cache.alert_projection_generation != generation {
+    // A canonical snapshot may complete while projection advances again. It
+    // is still a complete immutable last-good payload, merely stale until the
+    // next warm catches up. Reject only an impossible future generation.
+    if cache.alert_projection_generation < generation {
         return false;
     }
     for (key, value) in [
@@ -513,6 +516,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         }
     }
     tokio::spawn(async move {
+        let mut snapshot_cache_generation = None;
         loop {
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                 state.proxy.record_admin_alerts_warm_defer();
@@ -530,18 +534,22 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 tokio::time::sleep(delay).await;
                 continue;
             }
-            let generation = current_admin_alerts_generation(state.as_ref()).await;
+            let generation = match snapshot_cache_generation {
+                Some(generation) => generation,
+                None => current_admin_alerts_generation(state.as_ref()).await,
+            };
             let result = async {
-                let durable_projection_fence = state
-                    .proxy
-                    .admin_alerts_canonical_warm_projection_fence()
-                    .await?;
                 state.proxy.prepare_admin_alerts_canonical_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
+                let (groups, build_generation, _recent_generation, _history_generation) =
+                    admin_alerts_canonical_groups_for_warm(state.as_ref()).await?;
                 state.proxy.record_admin_alerts_warm_slice();
-                let catalog = state.proxy.admin_alert_catalog_for_cache_warm().await?;
+                let catalog = state
+                    .proxy
+                    .admin_alert_catalog_for_canonical_snapshot(build_generation)
+                    .await?;
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_catalog_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
@@ -550,29 +558,16 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 state.proxy.record_admin_alerts_warm_slice();
                 let events = state
                     .proxy
-                    .admin_alert_events_page_for_cache_warm(1, 20)
+                    .admin_alert_events_page_for_canonical_snapshot(build_generation, 1, 20)
                     .await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
                 state.proxy.record_admin_alerts_warm_slice();
-                let groups = admin_alerts_canonical_groups_for_warm(state.as_ref()).await?;
                 #[cfg(test)]
                 pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
-                }
-                if state
-                    .proxy
-                    .admin_alerts_canonical_warm_projection_fence()
-                    .await?
-                    != durable_projection_fence
-                {
-                    state.proxy.record_admin_alerts_warm_generation_discard();
-                    return Err(tavily_hikari::ProxyError::Deferred {
-                        operation: "admin_alerts_warm",
-                        reason: "projection_fence_changed".to_string(),
-                    });
                 }
                 if !publish_admin_alerts_canonical(
                     state.as_ref(),
@@ -607,6 +602,23 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     );
                     spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
                     break;
+                }
+                Err(tavily_hikari::ProxyError::Deferred { reason, .. })
+                    if reason == "groups_build_in_progress" =>
+                {
+                    // A Groups snapshot committed one bounded slice. This is
+                    // forward progress, not a failed warm attempt: immediately
+                    // start the next independently-admitted slice so a large
+                    // complete projection does not stretch into the retry
+                    // backoff schedule.
+                    snapshot_cache_generation.get_or_insert(generation);
+                    tokio::task::yield_now().await;
+                }
+                Err(tavily_hikari::ProxyError::Deferred { reason, .. })
+                    if reason == "groups_build_replaced" =>
+                {
+                    snapshot_cache_generation = None;
+                    tokio::task::yield_now().await;
                 }
                 Err(error)
                     if tavily_hikari::is_transient_sqlite_write_error(&error)
@@ -648,7 +660,15 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
 
 async fn admin_alerts_canonical_groups_for_warm(
     state: &AppState,
-) -> Result<PaginatedAlertGroups, tavily_hikari::ProxyError> {
+) -> Result<
+    (
+        PaginatedAlertGroups,
+        i64,
+        i64,
+        i64,
+    ),
+    tavily_hikari::ProxyError,
+> {
     let cache = dashboard_overview_cache_for_state(state);
     {
         let mut cache = cache.lock().await;
@@ -656,7 +676,7 @@ async fn admin_alerts_canonical_groups_for_warm(
             return Err(admin_alerts_warm_deferred("groups_reclaim_busy"));
         }
     }
-    let result = state.proxy.admin_alert_groups_page_for_cache_warm(1, 20).await;
+    let result = state.proxy.admin_alert_canonical_groups_page_for_warm().await;
     cache.lock().await.admin_alerts_groups_build_in_flight = false;
     result
 }
@@ -1216,25 +1236,25 @@ mod admin_alerts_prewarm_tests {
     }
 
     #[test]
-    fn canonical_publish_discards_all_staged_values_after_a_generation_change() {
+    fn canonical_publish_keeps_a_complete_older_snapshot_as_last_good() {
         let mut cache = DashboardOverviewCacheState {
             alert_projection_generation: 2,
             ..Default::default()
         };
 
+        assert!(publish_admin_alerts_canonical_into_cache(
+            &mut cache,
+            1,
+            123,
+            tokio::time::Instant::now(),
+            empty_catalog(),
+            empty_events(),
+            empty_groups(),
+        ));
         assert!(
-            !publish_admin_alerts_canonical_into_cache(
-                &mut cache,
-                1,
-                123,
-                tokio::time::Instant::now(),
-                empty_catalog(),
-                empty_events(),
-                empty_groups(),
-            ),
-            "a fenced generation cannot publish a mixed canonical cache"
+            cache.admin_alerts.entries.iter().all(|entry| entry.generation == 1),
+            "a complete immutable snapshot remains a coherent stale last-good value"
         );
-        assert!(cache.admin_alerts.entries.is_empty());
 
         assert!(publish_admin_alerts_canonical_into_cache(
             &mut cache,

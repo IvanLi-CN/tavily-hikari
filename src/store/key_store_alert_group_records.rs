@@ -46,7 +46,7 @@ impl KeyStore {
         }
 
         let mut query = QueryBuilder::new("");
-        Self::push_alert_events_for_source_cte(&mut query, filters, source);
+        Self::push_alert_events_for_source_cte(&mut query, filters, &source);
         query.push(" SELECT * FROM alerts WHERE row_sort_id IN (");
         {
             let mut separated = query.separated(", ");
@@ -57,7 +57,7 @@ impl KeyStore {
         query.push(")");
 
         let rows = self
-            .fetch_alert_query_rows_for_operation(query, source, operation)
+            .fetch_alert_query_rows_for_operation(query, &source, operation)
             .await?;
         let mut events_by_row_sort_id = HashMap::new();
         for row in rows {

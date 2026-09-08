@@ -87,6 +87,34 @@ async fn advance_alert_projection_until(proxy: &TavilyProxy, projected_events: i
     );
 }
 
+async fn warm_canonical_alert_groups_until_published(proxy: &TavilyProxy) -> PaginatedAlertGroups {
+    for _ in 0..64 {
+        match proxy
+            .key_store
+            .fetch_admin_alert_groups_page_for_operation(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                1,
+                20,
+                SqliteOperation::AdminAlertsCacheWarm,
+            )
+            .await
+        {
+            Ok(groups) => return groups,
+            Err(ProxyError::Deferred { reason, .. }) if reason == "groups_build_in_progress" => {
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("canonical Groups build failed: {error}"),
+        }
+    }
+    panic!("canonical Groups build did not publish within its bounded slices");
+}
+
 async fn advance_alert_projection_slice_until_admitted(
     proxy: &TavilyProxy,
 ) -> AlertProjectionSliceOutcome {
@@ -487,22 +515,7 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
         )
         .await
         .expect("read existing default Groups semantics");
-    let groups = proxy
-        .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
-        .await
-        .expect("build canonical groups model from complete projection");
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(groups.total, 1);
     assert_eq!(groups.items.len(), 1);
     assert_eq!(
@@ -534,22 +547,7 @@ async fn admin_alerts_canonical_groups_model_is_generation_fenced() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("advance source generation");
-    let rebuilt = proxy
-        .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
-        .await
-        .expect("rebuild canonical groups model after source generation change");
+    let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(rebuilt.total, 1);
     let rebuilt_state: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT active_generation, active_row_count, source_recent_generation, source_history_generation \
@@ -593,22 +591,7 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     insert_projected_rate_limit_alert(&proxy, "canonical-groups-reclaim-token", now).await;
     advance_alert_projection_until(&proxy, 1).await;
     advance_alert_projection_until_full_coverage(&proxy).await;
-    let active = proxy
-        .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
-        .await
-        .expect("publish an active canonical groups generation");
+    let active = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(active.total, 1);
     let (active_generation, active_row_count): (i64, i64) = sqlx::query_as(
         "SELECT active_generation, active_row_count FROM observability.admin_alert_canonical_groups_state \
@@ -641,22 +624,7 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     }
 
     for remaining_after_batch in [26_i64, 1_i64] {
-        let served = proxy
-            .key_store
-            .fetch_admin_alert_groups_page_for_operation(
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                &[],
-                1,
-                20,
-                SqliteOperation::AdminAlertsCacheWarm,
-            )
-            .await
-            .expect("retired rows must not block the active canonical model");
+        let served = warm_canonical_alert_groups_until_published(&proxy).await;
         assert_eq!(served, active);
         let has_more = proxy
             .key_store
@@ -682,22 +650,7 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
         .await
         .expect("reclaim final retired generation batch");
     assert!(!has_more);
-    let reclaimed = proxy
-        .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
-        .await
-        .expect("serve the active model after retired rows are drained");
+    let reclaimed = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(reclaimed, active);
     let retired_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
@@ -717,7 +670,7 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fence_changes() {
+async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_waiting_for_reclaim() {
     let db_path = temp_db_path("alert-canonical-groups-replacement-backlog");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_556_000;
@@ -735,22 +688,7 @@ async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fenc
     insert_projected_rate_limit_alert(&proxy, "canonical-groups-replacement-token", now).await;
     advance_alert_projection_until(&proxy, 1).await;
     advance_alert_projection_until_full_coverage(&proxy).await;
-    let active = proxy
-        .key_store
-        .fetch_admin_alert_groups_page_for_operation(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-            1,
-            20,
-            SqliteOperation::AdminAlertsCacheWarm,
-        )
-        .await
-        .expect("publish an active canonical groups generation");
+    let active = warm_canonical_alert_groups_until_published(&proxy).await;
     let active_generation: i64 = sqlx::query_scalar(
         "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
          WHERE singleton = 1",
@@ -761,8 +699,8 @@ async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fenc
 
     let staging_generation = if active_generation == 1 { 2 } else { 1 };
     // This is intentionally larger than one minute of the 25-row/5s background cleanup
-    // cadence. New source fences reuse this inactive slot; they must not allocate a third
-    // physical generation or wait long enough to exhaust the five-minute last-good cache.
+    // cadence. A snapshot build must publish without waiting for retired rows: its unique
+    // build generation prevents an old cleanup slice from overwriting staged output.
     for position in 1..=326_i64 {
         sqlx::query(
             r#"INSERT INTO observability.admin_alert_canonical_groups (
@@ -790,22 +728,7 @@ async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fenc
     .expect("advance the source fence");
 
     for source_change in 0..3 {
-        let rebuilt = proxy
-            .key_store
-            .fetch_admin_alert_groups_page_for_operation(
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                &[],
-                1,
-                20,
-                SqliteOperation::AdminAlertsCacheWarm,
-            )
-            .await
-            .expect("replacement must publish without serially draining the inactive slot");
+        let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
         assert_eq!(rebuilt, active);
         let (active_slot, active_row_count, retained_rows): (i64, i64, i64) = sqlx::query_as(
             "SELECT \
@@ -817,15 +740,16 @@ async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fenc
         )
         .fetch_one(&proxy.key_store.pool)
         .await
-        .expect("inspect the two-slot canonical model");
-        let expected_slot = if source_change % 2 == 0 {
-            staging_generation
-        } else {
-            active_generation
-        };
-        assert_eq!(active_slot, expected_slot);
+        .expect("inspect the fenced canonical model");
+        assert!(
+            active_slot > active_generation + source_change as i64,
+            "each replacement must own a new immutable build generation"
+        );
         assert_eq!(active_row_count, rebuilt.total);
-        assert_eq!(retained_rows, 327, "two reusable slots bound retained rows");
+        assert!(
+            retained_rows >= 327,
+            "retired rows remain available to bounded cleanup"
+        );
         if source_change < 2 {
             sqlx::query(
                 "UPDATE observability.dashboard_alert_projection_history_state \
@@ -841,7 +765,7 @@ async fn admin_alerts_canonical_groups_model_reuses_two_slots_across_source_fenc
         .key_store
         .reclaim_admin_alert_canonical_groups_generations()
         .await
-        .expect("reclaim the active slot's obsolete tail");
+        .expect("start reclaiming retired fenced generations");
     assert!(has_tail);
 
     drop(proxy);

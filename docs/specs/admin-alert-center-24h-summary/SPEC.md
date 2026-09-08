@@ -38,18 +38,18 @@
   每个 warm slice 在开始时重新检查前台速率与 SQLite contention；任何已 aged 的
   reconciliation 调度例外也不适用于该 warm controller。它不得因别的维护工作获得 RPS
   例外而预热、扩张或占用前台保留连接。
-  默认 Events `1/20` 的 canonical slice 直接从投影表的
-  `(occurred_at DESC, row_sort_id DESC)` 索引读取计数和页面，并在 Rust 解码已物化的
-  `payload_json`；只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状
-  快照上仍超过 `250ms`，必须先提交 `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高
-  读预算或恢复 raw fallback。
+  默认 Events `1/20` 的 canonical slice 从同代不可变 snapshot 的
+  `(build_generation, occurred_at DESC, row_sort_id DESC)` 索引读取计数和页面，并在 Rust 解码
+  已物化的 `payload_json`；snapshot 由投影行的有界 keyset slice 填充。只有带筛选的非 canonical
+  查询才保留 JSON CTE 语义。若该直接页在生产形状快照上仍超过 `250ms`，必须先提交
+  `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高读预算或恢复 raw fallback。
   默认 Groups `1/20` 使用本机 observability 的 canonical-groups read model，而不在 warm
-  路径运行完整历史 JSON CTE。builder 从 complete history projection 以 source-fenced keyset
-  slices 读取事件、复用既有 Rust grouping 语义，并将 staged groups 作为一代写入；只有全部 slice
-  成功且 source fence 未变化才原子切换 active generation。旧代和失败 staged rows 只能以不阻塞
-  active generation 发布的小批次后台回收，绝不参与 HTTP。两个可复用 staging slot 与 active row
-  count 将 source-fence 重试的保留行限制为固定两组，而不延后 replacement publish。该模型不进入 HA
-  outbox，筛选的非 canonical Groups 仍保留原有语义。
+  路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision 和 source
+  fence，以 keyset slices 暂存该 revision 的事件、复用既有 Rust grouping 语义，并在全部 slice
+  成功后切换 active generation。投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot
+  值；因此已完成的 snapshot 可作为 stale last-good 原子发布，而不是因最终 fence 改变而无限丢弃。
+  staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台回收，绝不参与 HTTP。
+  该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
   Canonical HTTP 的 fresh、stale 与 cold payload 响应不计入 synthetic SQLite 前台活动；已配置
   passkey 的 session lookup 与实际进入 bounded database fallback 的 noncanonical 读取仍计量；
   前者在开始获取 SQLite 连接之前计量，避免 cache-only 重试自行阻止 warm admission，同时不隐藏

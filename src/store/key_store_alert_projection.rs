@@ -666,19 +666,62 @@ impl KeyStore {
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
+            let (build_generation, build_projection_revision) = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT build_generation, build_projection_revision \
+                 FROM observability.admin_alert_canonical_groups_state \
+                 WHERE singleton = 1 AND build_generation > 0",
+            )
+            .fetch_optional(&mut **tx)
+            .await?
+            .unwrap_or_default();
+            let projection_revision = if rows.is_empty() {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT revision FROM observability.dashboard_alert_projection_revision_state \
+                     WHERE singleton = 1",
+                )
+                .fetch_one(&mut **tx)
+                .await?
+            } else {
+                sqlx::query_scalar::<_, i64>(
+                    "UPDATE observability.dashboard_alert_projection_revision_state \
+                     SET revision = revision + 1 WHERE singleton = 1 RETURNING revision",
+                )
+                .fetch_one(&mut **tx)
+                .await?
+            };
             for row in &rows {
                 let payload_json = serde_json::to_string(row).map_err(|err| {
                     ProxyError::Other(format!("serialize alert projection event: {err}"))
                 })?;
+                if build_generation > 0 {
+                    // A canonical Groups build owns a fixed projection revision. Preserve the
+                    // pre-update row once so its independently-budgeted read slices continue
+                    // to see that snapshot while projection writes advance normally.
+                    sqlx::query(
+                        r#"INSERT OR IGNORE INTO observability.admin_alert_canonical_group_overrides
+                               (build_generation, source_kind, source_id, occurred_at, row_sort_id, payload_json)
+                           SELECT ?, source_kind, source_id, occurred_at, row_sort_id, payload_json
+                             FROM observability.dashboard_alert_projection_events
+                            WHERE source_kind = ? AND source_id = ? AND projection_revision <= ?"#,
+                    )
+                    .bind(build_generation)
+                    .bind(&row.source_kind)
+                    .bind(&row.source_id)
+                    .bind(build_projection_revision)
+                    .execute(&mut **tx)
+                    .await?;
+                }
                 sqlx::query(
                     r#"INSERT INTO observability.dashboard_alert_projection_events
-                        (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                        (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
+                         projection_revision)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(source_kind, source_id) DO UPDATE SET
                          occurred_at = excluded.occurred_at,
                          row_sort_id = excluded.row_sort_id,
                          payload_json = excluded.payload_json,
-                         projected_at = excluded.projected_at"#,
+                         projected_at = excluded.projected_at,
+                         projection_revision = excluded.projection_revision"#,
                 )
                 .bind(&row.source_kind)
                 .bind(&row.source_id)
@@ -686,6 +729,7 @@ impl KeyStore {
                 .bind(&row.row_sort_id)
                 .bind(payload_json)
                 .bind(observed_at)
+                .bind(projection_revision)
                 .execute(&mut **tx)
                 .await?;
             }

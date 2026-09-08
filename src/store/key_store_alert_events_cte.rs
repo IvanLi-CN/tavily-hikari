@@ -494,6 +494,33 @@ impl KeyStore {
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
+        Self::push_projected_alert_events_cte_from_relation(
+            query,
+            filters,
+            "observability.dashboard_alert_projection_events",
+            None,
+        );
+    }
+
+    fn push_canonical_snapshot_alert_events_cte<'a>(
+        query: &mut QueryBuilder<'a, Sqlite>,
+        filters: AlertEventFilters<'a>,
+        build_generation: i64,
+    ) {
+        Self::push_projected_alert_events_cte_from_relation(
+            query,
+            filters,
+            "observability.admin_alert_canonical_group_events",
+            Some(build_generation),
+        );
+    }
+
+    fn push_projected_alert_events_cte_from_relation<'a>(
+        query: &mut QueryBuilder<'a, Sqlite>,
+        filters: AlertEventFilters<'a>,
+        relation: &str,
+        build_generation: Option<i64>,
+    ) {
         query.push(
             r#"WITH alerts AS (
                 SELECT source_kind,
@@ -529,9 +556,16 @@ impl KeyStore {
                        json_extract(payload_json, '$.job_queued_at') AS job_queued_at,
                        json_extract(payload_json, '$.job_started_at') AS job_started_at,
                        json_extract(payload_json, '$.job_finished_at') AS job_finished_at
-                  FROM observability.dashboard_alert_projection_events
+                  FROM "#,
+        );
+        query.push(relation);
+        query.push(
+            r#"
                  WHERE 1 = 1"#,
         );
+        if let Some(build_generation) = build_generation {
+            query.push(" AND build_generation = ").push_bind(build_generation);
+        }
         if let Some(alert_type) = filters.alert_type {
             query
                 .push(" AND json_extract(payload_json, '$.alert_type') = ")

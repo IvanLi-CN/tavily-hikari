@@ -2026,6 +2026,14 @@ impl KeyStore {
         &self,
         operation: SqliteOperation,
     ) -> Result<AdminAlertsReadSession, ProxyError> {
+        if operation == SqliteOperation::AdminAlertsCacheWarm
+            && let Some(reason) = self.admin_alerts_cache_warm_defer_reason()
+        {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: reason.to_string(),
+            });
+        }
         Ok(AdminAlertsReadSession {
             snapshot: Some(self.sqlite_runtime.begin_read_snapshot(operation).await?),
             operation,

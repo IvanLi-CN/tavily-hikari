@@ -8,10 +8,11 @@ async fn wait_for_server_pressure_totals(
     expected_success: i64,
     expected_failure: i64,
 ) {
-    // A healthy flush starts after the one-second debounce. Each of the first
-    // two bounded SQLite defers waits five seconds before retrying; leave a
-    // small scheduler margin for that supported recovery path.
-    let result = tokio::time::timeout(Duration::from_secs(13), async {
+    // A healthy flush starts after the one-second debounce. The first two
+    // bounded SQLite defers wait five seconds, then a third defer uses the
+    // supported 30-second backoff. Leave scheduler margin for that complete
+    // recovery path rather than mistaking capacity protection for data loss.
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
         loop {
             let (success_count, failure_count): (i64, i64) = sqlx::query_as(
                 r#"
@@ -1092,6 +1093,12 @@ async fn observability_deferred_writer_requeues_pressure_deltas_after_writer_con
     )
     .await
     .expect("create proxy");
+    // Isolate this writer-lock recovery test from the unrelated request-stats
+    // worker, which can otherwise consume a foreground-reserved pool slot.
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop unrelated request-stats worker");
     let now = manual_clock.now_ts();
     let lock_handle =
         // The writer intentionally debounces one second before its first

@@ -2,57 +2,7 @@ use super::*;
 use super::core_support_and_parsing::*;
 use super::linuxdo_oauth_and_admin_keys::*;
 use super::upstream_support_and_manual_jobs::*;
-use std::sync::{Arc, Mutex};
 use tavily_hikari::SqliteAdmissionOutcome;
-use tracing::{Event, Subscriber, field};
-use tracing_subscriber::{layer::{Context, Layer, SubscriberExt}, registry::LookupSpan};
-
-#[derive(Clone)]
-struct AlertPerfEventLayer {
-    events: Arc<Mutex<Vec<(String, String)>>>,
-}
-
-impl<S> Layer<S> for AlertPerfEventLayer
-where
-    S: Subscriber + for<'span> LookupSpan<'span>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let mut visitor = AlertPerfEventVisitor::default();
-        event.record(&mut visitor);
-        if let (Some(event_name), Some(phase)) = (visitor.event, visitor.phase) {
-            self.events
-                .lock()
-                .expect("alert perf event lock")
-                .push((event_name, phase));
-        }
-    }
-}
-
-#[derive(Default)]
-struct AlertPerfEventVisitor {
-    event: Option<String>,
-    phase: Option<String>,
-}
-
-impl field::Visit for AlertPerfEventVisitor {
-    fn record_debug(&mut self, field: &field::Field, value: &dyn std::fmt::Debug) {
-        self.record(field, format!("{value:?}").trim_matches('"').to_string());
-    }
-
-    fn record_str(&mut self, field: &field::Field, value: &str) {
-        self.record(field, value.to_string());
-    }
-}
-
-impl AlertPerfEventVisitor {
-    fn record(&mut self, field: &field::Field, value: String) {
-        match field.name() {
-            "event" => self.event = Some(value),
-            "phase" => self.phase = Some(value),
-            _ => {}
-        }
-    }
-}
 
 #[tokio::test]
 async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
@@ -804,15 +754,25 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
                (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
            VALUES ('auth_token_log', 'alert-source-1', 1700000000, 'alert-sort-1', ?, 1700000000)"#,
     )
-    .bind(payload)
+    .bind(&payload)
     .execute(&pool)
     .await
     .expect("seed projected alert event");
+    sqlx::query(
+        r#"INSERT INTO observability.admin_alert_canonical_group_events
+               (build_generation, source_kind, source_id, occurred_at, row_sort_id, partition_key, payload_json)
+           VALUES (17, 'auth_token_log', 'alert-source-1', 1700000000, 'alert-sort-1', 'key:key-1', ?)"#,
+    )
+    .bind(payload)
+    .execute(&pool)
+    .await
+    .expect("seed immutable canonical alert snapshot");
 
     let plan_rows = sqlx::query(
         r#"EXPLAIN QUERY PLAN
              SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json
-               FROM observability.dashboard_alert_projection_events
+               FROM observability.admin_alert_canonical_group_events
+              WHERE build_generation = 17
               ORDER BY occurred_at DESC, row_sort_id DESC
               LIMIT 20 OFFSET 0"#,
     )
@@ -825,14 +785,15 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        plan.contains("idx_dashboard_alert_projection_events_time"),
-        "canonical Events page must use its time index: {plan}"
+        plan.contains("idx_admin_alert_canonical_group_events_time"),
+        "canonical Events page must use its immutable snapshot time index: {plan}"
     );
 
     let count_plan_rows = sqlx::query(
         r#"EXPLAIN QUERY PLAN
              SELECT COUNT(*)
-               FROM observability.dashboard_alert_projection_events"#,
+               FROM observability.admin_alert_canonical_group_events
+              WHERE build_generation = 17"#,
     )
     .fetch_all(&pool)
     .await
@@ -843,31 +804,18 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        count_plan.contains("idx_dashboard_alert_projection_events_time"),
-        "canonical Events count must use a covering time index: {count_plan}"
+        count_plan.contains("idx_admin_alert_canonical_group_events_time"),
+        "canonical Events count must use a snapshot index: {count_plan}"
     );
 
-    let log_events = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_subscriber::registry().with(AlertPerfEventLayer {
-        events: Arc::clone(&log_events),
-    });
-    let log_guard = tracing::subscriber::set_default(subscriber);
     let events = proxy
-        .admin_alert_events_page_for_cache_warm(1, 20)
+        .admin_alert_events_page_for_canonical_snapshot(17, 1, 20)
         .await
         .expect("indexed canonical event page");
-    drop(log_guard);
     assert_eq!(events.total, 1);
     assert_eq!(events.items.len(), 1);
     assert_eq!(events.items[0].id, "auth_token_log:alert-source-1");
     assert_eq!(events.items[0].alert_type, "upstream_rate_limited_429");
-    let logs = log_events.lock().expect("alert perf event lock");
-    assert!(
-        logs.iter().any(|(event, phase)| {
-            event == "alerts_projection_indexed" && phase == "canonical_events_indexed"
-        }),
-        "canonical warm call must emit its indexed execution phase: {logs:?}"
-    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1066,7 +1014,7 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
 }
 
 #[tokio::test]
-async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slices() {
+async fn admin_alerts_warm_publishes_complete_snapshot_as_stale_after_source_advance() {
     let db_path = temp_db_path("admin-alerts-durable-warm-fence");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -1137,12 +1085,14 @@ async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slic
     .await
     .expect("commit a durable history projection generation between warm slices");
     assert_eq!(changed.rows_affected(), 3);
+    super::super::mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
     {
         let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
         let cache = cache_handle.lock().await;
         assert_eq!(
-            cache.alert_projection_generation, initial_last_good.0,
-            "the scheduler has not yet propagated the durable projection commit into memory"
+            cache.alert_projection_generation,
+            initial_last_good.0 + 1,
+            "the in-memory projection generation advances when the durable source changes"
         );
     }
     pause.release();
@@ -1151,7 +1101,7 @@ async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slic
         loop {
             let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
             let cache = cache_handle.lock().await;
-            if cache.admin_alerts_prewarm_defers > 0 {
+            if !cache.admin_alerts_prewarm_in_flight {
                 let canonical = cache
                     .admin_alerts
                     .entries
@@ -1159,11 +1109,22 @@ async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slic
                     .filter(|entry| entry.canonical)
                     .map(|entry| (entry.key.clone(), entry.generation, entry.stored_at))
                     .collect::<Vec<_>>();
-                assert_eq!(
-                    canonical, initial_last_good.1,
-                    "a durable generation change must discard staged values and retain last-good"
+                assert!(
+                    canonical.iter().all(|(_, generation, _)| *generation == initial_last_good.0),
+                    "the completed snapshot retains its original cache generation"
                 );
-                assert_eq!(cache.alert_projection_generation, initial_last_good.0);
+                assert_eq!(
+                    cache.alert_projection_generation,
+                    initial_last_good.0 + 1,
+                    "the newer source generation makes the immutable payload stale"
+                );
+                assert!(
+                    canonical.iter().all(|(_, _, stored_at)| {
+                        *stored_at > initial_last_good.1[0].2
+                    }),
+                    "the controller publishes the completed immutable snapshot rather than discarding it"
+                );
+                assert_eq!(cache.admin_alerts_prewarm_defers, 0);
                 break;
             }
             drop(cache);
@@ -1171,7 +1132,7 @@ async fn admin_alerts_warm_discards_durable_projection_fence_change_between_slic
         }
     })
     .await
-    .expect("the durable fence mismatch defers the canonical warm");
+    .expect("the durable source advance still permits a complete stale canonical publish");
 
     let _ = std::fs::remove_file(db_path);
 }

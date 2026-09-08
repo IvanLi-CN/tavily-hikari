@@ -128,16 +128,18 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   all three values behind one projection-generation fence and publishes them together. A deferred
   warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
   HTTP to trigger a rebuild.
-- The canonical Events page is the bounded exception to the general filtered read builder: it uses
-  the projection table's time index for `COUNT(*)` and the first twenty rows, then decodes the stored
-  event payload in Rust. Any remaining >250ms source-read evidence must be presented as a query plan
+- The canonical Events page is the bounded exception to the general filtered read builder: it uses the
+  immutable canonical snapshot's time index for `COUNT(*)` and the first twenty rows, then decodes the
+  stored event payload in Rust. Its snapshot is populated from projection rows through independently
+  bounded keyset slices. Any remaining >250ms source-read evidence must be presented as a query plan
   before a later projection/index change; this ADR does not authorize a larger deadline or raw fallback.
-- The canonical Groups page is served from a local observability read model. Its builder uses bounded
-  keyset projection slices and existing Rust grouping semantics, stages one generation, and switches
-  only after the complete durable projection fence is unchanged. Staged or obsolete groups are never
-  visible to HTTP. Two reusable staging slots bound retained rows across source-fence retries; a short
-  background transaction trims only obsolete active-slot tails and never gates publication. This
-  sidecar-derived model is not HA truth.
+- The canonical Groups page is served from a local observability read model. A build captures one
+  immutable projection revision, then uses independently admitted keyset read slices to stage events
+  and existing Rust grouping semantics. Projection writes preserve a pre-snapshot row once when they
+  advance during that build, so catalog, Events, and Groups can publish one complete snapshot even if
+  a newer revision has arrived. Such a payload is cache-stale, not mixed; the next warm pursues the
+  newer revision. Incomplete staging is never visible, and short background transactions reclaim
+  obsolete event, override, and group generations. This sidecar-derived model is not HA truth.
 - Multi-Key reconciliation observations are reusable only when candidate-global, Key-set, and per-Key
   logical source identities all match. A single changed Key rereads only that Key; global or Key-set
   changes fence all observations. This refines a local read optimization only and leaves claim fences,

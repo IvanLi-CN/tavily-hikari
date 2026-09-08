@@ -1212,6 +1212,10 @@ pub(crate) fn is_observability_table(table: &str) -> bool {
             | "dashboard_request_rollup_buckets"
             | "request_log_catalog_rollups"
             | "admin_alert_canonical_groups_state"
+            | "admin_alert_canonical_group_events"
+            | "admin_alert_canonical_group_overrides"
+            | "dashboard_alert_projection_events"
+            | "dashboard_alert_projection_revision_state"
     )
 }
 
