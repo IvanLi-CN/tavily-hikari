@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -652,6 +652,89 @@ async fn canonical_payload_resume_migration_reopens_legacy_payload_stops() {
     .await
     .expect("read resumed catalog status");
     assert_eq!(catalog_status, "building");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn canonical_staged_output_migration_reopens_slots_without_backfill() {
+    let db_path = temp_db_path("canonical-staged-output-v38-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-canonical-staged-output-v38-retry".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create current database");
+
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 1, active_row_count = 1, build_generation = 2 \
+         WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a pre-v38 Groups slot");
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_catalog_payload_items \
+         (build_generation, facet_kind, facet_value, facet_label, item_count) \
+         VALUES (1, 'token', 'token-1', 'Token 1', 1)",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a stale catalog output row");
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_group_payload_chunks \
+         (build_generation, position, chunk_position, payload_chunk) \
+         VALUES (1, 1, 0, '{}')",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a stale Group output chunk");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 38")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate interruption before v38 ledger write");
+
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("resume staged output migration"),
+        "an existing database must not request full bootstrap"
+    );
+    let groups_state: (i64, i64) = sqlx::query_as(
+        "SELECT active_generation, build_generation \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reopened Groups state");
+    assert_eq!(groups_state, (0, 0));
+    let catalog_generation: i64 = sqlx::query_scalar(
+        "SELECT build_generation FROM observability.admin_alert_canonical_catalog_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reopened catalog state");
+    assert_eq!(catalog_generation, 0);
+    let source_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observability.dashboard_alert_projection_events")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("verify no source projection scan or mutation");
+    assert_eq!(source_rows, 0);
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 38")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v38 ledger record");
+    assert_eq!(ledger_rows, 1);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
@@ -1893,7 +1976,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
         ]
     );
 

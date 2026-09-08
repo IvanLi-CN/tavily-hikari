@@ -40,17 +40,18 @@
   例外而预热、扩张或占用前台保留连接。
   默认 Events `1/20` 的 canonical slice 从 `dashboard_alert_projection_events` 的时间索引读取计数和
   页面，并在 Rust 解码已物化的 `payload_json`。Catalog facet 从同代 immutable Groups event snapshot
-  每次接受 `50` 行到本机 facet model，并以每次 `250` 行的持久化 output cursor 组装 exact payload；重试不能重扫
-  已接受 slice，也不能为每个 facet 运行 JSON CTE。exact derived payload 通过 durable cursor 续跑，不能因任意尺寸阈值
+  每次接受 `50` 行到本机 facet model，并以每次 `250` 行的持久化 output cursor 写入独立 output rows；重试不能重扫
+  已接受 slice，也不能为每个 facet 运行 JSON CTE。snapshot 只从 complete output rows 组装 exact payload，不能因任意尺寸阈值
   截断或永久 defer。只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状快照上仍超过 `250ms`，必须先提交
   `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高读预算或恢复 raw fallback。
   默认 Groups `1/20` 使用本机 observability 的 canonical-groups read model，而不在 warm
   路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence
   与固定 source-row membership boundary，以 rowid/keyset slices 暂存该 snapshot 的事件、复用既有
   Rust grouping 语义，并在全部 slice 成功后切换 active generation。每个分区 slice 在继续前持久化一个有界
-  event fragment 与 durable final-reduction cursor；投影在 build 期间推进时，会在同一短事务保存受影响行的
-  pre-snapshot 值；每条分区 source statement 都独立受预算限制，且不得将增长中的 partition JSON 反复持久化。
-  exact reduction 必须通过 durable source/reduction cursor 保持可恢复，不能截断或永久停止。build 期间 source
+  event fragment；投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot 值；每条分区 source
+  statement 都独立受预算限制，且不得将增长中的 partition JSON 反复持久化。final reduction 从 immutable fragments
+  重建未接受的单个 partition，并将每个 group 写为有界 payload chunks 和 metadata；只有同一短事务接受该 partition
+  cursor 后才进入下一分区。build 期间 source
   fence 改变时必须丢弃 staged generation 并重试，绝不将其作为 stale last-good 发布。staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台
   回收，且永远排除 active 与 in-flight build generation。model slot 在复用前同样只按小批次清空，绝不参与 HTTP。
   该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。

@@ -55,21 +55,23 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   passkey session lookup and a noncanonical bounded-read fallback are each real foreground work.
   The default Events `1/20` warm slice reads count and page rows directly through the projection's
   time index and decodes materialized payloads in Rust. Catalog facets checkpoint 50 immutable Groups
-  snapshot rows at a time into a local facet model; each sorted facet payload also advances through a
-  durable 250-row output cursor. Retries resume those cursors rather than issuing a JSON CTE or
-  rescanning prior rows. Exact derived payloads use durable output cursors and must not be truncated or
-  turned into a permanent defer because of an arbitrary size threshold. Filtered/noncanonical reads keep
+  snapshot rows at a time into a local facet model; each sorted facet payload advances through a durable
+  250-row cursor into independently staged output rows. Retries resume those cursors rather than issuing
+  a JSON CTE or rescanning prior rows, and snapshot assembly reads only completed output rows. Exact
+  derived payloads must not be truncated or turned into a permanent defer because of an arbitrary size
+  threshold. Filtered/noncanonical reads keep
   their existing JSON CTE semantics. A production-shaped statement that exceeds its native read deadline
   requires query-plan evidence and a separate projection task, never a larger read budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
   atomically captures a complete projection revision, source fence, and fixed source-row membership
   boundary. Source rows are copied by that bounded rowid range, so later projection writes cannot
   extend a build's final scan. A projection write that advances during a build retains the previous row
-  once for that snapshot. Each partition checkpoints one bounded event fragment and a durable final
-  reduction cursor before moving to the next slice; a changed source fence discards the staged generation
-  before publication, so it never publishes a cross-generation or stale replacement. The exact reduction
-  stays resumable through its durable source and reduction cursors without truncating nested events. The
-  two model slots are cleared in short slices before reuse.
+  once for that snapshot. Each partition checkpoints bounded event fragments. Final reduction reads those
+  immutable fragments, stages each resulting group as bounded payload chunks plus a small metadata row,
+  then atomically accepts the partition cursor. A cancellation recomputes only the unaccepted partition;
+  it never rewrites an accumulating JSON state row. A changed source fence discards the staged generation
+  before publication, so it never publishes a cross-generation or stale replacement. The two model slots
+  are cleared in short slices before reuse.
   Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
   generations. This derived model never enters the HA outbox and does not change filtered Groups semantics.
 

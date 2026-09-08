@@ -62,8 +62,8 @@
   `remote_attempt_budget` defers, resumed runs, and terminal completions. They expose counts only;
   token ids, key ids, SQL, and upstream response content remain private.
 - The same 60-second window separately aggregates canonical Events indexed reads, Catalog source and
-  output-payload slices, canonical Groups fixed-membership copy/fragment/final-reduction slices,
-  publishes, resumable payload checkpoints, defers, and Key-observation identity reuses/misses. These
+  independently staged output-row slices, canonical Groups fixed-membership copy/fragment/finalization
+  slices, publishes, resumable payload checkpoints, defers, and Key-observation identity reuses/misses. These
   counters describe source-fence progress only; they never emit a Key, token, source identity, SQL,
   or payload.
 - Dashboard read-model invalidation is a durable business-write signal, not only a request-statistics

@@ -859,16 +859,22 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     assert_eq!(catalog.keys[0].value, "key-1");
     assert_eq!(catalog.users[0].label, "Test User");
     assert_eq!(catalog.request_kind_options[0].key, "tavily_search");
-    let completed_payloads: (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(MAX(LENGTH(payload_json)), 0) \
-         FROM observability.admin_alert_canonical_catalog_payloads \
-         WHERE build_generation = 17 AND payload_status = 'complete'",
+    let completed_payloads: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 17 AND payload_status = 'complete'), \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+              WHERE build_generation = 17), \
+            (SELECT COALESCE(MAX(LENGTH(payload_json)), 0) \
+               FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 17 AND payload_status = 'complete')",
     )
     .fetch_one(&pool)
     .await
     .expect("read bounded catalog payload checkpoints");
     assert_eq!(completed_payloads.0, 5);
-    assert!(completed_payloads.1 <= 1_048_576);
+    assert!(completed_payloads.1 >= 5);
+    assert!(completed_payloads.2 <= 2);
 
     sqlx::query(
         "UPDATE observability.admin_alert_canonical_groups_state \
@@ -982,15 +988,25 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
             ProxyError::Deferred { ref reason, .. } if reason == "catalog_payload_build_in_progress"
         ));
     }
-    let token_payload_checkpoint: (String, i64, i64) = sqlx::query_as(
-        "SELECT payload_status, cursor_item_count, json_array_length(payload_json) \
-         FROM observability.admin_alert_canonical_catalog_payloads \
-         WHERE build_generation = 19 AND facet_kind = 'token'",
+    let token_payload_checkpoint: (String, i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT payload_status FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 19 AND facet_kind = 'token'), \
+            (SELECT cursor_item_count FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 19 AND facet_kind = 'token'), \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+              WHERE build_generation = 19 AND facet_kind = 'token'), \
+            (SELECT LENGTH(payload_json) FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 19 AND facet_kind = 'token') \
+        ",
     )
     .fetch_one(&pool)
     .await
     .expect("read the durable first catalog payload page");
-    assert_eq!(token_payload_checkpoint, ("building".to_string(), 1, 250));
+    assert_eq!(
+        token_payload_checkpoint,
+        ("building".to_string(), 1, 250, 2)
+    );
     let multi_page_catalog = {
         let mut catalog = None;
         for _ in 0..8 {
@@ -1036,50 +1052,56 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         .await
         .expect("seed completed empty catalog payload");
     }
-    let oversized_tokens = (0..4_000_i64)
-        .map(|index| {
-            (
-                format!("token-{index:04}"),
-                format!("Token {index:04} {}", "x".repeat(300)),
-                1_i64,
-            )
-        })
-        .collect::<Vec<_>>();
-    let oversized_payload = serde_json::to_string(&oversized_tokens)
-        .expect("serialize oversized exact token catalog payload");
-    assert!(oversized_payload.len() > 1_048_576);
-    sqlx::query(
-        "INSERT INTO observability.admin_alert_canonical_catalog_payloads \
-         (build_generation, facet_kind, payload_json, payload_status) \
-         VALUES (20, 'token', ?, 'building')",
-    )
-    .bind(&oversized_payload)
-    .execute(&pool)
-    .await
-    .expect("seed resumable oversized token catalog payload");
-    let oversized_checkpoint = proxy
-        .admin_alert_catalog_for_canonical_snapshot(20)
+    for index in 0..4_000_i64 {
+        let value = format!("token-{index:04}");
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_catalog_facets
+                   (build_generation, facet_kind, facet_identity, facet_value, facet_label, item_count)
+               VALUES (20, 'token', ?, ?, ?, 1)"#,
+        )
+        .bind(&value)
+        .bind(&value)
+        .bind(format!("Token {index:04} {}", "x".repeat(300)))
+        .execute(&pool)
         .await
-        .expect_err("the final durable output checkpoint still yields once before publication");
-    assert!(matches!(
-        oversized_checkpoint,
-        ProxyError::Deferred { ref reason, .. } if reason == "catalog_payload_build_in_progress"
-    ));
-    let oversized_catalog = proxy
-        .admin_alert_catalog_for_canonical_snapshot(20)
-        .await
-        .expect("an exact payload above 1 MiB must remain publishable");
+        .expect("seed an independently staged token facet");
+    }
+    let oversized_catalog = {
+        let mut catalog = None;
+        for _ in 0..24 {
+            match proxy.admin_alert_catalog_for_canonical_snapshot(20).await {
+                Ok(value) => {
+                    catalog = Some(value);
+                    break;
+                }
+                Err(ProxyError::Deferred { reason, .. })
+                    if reason == "catalog_payload_build_in_progress" =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!(
+                    "an exact large catalog must publish from independently staged rows: {error:?}"
+                ),
+            }
+        }
+        catalog.expect("the independently staged catalog must complete")
+    };
     assert_eq!(oversized_catalog.tokens.len(), 4_000);
-    let oversized_status: (String, i64) = sqlx::query_as(
-        "SELECT payload_status, LENGTH(payload_json) \
-         FROM observability.admin_alert_canonical_catalog_payloads \
-         WHERE build_generation = 20 AND facet_kind = 'token'",
+    let oversized_status: (String, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT payload_status FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 20 AND facet_kind = 'token'), \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+              WHERE build_generation = 20 AND facet_kind = 'token'), \
+            (SELECT LENGTH(payload_json) FROM observability.admin_alert_canonical_catalog_payloads \
+              WHERE build_generation = 20 AND facet_kind = 'token')",
     )
     .fetch_one(&pool)
     .await
     .expect("read completed oversized payload checkpoint");
     assert_eq!(oversized_status.0, "complete");
-    assert!(oversized_status.1 > 1_048_576);
+    assert_eq!(oversized_status.1, 4_000);
+    assert_eq!(oversized_status.2, 2);
 
     let _ = std::fs::remove_file(db_path);
 }

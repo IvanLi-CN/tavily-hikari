@@ -130,9 +130,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads
   `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
   stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per
-  accepted slice into a local facet model, then checkpoint each sorted facet payload every 250 rows;
-  retries resume both durable cursors rather than issuing a JSON CTE per facet or rereading prior
-  snapshot rows. Exact derived payloads advance durable output cursors without truncation or a
+  accepted slice into a local facet model, then checkpoint each sorted facet payload every 250 rows into
+  independently staged output rows; retries resume both durable cursors rather than issuing a JSON CTE
+  per facet or rereading prior snapshot rows. Exact derived payloads advance durable output cursors
+  without truncation or a
   size-based terminal stop. Any remaining >250ms source-read evidence must be presented as a query plan before a later
   projection/index change; this ADR does not authorize a larger deadline or raw fallback.
 - The canonical Groups page is served from a local observability read model. A build captures one
@@ -141,9 +142,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   pre-snapshot row once when they advance during that build. A source-fence change rejects and discards
   the staged generation before publication, so catalog, Events, and Groups never publish a mixed or
   stale replacement. No state row repeatedly serializes an accumulating partition payload: each
-  accepted partition slice persists one bounded event fragment and the final reduction advances a
-  durable fragment cursor. The exact reduction remains resumable without truncating nested events. The
-  two model slots are cleared in short slices before
+  accepted partition slice persists bounded event fragments, and final reduction writes independently
+  bounded payload chunks plus small group metadata before atomically accepting that partition. If a
+  finalization is interrupted, its immutable source fragments are reused and only the unaccepted
+  partition is recomputed. The two model slots are cleared in short slices before
   reuse, and only a complete final payload is staged. Incomplete staging is never visible, and short
   background transactions reclaim only obsolete generations, never the active or in-flight build.
   This sidecar-derived model is not HA truth.

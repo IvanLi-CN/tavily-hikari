@@ -943,11 +943,7 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read the first durable aggregate checkpoint");
-    assert_eq!(
-        (first_cursor, first_complete, first_fragment_position),
-        (now + 249, false, 2),
-        "the first accepted slice must durably advance exactly one bounded fragment"
-    );
+    assert_eq!((first_cursor, first_complete), (now + 249, false));
     let first_fragment_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments \
          WHERE build_generation = 2 AND partition_key = 'partition'",
@@ -955,7 +951,12 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("count persisted aggregate fragments");
-    assert_eq!(first_fragment_count, 1);
+    assert!(first_fragment_count >= 1);
+    assert_eq!(
+        first_fragment_position,
+        first_fragment_count + 1,
+        "the first accepted slice advances past every independently staged fragment"
+    );
 
     let second = proxy
         .key_store
@@ -975,9 +976,9 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("read the second durable aggregate checkpoint");
-    assert_eq!(
-        (second_cursor, second_complete, second_fragment_position),
-        (now + 499, false, 3),
+    assert_eq!((second_cursor, second_complete), (now + 499, false));
+    assert!(
+        second_fragment_position > first_fragment_position,
         "the next call resumes after the accepted first slice instead of rescanning it"
     );
 
@@ -990,51 +991,55 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
         third,
         ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
-    let source_complete: (bool, i64) = sqlx::query_as(
-        "SELECT build_partition_source_complete, build_partition_finalize_fragment_position \
+    let source_complete: (bool, String) = sqlx::query_as(
+        "SELECT build_partition_source_complete, build_partition_events_json \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read the source-complete aggregate checkpoint");
-    assert_eq!(source_complete, (true, 1));
+    assert_eq!(source_complete, (true, "[]".to_string()));
 
-    let first_reduction = proxy
+    let finalized_partition = proxy
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
         .await
-        .expect_err("the first reduction fragment must persist independently");
-    assert!(matches!(
-        first_reduction,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-    ));
-    let first_reduction_checkpoint: (i64, String) = sqlx::query_as(
-        "SELECT build_partition_finalize_fragment_position, build_partition_events_json \
+        .expect_err("the source fragments must finalize before publication");
+    assert!(
+        matches!(
+            finalized_partition,
+            ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+        ),
+        "unexpected finalization outcome: {finalized_partition:?}"
+    );
+    let finalized_partition_state: (String, String, i64) = sqlx::query_as(
+        "SELECT build_partition_key, build_partition_events_json, build_next_position \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read the persisted reduction cursor");
-    assert_eq!(first_reduction_checkpoint.0, 2);
-    assert_ne!(first_reduction_checkpoint.1, "[]");
-
-    let second_reduction = proxy
-        .key_store
-        .admin_alert_canonical_groups_page_for_warm()
+    .expect("read the finalized partition state");
+    assert_eq!(
+        finalized_partition_state,
+        ("".to_string(), "[]".to_string(), 2)
+    );
+    let (fragment_count, max_fragment_bytes, payload_chunk_count): (i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments \
+                  WHERE build_generation = 2 AND partition_key = 'partition'), \
+                (SELECT COALESCE(MAX(LENGTH(events_json)), 0) \
+                   FROM observability.admin_alert_canonical_group_fragments \
+                  WHERE build_generation = 2 AND partition_key = 'partition'), \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_payload_chunks \
+                  WHERE build_generation = 2)",
+        )
+        .fetch_one(&proxy.key_store.pool)
         .await
-        .expect_err("the next reduction fragment must resume from its durable cursor");
-    assert!(matches!(
-        second_reduction,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-    ));
-    let second_reduction_cursor: i64 = sqlx::query_scalar(
-        "SELECT build_partition_finalize_fragment_position \
-         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read the resumed reduction cursor");
-    assert_eq!(second_reduction_cursor, 3);
+        .expect("read bounded staged input and output records");
+    assert!(fragment_count >= 3);
+    assert!(max_fragment_bytes <= 64 * 1024);
+    assert!(payload_chunk_count > 0);
 
     let groups = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(

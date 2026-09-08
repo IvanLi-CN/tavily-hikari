@@ -31,8 +31,12 @@ const ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_VERSION: i64 = 37;
 const ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_NAME: &str = "admin-alert-canonical-payload-resume-v1";
 const ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_CHECKSUM: &str =
     "sha256:50e585f7f8a26b5ea2a7a795a4f81f272d8a34e2bb21c4dce3cb17a66c8395c1";
+const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION: i64 = 38;
+const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME: &str = "admin-alert-canonical-staged-output-v1";
+const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM: &str =
+    "sha256:7c13f0c6248de36e53a5bf692a6c2f4955af75e1ce4f32f1e49ab348d252b241";
 
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 7] {
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 8] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -68,6 +72,11 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_VERSION,
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_NAME,
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION,
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME,
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM,
         ),
     ]
 }
@@ -122,6 +131,13 @@ impl KeyStore {
             self.apply_admin_alert_canonical_payload_resume_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_staged_output_migration()
+                .await?;
+        }
         Ok(())
     }
 
@@ -137,7 +153,8 @@ impl KeyStore {
         self.apply_admin_alert_canonical_groups_finalize_cursor_migration()
             .await?;
         self.apply_admin_alert_canonical_payload_resume_migration()
-            .await
+            .await?;
+        self.apply_admin_alert_canonical_staged_output_migration().await
     }
 
     async fn validate_convergence_schema_migration_objects(&self) -> Result<(), ProxyError> {
@@ -304,6 +321,33 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 36".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION)
+            .await?
+            && (!self
+                .schema_object_exists(
+                    "observability",
+                    "admin_alert_canonical_catalog_payload_items",
+                )
+                .await?
+                || !self
+                    .schema_object_exists(
+                        "observability",
+                        "admin_alert_canonical_group_payload_chunks",
+                    )
+                    .await?
+                || !self
+                    .schema_named_object_exists(
+                        "observability",
+                        "index",
+                        "idx_admin_alert_canonical_catalog_payload_items_read",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 38".to_string(),
             ));
         }
         Ok(())
@@ -833,6 +877,83 @@ impl KeyStore {
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_VERSION,
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_NAME,
             ADMIN_ALERT_CANONICAL_PAYLOAD_RESUME_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_staged_output_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_catalog_payload_items (
+                build_generation INTEGER NOT NULL,
+                facet_kind TEXT NOT NULL,
+                facet_value TEXT NOT NULL,
+                facet_label TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                PRIMARY KEY(build_generation, facet_kind, facet_value)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_catalog_payload_items_read \
+             ON admin_alert_canonical_catalog_payload_items(\
+                 build_generation, facet_kind, item_count DESC, facet_label, facet_value\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_payload_chunks (
+                build_generation INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                chunk_position INTEGER NOT NULL,
+                payload_chunk TEXT NOT NULL,
+                PRIMARY KEY(build_generation, position, chunk_position)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Existing payload rows can be complete only because they repeatedly
+        // rewrote growing JSON. This sidecar is derived, so reopen both slots
+        // instead of attempting a startup backfill of stale output.
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_generation = 0, active_row_count = 0,
+                      active_projection_revision = -1,
+                      source_recent_generation = -1, source_history_generation = -1,
+                      build_generation = 0, build_projection_revision = -1,
+                      build_source_recent_generation = -1,
+                      build_source_history_generation = -1,
+                      build_source_rowid_upper_bound = 0,
+                      build_cursor_source_rowid = 0, build_phase = 'idle',
+                      build_partition_key = '', build_partition_after_key = '',
+                      build_partition_cursor_occurred_at = -9223372036854775808,
+                      build_partition_cursor_row_sort_id = '',
+                      build_partition_events_json = '[]',
+                      build_partition_source_complete = 0,
+                      build_partition_fragment_next_position = 1,
+                      build_partition_finalize_fragment_position = 1,
+                      build_next_position = 1
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_catalog_state
+                  SET build_generation = 0,
+                      cursor_occurred_at = -9223372036854775808,
+                      cursor_row_sort_id = '', source_complete = 0
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION,
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME,
+            ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM,
         )
         .await
     }
