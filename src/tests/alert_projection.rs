@@ -1000,18 +1000,22 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
     .expect("read the source-complete aggregate checkpoint");
     assert_eq!(source_complete, (true, "[]".to_string()));
 
-    let finalized_partition = proxy
-        .key_store
-        .admin_alert_canonical_groups_page_for_warm()
+    for _ in 0..160 {
+        let _ = proxy
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await;
+        let partition_key: String = sqlx::query_scalar(
+            "SELECT build_partition_key FROM observability.admin_alert_canonical_groups_state \
+             WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
         .await
-        .expect_err("the source fragments must finalize before publication");
-    assert!(
-        matches!(
-            finalized_partition,
-            ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-        ),
-        "unexpected finalization outcome: {finalized_partition:?}"
-    );
+        .expect("read streamed reduction partition state");
+        if partition_key.is_empty() {
+            break;
+        }
+    }
     let finalized_partition_state: (String, String, i64) = sqlx::query_as(
         "SELECT build_partition_key, build_partition_events_json, build_next_position \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
@@ -1023,28 +1027,46 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
         finalized_partition_state,
         ("".to_string(), "[]".to_string(), 2)
     );
-    let (fragment_count, max_fragment_bytes, payload_chunk_count): (i64, i64, i64) =
-        sqlx::query_as(
-            "SELECT \
+    let (fragment_count, max_fragment_bytes, reduction_event_count, payload_chunk_count): (
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT \
                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments \
                   WHERE build_generation = 2 AND partition_key = 'partition'), \
                 (SELECT COALESCE(MAX(LENGTH(events_json)), 0) \
                    FROM observability.admin_alert_canonical_group_fragments \
                   WHERE build_generation = 2 AND partition_key = 'partition'), \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_reduction_events \
+                  WHERE build_generation = 2 AND partition_key = 'partition'), \
                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_payload_chunks \
                   WHERE build_generation = 2)",
-        )
-        .fetch_one(&proxy.key_store.pool)
-        .await
-        .expect("read bounded staged input and output records");
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read bounded staged input and output records");
     assert!(fragment_count >= 3);
     assert!(max_fragment_bytes <= 64 * 1024);
+    assert_eq!(reduction_event_count, 501);
     assert!(payload_chunk_count > 0);
 
     let groups = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(
         groups.total, 1,
         "the complete partition preserves Groups semantics"
+    );
+    let group = groups
+        .items
+        .first()
+        .expect("the completed semantic partition has one mother group");
+    assert_eq!(group.event_count, 501);
+    assert_eq!(group.child_count, 1);
+    assert_eq!(
+        group.children.first().map(|child| child.child_events.len()),
+        Some(501),
+        "streamed output preserves every child event across fragment boundaries"
     );
 
     drop(proxy);

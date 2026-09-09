@@ -148,7 +148,12 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   partition is recomputed. The two model slots are cleared in short slices before
   reuse, and only a complete final payload is staged. Incomplete staging is never visible, and short
   background transactions reclaim only obsolete generations, never the active or in-flight build.
-  This sidecar-derived model is not HA truth.
+  This sidecar-derived model is not HA truth. The staged Catalog output key includes both facet value
+  and display label, so the v39 local slot is lossless when one user value has multiple historical
+  labels. Semantic Groups finalization uses the v40 sidecar reducer: classification input events,
+  child/mother aggregates, and payload output chunks each have durable cursors. Placeholder metadata
+  can exist only in the inactive build generation; publication remains fenced until all payload chunks
+  and the partition cursor are accepted.
 - Multi-Key reconciliation observations are reusable only when candidate-global, Key-set, and per-Key
   logical source identities all match. A single changed Key rereads only that Key; global or Key-set
   changes fence all observations. This refines a local read optimization only and leaves claim fences,

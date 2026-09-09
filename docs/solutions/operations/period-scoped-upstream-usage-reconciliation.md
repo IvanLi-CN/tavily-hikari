@@ -61,6 +61,9 @@ state, local-pressure state, or billing truth. Sum usage and enter the existing 
 path only after all current-generation key observations are present. Delete local observations
 atomically only with terminal completion, and fence both observation writes and continuations by claim
 generation.
+The identity columns are the reuse fence, not another source of truth: a single changed Key rereads
+only that Key, while a changed candidate or Key set invalidates all partial observations. This keeps
+the optimization local and makes accepted terminal work the only state that can affect billing.
 The scheduled-job `attempt` is part of that fence: a controlled pre-request retry records an error for
 the current claim and creates one continuation at `attempt + 1`, while finalization rejects any stale
 `(job_id, claim_generation, attempt)` tuple. This makes retry injection deterministic in tests without

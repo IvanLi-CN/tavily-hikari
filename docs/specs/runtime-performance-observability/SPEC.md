@@ -66,6 +66,9 @@
   slices, publishes, resumable payload checkpoints, defers, and Key-observation identity reuses/misses. These
   counters describe source-fence progress only; they never emit a Key, token, source identity, SQL,
   or payload.
+  Catalog label-preserving writes and streamed Groups reducer slices are counted separately from
+  publication. A reduction placeholder or staged row is not a successful publish; only a complete
+  generation-fenced payload contributes to the publication counter.
 - Dashboard read-model invalidation is a durable business-write signal, not only a request-statistics
   signal. A successful quota or other overview-visible write advances the shared dirty generation;
   the read model coalesces dirty rebuilds to at most once per ten seconds and uses a sixty-second

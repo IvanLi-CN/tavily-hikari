@@ -55,6 +55,9 @@
   fence 改变时必须丢弃 staged generation 并重试，绝不将其作为 stale last-good 发布。staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台
   回收，且永远排除 active 与 in-flight build generation。model slot 在复用前同样只按小批次清空，绝不参与 HTTP。
   该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
+  Catalog staged output 的 facet identity 同时包含 value 与 label；v39 的本机派生表因此保留同一
+  用户值的多个历史 label。v40 的 semantic Groups reducer 将事件分类、child/mother 聚合和 payload
+  chunk 输出各自持久化，取消或重启只从未接受的 cursor 继续，未完成 generation 不得发布。
   Canonical HTTP 的 fresh、stale 与 cold payload 响应不计入 synthetic SQLite 前台活动；已配置
   passkey 的 session lookup 与实际进入 bounded database fallback 的 noncanonical 读取仍计量；
   前者在开始获取 SQLite 连接之前计量，避免 cache-only 重试自行阻止 warm admission，同时不隐藏

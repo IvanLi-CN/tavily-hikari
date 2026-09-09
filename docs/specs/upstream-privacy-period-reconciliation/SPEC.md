@@ -185,6 +185,9 @@
   30-second auto continuation; it changes neither billing truth nor semantic, transport,
   upstream-429, or local-pressure state. The observation table is derived state, not HA outbox
   truth.
+  The per-Key logical identity is part of the observation fence: a single Key source change rereads
+  only that Key, while candidate-global or Key-set changes invalidate the complete partial set. The
+  identity is local optimization state and never changes compare billing truth.
 - 状态页使用门禁清单和 `n/m`，同时覆盖 loading、empty、error 与 degraded 状态。
 
 ## 功能与行为规格（Functional/Behavior Spec）

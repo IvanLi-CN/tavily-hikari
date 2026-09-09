@@ -863,7 +863,7 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         "SELECT \
             (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payloads \
               WHERE build_generation = 17 AND payload_status = 'complete'), \
-            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
               WHERE build_generation = 17), \
             (SELECT COALESCE(MAX(LENGTH(payload_json)), 0) \
                FROM observability.admin_alert_canonical_catalog_payloads \
@@ -994,7 +994,7 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
               WHERE build_generation = 19 AND facet_kind = 'token'), \
             (SELECT cursor_item_count FROM observability.admin_alert_canonical_catalog_payloads \
               WHERE build_generation = 19 AND facet_kind = 'token'), \
-            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
               WHERE build_generation = 19 AND facet_kind = 'token'), \
             (SELECT LENGTH(payload_json) FROM observability.admin_alert_canonical_catalog_payloads \
               WHERE build_generation = 19 AND facet_kind = 'token') \
@@ -1091,7 +1091,7 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         "SELECT \
             (SELECT payload_status FROM observability.admin_alert_canonical_catalog_payloads \
               WHERE build_generation = 20 AND facet_kind = 'token'), \
-            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
               WHERE build_generation = 20 AND facet_kind = 'token'), \
             (SELECT LENGTH(payload_json) FROM observability.admin_alert_canonical_catalog_payloads \
               WHERE build_generation = 20 AND facet_kind = 'token')",
@@ -1102,6 +1102,72 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     assert_eq!(oversized_status.0, "complete");
     assert_eq!(oversized_status.1, 4_000);
     assert_eq!(oversized_status.2, 2);
+
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 21 WHERE singleton = 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("activate a label-sensitive catalog fixture");
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_catalog_state \
+         SET build_generation = 21, cursor_occurred_at = 0, cursor_row_sort_id = '', \
+             source_complete = 1 WHERE singleton = 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("mark label-sensitive catalog facets complete");
+    for (identity, label) in [
+        ("user-1\u{001f}Former name", "Former name"),
+        ("user-1\u{001f}Current name", "Current name"),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_catalog_facets
+                   (build_generation, facet_kind, facet_identity, facet_value, facet_label, item_count)
+               VALUES (21, 'user', ?, 'user-1', ?, 1)"#,
+        )
+        .bind(identity)
+        .bind(label)
+        .execute(&pool)
+        .await
+        .expect("seed distinct labels for one user identity");
+    }
+    let label_sensitive_catalog = {
+        let mut catalog = None;
+        for _ in 0..16 {
+            match proxy.admin_alert_catalog_for_canonical_snapshot(21).await {
+                Ok(value) => {
+                    catalog = Some(value);
+                    break;
+                }
+                Err(ProxyError::Deferred { reason, .. })
+                    if reason == "catalog_payload_build_in_progress" =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("publish label-sensitive catalog payload: {error:?}"),
+            }
+        }
+        catalog.expect("label-sensitive catalog payload must complete")
+    };
+    assert_eq!(
+        label_sensitive_catalog
+            .users
+            .iter()
+            .map(|item| (item.value.as_str(), item.label.as_str(), item.count))
+            .collect::<Vec<_>>(),
+        vec![("user-1", "Current name", 1), ("user-1", "Former name", 1)],
+        "staged output must retain every label-sensitive facet identity"
+    );
+    let label_sensitive_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
+         WHERE build_generation = 21 AND facet_kind = 'user' AND facet_value = 'user-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count lossless staged catalog rows");
+    assert_eq!(label_sensitive_rows, 2);
 
     let _ = std::fs::remove_file(db_path);
 }

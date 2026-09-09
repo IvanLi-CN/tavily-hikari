@@ -105,6 +105,11 @@ reads:
   clearing it in small write slices. Reclaim obsolete event, override, and group generations in small write
   batches while excluding the active and in-flight build generations. Do not use the model for filtered
   queries or replicate it through HA.
+  The staged Catalog output table must key a facet by both value and label. The v39 local sidecar
+  prevents a later label for the same user value from replacing an earlier label. Semantic Groups
+  finalization uses v40 durable classification and output cursors; placeholder metadata is useful for
+  reclaim/restart visibility but remains tied to the inactive generation until all payload chunks are
+  accepted.
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.

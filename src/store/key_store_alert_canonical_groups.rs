@@ -2,6 +2,13 @@ const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS: usize = 25;
 const ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+struct CompatGroupReductionState {
+    event_count: i64,
+    first_seen: i64,
+    latest_event: AlertEventRecord,
+}
+
 fn canonical_alert_event_fragment_payloads(
     events: Vec<AlertEventRecord>,
 ) -> Result<Vec<String>, ProxyError> {
@@ -11,6 +18,12 @@ fn canonical_alert_event_fragment_payloads(
     for event in events {
         let event_json = serde_json::to_string(&event)
             .map_err(|error| ProxyError::Other(format!("serialize canonical alert event: {error}")))?;
+        if event_json.len() + 2 > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_event_payload_exceeds_fragment_budget".to_string(),
+            });
+        }
         let separator_bytes = usize::from(has_event);
         if has_event
             && fragment.len() + separator_bytes + event_json.len() + 1
@@ -73,8 +86,10 @@ struct AdminAlertCanonicalGroupsState {
     build_partition_key: String,
     build_partition_after_key: String,
     build_partition_cursor: (i64, String),
+    build_partition_events_json: String,
     build_partition_source_complete: bool,
     build_partition_fragment_next_position: i64,
+    build_partition_finalize_fragment_position: i64,
     build_next_position: i64,
 }
 
@@ -166,7 +181,9 @@ impl KeyStore {
                        build_source_rowid_upper_bound, build_cursor_source_rowid,
                        build_partition_key, build_partition_after_key,
                        build_partition_cursor_occurred_at, build_partition_cursor_row_sort_id,
+                       build_partition_events_json,
                        build_partition_source_complete, build_partition_fragment_next_position,
+                       build_partition_finalize_fragment_position,
                        build_next_position
                   FROM observability.admin_alert_canonical_groups_state
                  WHERE singleton = 1"#,
@@ -201,9 +218,12 @@ impl KeyStore {
                 row.try_get("build_partition_cursor_occurred_at")?,
                 row.try_get("build_partition_cursor_row_sort_id")?,
             ),
+            build_partition_events_json: row.try_get("build_partition_events_json")?,
             build_partition_source_complete: row.try_get("build_partition_source_complete")?,
             build_partition_fragment_next_position: row
                 .try_get("build_partition_fragment_next_position")?,
+            build_partition_finalize_fragment_position: row
+                .try_get("build_partition_finalize_fragment_position")?,
             build_next_position: row.try_get("build_next_position")?,
         })
     }
@@ -387,10 +407,14 @@ impl KeyStore {
                         "admin_alert_canonical_group_events",
                         "admin_alert_canonical_group_overrides",
                         "admin_alert_canonical_group_fragments",
+                        "admin_alert_canonical_group_reduction_events",
+                        "admin_alert_canonical_group_reduction_children",
+                        "admin_alert_canonical_group_reduction_mothers",
                         "admin_alert_canonical_group_payload_chunks",
                         "admin_alert_canonical_catalog_facets",
                         "admin_alert_canonical_catalog_payloads",
                         "admin_alert_canonical_catalog_payload_items",
+                        "admin_alert_canonical_catalog_payload_items_v2",
                     ] {
                         let delete = format!(
                             "DELETE FROM observability.{table} WHERE rowid IN ( \
@@ -408,10 +432,14 @@ impl KeyStore {
                         "admin_alert_canonical_group_events",
                         "admin_alert_canonical_group_overrides",
                         "admin_alert_canonical_group_fragments",
+                        "admin_alert_canonical_group_reduction_events",
+                        "admin_alert_canonical_group_reduction_children",
+                        "admin_alert_canonical_group_reduction_mothers",
                         "admin_alert_canonical_group_payload_chunks",
                         "admin_alert_canonical_catalog_facets",
                         "admin_alert_canonical_catalog_payloads",
                         "admin_alert_canonical_catalog_payload_items",
+                        "admin_alert_canonical_catalog_payload_items_v2",
                     ] {
                         let exists = format!(
                             "SELECT EXISTS(SELECT 1 FROM observability.{table} \
@@ -632,94 +660,182 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
-        let mut events = Vec::new();
-        let mut fragment_position = 1;
-        while let Some((next_position, fragment_events)) = self
+        if serde_json::from_str::<SemanticReductionProgress>(&state.build_partition_events_json)
+            .is_ok()
+        {
+            return self
+                .finalize_admin_alert_canonical_semantic_partition(snapshot, state)
+                .await;
+        }
+        let Some((fragment_position, events)) = self
             .read_admin_alert_canonical_groups_partition_fragment(
                 snapshot,
                 &state.build_partition_key,
-                fragment_position,
+                state.build_partition_finalize_fragment_position,
             )
             .await?
-        {
-            events.extend(fragment_events);
-            fragment_position = next_position + 1;
+        else {
+            return self
+                .publish_admin_alert_canonical_compat_partition(snapshot, state)
+                .await;
+        };
+        if events.iter().any(|event| {
+            matches!(
+                event.alert_type.as_str(),
+                ALERT_TYPE_USER_REQUEST_RATE_LIMITED | ALERT_TYPE_USER_QUOTA_EXHAUSTED
+            ) && event.semantic_window.is_some()
+        }) {
+            return self
+                .finalize_admin_alert_canonical_semantic_partition(snapshot, state)
+                .await;
         }
-        let groups = build_group_records_from_events(events).top_level_items;
-        let mut staged = Vec::with_capacity(groups.len());
-        for (index, group) in groups.into_iter().enumerate() {
-            let payload_json = serde_json::to_string(&group).map_err(|error| {
-                ProxyError::Other(format!("serialize canonical alert group: {error}"))
-            })?;
-            let position = state.build_next_position + index as i64;
-            for (chunk_position, payload_chunk) in
-                canonical_alert_payload_chunks(&payload_json).into_iter().enumerate()
-            {
-                self.ensure_admin_alerts_cache_warm_write_admitted()?;
-                self.sqlite_runtime
-                    .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
-                        Box::pin(async move {
-                            sqlx::query(
-                                r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_chunks
-                                       (build_generation, position, chunk_position, payload_chunk)
-                                   VALUES (?, ?, ?, ?)"#,
-                            )
-                            .bind(snapshot.build_generation)
-                            .bind(position)
-                            .bind(chunk_position as i64)
-                            .bind(payload_chunk)
-                            .execute(&mut **tx)
-                            .await?;
-                            Ok::<_, ProxyError>(())
-                        })
-                    })
-                    .await?;
-            }
-            staged.push((
-                position,
-                group.last_seen,
-                group.count,
-                group.alert_type,
-                group.id,
+
+        let current = serde_json::from_str::<CompatGroupReductionState>(
+            &state.build_partition_events_json,
+        )
+        .ok();
+        let Some(latest_event) = events.last().cloned() else {
+            return Err(ProxyError::Other(
+                "canonical alert group fragment cannot be empty".to_string(),
             ));
+        };
+        let next = CompatGroupReductionState {
+            event_count: current
+                .as_ref()
+                .map_or(events.len() as i64, |reduction| {
+                    reduction.event_count + events.len() as i64
+                }),
+            first_seen: current
+                .as_ref()
+                .map_or_else(|| events[0].occurred_at, |reduction| reduction.first_seen),
+            latest_event,
+        };
+        let reduction_json = serde_json::to_string(&next).map_err(|error| {
+            ProxyError::Other(format!("serialize canonical compat reduction state: {error}"))
+        })?;
+        let partition = state.build_partition_key.clone();
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let advanced = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        r#"UPDATE observability.admin_alert_canonical_groups_state
+                              SET build_partition_events_json = ?,
+                                  build_partition_finalize_fragment_position = ?
+                            WHERE singleton = 1 AND build_generation = ?
+                              AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_partition_key = ?
+                              AND build_partition_finalize_fragment_position = ?
+                              AND build_source_recent_generation = (
+                                  SELECT COALESCE(SUM(generation), 0)
+                                    FROM observability.dashboard_alert_projection_state
+                              )
+                              AND build_source_history_generation = (
+                                  SELECT COALESCE(SUM(generation), 0)
+                                    FROM observability.dashboard_alert_projection_history_state
+                              )"#,
+                    )
+                    .bind(reduction_json)
+                    .bind(fragment_position + 1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(&partition)
+                    .bind(state.build_partition_finalize_fragment_position)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(changed.rows_affected() == 1)
+                })
+            })
+            .await?;
+        if !advanced {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_build_replaced".to_string(),
+            });
         }
-        for chunk in staged.chunks(ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS) {
+        self.record_admin_alerts_warm_slice();
+        self.sqlite_runtime
+            .record_admin_alerts_canonical_group_reduction_slice();
+        Ok(())
+    }
+
+    async fn publish_admin_alert_canonical_compat_partition(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        state: AdminAlertCanonicalGroupsState,
+    ) -> Result<(), ProxyError> {
+        let reduction = serde_json::from_str::<CompatGroupReductionState>(
+            &state.build_partition_events_json,
+        )
+        .map_err(|_| {
+            ProxyError::Other("canonical compat reduction state is unavailable".to_string())
+        })?;
+        let mut group = build_compat_group_record(std::slice::from_ref(&reduction.latest_event)).ok_or_else(|| {
+            ProxyError::Other("canonical compat reduction has no latest event".to_string())
+        })?;
+        group.count = reduction.event_count;
+        group.event_count = reduction.event_count;
+        group.first_seen = reduction.first_seen;
+        let payload_json = serde_json::to_string(&group)
+            .map_err(|error| ProxyError::Other(format!("serialize canonical alert group: {error}")))?;
+        let position = state.build_next_position;
+        for (chunk_position, payload_chunk) in
+            canonical_alert_payload_chunks(&payload_json).into_iter().enumerate()
+        {
             self.ensure_admin_alerts_cache_warm_write_admitted()?;
-            let chunk = chunk.to_vec();
             self.sqlite_runtime
                 .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                     Box::pin(async move {
-                        for (position, last_seen, total_count, alert_type, group_id) in chunk {
-                            sqlx::query(
-                                r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_groups
-                                       (build_generation, position, last_seen, total_count,
-                                        alert_type, group_id, payload_json)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?)"#,
-                            )
-                            .bind(snapshot.build_generation)
-                            .bind(position)
-                            .bind(last_seen)
-                            .bind(total_count)
-                            .bind(alert_type)
-                            .bind(group_id)
-                            .bind("")
-                            .execute(&mut **tx)
-                            .await?;
-                        }
+                        sqlx::query(
+                            r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_chunks
+                                   (build_generation, position, chunk_position, payload_chunk)
+                               VALUES (?, ?, ?, ?)"#,
+                        )
+                        .bind(snapshot.build_generation)
+                        .bind(position)
+                        .bind(chunk_position as i64)
+                        .bind(payload_chunk)
+                        .execute(&mut **tx)
+                        .await?;
                         Ok::<_, ProxyError>(())
                     })
                 })
                 .await?;
         }
-        let next_position = state.build_next_position + staged.len() as i64;
-        let partition = state.build_partition_key.clone();
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         self.sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                let group = group.clone();
+                Box::pin(async move {
+                    sqlx::query(
+                        r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_groups
+                               (build_generation, position, last_seen, total_count,
+                                alert_type, group_id, payload_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .bind(group.last_seen)
+                    .bind(group.count)
+                    .bind(group.alert_type)
+                    .bind(group.id)
+                    .bind("")
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(())
+                })
+            })
+            .await?;
+        let partition = state.build_partition_key.clone();
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let finalized = self
+            .sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
                     let changed = sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
-                                  SET build_partition_key = '', build_partition_after_key = ?,
+                              SET build_partition_key = '', build_partition_after_key = ?,
                                   build_partition_cursor_occurred_at = -9223372036854775808,
                                   build_partition_cursor_row_sort_id = '',
                                   build_partition_events_json = '[]',
@@ -740,7 +856,7 @@ impl KeyStore {
                               )"#,
                     )
                     .bind(&partition)
-                    .bind(next_position)
+                    .bind(position + 1)
                     .bind(snapshot.build_generation)
                     .bind(snapshot.projection_revision)
                     .bind(&partition)
@@ -749,18 +865,26 @@ impl KeyStore {
                     Ok::<_, ProxyError>(changed.rows_affected() == 1)
                 })
             })
-            .await?
-            .then_some(())
-            .ok_or_else(|| ProxyError::Deferred {
+            .await?;
+        if !finalized {
+            return Err(ProxyError::Deferred {
                 operation: "admin_alerts_cache_warm",
                 reason: "groups_build_replaced".to_string(),
-            })?;
+            });
+        }
         self.record_admin_alerts_warm_slice();
-        self.sqlite_runtime
-            .record_admin_alerts_canonical_group_build_slice();
         self.sqlite_runtime
             .record_admin_alerts_canonical_group_reduction_slice();
         Ok(())
+    }
+
+    async fn finalize_admin_alert_canonical_semantic_partition(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        state: AdminAlertCanonicalGroupsState,
+    ) -> Result<(), ProxyError> {
+        self.advance_admin_alert_canonical_semantic_reduction(snapshot, state)
+            .await
     }
 
     async fn capture_admin_alert_canonical_groups_partition_slice(
@@ -1103,6 +1227,51 @@ impl KeyStore {
                     .execute(&mut **tx)
                     .await?
                     .rows_affected();
+                    let cleanup_reduction_events = sqlx::query(
+                        r#"DELETE FROM observability.admin_alert_canonical_group_reduction_events
+                             WHERE rowid IN (
+                                 SELECT rowid
+                                   FROM observability.admin_alert_canonical_group_reduction_events
+                                  WHERE build_generation <> ? AND build_generation <> ?
+                                  ORDER BY build_generation ASC, partition_key ASC, event_position ASC
+                                  LIMIT 25
+                             )"#,
+                    )
+                    .bind(active_generation)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
+                    let cleanup_reduction_children = sqlx::query(
+                        r#"DELETE FROM observability.admin_alert_canonical_group_reduction_children
+                             WHERE rowid IN (
+                                 SELECT rowid
+                                   FROM observability.admin_alert_canonical_group_reduction_children
+                                  WHERE build_generation <> ? AND build_generation <> ?
+                                  ORDER BY build_generation ASC, partition_key ASC, child_ordinal ASC
+                                  LIMIT 25
+                             )"#,
+                    )
+                    .bind(active_generation)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
+                    let cleanup_reduction_mothers = sqlx::query(
+                        r#"DELETE FROM observability.admin_alert_canonical_group_reduction_mothers
+                             WHERE rowid IN (
+                                 SELECT rowid
+                                   FROM observability.admin_alert_canonical_group_reduction_mothers
+                                  WHERE build_generation <> ? AND build_generation <> ?
+                                  ORDER BY build_generation ASC, partition_key ASC, mother_ordinal ASC
+                                  LIMIT 25
+                             )"#,
+                    )
+                    .bind(active_generation)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
                     let cleanup_group_payload_chunks = sqlx::query(
                         r#"DELETE FROM observability.admin_alert_canonical_group_payload_chunks
                              WHERE rowid IN (
@@ -1163,13 +1332,33 @@ impl KeyStore {
                     .execute(&mut **tx)
                     .await?
                     .rows_affected();
+                    let cleanup_catalog_payload_items_v2 = sqlx::query(
+                        r#"DELETE FROM observability.admin_alert_canonical_catalog_payload_items_v2
+                             WHERE rowid IN (
+                                 SELECT rowid
+                                   FROM observability.admin_alert_canonical_catalog_payload_items_v2
+                                  WHERE build_generation <> ? AND build_generation <> ?
+                                  ORDER BY build_generation ASC, facet_kind ASC, facet_value ASC,
+                                           facet_label ASC
+                                  LIMIT 25
+                             )"#,
+                    )
+                    .bind(active_generation)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
                     let cleanup_remaining = cleanup_events > 0
                         || cleanup_overrides > 0
                         || cleanup_fragments > 0
+                        || cleanup_reduction_events > 0
+                        || cleanup_reduction_children > 0
+                        || cleanup_reduction_mothers > 0
                         || cleanup_group_payload_chunks > 0
                         || cleanup_catalog > 0
                         || cleanup_catalog_payloads > 0
                         || cleanup_catalog_payload_items > 0
+                        || cleanup_catalog_payload_items_v2 > 0
                         || sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_group_events \
                              WHERE build_generation <> ? AND build_generation <> ?)",
@@ -1202,6 +1391,30 @@ impl KeyStore {
                         .fetch_one(&mut **tx)
                         .await?
                         || sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_group_reduction_events \
+                             WHERE build_generation <> ? AND build_generation <> ?)",
+                        )
+                        .bind(active_generation)
+                        .bind(build_generation)
+                        .fetch_one(&mut **tx)
+                        .await?
+                        || sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_group_reduction_children \
+                             WHERE build_generation <> ? AND build_generation <> ?)",
+                        )
+                        .bind(active_generation)
+                        .bind(build_generation)
+                        .fetch_one(&mut **tx)
+                        .await?
+                        || sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_group_reduction_mothers \
+                             WHERE build_generation <> ? AND build_generation <> ?)",
+                        )
+                        .bind(active_generation)
+                        .bind(build_generation)
+                        .fetch_one(&mut **tx)
+                        .await?
+                        || sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_catalog_facets \
                              WHERE build_generation <> ? AND build_generation <> ?)",
                         )
@@ -1219,6 +1432,14 @@ impl KeyStore {
                         .await?
                         || sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_catalog_payload_items \
+                             WHERE build_generation <> ? AND build_generation <> ?)",
+                        )
+                        .bind(active_generation)
+                        .bind(build_generation)
+                        .fetch_one(&mut **tx)
+                        .await?
+                        || sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
                              WHERE build_generation <> ? AND build_generation <> ?)",
                         )
                         .bind(active_generation)

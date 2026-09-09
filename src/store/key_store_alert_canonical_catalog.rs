@@ -356,7 +356,7 @@ impl KeyStore {
                 Box::pin(async move {
                     for (facet_value, facet_label, item_count) in rows {
                         sqlx::query(
-                            "INSERT OR REPLACE INTO observability.admin_alert_canonical_catalog_payload_items \
+                            "INSERT OR REPLACE INTO observability.admin_alert_canonical_catalog_payload_items_v2 \
                              (build_generation, facet_kind, facet_value, facet_label, item_count) \
                              VALUES (?, ?, ?, ?, ?)",
                         )
@@ -536,7 +536,7 @@ impl KeyStore {
                 .await?;
             let result = sqlx::query_as::<_, (String, String, i64)>(
                 "SELECT facet_value, facet_label, item_count \
-                 FROM observability.admin_alert_canonical_catalog_payload_items \
+                 FROM observability.admin_alert_canonical_catalog_payload_items_v2 \
                  WHERE build_generation = ? AND facet_kind = ? \
                    AND (item_count < ? OR (item_count = ? AND \
                         (facet_label > ? OR (facet_label = ? AND facet_value > ?)))) \

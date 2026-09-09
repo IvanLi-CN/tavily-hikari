@@ -35,8 +35,18 @@ const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION: i64 = 38;
 const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME: &str = "admin-alert-canonical-staged-output-v1";
 const ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM: &str =
     "sha256:7c13f0c6248de36e53a5bf692a6c2f4955af75e1ce4f32f1e49ab348d252b241";
+const ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_VERSION: i64 = 39;
+const ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_NAME: &str =
+    "admin-alert-canonical-catalog-payload-labels-v1";
+const ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_CHECKSUM: &str =
+    "sha256:bff9323b90c57e0da1ebc0b0c47cb2e1a9493833609451a380c474b84d3f6acf";
+const ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION: i64 = 40;
+const ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_NAME: &str =
+    "admin-alert-canonical-groups-streamed-finalization-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_CHECKSUM: &str =
+    "sha256:16190b4b0f90ace54cfc6dbaebe86ce6981cf9876f2ed03e8349b76238b8dedf";
 
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 8] {
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 10] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -77,6 +87,16 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION,
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME,
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_VERSION,
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_NAME,
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_CHECKSUM,
         ),
     ]
 }
@@ -138,6 +158,20 @@ impl KeyStore {
             self.apply_admin_alert_canonical_staged_output_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_catalog_payload_labels_migration()
+                .await?;
+        }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_streamed_finalization_migration()
+                .await?;
+        }
         Ok(())
     }
 
@@ -154,7 +188,12 @@ impl KeyStore {
             .await?;
         self.apply_admin_alert_canonical_payload_resume_migration()
             .await?;
-        self.apply_admin_alert_canonical_staged_output_migration().await
+        self.apply_admin_alert_canonical_staged_output_migration()
+            .await?;
+        self.apply_admin_alert_canonical_catalog_payload_labels_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_streamed_finalization_migration()
+            .await
     }
 
     async fn validate_convergence_schema_migration_objects(&self) -> Result<(), ProxyError> {
@@ -348,6 +387,53 @@ impl KeyStore {
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 38".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_VERSION)
+            .await?
+            && (!self
+                .schema_object_exists(
+                    "observability",
+                    "admin_alert_canonical_catalog_payload_items_v2",
+                )
+                .await?
+                || !self
+                    .schema_named_object_exists(
+                        "observability",
+                        "index",
+                        "idx_admin_alert_canonical_catalog_payload_items_v2_read",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 39".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION)
+            .await?
+            && (!self
+                .schema_object_exists(
+                    "observability",
+                    "admin_alert_canonical_group_reduction_events",
+                )
+                .await?
+                || !self
+                    .schema_object_exists(
+                        "observability",
+                        "admin_alert_canonical_group_reduction_children",
+                    )
+                    .await?
+                || !self
+                    .schema_object_exists(
+                        "observability",
+                        "admin_alert_canonical_group_reduction_mothers",
+                    )
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 40".to_string(),
             ));
         }
         Ok(())
@@ -954,6 +1040,184 @@ impl KeyStore {
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_VERSION,
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_NAME,
             ADMIN_ALERT_CANONICAL_STAGED_OUTPUT_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_catalog_payload_labels_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        // A user facet's stable identity includes its historical display label.
+        // v38 keyed staged output only by value and could overwrite one label
+        // with another. Keep the old derived table for rolling upgrades, and
+        // open a fresh slot backed by this lossless output table.
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_catalog_payload_items_v2 (
+                build_generation INTEGER NOT NULL,
+                facet_kind TEXT NOT NULL,
+                facet_value TEXT NOT NULL,
+                facet_label TEXT NOT NULL,
+                item_count INTEGER NOT NULL,
+                PRIMARY KEY(build_generation, facet_kind, facet_value, facet_label)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_catalog_payload_items_v2_read \
+             ON admin_alert_canonical_catalog_payload_items_v2(\
+                 build_generation, facet_kind, item_count DESC, facet_label, facet_value\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Both catalog tables are local, reproducible output. Reopen the
+        // complete derived slot rather than copying rows with a lossy key or
+        // scanning business data during migration.
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_generation = 0, active_row_count = 0,
+                      active_projection_revision = -1,
+                      source_recent_generation = -1, source_history_generation = -1,
+                      build_generation = 0, build_projection_revision = -1,
+                      build_source_recent_generation = -1,
+                      build_source_history_generation = -1,
+                      build_source_rowid_upper_bound = 0,
+                      build_cursor_source_rowid = 0, build_phase = 'idle',
+                      build_partition_key = '', build_partition_after_key = '',
+                      build_partition_cursor_occurred_at = -9223372036854775808,
+                      build_partition_cursor_row_sort_id = '',
+                      build_partition_events_json = '[]',
+                      build_partition_source_complete = 0,
+                      build_partition_fragment_next_position = 1,
+                      build_partition_finalize_fragment_position = 1,
+                      build_next_position = 1
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_catalog_state
+                  SET build_generation = 0,
+                      cursor_occurred_at = -9223372036854775808,
+                      cursor_row_sort_id = '', source_complete = 0
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_VERSION,
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_NAME,
+            ADMIN_ALERT_CANONICAL_CATALOG_PAYLOAD_LABELS_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_streamed_finalization_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_reduction_events (
+                build_generation INTEGER NOT NULL,
+                partition_key TEXT NOT NULL,
+                event_position INTEGER NOT NULL,
+                child_ordinal INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                PRIMARY KEY(build_generation, partition_key, event_position)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_reduction_events_child \
+             ON admin_alert_canonical_group_reduction_events(\
+                 build_generation, partition_key, child_ordinal, event_position DESC\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_reduction_children (
+                build_generation INTEGER NOT NULL,
+                partition_key TEXT NOT NULL,
+                child_ordinal INTEGER NOT NULL,
+                mother_ordinal INTEGER NOT NULL,
+                first_event_position INTEGER NOT NULL,
+                last_event_position INTEGER NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                event_count INTEGER NOT NULL,
+                latest_event_json TEXT NOT NULL,
+                semantic_kind TEXT NOT NULL,
+                semantic_window_minutes INTEGER,
+                semantic_window_start INTEGER,
+                semantic_window_end INTEGER,
+                semantic_window_key TEXT,
+                PRIMARY KEY(build_generation, partition_key, child_ordinal)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_reduction_mothers (
+                build_generation INTEGER NOT NULL,
+                partition_key TEXT NOT NULL,
+                mother_ordinal INTEGER NOT NULL,
+                first_child_ordinal INTEGER NOT NULL,
+                last_child_ordinal INTEGER NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                event_count INTEGER NOT NULL,
+                child_count INTEGER NOT NULL,
+                latest_event_json TEXT NOT NULL,
+                semantic_kind TEXT NOT NULL,
+                semantic_window_minutes INTEGER,
+                semantic_window_start INTEGER,
+                semantic_window_end INTEGER,
+                semantic_window_key TEXT,
+                PRIMARY KEY(build_generation, partition_key, mother_ordinal)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        // v36's cursor did not describe an accepted reduction. Discard only
+        // this local output slot; source projection data remains untouched.
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_generation = 0, active_row_count = 0,
+                      active_projection_revision = -1,
+                      source_recent_generation = -1, source_history_generation = -1,
+                      build_generation = 0, build_projection_revision = -1,
+                      build_source_recent_generation = -1,
+                      build_source_history_generation = -1,
+                      build_source_rowid_upper_bound = 0,
+                      build_cursor_source_rowid = 0, build_phase = 'idle',
+                      build_partition_key = '', build_partition_after_key = '',
+                      build_partition_cursor_occurred_at = -9223372036854775808,
+                      build_partition_cursor_row_sort_id = '',
+                      build_partition_events_json = '[]',
+                      build_partition_source_complete = 0,
+                      build_partition_fragment_next_position = 1,
+                      build_partition_finalize_fragment_position = 1,
+                      build_next_position = 1
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_catalog_state
+                  SET build_generation = 0,
+                      cursor_occurred_at = -9223372036854775808,
+                      cursor_row_sort_id = '', source_complete = 0
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_CHECKSUM,
         )
         .await
     }

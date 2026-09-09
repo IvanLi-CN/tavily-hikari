@@ -77,11 +77,8 @@ related_specs:
   represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal
   completion, so writer contention cannot turn a partial remote sample into semantic failure or lose
   billing truth.
-- Multi-key reconciliation observation writes are short `ReconciliationProjection` transactions.
-  They upsert only successful responses for the current work generation, while the two-request cap is
-  represented as a typed `remote_attempt_budget` defer. Derived rows are cleared only with terminal
-  completion, so writer contention cannot turn a partial remote sample into semantic failure or lose
-  billing truth.
+  The candidate-global, Key-set, and per-Key logical source identities fence reuse: one changed Key
+  invalidates only that Key, while a global or Key-set change invalidates the complete partial set.
 
 ## Context
 
