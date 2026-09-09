@@ -93,7 +93,7 @@ async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_
     let formatted = format_admin_alerts_warm_window(window.admin_alerts_warm);
     assert_eq!(
         formatted,
-        "slices=1,publishes=1,generation_discards=1,defers=1,cold_misses=1,canonical_group_build_slices=1,canonical_group_publishes=1,canonical_group_defers=1"
+        "slices=1,publishes=1,generation_discards=1,defers=1,cold_misses=1,canonical_events_indexed_reads=0,canonical_catalog_payload_slices=0,canonical_group_build_slices=1,canonical_group_reduction_slices=0,canonical_group_publishes=1,canonical_group_defers=1"
     );
     assert!(!formatted.contains("SELECT"));
     assert!(!formatted.contains("token"));
