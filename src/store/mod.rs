@@ -564,6 +564,46 @@ pub(crate) async fn sleep_before_sqlite_transient_write_retry(
     deadline: Instant,
     err: &ProxyError,
 ) -> bool {
+    sleep_before_sqlite_transient_retry(
+        backend_time,
+        operation,
+        attempt,
+        deadline,
+        err,
+        "sqlite_transient_write_retry",
+        "write",
+    )
+    .await
+}
+
+pub(crate) async fn sleep_before_sqlite_transient_read_retry(
+    backend_time: &BackendTime,
+    operation: &str,
+    attempt: usize,
+    deadline: Instant,
+    err: &ProxyError,
+) -> bool {
+    sleep_before_sqlite_transient_retry(
+        backend_time,
+        operation,
+        attempt,
+        deadline,
+        err,
+        "sqlite_transient_read_retry",
+        "read",
+    )
+    .await
+}
+
+async fn sleep_before_sqlite_transient_retry(
+    backend_time: &BackendTime,
+    operation: &str,
+    attempt: usize,
+    deadline: Instant,
+    err: &ProxyError,
+    event: &str,
+    kind: &str,
+) -> bool {
     if !is_transient_sqlite_write_error(err) {
         return false;
     }
@@ -577,12 +617,12 @@ pub(crate) async fn sleep_before_sqlite_transient_write_retry(
     let backoff = sqlite_transient_write_retry_delay(attempt).min(remaining);
     warn!(
         component = "db",
-        event = "sqlite_transient_write_retry",
+        event,
         operation,
         attempt = attempt + 1,
         backoff_ms = backoff.as_millis() as u64,
         err = %err,
-        "{operation}: transient sqlite write error (attempt={}, backoff={}ms): {err}",
+        "{operation}: transient sqlite {kind} error (attempt={}, backoff={}ms): {err}",
         attempt + 1,
         backoff.as_millis(),
     );

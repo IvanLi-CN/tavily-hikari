@@ -1973,11 +1973,37 @@ impl UserBusinessCalls1hWindow {
     }
 
     pub(crate) async fn backfill_recent(&self) -> Result<(), ProxyError> {
-        let result = self.backfill_recent_impl().await;
-        if result.is_err() {
-            self.backend.abort_backfill().await;
+        // Listener startup may overlap with a short control write. Keep this
+        // read-only cache warm-up recoverable instead of surfacing a transient
+        // SQLite lock as a final startup error.
+        let retry_deadline = self
+            .backend_time
+            .instant_now()
+            .checked_add(Duration::from_secs(15))
+            .unwrap_or_else(Instant::now);
+        let mut retry_attempt = 0;
+        loop {
+            match self.backfill_recent_impl().await {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if sleep_before_sqlite_transient_read_retry(
+                        &self.backend_time,
+                        "user business calls backfill",
+                        retry_attempt,
+                        retry_deadline,
+                        &err,
+                    )
+                    .await =>
+                {
+                    self.backend.abort_backfill().await;
+                    retry_attempt += 1;
+                }
+                Err(err) => {
+                    self.backend.abort_backfill().await;
+                    return Err(err);
+                }
+            }
         }
-        result
     }
 
     async fn backfill_recent_impl(&self) -> Result<(), ProxyError> {

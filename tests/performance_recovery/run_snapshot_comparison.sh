@@ -694,6 +694,7 @@ def structured_field(line, field, value):
 
 sqlite_transient_lock_retries = sum(
     structured_field(line, "event", "sqlite_transient_write_retry")
+    or structured_field(line, "event", "sqlite_transient_read_retry")
     or ("transient sqlite error" in line and "attempt=" in line)
     for line in sqlite_lock_lines
 )
