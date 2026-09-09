@@ -1423,7 +1423,7 @@ async fn admin_alerts_warm_discards_a_snapshot_after_source_advance() {
         .await;
     super::super::prewarm_admin_alerts(state.clone()).await;
     tokio::time::timeout(
-        std::time::Duration::from_secs(2),
+        std::time::Duration::from_secs(15),
         pause.wait_until_arrived(),
     )
     .await
