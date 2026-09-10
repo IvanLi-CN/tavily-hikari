@@ -12,9 +12,9 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
     let key = key
         .trim()
         .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':'));
-    let decoded = match urlencoding::decode(key) {
-        Ok(decoded) => decoded.into_owned(),
-        Err(_) => return true,
+    let decoded = match decode_alert_percent_escapes(key) {
+        Ok(decoded) => decoded,
+        Err(()) => return true,
     };
     // Fallback diagnostics can contain a malformed JSON fragment whose key
     // still uses JSON unicode escapes (for example, `\u0061piKey`). Decode
@@ -263,9 +263,9 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
 }
 
 fn redact_opaque_sensitive_tokens(value: &str) -> String {
-    let decoded = match urlencoding::decode(value) {
-        Ok(decoded) => decoded.into_owned(),
-        Err(_) => return "***redacted***".to_string(),
+    let decoded = match decode_alert_percent_escapes(value) {
+        Ok(decoded) => decoded,
+        Err(()) => return "***redacted***".to_string(),
     };
     let decoded = match decode_alert_unicode_escapes(&decoded) {
         Ok(decoded) => decoded,
@@ -368,6 +368,18 @@ fn decode_alert_unicode_escapes(value: &str) -> Result<String, ()> {
         offset += character.len_utf8();
     }
     Ok(decoded)
+}
+
+fn decode_alert_percent_escapes(value: &str) -> Result<String, ()> {
+    let mut decoded = value.to_string();
+    for _ in 0..4 {
+        let next = urlencoding::decode(&decoded).map_err(|_| ())?.into_owned();
+        if next == decoded {
+            return Ok(decoded);
+        }
+        decoded = next;
+    }
+    Err(())
 }
 
 fn redact_embedded_json_text(value: &str) -> Option<String> {
@@ -964,6 +976,11 @@ mod tests {
             "usage_http 429: query=tvly%2Ddev%2Dopaque%2Dvalue",
         );
         assert!(!encoded_value.contains("tvly%2Ddev%2Dopaque%2Dvalue"));
+
+        let double_encoded_value = redact_sensitive_alert_display_text(
+            "usage_http 429: query=tvly%252Ddev%252Dopaque%252Dvalue",
+        );
+        assert!(!double_encoded_value.contains("tvly%252Ddev%252Dopaque%252Dvalue"));
 
         let escaped_value = redact_sensitive_alert_display_text(
             r#"usage_http 429: {"error":"\\u0073k_live_secret"}"#,
