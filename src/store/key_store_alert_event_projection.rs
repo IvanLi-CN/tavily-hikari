@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn alert_projection_keeps_unicode_sensitive_values_redacted() {
+    fn alert_projection_redacts_unicode_sensitive_values() {
         let redacted = redact_sensitive_alert_display_text(
             "usage_http 429: authorization: \"Ģsecret-value\"; safe: visible",
         );
