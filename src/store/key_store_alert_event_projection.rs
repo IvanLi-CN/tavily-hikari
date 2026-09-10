@@ -81,7 +81,28 @@ fn redact_sensitive_alert_display_text(value: &str) -> String {
             redact_sensitive_json(&mut json);
             serde_json::to_string(&json).unwrap_or_else(|_| value.to_string())
         })
-        .unwrap_or_else(|_| value.to_string());
+        .ok()
+        .or_else(|| {
+            value.char_indices().find_map(|(index, character)| {
+                if !matches!(character, '{' | '[') {
+                    return None;
+                }
+                let suffix = &value[index..];
+                let mut stream =
+                    serde_json::Deserializer::from_str(suffix).into_iter::<serde_json::Value>();
+                let mut json = stream.next()?.ok()?;
+                let consumed = stream.byte_offset();
+                redact_sensitive_json(&mut json);
+                let serialized = serde_json::to_string(&json).ok()?;
+                Some(format!(
+                    "{}{}{}",
+                    &value[..index],
+                    serialized,
+                    &suffix[consumed..]
+                ))
+            })
+        })
+        .unwrap_or_else(|| value.to_string());
     redact_sensitive_query_parameters(&normalized)
 }
 
@@ -400,5 +421,17 @@ mod tests {
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("\"key\""));
         assert!(!redacted.contains("\"refreshToken\":\"refresh\""));
+    }
+
+    #[test]
+    fn alert_projection_redacts_prefixed_json_error_payloads() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"accessToken":"secret","nested":{"apiKey":"key"}}"#,
+        );
+        assert!(redacted.contains("usage_http 429"));
+        assert!(redacted.contains("\"accessToken\":\"***redacted***\""));
+        assert!(redacted.contains("\"apiKey\":\"***redacted***\""));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("key"));
     }
 }
