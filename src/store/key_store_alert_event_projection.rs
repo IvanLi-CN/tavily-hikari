@@ -40,13 +40,35 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
 fn redact_sensitive_json(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(fields) => {
-            for (key, value) in fields.iter_mut() {
-                if is_sensitive_alert_display_key(key) {
-                    *value = serde_json::Value::String("***redacted***".to_string());
-                } else {
-                    redact_sensitive_json(value);
+            // Object keys are display data too. Rebuild the map so opaque
+            // credentials embedded in a key cannot bypass the structured
+            // value redaction path.
+            let original = std::mem::take(fields);
+            let mut redacted_fields = serde_json::Map::with_capacity(original.len());
+            for (key, mut value) in original {
+                let mut redacted_key = redact_opaque_sensitive_tokens(&key);
+                if redacted_fields.contains_key(&redacted_key) {
+                    // Two credential-like keys can redact to the same marker.
+                    // Keep both display fields without exposing their source.
+                    let base_key = redacted_key.clone();
+                    let mut suffix = 2usize;
+                    loop {
+                        let candidate = format!("{base_key}_{suffix}");
+                        if !redacted_fields.contains_key(&candidate) {
+                            redacted_key = candidate;
+                            break;
+                        }
+                        suffix = suffix.saturating_add(1);
+                    }
                 }
+                if is_sensitive_alert_display_key(&key) {
+                    value = serde_json::Value::String("***redacted***".to_string());
+                } else {
+                    redact_sensitive_json(&mut value);
+                }
+                redacted_fields.insert(redacted_key, value);
             }
+            *fields = redacted_fields;
         }
         serde_json::Value::Array(values) => {
             for value in values {
@@ -841,6 +863,23 @@ mod tests {
             redact_sensitive_alert_display_text(r#"usage_http 429: {"\u0061piKey": "secret""#);
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("***redacted***"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_opaque_credentials_in_json_object_keys() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"{"tvly-dev-opaque-value":"visible","sk_opaque_value":"visible"}"#,
+        );
+        assert!(!redacted.contains("tvly-dev-opaque-value"));
+        assert!(!redacted.contains("sk_opaque_value"));
+        assert_eq!(redacted.matches("***redacted***").count(), 2);
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"{"\u0074vly-dev-unicode-value":"visible","\u0073k_unicode_value":"visible"}"#,
+        );
+        assert!(!redacted.contains("tvly-dev-unicode-value"));
+        assert!(!redacted.contains("sk_unicode_value"));
+        assert_eq!(redacted.matches("***redacted***").count(), 2);
     }
 
     #[test]
