@@ -503,7 +503,10 @@
       "estimated_seconds": 64,
       "coverage_target": "lib",
       "run_args": ["--lib"],
-      "include_prefixes": ["tests::alert_projection::"]
+      "include_prefixes": [
+        "tests::alert_projection::",
+        "store::key_store_alert_event_projection::tests::alert_projection_redacts_sensitive_"
+      ]
     },
     {
       "id": "lib-reconciliation-maintenance",

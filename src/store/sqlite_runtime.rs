@@ -116,7 +116,7 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
 }
 
 #[derive(Debug)]
-pub struct SqliteMaintenanceRunLease {
+pub(crate) struct SqliteMaintenanceRunLease {
     _permit: OwnedSemaphorePermit,
 }
 
@@ -787,6 +787,39 @@ impl SqliteRuntime {
         self.try_admit_maintenance_bulk_with_foreground_policy(operation)
     }
 
+    /// Research drain has an aged-turn exception for the foreground-RPS
+    /// heuristic, but it still owns the single bulk slot for its bounded
+    /// source read. The permit is intentionally scoped by the caller to the
+    /// local read phase and must be dropped before any outbound HTTP request.
+    pub(crate) fn try_admit_research_drain_bulk(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        let operation = SqliteOperation::ReconciliationProjection;
+        if self
+            .inner
+            .maintenance_shutdown
+            .load(AtomicOrdering::Acquire)
+        {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        }
+        if self.recent_contention_active() {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
+            return Err(SqliteAdmissionDeferReason::RecentContention);
+        }
+        if !self.has_foreground_pool_capacity() {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::PoolPressure);
+            return Err(SqliteAdmissionDeferReason::PoolPressure);
+        }
+        match self.inner.maintenance_bulk.clone().try_acquire_owned() {
+            Ok(permit) => Ok(SqliteMaintenanceBulkPermit { _permit: permit }),
+            Err(_) => {
+                self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+                Err(SqliteAdmissionDeferReason::BulkBusy)
+            }
+        }
+    }
+
     /// Reject a reconciliation run before it reaches a control read that
     /// could wait on an exhausted pool. The actual preparation still obtains
     /// the one bulk permit at its own boundary, so this probe never reserves
@@ -806,36 +839,6 @@ impl SqliteRuntime {
         if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
             self.record_deferred(operation, reason);
             return Err(reason);
-        }
-        Ok(())
-    }
-
-    /// Research drain's aged turn may bypass only the foreground-RPS
-    /// heuristic. It still has to respect maintenance shutdown, pool
-    /// capacity, recent contention, and the shared bulk slot.
-    pub(crate) fn preflight_research_drain_admission(
-        &self,
-    ) -> Result<(), SqliteAdmissionDeferReason> {
-        let operation = SqliteOperation::ReconciliationProjection;
-        if self
-            .inner
-            .maintenance_shutdown
-            .load(AtomicOrdering::Acquire)
-        {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
-            return Err(SqliteAdmissionDeferReason::BulkBusy);
-        }
-        if self.recent_contention_active() {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
-            return Err(SqliteAdmissionDeferReason::RecentContention);
-        }
-        if !self.has_foreground_pool_capacity() {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::PoolPressure);
-            return Err(SqliteAdmissionDeferReason::PoolPressure);
-        }
-        if self.inner.maintenance_bulk.available_permits() == 0 {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
-            return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
         Ok(())
     }

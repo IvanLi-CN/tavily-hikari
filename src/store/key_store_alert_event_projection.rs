@@ -11,19 +11,24 @@ pub(crate) const ALERT_EVENT_IDENTIFIER_MAX_CHARS: usize = 256;
 fn is_sensitive_alert_display_key(key: &str) -> bool {
     let key = key
         .trim()
-        .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':' | ' '))
-        .to_ascii_lowercase();
-    key.contains("api_key")
-        || key.contains("apikey")
-        || key.contains("access_token")
-        || key.contains("refresh_token")
+        .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':'));
+    let decoded = urlencoding::decode(key).unwrap_or_else(|_| key.into());
+    let key: String = decoded
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let key = key.as_str();
+    key.contains("apikey")
+        || key.contains("accesstoken")
+        || key.contains("refreshtoken")
         || key == "token"
-        || key.ends_with("_token")
+        || key.contains("token")
         || key.contains("password")
         || key.contains("secret")
         || key.contains("authorization")
         || key.contains("credential")
-        || key.contains("private_key")
+        || key.contains("privatekey")
 }
 
 fn redact_sensitive_json(value: &mut serde_json::Value) {
@@ -373,13 +378,27 @@ mod tests {
     }
 
     #[test]
+    fn alert_projection_redacts_common_sensitive_key_spellings() {
+        let redacted = redact_sensitive_alert_display_text(
+            "https://example.test/mcp?access-token=one&%61pi%5Fkey=two&safe=value",
+        );
+        assert!(redacted.contains("access-token=***redacted***"));
+        assert!(redacted.contains("%61pi%5Fkey=***redacted***"));
+        assert!(redacted.contains("safe=value"));
+        assert!(!redacted.contains("one"));
+        assert!(!redacted.contains("two"));
+    }
+
+    #[test]
     fn alert_projection_redacts_sensitive_json_fields() {
         let redacted = redact_sensitive_alert_display_text(
-            r#"{"error":"failed","access_token":"secret","nested":{"private_key":"key"}}"#,
+            r#"{"error":"failed","accessToken":"secret","private-key":"key","nested":{"refreshToken":"refresh"}}"#,
         );
-        assert!(redacted.contains("\"access_token\":\"***redacted***\""));
-        assert!(redacted.contains("\"private_key\":\"***redacted***\""));
+        assert!(redacted.contains("\"accessToken\":\"***redacted***\""));
+        assert!(redacted.contains("\"private-key\":\"***redacted***\""));
+        assert!(redacted.contains("\"refreshToken\":\"***redacted***\""));
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("\"key\""));
+        assert!(!redacted.contains("\"refreshToken\":\"refresh\""));
     }
 }

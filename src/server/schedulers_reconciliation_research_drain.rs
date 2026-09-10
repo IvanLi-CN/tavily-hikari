@@ -93,37 +93,6 @@ async fn run_reconciliation_research_drain_claimed_job(
         .await;
     }
 
-    let Some(_run_lease) = state.proxy.try_start_sqlite_maintenance_run() else {
-        let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
-        return persist_claimed_research_drain(
-            state,
-            job_id,
-            claim_generation,
-            Ok(ClaimedResearchDrainOutcome::Deferred {
-                reason: tavily_hikari::ResearchDrainDeferReason::ControlDefer,
-                retry_at,
-            }),
-        )
-        .await;
-    };
-    if let Err(reason) = state.proxy.preflight_reconciliation_research_drain() {
-        let reason = match reason {
-            "foreground_pressure" => tavily_hikari::ResearchDrainDeferReason::ForegroundPressure,
-            _ => tavily_hikari::ResearchDrainDeferReason::ControlDefer,
-        };
-        let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
-        return persist_claimed_research_drain(
-            state,
-            job_id,
-            claim_generation,
-            Ok(ClaimedResearchDrainOutcome::Deferred {
-                reason,
-                retry_at,
-            }),
-        )
-        .await;
-    }
-
     let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
     let run_result = state
         .proxy
