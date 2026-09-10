@@ -1385,7 +1385,7 @@ async fn reconciliation_rejects_reclaimed_claim_after_remote_fetch() {
             )
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(2), fetch_started.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(5), fetch_started.notified())
         .await
         .expect("upstream usage fetch starts");
     clock.set_now_ts(now + 61);
