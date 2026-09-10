@@ -895,6 +895,13 @@ mod tests {
             r#"usage_http 429: {"authorization":"prefix"} note tvly-dev-secret"#,
         );
         assert!(!redacted.contains("tvly-dev-secret"));
+
+        let redacted =
+            redact_sensitive_alert_display_text("usage_http 429: note tvly-dev-opaque-value");
+        assert!(!redacted.contains("tvly-dev-opaque-value"));
+
+        let redacted = redact_sensitive_alert_display_text("usage_http 429: note sk_opaque_value");
+        assert!(!redacted.contains("sk_opaque_value"));
     }
 
     #[test]
