@@ -1000,11 +1000,17 @@ mod tests {
         assert!(nested_value.contains("***redacted***"));
 
         let mixed_value = redact_sensitive_alert_display_text(
-            r#"usage_http 429: query=\\u0025\\u0037\\u0033k_live_secret"#,
+            r#"usage_http 429: query=\u0025\u0037\u0033k_live_secret"#,
         );
         assert!(!mixed_value.contains("sk_live_secret"));
         assert!(mixed_value.contains("***redacted***"));
-        assert!(!mixed_value.contains(r#"\\u0025\\u0037\\u0033k_live_secret"#));
+        assert!(!mixed_value.contains(r#"\u0025\u0037\u0033k_live_secret"#));
+
+        let mut over_depth = "%".to_string();
+        for _ in 0..9 {
+            over_depth = urlencoding::encode(&over_depth).into_owned();
+        }
+        assert!(super::decode_alert_credential_layers(&over_depth).is_err());
     }
 
     #[test]
