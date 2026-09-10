@@ -56,8 +56,9 @@ fn redact_sensitive_json(value: &mut serde_json::Value) {
         serde_json::Value::String(text) => {
             if let Some(redacted) = redact_embedded_json_text(text) {
                 *text = redacted;
+            } else {
+                *text = redact_sensitive_labeled_values(text);
             }
-            *text = redact_sensitive_labeled_values(text);
         }
         _ => {}
     }
@@ -76,32 +77,12 @@ fn quoted_alert_suffix_is_structural(value: &str) -> bool {
             return false;
         }
         let after_separator = &remainder[separator.len_utf8()..];
-        let had_whitespace = after_separator.len() != after_separator.trim_start().len();
         remainder = after_separator.trim_start();
         if matches!(separator, '}' | ']' | ')') {
             if remainder.is_empty() {
                 return true;
             }
-            if matches!(remainder.chars().next(), Some('}' | ']' | ')')) {
-                continue;
-            }
-            if matches!(
-                remainder.chars().next(),
-                Some(',' | ';' | '|' | '&' | '\n' | '\r' | ':' | '=')
-            ) {
-                continue;
-            }
-            let token_end = remainder
-                .char_indices()
-                .find(|(_, character)| {
-                    !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-                })
-                .map(|(offset, _)| offset)
-                .unwrap_or(remainder.len());
-            let token = &remainder[..token_end];
-            let token_is_sensitive = is_sensitive_alert_display_key(token)
-                || token.to_ascii_lowercase().starts_with("sk_");
-            return had_whitespace && !token_is_sensitive;
+            return false;
         }
         if remainder.is_empty() {
             return true;
@@ -245,7 +226,50 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
         changed = true;
     }
 
-    if !changed {
+    let redacted = if !changed {
+        value.to_string()
+    } else {
+        output.push_str(&value[cursor..]);
+        output
+    };
+    redact_opaque_sensitive_tokens(&redacted)
+}
+
+fn redact_opaque_sensitive_tokens(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let mut scan_offset = 0;
+    while let Some(relative_index) = [
+        value[scan_offset..].find("sk_"),
+        value[scan_offset..].find("tvly-"),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
+        let start = scan_offset + relative_index;
+        let is_boundary = start == 0
+            || !value[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        if !is_boundary {
+            scan_offset = start + 3;
+            continue;
+        }
+        let end = value[start..]
+            .char_indices()
+            .find(|(_, character)| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+            })
+            .map(|(offset, _)| start + offset)
+            .unwrap_or(value.len());
+        output.push_str(&value[cursor..start]);
+        output.push_str("***redacted***");
+        cursor = end;
+        scan_offset = end;
+    }
+    if cursor == 0 {
         value.to_string()
     } else {
         output.push_str(&value[cursor..]);
@@ -284,7 +308,7 @@ fn redact_embedded_json_text(value: &str) -> Option<String> {
             scan_offset = index + character.len_utf8();
             continue;
         };
-        output.push_str(&value[cursor..index]);
+        output.push_str(&redact_sensitive_labeled_values(&value[cursor..index]));
         if serialized == redacted {
             output.push_str(&suffix[..consumed]);
         } else {
@@ -298,7 +322,7 @@ fn redact_embedded_json_text(value: &str) -> Option<String> {
     if !changed {
         return None;
     }
-    output.push_str(&value[cursor..]);
+    output.push_str(&redact_sensitive_labeled_values(&value[cursor..]));
     Some(output)
 }
 
@@ -327,16 +351,24 @@ fn redact_sensitive_query_parameters(value: &str) -> String {
 }
 
 fn redact_sensitive_alert_display_text(value: &str) -> String {
-    let normalized = serde_json::from_str::<serde_json::Value>(value)
-        .map(|mut json| {
+    let (normalized, structured) =
+        if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(value) {
             redact_sensitive_json(&mut json);
-            serde_json::to_string(&json).unwrap_or_else(|_| value.to_string())
-        })
-        .ok()
-        .or_else(|| redact_embedded_json_text(value))
-        .unwrap_or_else(|| value.to_string());
+            (
+                serde_json::to_string(&json).unwrap_or_else(|_| value.to_string()),
+                true,
+            )
+        } else if let Some(redacted) = redact_embedded_json_text(value) {
+            (redacted, true)
+        } else {
+            (value.to_string(), false)
+        };
     let normalized = redact_sensitive_query_parameters(&normalized);
-    redact_sensitive_labeled_values(&normalized)
+    if structured {
+        normalized
+    } else {
+        redact_sensitive_labeled_values(&normalized)
+    }
 }
 
 fn bounded_alert_event_display_text(value: Option<String>) -> Option<String> {
@@ -848,6 +880,21 @@ mod tests {
             r#"usage_http 429: {"authorization":"prefix"} sk_live_secret"#,
         );
         assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"} tvly-dev-secret"#,
+        );
+        assert!(!redacted.contains("tvly-dev-secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"} note sk_live_secret"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"} note tvly-dev-secret"#,
+        );
+        assert!(!redacted.contains("tvly-dev-secret"));
     }
 
     #[test]
