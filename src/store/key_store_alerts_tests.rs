@@ -1,5 +1,8 @@
 use super::*;
 use crate::BackendTime;
+use super::key_store_alert_event_projection::{
+    ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS, ALERT_EVENT_IDENTIFIER_MAX_CHARS,
+};
 use tempfile::tempdir;
 
 async fn seed_bound_user_and_token(
@@ -610,7 +613,8 @@ async fn fetch_alert_groups_page_executes_sqlite_grouped_query_for_mother_and_co
     let temp_dir = tempdir().expect("create temp dir");
     let db_path = temp_dir.path().join("alerts-groups.db");
     let db_str = db_path.to_string_lossy().to_string();
-    let store = KeyStore::new_with_time(&db_str, BackendTime::system())
+    let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_101_000);
+    let store = KeyStore::new_with_time(&db_str, backend_time)
         .await
         .expect("create key store");
 
@@ -766,7 +770,8 @@ async fn fetch_alert_groups_page_supports_multiple_mother_groups_without_sqlite_
     let temp_dir = tempdir().expect("create temp dir");
     let db_path = temp_dir.path().join("alerts-groups-multi-mother.db");
     let db_str = db_path.to_string_lossy().to_string();
-    let store = KeyStore::new_with_time(&db_str, BackendTime::system())
+    let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_010_600);
+    let store = KeyStore::new_with_time(&db_str, backend_time)
         .await
         .expect("create key store");
 

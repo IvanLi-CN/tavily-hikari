@@ -17,6 +17,7 @@ use tracing::log::LevelFilter;
 use tracing::{error, info, warn};
 
 mod immediate_transaction;
+mod key_store_alert_event_projection;
 mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 #[cfg(test)]

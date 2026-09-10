@@ -28,7 +28,7 @@ enum AlertReadSource {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AlertEventProjectionRow {
+pub(crate) struct AlertEventProjectionRow {
     source_kind: String,
     source_id: String,
     row_sort_id: String,
