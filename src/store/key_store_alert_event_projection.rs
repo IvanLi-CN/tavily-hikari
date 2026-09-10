@@ -337,22 +337,30 @@ fn decode_alert_unicode_escapes_once(value: &str) -> Result<String, ()> {
     let mut decoded = String::with_capacity(value.len());
     let mut offset = 0;
     while offset < bytes.len() {
-        if bytes[offset] == b'\\' && bytes.get(offset + 1) == Some(&b'u') {
-            if offset + 6 > bytes.len() {
-                return Err(());
+        if bytes[offset] == b'\\' {
+            let slash_start = offset;
+            while bytes.get(offset) == Some(&b'\\') {
+                offset += 1;
             }
-            let mut codepoint = 0_u32;
-            for byte in &bytes[offset + 2..offset + 6] {
-                codepoint = codepoint.checked_mul(16).ok_or(())?
-                    + match byte {
-                        b'0'..=b'9' => u32::from(byte - b'0'),
-                        b'a'..=b'f' => u32::from(byte - b'a' + 10),
-                        b'A'..=b'F' => u32::from(byte - b'A' + 10),
-                        _ => return Err(()),
-                    };
+            if bytes.get(offset) == Some(&b'u') {
+                if offset + 6 > bytes.len() {
+                    return Err(());
+                }
+                let mut codepoint = 0_u32;
+                for byte in &bytes[offset + 2..offset + 6] {
+                    codepoint = codepoint.checked_mul(16).ok_or(())?
+                        + match byte {
+                            b'0'..=b'9' => u32::from(byte - b'0'),
+                            b'a'..=b'f' => u32::from(byte - b'a' + 10),
+                            b'A'..=b'F' => u32::from(byte - b'A' + 10),
+                            _ => return Err(()),
+                        };
+                }
+                decoded.push(char::from_u32(codepoint).ok_or(())?);
+                offset += 6;
+                continue;
             }
-            decoded.push(char::from_u32(codepoint).ok_or(())?);
-            offset += 6;
+            decoded.push_str(&value[slash_start..offset]);
             continue;
         }
         let character = value[offset..].chars().next().ok_or(())?;
@@ -989,11 +997,14 @@ mod tests {
             r#"usage_http 429: {"error":"\\u005cu0073k_live_secret"}"#,
         );
         assert!(!nested_value.contains("sk_live_secret"));
+        assert!(nested_value.contains("***redacted***"));
 
         let mixed_value = redact_sensitive_alert_display_text(
             r#"usage_http 429: query=\\u0025\\u0037\\u0033k_live_secret"#,
         );
         assert!(!mixed_value.contains("sk_live_secret"));
+        assert!(mixed_value.contains("***redacted***"));
+        assert!(!mixed_value.contains(r#"\\u0025\\u0037\\u0033k_live_secret"#));
     }
 
     #[test]
