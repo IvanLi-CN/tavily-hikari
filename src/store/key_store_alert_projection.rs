@@ -1103,7 +1103,13 @@ impl KeyStore {
                     ProxyError::Other(format!(
                         "deserialize materialized recent alert summary: {err}"
                     ))
-                }).map(|summary| (source_generation, summary))
+                }).map(|summary| {
+                    (
+                        source_generation,
+                        key_store_alert_event_projection::
+                            normalize_recent_alerts_summary_for_projection(summary),
+                    )
+                })
             })
             .transpose()?;
         Ok((source_generation, summary))

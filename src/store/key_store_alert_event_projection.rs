@@ -1,5 +1,5 @@
 use super::AlertEventProjectionRow;
-use crate::{AlertEventRecord, ProxyError};
+use crate::{AlertEventRecord, AlertGroupRecord, ProxyError, RecentAlertsSummary};
 
 // Alerts are a display projection, not a second raw-error archive. The raw
 // request and job records remain authoritative; every copied diagnostic field
@@ -13,6 +13,12 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
         .trim()
         .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':'));
     let decoded = urlencoding::decode(key).unwrap_or_else(|_| key.into());
+    // Fallback diagnostics can contain a malformed JSON fragment whose key
+    // still uses JSON unicode escapes (for example, `\u0061piKey`). Decode
+    // those escapes before normalizing the label so malformed input cannot
+    // bypass the sensitive-key filter.
+    let decoded = serde_json::from_str::<String>(&format!("\"{decoded}\""))
+        .unwrap_or_else(|_| decoded.into_owned());
     let key: String = decoded
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
@@ -129,8 +135,28 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
             output.push_str(&value[cursor..value_start + 1]);
             output.push_str("***redacted***");
             if let Some(closing_quote) = closing_quote {
-                output.push(quote as char);
-                cursor = closing_quote + 1;
+                let after_quote = &value[closing_quote + 1..];
+                let trimmed_after_quote = after_quote.trim_start();
+                let has_safe_boundary = match trimmed_after_quote.chars().next() {
+                    None => true,
+                    Some(',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | ')' | ':' | '=') => true,
+                    Some(_) if trimmed_after_quote.len() < after_quote.len() => {
+                        trimmed_after_quote.char_indices().any(|(_, character)| {
+                            matches!(character, ':' | '=' | ',' | ';' | '|' | '&' | '}' | ']')
+                        })
+                    }
+                    Some(_) => false,
+                };
+                if has_safe_boundary {
+                    output.push(quote as char);
+                    cursor = closing_quote + 1;
+                } else {
+                    // A non-delimited suffix means the quote was not a
+                    // trustworthy structural boundary. Keep the display
+                    // projection fail-closed instead of copying an opaque
+                    // credential-like suffix into the output.
+                    cursor = value.len();
+                }
             } else {
                 cursor = value.len();
             }
@@ -508,6 +534,57 @@ pub(crate) fn bound_alert_event_record_for_projection(
     event
 }
 
+pub(crate) fn normalize_alert_group_record_for_projection(
+    mut group: AlertGroupRecord,
+) -> AlertGroupRecord {
+    group.subject_label =
+        bounded_alert_event_display_text(Some(group.subject_label)).unwrap_or_default();
+    for entity in [&mut group.token, &mut group.key] {
+        if let Some(entity) = entity.as_mut() {
+            entity.label =
+                bounded_alert_event_display_text(Some(std::mem::take(&mut entity.label)))
+                    .unwrap_or_default();
+        }
+    }
+    if let Some(user) = group.user.as_mut() {
+        user.display_name = bounded_alert_event_display_text(user.display_name.take());
+        user.username = bounded_alert_event_display_text(user.username.take());
+    }
+    if let Some(job) = group.job.as_mut() {
+        job.job_type = bounded_alert_event_display_text(Some(std::mem::take(&mut job.job_type)))
+            .unwrap_or_default();
+        job.trigger_source =
+            bounded_alert_event_display_text(Some(std::mem::take(&mut job.trigger_source)))
+                .unwrap_or_default();
+        job.status = bounded_alert_event_display_text(Some(std::mem::take(&mut job.status)))
+            .unwrap_or_default();
+        job.message = bounded_alert_event_display_text(job.message.take());
+    }
+    group.latest_event = bound_alert_event_record_for_projection(group.latest_event);
+    group.children = group
+        .children
+        .into_iter()
+        .map(normalize_alert_group_record_for_projection)
+        .collect();
+    group.child_events = group
+        .child_events
+        .into_iter()
+        .map(bound_alert_event_record_for_projection)
+        .collect();
+    group
+}
+
+pub(crate) fn normalize_recent_alerts_summary_for_projection(
+    mut summary: RecentAlertsSummary,
+) -> RecentAlertsSummary {
+    summary.top_groups = summary
+        .top_groups
+        .into_iter()
+        .map(normalize_alert_group_record_for_projection)
+        .collect();
+    summary
+}
+
 pub(crate) fn serialize_alert_event_record_for_projection(
     event: AlertEventRecord,
 ) -> Result<(AlertEventRecord, String), ProxyError> {
@@ -524,7 +601,12 @@ pub(crate) fn serialize_alert_event_record_for_projection(
 
 #[cfg(test)]
 mod tests {
-    use super::redact_sensitive_alert_display_text;
+    use super::{
+        normalize_recent_alerts_summary_for_projection, redact_sensitive_alert_display_text,
+    };
+    use crate::{
+        AlertEventRecord, AlertGroupRecord, AlertJobRef, AlertSourceRef, RecentAlertsSummary,
+    };
 
     #[test]
     fn alert_projection_redacts_sensitive_query_parameters() {
@@ -644,5 +726,118 @@ mod tests {
         );
         assert!(redacted.contains("***redacted***"));
         assert!(!redacted.contains("secret-value"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_unicode_escaped_sensitive_labels() {
+        let redacted =
+            redact_sensitive_alert_display_text(r#"usage_http 429: {"\u0061piKey": "secret""#);
+        assert!(!redacted.contains("secret"));
+        assert!(redacted.contains("***redacted***"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_malformed_quoted_sensitive_value_suffix() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"sk_live_secret"}"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+        assert!(redacted.contains("***redacted***"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: "prefix" sk_live_secret"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_legacy_materialized_summary_job_messages() {
+        let event = AlertEventRecord {
+            id: "event-1".to_string(),
+            alert_type: "job_failed".to_string(),
+            title: "Job failed".to_string(),
+            summary: "summary".to_string(),
+            occurred_at: 1,
+            subject_kind: "job".to_string(),
+            subject_id: "job-1".to_string(),
+            subject_label: "job".to_string(),
+            user: None,
+            token: None,
+            key: None,
+            job: Some(AlertJobRef {
+                id: 1,
+                job_type: "maintenance".to_string(),
+                trigger_source: "scheduler".to_string(),
+                status: "failed".to_string(),
+                attempt: 1,
+                message: Some("authorization: sk_live_legacy".to_string()),
+                queued_at: 1,
+                started_at: None,
+                finished_at: None,
+            }),
+            request: None,
+            request_kind: None,
+            failure_kind: None,
+            result_status: None,
+            error_message: None,
+            reason_code: None,
+            reason_summary: None,
+            reason_detail: None,
+            source: AlertSourceRef {
+                kind: "scheduled_job".to_string(),
+                id: "job-1".to_string(),
+            },
+            semantic_window: None,
+        };
+        let group = AlertGroupRecord {
+            id: "group-1".to_string(),
+            alert_type: "job_failed".to_string(),
+            subject_kind: "job".to_string(),
+            subject_id: "job-1".to_string(),
+            subject_label: "job".to_string(),
+            user: None,
+            token: None,
+            key: None,
+            job: None,
+            request_kind: None,
+            count: 1,
+            first_seen: 1,
+            last_seen: 1,
+            latest_event: event.clone(),
+            grouping_kind: "job".to_string(),
+            semantic_window_kind: None,
+            semantic_window_minutes: None,
+            semantic_window_start: None,
+            semantic_window_end: None,
+            semantic_window_key: None,
+            child_count: 1,
+            event_count: 1,
+            children: Vec::new(),
+            child_events: vec![event],
+        };
+        let normalized = normalize_recent_alerts_summary_for_projection(RecentAlertsSummary {
+            top_groups: vec![group],
+            ..Default::default()
+        });
+        let normalized_group = &normalized.top_groups[0];
+        assert_eq!(
+            normalized_group
+                .latest_event
+                .job
+                .as_ref()
+                .unwrap()
+                .message
+                .as_deref(),
+            Some("authorization: ***redacted***")
+        );
+        assert_eq!(
+            normalized_group.child_events[0]
+                .job
+                .as_ref()
+                .unwrap()
+                .message
+                .as_deref(),
+            Some("authorization: ***redacted***")
+        );
     }
 }
