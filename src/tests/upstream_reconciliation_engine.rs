@@ -1173,6 +1173,13 @@ async fn research_drain_remote_lease_is_request_scoped() {
         .await
         .expect("claim Research drain")
         .expect("Research drain becomes running");
+    // Keep this regression focused on request-scoped remote admission. The
+    // lazy maintenance pool can otherwise defer the source read under the
+    // parallel CI lane before the held lease is observed.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let controller = Arc::new(RemoteAttemptAdmissionController::default());
     let held_lease = controller
         .acquire_manual_attempt()
@@ -1188,13 +1195,16 @@ async fn research_drain_remote_lease_is_request_scoped() {
         )
         .await
         .expect("busy lease becomes a typed defer");
-    assert!(matches!(
-        outcome,
-        ClaimedResearchDrainOutcome::Deferred {
-            reason: crate::ResearchDrainDeferReason::RemoteLease,
-            retry_at,
-        } if retry_at == now + 5
-    ));
+    assert!(
+        matches!(
+            outcome,
+            ClaimedResearchDrainOutcome::Deferred {
+                reason: crate::ResearchDrainDeferReason::RemoteLease,
+                retry_at,
+            } if retry_at == now + 5
+        ),
+        "unexpected Research drain outcome: {outcome:?}"
+    );
     let research: (Option<i64>, i64) = sqlx::query_as(
         "SELECT terminal_at, poll_attempt_count FROM upstream_reconciliation_research \
          WHERE request_id = 'lease-request'",
@@ -1381,6 +1391,13 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         .await
         .expect("claim Research drain")
         .expect("Research drain becomes running");
+    // The assertion below is about skipping a cooled key, not lazy-pool
+    // admission. Prewarm the maintenance capacity so parallel CI workers do
+    // not turn the run into an unrelated typed defer.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let outcome = proxy
         .run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{address}"),
@@ -1390,14 +1407,17 @@ async fn reconciliation_research_drain_progresses_past_a_cooled_key() {
         )
         .await
         .expect("run eligible Research drain page");
-    assert!(matches!(
-        outcome,
-        ClaimedResearchDrainOutcome::Persisted {
-            polled: 1,
-            terminal: 1,
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            outcome,
+            ClaimedResearchDrainOutcome::Persisted {
+                polled: 1,
+                terminal: 1,
+                ..
+            }
+        ),
+        "unexpected Research drain outcome: {outcome:?}"
+    );
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     let rows = sqlx::query_as::<_, (String, Option<i64>)>(
         "SELECT request_id, terminal_at FROM upstream_reconciliation_research \
