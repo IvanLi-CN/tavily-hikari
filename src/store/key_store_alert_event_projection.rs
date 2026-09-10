@@ -140,11 +140,6 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
                 let has_safe_boundary = match trimmed_after_quote.chars().next() {
                     None => true,
                     Some(',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | ')' | ':' | '=') => true,
-                    Some(_) if trimmed_after_quote.len() < after_quote.len() => {
-                        trimmed_after_quote.char_indices().any(|(_, character)| {
-                            matches!(character, ':' | '=' | ',' | ';' | '|' | '&' | '}' | ']')
-                        })
-                    }
                     Some(_) => false,
                 };
                 if has_safe_boundary {
@@ -560,6 +555,13 @@ pub(crate) fn normalize_alert_group_record_for_projection(
             .unwrap_or_default();
         job.message = bounded_alert_event_display_text(job.message.take());
     }
+    if let Some(request_kind) = group.request_kind.as_mut() {
+        request_kind.key = bounded_alert_event_identifier_value(&request_kind.key);
+        request_kind.label =
+            bounded_alert_event_display_text(Some(std::mem::take(&mut request_kind.label)))
+                .unwrap_or_default();
+        request_kind.detail = bounded_alert_event_display_text(request_kind.detail.take());
+    }
     group.latest_event = bound_alert_event_record_for_projection(group.latest_event);
     group.children = group
         .children
@@ -606,6 +608,7 @@ mod tests {
     };
     use crate::{
         AlertEventRecord, AlertGroupRecord, AlertJobRef, AlertSourceRef, RecentAlertsSummary,
+        TokenRequestKind,
     };
 
     #[test]
@@ -748,6 +751,11 @@ mod tests {
             r#"usage_http 429: authorization: "prefix" sk_live_secret"#,
         );
         assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: "prefix" sk_live_secret: ignored"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
     }
 
     #[test]
@@ -799,7 +807,11 @@ mod tests {
             token: None,
             key: None,
             job: None,
-            request_kind: None,
+            request_kind: Some(TokenRequestKind {
+                key: "research".to_string(),
+                label: "Research".to_string(),
+                detail: Some("authorization: legacy-secret".to_string()),
+            }),
             count: 1,
             first_seen: 1,
             last_seen: 1,
@@ -836,6 +848,15 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .message
+                .as_deref(),
+            Some("authorization: ***redacted***")
+        );
+        assert_eq!(
+            normalized_group
+                .request_kind
+                .as_ref()
+                .unwrap()
+                .detail
                 .as_deref(),
             Some("authorization: ***redacted***")
         );
