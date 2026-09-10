@@ -163,12 +163,19 @@ const ADMIN_ALERTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_se
 const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn wait_for_admin_alerts_shutdown_or(
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
     shutdown_notify: &Arc<tokio::sync::Notify>,
     delay: std::time::Duration,
 ) -> bool {
+    let notified = shutdown_notify.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    if admin_alerts_shutdown_requested(cache).await {
+        return true;
+    }
     tokio::select! {
-        _ = tokio::time::sleep(delay) => false,
-        _ = shutdown_notify.notified() => true,
+        _ = tokio::time::sleep(delay) => admin_alerts_shutdown_requested(cache).await,
+        _ = &mut notified => true,
     }
 }
 
@@ -716,7 +723,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     retry_after_secs = delay.as_secs(),
                     "deferred canonical administrator Alerts cache before SQLite admission"
                 );
-                if wait_for_admin_alerts_shutdown_or(&shutdown_notify, delay).await {
+                if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                     cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                     flight_guard.disarm();
                     return;
@@ -844,7 +851,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         "deferred canonical administrator Alerts cache"
                     );
                     spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
-                    if wait_for_admin_alerts_shutdown_or(&shutdown_notify, delay).await {
+                    if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                         cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                         flight_guard.disarm();
                         return;
@@ -942,6 +949,7 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
             };
             let Some(batch_owner) = batch_owner else {
                 if wait_for_admin_alerts_shutdown_or(
+                    &cache,
                     &shutdown_notify,
                     std::time::Duration::from_secs(5),
                 )
@@ -979,6 +987,7 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
                 Ok(true) => {
                     defers = 0;
                     if wait_for_admin_alerts_shutdown_or(
+                        &cache,
                         &shutdown_notify,
                         std::time::Duration::from_secs(5),
                     )
@@ -1002,6 +1011,7 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
                         "deferred retired canonical Alerts groups reclamation"
                     );
                     if wait_for_admin_alerts_shutdown_or(
+                        &cache,
                         &shutdown_notify,
                         std::time::Duration::from_secs(delay),
                     )
