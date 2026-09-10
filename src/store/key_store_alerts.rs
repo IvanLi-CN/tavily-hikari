@@ -2,6 +2,281 @@
 #[path = "key_store_alerts_tests.rs"]
 mod alert_grouping_tests;
 
+// Alerts are a display projection, not a second raw-error archive. The raw
+// request and job records remain authoritative; every copied diagnostic field
+// is bounded before it can be repeated in Events and Groups payloads.
+const ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS: usize = 1024;
+const ALERT_EVENT_PROJECTION_MAX_BYTES: usize = 64 * 1024;
+const ALERT_EVENT_IDENTIFIER_MAX_CHARS: usize = 256;
+
+fn bounded_alert_event_display_text(value: Option<String>) -> Option<String> {
+    value.map(|value| {
+        crate::analysis::truncate_text(
+            &value,
+            ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS.saturating_sub(1),
+        )
+    })
+}
+
+fn normalize_alert_event_projection_display_text(row: &mut AlertEventProjectionRow) {
+    for value in [
+        &mut row.method,
+        &mut row.path,
+        &mut row.query,
+        &mut row.request_kind_key,
+        &mut row.request_kind_label,
+        &mut row.request_kind_detail,
+        &mut row.result_status,
+        &mut row.failure_kind,
+        &mut row.error_message,
+        &mut row.user_display_name,
+        &mut row.user_username,
+        &mut row.reason_code,
+        &mut row.reason_summary,
+        &mut row.reason_detail,
+        &mut row.job_type,
+        &mut row.job_trigger_source,
+        &mut row.job_status,
+        &mut row.job_message,
+    ] {
+        *value = bounded_alert_event_display_text(value.take());
+    }
+}
+
+fn bounded_alert_event_identifier(value: Option<String>) -> Option<String> {
+    value.map(|value| bounded_alert_event_identifier_value(&value))
+}
+
+fn bounded_alert_event_identifier_value(value: &str) -> String {
+    // `truncate_text` appends an ellipsis after the requested number of
+    // characters. Reserve one character so the serialized identifier stays
+    // within the advertised bound even when truncation occurs.
+    crate::analysis::truncate_text(value, ALERT_EVENT_IDENTIFIER_MAX_CHARS.saturating_sub(1))
+}
+
+fn retain_alert_group_child_events(events: Vec<AlertEventRecord>) -> Vec<AlertEventRecord> {
+    let mut bytes = 0usize;
+    let mut bounded_events = Vec::with_capacity(events.len());
+    for event in events {
+        let Ok((event, event_json)) = serialize_alert_event_record_for_projection(event) else {
+            return Vec::new();
+        };
+        bytes = bytes.saturating_add(event_json.len());
+        if bytes > ALERT_EVENT_PROJECTION_MAX_BYTES {
+            // Group summaries and the latest event remain available. The
+            // detail drawer can fetch the same child history through the
+            // existing paginated Events endpoint when inline history is large.
+            return Vec::new();
+        }
+        bounded_events.push(event);
+    }
+    bounded_events
+}
+
+fn serialize_alert_event_projection_payload(
+    mut row: AlertEventProjectionRow,
+) -> Result<String, ProxyError> {
+    normalize_alert_event_projection_display_text(&mut row);
+    let payload = serde_json::to_string(&row)
+        .map_err(|error| ProxyError::Other(format!("serialize alert projection payload: {error}")))?;
+    if payload.len() <= ALERT_EVENT_PROJECTION_MAX_BYTES {
+        return Ok(payload);
+    }
+
+    row.source_kind = bounded_alert_event_identifier_value(&row.source_kind);
+    row.source_id = bounded_alert_event_identifier_value(&row.source_id);
+    row.row_sort_id = bounded_alert_event_identifier_value(&row.row_sort_id);
+    row.alert_type = bounded_alert_event_identifier_value(&row.alert_type);
+    row.token_id = bounded_alert_event_identifier(row.token_id.take());
+    row.key_id = bounded_alert_event_identifier(row.key_id.take());
+    row.user_id = bounded_alert_event_identifier(row.user_id.take());
+    let compact_identities = serde_json::to_string(&row)
+        .map_err(|error| {
+            ProxyError::Other(format!("serialize compact alert projection identities: {error}"))
+        })?;
+    if compact_identities.len() <= ALERT_EVENT_PROJECTION_MAX_BYTES {
+        return Ok(compact_identities);
+    }
+
+    // The projection is a bounded display copy, not a second raw-log archive.
+    // If legacy data still exceeds the fragment budget, remove optional detail
+    // before persisting it again. Counts, type, time and filter identities stay
+    // available; the raw source remains the authority for full diagnostics.
+    row.query = None;
+    row.request_kind_detail = None;
+    row.reason_detail = None;
+    row.job_message = None;
+    row.error_message = None;
+    row.reason_summary = None;
+    row.request_kind_label = None;
+    row.user_display_name = None;
+    row.user_username = None;
+    row.method = None;
+    row.path = None;
+    let compact = serde_json::to_string(&row).map_err(|error| {
+        ProxyError::Other(format!("serialize compact alert projection payload: {error}"))
+    })?;
+    if compact.len() > ALERT_EVENT_PROJECTION_MAX_BYTES {
+        return Err(ProxyError::Other(
+            "alert projection payload exceeds its display budget".to_string(),
+        ));
+    }
+    Ok(compact)
+}
+
+fn bound_alert_event_record_for_projection(mut event: AlertEventRecord) -> AlertEventRecord {
+    // AlertEventRecord is assembled after projection decoding, so a legacy
+    // source row can still carry oversized identifiers or nested labels. Keep
+    // the summary/count/latest-event contract, but make every persisted
+    // derived copy bounded before it reaches fragments or reduction tables.
+    for value in [
+        &mut event.title,
+        &mut event.summary,
+        &mut event.subject_label,
+    ] {
+        *value = bounded_alert_event_display_text(Some(std::mem::take(value))).unwrap_or_default();
+    }
+    for value in [
+        &mut event.failure_kind,
+        &mut event.result_status,
+        &mut event.error_message,
+        &mut event.reason_code,
+        &mut event.reason_summary,
+        &mut event.reason_detail,
+    ] {
+        *value = bounded_alert_event_display_text(value.take());
+    }
+    if let Some(user) = event.user.as_mut() {
+        user.display_name = bounded_alert_event_display_text(user.display_name.take());
+        user.username = bounded_alert_event_display_text(user.username.take());
+    }
+    for entity in [&mut event.token, &mut event.key] {
+        if let Some(entity) = entity.as_mut() {
+            entity.label = bounded_alert_event_display_text(Some(std::mem::take(&mut entity.label)))
+                .unwrap_or_default();
+        }
+    }
+    if let Some(job) = event.job.as_mut() {
+        job.job_type = bounded_alert_event_display_text(Some(std::mem::take(&mut job.job_type)))
+            .unwrap_or_default();
+        job.trigger_source =
+            bounded_alert_event_display_text(Some(std::mem::take(&mut job.trigger_source)))
+                .unwrap_or_default();
+        job.status = bounded_alert_event_display_text(Some(std::mem::take(&mut job.status)))
+            .unwrap_or_default();
+        job.message = bounded_alert_event_display_text(job.message.take());
+    }
+    if let Some(request) = event.request.as_mut() {
+        request.method = bounded_alert_event_display_text(Some(std::mem::take(&mut request.method)))
+            .unwrap_or_default();
+        request.path = bounded_alert_event_display_text(Some(std::mem::take(&mut request.path)))
+            .unwrap_or_default();
+        request.query = bounded_alert_event_display_text(request.query.take());
+    }
+    if let Some(request_kind) = event.request_kind.as_mut() {
+        request_kind.label =
+            bounded_alert_event_display_text(Some(std::mem::take(&mut request_kind.label)))
+                .unwrap_or_default();
+        request_kind.detail = bounded_alert_event_display_text(request_kind.detail.take());
+    }
+    if let Some(semantic) = event.semantic_window.as_mut() {
+        semantic.window_key = semantic
+            .window_key
+            .take()
+            .map(|value| bounded_alert_event_identifier_value(&value));
+    }
+
+    if serde_json::to_vec(&event)
+        .map(|payload| payload.len() > ALERT_EVENT_PROJECTION_MAX_BYTES)
+        .unwrap_or(true)
+    {
+        event.id = bounded_alert_event_identifier_value(&event.id);
+        event.alert_type = bounded_alert_event_identifier_value(&event.alert_type);
+        event.subject_kind = bounded_alert_event_identifier_value(&event.subject_kind);
+        event.subject_id = bounded_alert_event_identifier_value(&event.subject_id);
+        event.source.kind = bounded_alert_event_identifier_value(&event.source.kind);
+        event.source.id = bounded_alert_event_identifier_value(&event.source.id);
+        if let Some(user) = event.user.as_mut() {
+            user.user_id = bounded_alert_event_identifier_value(&user.user_id);
+        }
+        for entity in [&mut event.token, &mut event.key] {
+            if let Some(entity) = entity.as_mut() {
+                entity.id = bounded_alert_event_identifier_value(&entity.id);
+            }
+        }
+        if let Some(request_kind) = event.request_kind.as_mut() {
+            request_kind.key = bounded_alert_event_identifier_value(&request_kind.key);
+        }
+    }
+
+    if serde_json::to_vec(&event)
+        .map(|payload| payload.len() > ALERT_EVENT_PROJECTION_MAX_BYTES)
+        .unwrap_or(true)
+    {
+        // Optional diagnostic detail is never allowed to turn a derived
+        // record into an unbounded blob. The raw source log remains the
+        // authoritative place for those details.
+        event.request = None;
+        event.request_kind = None;
+        if let Some(job) = event.job.as_mut() {
+            job.message = None;
+        }
+        if let Some(user) = event.user.as_mut() {
+            user.display_name = None;
+            user.username = None;
+        }
+        if let Some(entity) = event.token.as_mut() {
+            entity.label.clear();
+        }
+        if let Some(entity) = event.key.as_mut() {
+            entity.label.clear();
+        }
+        event.error_message = None;
+        event.reason_detail = None;
+    }
+    if serde_json::to_vec(&event)
+        .map(|payload| payload.len() > ALERT_EVENT_PROJECTION_MAX_BYTES)
+        .unwrap_or(true)
+    {
+        // This is an unreachable-sized legacy fallback (for example, a
+        // database containing unbounded identity columns). Keep only the
+        // stable summary identity and timestamps rather than allowing an
+        // oversized derived row to be written.
+        event.failure_kind = None;
+        event.result_status = None;
+        event.reason_code = None;
+        event.reason_summary = None;
+        event.title = crate::analysis::truncate_text(&event.title, 256);
+        event.summary = crate::analysis::truncate_text(&event.summary, 512);
+        event.subject_label = crate::analysis::truncate_text(&event.subject_label, 256);
+        event.user = None;
+        event.token = None;
+        event.key = None;
+        event.job = None;
+    }
+    debug_assert!(
+        serde_json::to_vec(&event)
+            .map(|payload| payload.len() <= ALERT_EVENT_PROJECTION_MAX_BYTES)
+            .unwrap_or(false),
+        "derived alert event must stay within its persistence budget"
+    );
+    event
+}
+
+fn serialize_alert_event_record_for_projection(
+    event: AlertEventRecord,
+) -> Result<(AlertEventRecord, String), ProxyError> {
+    let event = bound_alert_event_record_for_projection(event);
+    let payload = serde_json::to_string(&event)
+        .map_err(|error| ProxyError::Other(format!("serialize bounded alert event: {error}")))?;
+    if payload.len() > ALERT_EVENT_PROJECTION_MAX_BYTES {
+        return Err(ProxyError::Other(
+            "derived alert event exceeds its persistence budget".to_string(),
+        ));
+    }
+    Ok((event, payload))
+}
+
 fn parse_request_rate_window_metadata(error_message: Option<&str>) -> Option<i64> {
     let message = error_message?.trim();
     let marker = "rolling ";
@@ -114,7 +389,7 @@ fn group_request_kind_key(event: &AlertEventRecord) -> &str {
 }
 
 fn build_compat_group_record(events: &[AlertEventRecord]) -> Option<AlertGroupRecord> {
-    let latest_event = events.first()?.clone();
+    let latest_event = bound_alert_event_record_for_projection(events.first()?.clone());
     let earliest_event = events.last()?;
     Some(AlertGroupRecord {
         id: alert_group_id(&latest_event),
@@ -160,9 +435,11 @@ fn child_group_id(parent_id: &str, index: usize) -> String {
 }
 
 fn build_child_group_record(id: String, events: Vec<AlertEventRecord>) -> Option<AlertGroupRecord> {
-    let latest_event = events.first()?.clone();
-    let earliest_event = events.last()?;
+    let latest_event = bound_alert_event_record_for_projection(events.first()?.clone());
+    let first_seen = events.last()?.occurred_at;
     let semantic = latest_event.semantic_window.clone();
+    let event_count = events.len() as i64;
+    let child_events = retain_alert_group_child_events(events);
     Some(AlertGroupRecord {
         id,
         alert_type: latest_event.alert_type.clone(),
@@ -174,8 +451,8 @@ fn build_child_group_record(id: String, events: Vec<AlertEventRecord>) -> Option
         key: latest_event.key.clone(),
         job: latest_event.job.clone(),
         request_kind: None,
-        count: events.len() as i64,
-        first_seen: earliest_event.occurred_at,
+        count: event_count,
+        first_seen,
         last_seen: latest_event.occurred_at,
         latest_event,
         grouping_kind: "child".to_string(),
@@ -187,9 +464,9 @@ fn build_child_group_record(id: String, events: Vec<AlertEventRecord>) -> Option
         semantic_window_end: semantic.as_ref().and_then(|value| value.window_end),
         semantic_window_key: semantic.and_then(|value| value.window_key),
         child_count: 0,
-        event_count: events.len() as i64,
+        event_count,
         children: Vec::new(),
-        child_events: events,
+        child_events,
     })
 }
 
@@ -747,6 +1024,14 @@ fn alert_group_id(event: &AlertEventRecord) -> String {
 }
 
 impl KeyStore {
+    fn retain_alert_filters<'a>(&self, filters: AlertEventFilters<'a>) -> AlertEventFilters<'a> {
+        let retention_since = self.alert_projection_retention_since();
+        AlertEventFilters {
+            since: Some(filters.since.unwrap_or(retention_since).max(retention_since)),
+            ..filters
+        }
+    }
+
     pub(crate) async fn ensure_auth_token_logs_alert_time_index(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_auth_token_logs_alert_time
@@ -935,73 +1220,6 @@ impl KeyStore {
         result
     }
 
-    async fn effective_auth_token_log_retention_days_in_admin_session(
-        &self,
-        session: &mut AdminAlertsReadSession,
-    ) -> Result<i64, ProxyError> {
-        let result = sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
-            .bind(META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1)
-            .fetch_optional(&mut **session)
-            .await;
-        let value = session.query(result).await?;
-        if let Some(retention_days) = value
-            .as_deref()
-            .and_then(|value| value.parse::<i64>().ok())
-            .and_then(normalize_auth_token_log_retention_days)
-        {
-            return Ok(retention_days);
-        }
-        effective_auth_token_log_retention_days()
-    }
-
-    async fn effective_auth_token_log_retention_days_for_operation(
-        &self,
-        operation: SqliteOperation,
-    ) -> Result<i64, ProxyError> {
-        if operation == SqliteOperation::AdminAlertsCacheWarm {
-            let mut session = self
-                .begin_admin_alerts_read_session_for_operation(operation)
-                .await?;
-            let query_result = sqlx::query_scalar::<_, String>(
-                "SELECT value FROM meta WHERE key = ? LIMIT 1",
-            )
-            .bind(META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1)
-            .fetch_optional(&mut *session)
-            .await;
-            let result = session.query(query_result).await;
-            let finish_result = session.finish().await;
-            finish_result?;
-            let value = result?;
-            if let Some(retention_days) = value
-                .as_deref()
-                .and_then(|value| value.parse::<i64>().ok())
-                .and_then(normalize_auth_token_log_retention_days)
-            {
-                return Ok(retention_days);
-            }
-            return effective_auth_token_log_retention_days();
-        }
-        let mut conn = self
-            .sqlite_runtime
-            .acquire_operation_connection(operation)
-            .await?;
-        let result = sqlx::query_scalar::<_, String>(
-            "SELECT value FROM meta WHERE key = ? LIMIT 1",
-        )
-        .bind(META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1)
-        .fetch_optional(&mut *conn)
-        .await;
-        let value = conn.complete_query(result).await?;
-        if let Some(retention_days) = value
-            .as_deref()
-            .and_then(|value| value.parse::<i64>().ok())
-            .and_then(normalize_auth_token_log_retention_days)
-        {
-            return Ok(retention_days);
-        }
-        effective_auth_token_log_retention_days()
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fetch_admin_alert_events_page(
         &self,
@@ -1044,7 +1262,7 @@ impl KeyStore {
         per_page: i64,
         operation: SqliteOperation,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
-        let filters = AlertEventFilters {
+        let requested_filters = AlertEventFilters {
             alert_type,
             since,
             until,
@@ -1053,8 +1271,17 @@ impl KeyStore {
             key_id,
             request_kinds,
         };
+        let is_canonical_default = requested_filters.is_unfiltered();
+        let filters = self.retain_alert_filters(requested_filters);
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
+        if operation == SqliteOperation::AdminAlertsCacheWarm
+            && is_canonical_default
+            && page == 1
+            && per_page == 20
+        {
+            return self.fetch_default_projected_alert_events_page().await;
+        }
         if operation == SqliteOperation::AdminAlertsCacheWarm {
             return self
                 .fetch_projected_alert_events_page_for_operation(
@@ -1132,19 +1359,21 @@ impl KeyStore {
         let result = async {
             let total_result = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events \
-                 WHERE build_generation = ?",
+                 WHERE build_generation = ? AND occurred_at >= ?",
             )
             .bind(build_generation)
+            .bind(self.alert_projection_retention_since())
             .fetch_one(&mut *session)
             .await;
             let total = session.query(total_result).await?;
             let rows_result = sqlx::query(
                 "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
                  FROM observability.admin_alert_canonical_group_events \
-                 WHERE build_generation = ? \
+                 WHERE build_generation = ? AND occurred_at >= ? \
                  ORDER BY occurred_at DESC, row_sort_id DESC LIMIT ? OFFSET ?",
             )
             .bind(build_generation)
+            .bind(self.alert_projection_retention_since())
             .bind(per_page)
             .bind(offset)
             .fetch_all(&mut *session)
@@ -1276,8 +1505,10 @@ impl KeyStore {
             // can use the projection table without evaluating JSON for every
             // historical row.
             let total_result = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM observability.dashboard_alert_projection_events",
+                "SELECT COUNT(*) FROM observability.dashboard_alert_projection_events \
+                  WHERE occurred_at >= ?",
             )
+            .bind(self.alert_projection_retention_since())
             .fetch_one(&mut *session)
             .await;
             let total = session.query(total_result).await?;
@@ -1288,9 +1519,11 @@ impl KeyStore {
             let rows_result = sqlx::query(
                 r#"SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json
                      FROM observability.dashboard_alert_projection_events
+                    WHERE occurred_at >= ?
                     ORDER BY occurred_at DESC, row_sort_id DESC
                     LIMIT 20 OFFSET 0"#,
             )
+            .bind(self.alert_projection_retention_since())
             .fetch_all(&mut *session)
             .await;
             let rows = session.query(rows_result).await?;
@@ -2321,7 +2554,8 @@ impl KeyStore {
         Ok(projection)
     }
 
-    fn build_alert_event_from_projection(row: AlertEventProjectionRow) -> Option<AlertEventRecord> {
+    fn build_alert_event_from_projection(mut row: AlertEventProjectionRow) -> Option<AlertEventRecord> {
+        normalize_alert_event_projection_display_text(&mut row);
         let AlertEventProjectionRow {
             source_kind,
             source_id,
@@ -2448,7 +2682,7 @@ impl KeyStore {
             semantic_window: None,
         };
         event.semantic_window = event_semantic_window(&event);
-        Some(event)
+        Some(bound_alert_event_record_for_projection(event))
     }
 
     fn build_alert_event_items(
@@ -2472,7 +2706,7 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
-        let filters = AlertEventFilters {
+        let requested_filters = AlertEventFilters {
             alert_type,
             since,
             until,
@@ -2481,6 +2715,7 @@ impl KeyStore {
             key_id,
             request_kinds,
         };
+        let filters = self.retain_alert_filters(requested_filters);
         if self.alert_projection_is_complete().await? {
             return self
                 .fetch_projected_alert_events_page(filters, page, per_page)
@@ -2504,7 +2739,7 @@ impl KeyStore {
     ) -> Result<PaginatedAlertGroups, ProxyError> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
-        let filters = AlertEventFilters {
+        let filters = self.retain_alert_filters(AlertEventFilters {
             alert_type,
             since,
             until,
@@ -2512,7 +2747,7 @@ impl KeyStore {
             token_id,
             key_id,
             request_kinds,
-        };
+        });
         let source = if self.alert_projection_is_complete().await? {
             AlertReadSource::Projected
         } else {
@@ -2580,7 +2815,7 @@ impl KeyStore {
         per_page: i64,
         operation: SqliteOperation,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
-        let filters = AlertEventFilters {
+        let requested_filters = AlertEventFilters {
             alert_type,
             since,
             until,
@@ -2589,10 +2824,12 @@ impl KeyStore {
             key_id,
             request_kinds,
         };
+        let is_canonical_default = requested_filters.is_unfiltered();
+        let filters = self.retain_alert_filters(requested_filters);
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         if operation == SqliteOperation::AdminAlertsCacheWarm
-            && filters.is_unfiltered()
+            && is_canonical_default
             && page == 1
             && per_page == 20
         {
@@ -2722,7 +2959,7 @@ impl KeyStore {
         mut session: Option<&mut AdminAlertsReadSession>,
         operation: SqliteOperation,
     ) -> Result<AlertCatalog, ProxyError> {
-        let filters = AlertEventFilters {
+        let filters = self.retain_alert_filters(AlertEventFilters {
             alert_type: None,
             since: None,
             until: None,
@@ -2730,7 +2967,7 @@ impl KeyStore {
             token_id: None,
             key_id: None,
             request_kinds: &[],
-        };
+        });
         let mut request_kind_query = QueryBuilder::new("");
         Self::push_alert_events_for_source_cte(&mut request_kind_query, filters, &source);
         request_kind_query.push(
@@ -2744,7 +2981,7 @@ impl KeyStore {
               GROUP BY request_kind_key \
               ORDER BY count DESC, request_kind_label ASC, request_kind_key ASC",
         );
-        let request_kind_rows = match session.as_deref_mut() {
+        let request_kind_rows = match session.as_mut() {
             Some(session) => self
                 .fetch_projected_alert_query_rows_in_admin_session(session, request_kind_query)
                 .await?,
@@ -2782,7 +3019,7 @@ impl KeyStore {
               GROUP BY user_id, label \
               ORDER BY count DESC, label ASC, value ASC",
         );
-        let users = match session.as_deref_mut() {
+        let users = match session.as_mut() {
             Some(session) => self
                 .fetch_projected_alert_query_rows_in_admin_session(session, users_query)
                 .await?,
@@ -2812,7 +3049,7 @@ impl KeyStore {
               GROUP BY token_id \
               ORDER BY count DESC, label ASC, value ASC",
         );
-        let tokens = match session.as_deref_mut() {
+        let tokens = match session.as_mut() {
             Some(session) => self
                 .fetch_projected_alert_query_rows_in_admin_session(session, tokens_query)
                 .await?,
@@ -2842,7 +3079,7 @@ impl KeyStore {
               GROUP BY key_id \
               ORDER BY count DESC, label ASC, value ASC",
         );
-        let keys = match session.as_deref_mut() {
+        let keys = match session.as_mut() {
             Some(session) => self
                 .fetch_projected_alert_query_rows_in_admin_session(session, keys_query)
                 .await?,
@@ -2868,7 +3105,7 @@ impl KeyStore {
               WHERE COALESCE(NULLIF(TRIM(alert_type), ''), '') <> '' \
               GROUP BY alert_type",
         );
-        let types_rows = match session.as_deref_mut() {
+        let types_rows = match session.as_mut() {
             Some(session) => self
                 .fetch_projected_alert_query_rows_in_admin_session(session, types_query)
                 .await?,
@@ -2884,16 +3121,8 @@ impl KeyStore {
         })
         .collect::<Vec<_>>();
 
-        let retention_days = match session {
-            Some(session) => self
-                .effective_auth_token_log_retention_days_in_admin_session(session)
-                .await?,
-            None => self
-                .effective_auth_token_log_retention_days_for_operation(operation)
-                .await?,
-        };
         Ok(AlertCatalog {
-            retention_days,
+            retention_days: ALERT_PROJECTION_RETENTION_DAYS,
             types,
             request_kind_options,
             users,

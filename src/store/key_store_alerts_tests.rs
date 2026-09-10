@@ -324,6 +324,62 @@ fn request_rate_events_merge_request_kinds_into_one_child_window() {
 }
 
 #[test]
+fn oversized_alert_event_is_compacted_before_derived_persistence() {
+    let mut event = make_alert_event(
+        "evt-oversized",
+        ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+        1_700_000_000,
+        "mcp_tools_list",
+        "MCP tools/list",
+        Some("diagnostic"),
+    );
+    event.error_message = Some("oversized-error".repeat(32 * 1024));
+    event.token = Some(AlertEntityRef {
+        id: "token-identity".repeat(32 * 1024),
+        label: "token-label".repeat(32 * 1024),
+    });
+
+    let (bounded, payload) = serialize_alert_event_record_for_projection(event)
+        .expect("serialize bounded derived event");
+    assert!(
+        payload.len() <= ALERT_EVENT_PROJECTION_MAX_BYTES,
+        "derived event payload must stay bounded: {}",
+        payload.len()
+    );
+    assert!(bounded.error_message.as_ref().is_some_and(|value| {
+        value.chars().count() <= ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS
+    }));
+    assert!(bounded
+        .token
+        .as_ref()
+        .is_some_and(|value| value.id.chars().count() <= ALERT_EVENT_IDENTIFIER_MAX_CHARS));
+    assert!(bounded
+        .token
+        .as_ref()
+        .is_some_and(|value| value.label.chars().count() <= ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS));
+    assert_eq!(
+        bounded.semantic_window.as_ref().map(|value| value.kind),
+        Some(AlertSemanticWindowKind::RequestRate),
+        "compaction must preserve grouping semantics while dropping oversized detail"
+    );
+
+    let mut long_display_event = make_alert_event(
+        "evt-long-identity",
+        ALERT_TYPE_USER_REQUEST_RATE_LIMITED,
+        1_700_000_001,
+        "mcp_tools_list",
+        "MCP tools/list",
+        None,
+    );
+    long_display_event.subject_label = "subject-label".repeat(2_000);
+    let (bounded_display, display_payload) =
+        serialize_alert_event_record_for_projection(long_display_event)
+            .expect("serialize a bounded long display field");
+    assert!(display_payload.len() < ALERT_EVENT_PROJECTION_MAX_BYTES);
+    assert!(bounded_display.subject_label.chars().count() <= ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS);
+}
+
+#[test]
 fn upstream_alerts_prefer_key_subject_over_token() {
     let user = AlertUserRef {
         user_id: "usr_test".to_string(),

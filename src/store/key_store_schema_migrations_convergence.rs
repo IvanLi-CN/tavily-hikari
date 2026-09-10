@@ -45,8 +45,27 @@ const ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_NAME: &str =
     "admin-alert-canonical-groups-streamed-finalization-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_CHECKSUM: &str =
     "sha256:16190b4b0f90ace54cfc6dbaebe86ce6981cf9876f2ed03e8349b76238b8dedf";
-
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 10] {
+const ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_VERSION: i64 = 41;
+const ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_NAME: &str =
+    "admin-alert-canonical-groups-event-id-order-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_CHECKSUM: &str =
+    "sha256:6c39e92ab3dd7f9b2d0a0b0dd0e51f4d5b53c4f3d6fd87fb4fb5a3b2e0b4d4a1";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_VERSION: i64 = 42;
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_NAME: &str =
+    "admin-alert-canonical-groups-payload-read-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHECKSUM: &str =
+    "sha256:9e6c8f5b2d97d72f0f45f3b7ad6d9c7b225ce32d83f3b4567a96b4e5d8cf21a0";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_VERSION: i64 = 43;
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_NAME: &str =
+    "admin-alert-canonical-groups-payload-read-chunks-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_CHECKSUM: &str =
+    "sha256:4a9f2b6c7d8e90123456789abcdef0123456789abcdef0123456789abcdef0123";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION: i64 = 44;
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME: &str =
+    "admin-alert-canonical-groups-payload-read-owner-v1";
+const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM: &str =
+    "sha256:7b8c9d0e1f23456789abcdef0123456789abcdef0123456789abcdef01234567";
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 14] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -97,6 +116,26 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_STREAMED_FINALIZATION_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_CHECKSUM,
+        ),
+        (
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM,
         ),
     ]
 }
@@ -172,6 +211,34 @@ impl KeyStore {
             self.apply_admin_alert_canonical_groups_streamed_finalization_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_event_id_order_migration()
+                .await?;
+        }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_payload_read_migration()
+                .await?;
+        }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_payload_read_chunks_migration()
+                .await?;
+        }
+        if !self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION)
+            .await?
+        {
+            self.apply_admin_alert_canonical_groups_payload_read_owner_migration()
+                .await?;
+        }
         Ok(())
     }
 
@@ -193,6 +260,14 @@ impl KeyStore {
         self.apply_admin_alert_canonical_catalog_payload_labels_migration()
             .await?;
         self.apply_admin_alert_canonical_groups_streamed_finalization_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_event_id_order_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_payload_read_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_payload_read_chunks_migration()
+            .await?;
+        self.apply_admin_alert_canonical_groups_payload_read_owner_migration()
             .await
     }
 
@@ -430,10 +505,127 @@ impl KeyStore {
                         "observability",
                         "admin_alert_canonical_group_reduction_mothers",
                     )
+                    .await?
+                || !self
+                    .schema_named_object_exists(
+                        "observability",
+                        "index",
+                        "idx_admin_alert_canonical_group_reduction_events_child",
+                    )
                     .await?)
         {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 40".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_VERSION)
+            .await?
+            && !self
+                .schema_object_exists("observability", "admin_alert_canonical_groups_state")
+                .await?
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 41".to_string(),
+            ));
+        }
+        let payload_read_migration_applied = self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_VERSION)
+            .await?;
+        let mut payload_read_columns_present = true;
+        if payload_read_migration_applied {
+            for column in [
+                "payload_read_generation",
+                "payload_read_position",
+                "payload_read_chunk_position",
+                "payload_read_json",
+            ] {
+                if !self
+                    .table_column_exists("admin_alert_canonical_groups_state", column)
+                    .await?
+                {
+                    payload_read_columns_present = false;
+                    break;
+                }
+            }
+        }
+        if payload_read_migration_applied && !payload_read_columns_present {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 42".to_string(),
+            ));
+        }
+        let payload_read_chunks_migration_applied = self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_VERSION)
+            .await?;
+        let payload_read_chunks_present = payload_read_chunks_migration_applied
+            && self
+                .schema_object_exists(
+                    "observability",
+                    "admin_alert_canonical_group_payload_read_chunks",
+                )
+                .await?
+            && self
+                .schema_named_object_exists(
+                    "observability",
+                    "index",
+                    "idx_admin_alert_canonical_group_payload_read_chunks_lookup",
+                )
+                .await?
+            && self
+                .table_column_exists(
+                    "admin_alert_canonical_group_payload_read_chunks",
+                    "chunk_position",
+                )
+                .await?;
+        if payload_read_chunks_migration_applied && !payload_read_chunks_present {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 43".to_string(),
+            ));
+        }
+        let payload_read_owner_migration_applied = self
+            .schema_migration_applied(ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION)
+            .await?;
+        let mut payload_read_owner_columns_present = true;
+        if payload_read_owner_migration_applied {
+            for column in [
+                "build_generation",
+                "build_projection_revision",
+                "source_recent_generation",
+                "source_history_generation",
+                "position",
+                "chunk_position",
+                "payload_chunk",
+            ] {
+                if !self
+                    .table_column_exists(
+                        "admin_alert_canonical_group_payload_read_chunks_v2",
+                        column,
+                    )
+                    .await?
+                {
+                    payload_read_owner_columns_present = false;
+                    break;
+                }
+            }
+        }
+        let payload_read_owner_present = payload_read_owner_migration_applied
+            && self
+                .schema_object_exists(
+                    "observability",
+                    "admin_alert_canonical_group_payload_read_chunks_v2",
+                )
+                .await?
+            && payload_read_owner_columns_present
+            && self
+                .schema_named_object_exists(
+                    "observability",
+                    "index",
+                    "idx_admin_alert_canonical_group_payload_read_chunks_v2_lookup",
+                )
+                .await?;
+        if payload_read_owner_migration_applied && !payload_read_owner_present {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 44".to_string(),
             ));
         }
         Ok(())
@@ -1221,4 +1413,165 @@ impl KeyStore {
         )
         .await
     }
+
+    async fn apply_admin_alert_canonical_groups_event_id_order_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        // Groups output is local derived state. Reopen it once so a rolling
+        // upgrade cannot serve a snapshot ordered by the old projection
+        // row_sort_id alongside rows ordered by AlertEventRecord.id.
+        sqlx::query(
+            r#"UPDATE observability.admin_alert_canonical_groups_state
+                  SET active_generation = 0, active_row_count = 0,
+                      active_projection_revision = -1,
+                      source_recent_generation = -1, source_history_generation = -1,
+                      build_generation = 0, build_projection_revision = -1,
+                      build_source_recent_generation = -1,
+                      build_source_history_generation = -1,
+                      build_source_rowid_upper_bound = 0,
+                      build_cursor_source_rowid = 0, build_phase = 'idle',
+                      build_partition_key = '', build_partition_after_key = '',
+                      build_partition_cursor_occurred_at = -9223372036854775808,
+                      build_partition_cursor_row_sort_id = '',
+                      build_partition_events_json = '[]',
+                      build_partition_source_complete = 0,
+                      build_partition_fragment_next_position = 1,
+                      build_partition_finalize_fragment_position = 1,
+                      build_next_position = 1
+                WHERE singleton = 1"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_EVENT_ID_ORDER_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_payload_read_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        for (column, definition) in [
+            ("payload_read_generation", "INTEGER NOT NULL DEFAULT 0"),
+            ("payload_read_position", "INTEGER NOT NULL DEFAULT 0"),
+            ("payload_read_chunk_position", "INTEGER NOT NULL DEFAULT 0"),
+            ("payload_read_json", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            if !self
+                .table_column_exists("admin_alert_canonical_groups_state", column)
+                .await?
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE observability.admin_alert_canonical_groups_state ADD COLUMN {column} {definition}"
+                ))
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "UPDATE observability.admin_alert_canonical_groups_state \
+                SET payload_read_generation = 0, payload_read_position = 0, \
+                    payload_read_chunk_position = 0, payload_read_json = '' \
+              WHERE singleton = 1",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_payload_read_chunks_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_payload_read_chunks (
+                build_generation INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                chunk_position INTEGER NOT NULL,
+                payload_chunk TEXT NOT NULL,
+                PRIMARY KEY(build_generation, position, chunk_position)
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_payload_read_chunks_lookup \
+             ON admin_alert_canonical_group_payload_read_chunks(\
+                 build_generation, position, chunk_position\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE observability.admin_alert_canonical_groups_state \
+                SET payload_read_chunk_position = 0, payload_read_json = '' \
+              WHERE singleton = 1",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_CHUNKS_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_admin_alert_canonical_groups_payload_read_owner_migration(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.admin_alert_canonical_group_payload_read_chunks_v2 (
+                build_generation INTEGER NOT NULL,
+                build_projection_revision INTEGER NOT NULL,
+                source_recent_generation INTEGER NOT NULL,
+                source_history_generation INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                chunk_position INTEGER NOT NULL,
+                payload_chunk TEXT NOT NULL,
+                PRIMARY KEY(
+                    build_generation, build_projection_revision,
+                    source_recent_generation, source_history_generation,
+                    position, chunk_position
+                )
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS observability.idx_admin_alert_canonical_group_payload_read_chunks_v2_lookup \
+             ON admin_alert_canonical_group_payload_read_chunks_v2(\
+                 build_generation, build_projection_revision, source_recent_generation,\
+                 source_history_generation, position, chunk_position\
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE observability.admin_alert_canonical_groups_state \
+                SET payload_read_generation = 0, payload_read_position = 0, \
+                    payload_read_chunk_position = 0, payload_read_json = '' \
+              WHERE singleton = 1",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME,
+            ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM,
+        )
+        .await
+    }
+
 }

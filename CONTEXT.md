@@ -58,8 +58,11 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   snapshot rows at a time into a local facet model; each sorted facet payload advances through a durable
   250-row cursor into independently staged output rows. Retries resume those cursors rather than issuing
   a JSON CTE or rescanning prior rows, and snapshot assembly reads only completed output rows. Exact
-  derived payloads must not be truncated or turned into a permanent defer because of an arbitrary size
-  threshold. Filtered/noncanonical reads keep
+  derived payloads must not be turned into a permanent defer because of an arbitrary size threshold.
+  A semantic Groups summary retains nested `child_events` only while that optional detail fits one
+  bounded read fragment; otherwise it publishes the exact group counts and latest event with an empty
+  inline detail list. The existing child drawer reads request details through its paginated source.
+  Filtered/noncanonical reads keep
   their existing JSON CTE semantics. A production-shaped statement that exceeds its native read deadline
   requires query-plan evidence and a separate projection task, never a larger read budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
@@ -78,7 +81,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   for one user value cannot overwrite one another. Semantic Groups reduction keeps classification input,
   child/mother aggregates, and output chunk position in local durable sidecar rows; an in-flight
   generation may contain placeholder metadata, but it is never published until every payload chunk and
-  partition cursor is accepted.
+  partition cursor is accepted. Alerts projection and all Alerts reads retain a rolling 32-day window;
+  the derived sidecar reclaims expired rows in bounded background slices.
 
 ## Reconciliation Terms
 

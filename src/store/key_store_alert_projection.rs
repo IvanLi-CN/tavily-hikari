@@ -6,6 +6,10 @@ const ALERT_PROJECTION_BATCH_ROWS: i64 = 25;
 const ALERT_PROJECTION_STALE_SECS: i64 = 90;
 const ALERT_PROJECTION_SUMMARY_REFRESH_SECS: i64 = 60;
 const ALERT_PROJECTION_DASHBOARD_WINDOW_HOURS: i64 = 24;
+// Match the repository's minimum request-log retention window. Alerts are a
+// derived operator view and must not outlive the source horizon.
+const ALERT_PROJECTION_RETENTION_DAYS: i64 = 32;
+const ALERT_PROJECTION_RETENTION_SECS: i64 = ALERT_PROJECTION_RETENTION_DAYS * 24 * 60 * 60;
 const ALERT_PROJECTION_SOURCES: [&str; 3] = [
     ALERT_SOURCE_AUTH_TOKEN_LOG,
     ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD,
@@ -57,6 +61,12 @@ pub(crate) enum AlertProjectionSliceOutcome {
 }
 
 impl KeyStore {
+    fn alert_projection_retention_since(&self) -> i64 {
+        self.backend_time
+            .now_ts()
+            .saturating_sub(ALERT_PROJECTION_RETENTION_SECS)
+    }
+
     pub(crate) fn try_admit_alert_projection(
         &self,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
@@ -192,15 +202,18 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
+        let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
                      FROM auth_token_logs
-                    WHERE failure_kind = 'upstream_rate_limited_429'
-                       OR result_status = 'quota_exhausted'
+                    WHERE (failure_kind = 'upstream_rate_limited_429'
+                           OR result_status = 'quota_exhausted')
+                      AND created_at >= ?
                     ORDER BY created_at DESC, id DESC
                     LIMIT 1"#,
             )
+            .bind(retention_since)
             .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("atl:{id:020}")))),
@@ -210,16 +223,20 @@ impl KeyStore {
                         SELECT created_at AS occurred_at, id AS source_id
                           FROM api_key_maintenance_records
                          WHERE COALESCE(reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
+                           AND created_at >= ?
                         UNION ALL
                         SELECT created_at AS occurred_at, id AS source_id
                           FROM api_key_maintenance_records
                          WHERE source = 'system'
                            AND operation_code = 'auto_mark_exhausted'
                            AND reason_code = 'quota_exhausted'
+                           AND created_at >= ?
                      )
                     ORDER BY occurred_at DESC, source_id DESC
                     LIMIT 1"#,
             )
+            .bind(retention_since)
+            .bind(retention_since)
             .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, source_id)| (occurred_at, format!("maint:{source_id}")))),
@@ -227,9 +244,11 @@ impl KeyStore {
                 r#"SELECT COALESCE(finished_at, started_at, queued_at), id
                      FROM scheduled_jobs
                     WHERE LOWER(TRIM(status)) IN ('error', 'failed')
+                      AND COALESCE(finished_at, started_at, queued_at) >= ?
                     ORDER BY COALESCE(finished_at, started_at, queued_at) DESC, id DESC
                     LIMIT 1"#,
             )
+            .bind(retention_since)
             .fetch_optional(&mut *conn)
             .await
             .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("job:{id:020}")))),
@@ -272,17 +291,20 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
+        let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
                      FROM auth_token_logs
                     WHERE (failure_kind = 'upstream_rate_limited_429'
                            OR result_status = 'quota_exhausted')
+                      AND created_at >= ?
                       AND (created_at > ? OR (created_at = ? AND id > ?))
                       AND (created_at < ? OR (created_at = ? AND id <= ?))
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?"#,
             )
+            .bind(retention_since)
             .bind(cursor.0)
             .bind(cursor.0)
             .bind(cursor_id.parse::<i64>().unwrap_or_default())
@@ -307,18 +329,22 @@ impl KeyStore {
                         SELECT created_at AS occurred_at, id AS source_id
                           FROM api_key_maintenance_records
                          WHERE COALESCE(reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
+                           AND created_at >= ?
                         UNION ALL
                         SELECT created_at AS occurred_at, id AS source_id
                           FROM api_key_maintenance_records
                          WHERE source = 'system'
                            AND operation_code = 'auto_mark_exhausted'
                            AND reason_code = 'quota_exhausted'
+                           AND created_at >= ?
                      )
                     WHERE (occurred_at > ? OR (occurred_at = ? AND source_id > ?))
                       AND (occurred_at < ? OR (occurred_at = ? AND source_id <= ?))
                     ORDER BY occurred_at ASC, source_id ASC
                     LIMIT ?"#,
             )
+            .bind(retention_since)
+            .bind(retention_since)
             .bind(cursor.0)
             .bind(cursor.0)
             .bind(cursor_id)
@@ -341,6 +367,7 @@ impl KeyStore {
                 r#"SELECT COALESCE(finished_at, started_at, queued_at), id
                      FROM scheduled_jobs
                     WHERE LOWER(TRIM(status)) IN ('error', 'failed')
+                      AND COALESCE(finished_at, started_at, queued_at) >= ?
                       AND (COALESCE(finished_at, started_at, queued_at) > ?
                            OR (COALESCE(finished_at, started_at, queued_at) = ? AND id > ?))
                       AND (COALESCE(finished_at, started_at, queued_at) < ?
@@ -348,6 +375,7 @@ impl KeyStore {
                     ORDER BY COALESCE(finished_at, started_at, queued_at) ASC, id ASC
                     LIMIT ?"#,
             )
+            .bind(retention_since)
             .bind(cursor.0)
             .bind(cursor.0)
             .bind(cursor_id.parse::<i64>().unwrap_or_default())
@@ -412,6 +440,40 @@ impl KeyStore {
             .map(Self::decode_alert_event_projection_row)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProxyError::from)
+    }
+
+    async fn prune_expired_alert_projection_slice(&self) -> Result<bool, ProxyError> {
+        let retention_since = self.alert_projection_retention_since();
+        self.sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let deleted = sqlx::query(
+                        r#"DELETE FROM observability.dashboard_alert_projection_events
+                            WHERE rowid IN (
+                                SELECT rowid
+                                  FROM observability.dashboard_alert_projection_events
+                                 WHERE occurred_at < ?
+                                 ORDER BY occurred_at ASC, rowid ASC
+                                 LIMIT ?
+                            )"#,
+                    )
+                    .bind(retention_since)
+                    .bind(ALERT_PROJECTION_BATCH_ROWS)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
+                    if deleted > 0 {
+                        sqlx::query(
+                            "UPDATE observability.dashboard_alert_projection_revision_state \
+                             SET revision = revision + 1 WHERE singleton = 1",
+                        )
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                    Ok::<_, ProxyError>(deleted > 0)
+                })
+            })
+            .await
     }
 
     pub(crate) async fn advance_alert_projection_slice(
@@ -506,6 +568,13 @@ impl KeyStore {
     async fn advance_admitted_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        if self.prune_expired_alert_projection_slice().await? {
+            return Ok(AlertProjectionSliceOutcome::Advanced {
+                rows: 0,
+                complete: false,
+                dashboard_dirty: true,
+            });
+        }
         let mut recent = self
             .alert_projection_source_state(AlertProjectionLane::RecentTail)
             .await?
@@ -616,9 +685,14 @@ impl KeyStore {
         let rows = self
             .alert_projection_hydrate_source_keys(&state.source_kind, &source_keys)
             .await?;
+        // When the durable cursor predates the retention window, an empty
+        // bounded keyset means every remaining source row is intentionally
+        // expired. Advance to the already captured fence so that the next
+        // scheduler wake does not rescan that empty interval forever.
         let next_cursor = source_keys
             .last()
-            .map(|row| (row.occurred_at, row.row_sort_id.clone()));
+            .map(|row| (row.occurred_at, row.row_sort_id.clone()))
+            .or_else(|| Some(fence.clone()));
         let complete = next_cursor
             .as_ref()
             .map(|cursor| cursor.0 == fence.0 && cursor.1 == fence.1)
@@ -689,10 +763,9 @@ impl KeyStore {
                 .fetch_one(&mut **tx)
                 .await?
             };
-            for row in &rows {
-                let payload_json = serde_json::to_string(row).map_err(|err| {
-                    ProxyError::Other(format!("serialize alert projection event: {err}"))
-                })?;
+            for source_row in &rows {
+                let row = source_row.clone();
+                let payload_json = serialize_alert_event_projection_payload(row.clone())?;
                 if build_generation > 0 {
                     // A canonical Groups build owns a fixed projection revision. Preserve the
                     // pre-update row once so its independently-budgeted read slices continue

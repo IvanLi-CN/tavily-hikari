@@ -146,7 +146,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   bounded payload chunks plus small group metadata before atomically accepting that partition. If a
   finalization is interrupted, its immutable source fragments are reused and only the unaccepted
   partition is recomputed. The two model slots are cleared in short slices before
-  reuse, and only a complete final payload is staged. Incomplete staging is never visible, and short
+  reuse, and only a complete final payload is staged. A Groups summary never makes nested event history
+  unbounded: oversized optional `child_events` are omitted from the canonical item while counts and the
+  latest event remain exact, and the existing child drawer loads request details through a paginated read.
+  Incomplete staging is never visible, and short
   background transactions reclaim only obsolete generations, never the active or in-flight build.
   This sidecar-derived model is not HA truth. The staged Catalog output key includes both facet value
   and display label, so the v39 local slot is lossless when one user value has multiple historical

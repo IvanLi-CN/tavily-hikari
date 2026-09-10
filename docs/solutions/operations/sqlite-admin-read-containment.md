@@ -100,7 +100,9 @@ reads:
   source set. Every source statement is independently bounded; persist bounded event fragments and stage
   final groups as bounded payload chunks plus metadata instead of an ever-growing JSON accumulator.
   Exact partition results remain recoverable by recomputing only an unaccepted partition from its staged
-  source fragments without truncating nested events. A source-fence change discards the staged generation instead of publishing it
+  source fragments. Preserve the group summary, counts, and latest event, but omit only optional nested
+  `child_events` once their inline detail exceeds one read fragment; the existing child drawer retrieves
+  request details through its paginated source. A source-fence change discards the staged generation instead of publishing it
   as stale. Reuse only the inactive one of two model slots after
   clearing it in small write slices. Reclaim obsolete event, override, and group generations in small write
   batches while excluding the active and in-flight build generations. Do not use the model for filtered

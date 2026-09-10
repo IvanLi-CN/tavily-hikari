@@ -42,7 +42,9 @@
   页面，并在 Rust 解码已物化的 `payload_json`。Catalog facet 从同代 immutable Groups event snapshot
   每次接受 `50` 行到本机 facet model，并以每次 `250` 行的持久化 output cursor 写入独立 output rows；重试不能重扫
   已接受 slice，也不能为每个 facet 运行 JSON CTE。snapshot 只从 complete output rows 组装 exact payload，不能因任意尺寸阈值
-  截断或永久 defer。只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状快照上仍超过 `250ms`，必须先提交
+  永久 defer。Groups 的母组与子组摘要、计数和最新事件始终完整；仅当一个母组的嵌入 `childEvents` 历史超过一个有界 read fragment 时，
+  该可选内联列表为空，详情由既有 child drawer 的分页 request-record 读取提供。Alerts projection 与所有 Alerts 查询固定保留最近 `32` 天。
+  只有带筛选的非 canonical 查询才保留 JSON CTE 语义。若该直接页在生产形状快照上仍超过 `250ms`，必须先提交
   `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高读预算或恢复 raw fallback。
   默认 Groups `1/20` 使用本机 observability 的 canonical-groups read model，而不在 warm
   路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence

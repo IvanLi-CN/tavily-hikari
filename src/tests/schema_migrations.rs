@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -805,6 +805,141 @@ async fn canonical_catalog_labels_and_streamed_reduction_migrations_retry_withou
             .await
             .expect("read v39/v40 ledger records");
     assert_eq!(migration_rows, 2);
+
+    // v41 must reopen even a previously recorded v40 slot so an upgrade
+    // cannot leave an active or in-flight snapshot using the old tie-breaker.
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET active_generation = 1, active_row_count = 1, build_generation = 2,
+             build_phase = 'aggregating' WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed an old-order active and staged slot");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 41")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate an interrupted v41 ledger write");
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("retry v41 event-id ordering migration"),
+        "the v41 retry must not request a full bootstrap"
+    );
+    let reopened_state: (i64, i64, String) = sqlx::query_as(
+        "SELECT active_generation, build_generation, build_phase \
+         FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read v41 reopened Groups state");
+    assert_eq!(reopened_state, (0, 0, "idle".to_string()));
+    let v41_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 41)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v41 ledger record");
+    assert_eq!(v41_recorded, 1);
+
+    // v42 adds the durable payload-read cursor. An interrupted migration must
+    // reset any partial staged prefix before the next warm build resumes.
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state \
+         SET payload_read_generation = 9, payload_read_position = 4, \
+             payload_read_chunk_position = 7, payload_read_json = 'partial' \
+         WHERE singleton = 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed an interrupted payload read checkpoint");
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 42")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate an interrupted v42 ledger write");
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("retry v42 payload-read migration"),
+        "the v42 retry must not request a full bootstrap"
+    );
+    let payload_read_state: (i64, i64, i64, String) = sqlx::query_as(
+        "SELECT payload_read_generation, payload_read_position, \
+                payload_read_chunk_position, payload_read_json \
+           FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reset payload-read checkpoint");
+    assert_eq!(payload_read_state, (0, 0, 0, String::new()));
+    let v42_recorded: i64 =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 42)")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v42 ledger record");
+    assert_eq!(v42_recorded, 1);
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 43")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate an interrupted v43 ledger write");
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("retry v43 payload-read chunks migration"),
+        "the v43 retry must not request a full bootstrap"
+    );
+    let payload_chunk_table: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' \
+         AND name = 'admin_alert_canonical_group_payload_read_chunks')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read v43 payload chunk table");
+    assert_eq!(payload_chunk_table, 1);
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 44")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate an interrupted v44 ledger write");
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("retry v44 payload-read owner migration"),
+        "the v44 retry must not request a full bootstrap"
+    );
+    let payload_owner_table: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' \
+         AND name = 'admin_alert_canonical_group_payload_read_chunks_v2')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read v44 payload owner table");
+    assert_eq!(payload_owner_table, 1);
+    let payload_owner_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM observability.sqlite_master WHERE type = 'table' \
+         AND name = 'admin_alert_canonical_group_payload_read_chunks_v2'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read v44 payload owner schema");
+    for column in [
+        "build_projection_revision",
+        "source_recent_generation",
+        "source_history_generation",
+        "chunk_position",
+    ] {
+        assert!(
+            payload_owner_sql.contains(column),
+            "v44 schema misses {column}"
+        );
+    }
+    assert!(payload_owner_sql.contains("PRIMARY KEY"));
     assert!(
         !proxy
             .key_store
@@ -812,6 +947,25 @@ async fn canonical_catalog_labels_and_streamed_reduction_migrations_retry_withou
             .await
             .expect("warm restart leaves v39/v40 DDL untouched"),
         "recorded local migrations must be no-ops on warm restart"
+    );
+
+    // A recorded v40 migration must fail closed if the covering child-event
+    // index disappears; silently accepting the ledger would reintroduce an
+    // unbounded reduction read on the next warm build.
+    sqlx::query("DROP INDEX observability.idx_admin_alert_canonical_group_reduction_events_child")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("drop v40 child-event index for fail-closed check");
+    let validation_error = proxy
+        .key_store
+        .prepare_versioned_schema()
+        .await
+        .expect_err("missing v40 child-event index must fail closed");
+    assert!(
+        validation_error
+            .to_string()
+            .contains("schema migration object validation failed at version 40"),
+        "unexpected missing-index validation error: {validation_error}"
     );
 
     drop(proxy);
@@ -872,6 +1026,42 @@ async fn reconciliation_identity_fence_migration_preserves_v28_ledger_contract()
     assert_eq!(fence_generation, 1);
 
     drop(reopened);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn canonical_groups_payload_owner_migration_validates_required_index() {
+    let db_path = temp_db_path("canonical-groups-payload-owner-validation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-canonical-groups-payload-owner-validation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    sqlx::query(
+        "DROP INDEX observability.idx_admin_alert_canonical_group_payload_read_chunks_v2_lookup",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("drop v44 lookup index for validation");
+    let validation_error = proxy
+        .key_store
+        .prepare_versioned_schema()
+        .await
+        .expect_err("missing v44 lookup index must fail closed");
+    assert!(
+        validation_error
+            .to_string()
+            .contains("schema migration object validation failed at version 44"),
+        "unexpected v44 validation error: {validation_error}"
+    );
+
+    drop(proxy);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
@@ -2054,7 +2244,7 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
         ]
     );
 

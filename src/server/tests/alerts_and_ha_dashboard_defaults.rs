@@ -713,12 +713,13 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     .expect("proxy created");
 
     let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
     let payload = serde_json::json!({
         "source_kind": "auth_token_log",
         "source_id": "alert-source-1",
         "row_sort_id": "alert-sort-1",
         "alert_type": "upstream_rate_limited_429",
-        "occurred_at": 1_700_000_000_i64,
+        "occurred_at": occurred_at,
         "token_id": "token-1",
         "key_id": "key-1",
         "request_log_id": null,
@@ -752,9 +753,11 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     sqlx::query(
         r#"INSERT INTO observability.dashboard_alert_projection_events
                (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
-           VALUES ('auth_token_log', 'alert-source-1', 1700000000, 'alert-sort-1', ?, 1700000000)"#,
+           VALUES ('auth_token_log', 'alert-source-1', ?, 'alert-sort-1', ?, ?)"#,
     )
+    .bind(occurred_at)
     .bind(&payload)
+    .bind(occurred_at)
     .execute(&pool)
     .await
     .expect("seed projected alert event");
@@ -808,8 +811,9 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     sqlx::query(
         r#"INSERT INTO observability.admin_alert_canonical_group_events
                (build_generation, source_kind, source_id, occurred_at, row_sort_id, partition_key, payload_json)
-           VALUES (17, 'auth_token_log', 'alert-source-1', 1700000000, 'alert-sort-1', 'key:key-1', ?)"#,
+           VALUES (17, 'auth_token_log', 'alert-source-1', ?, 'alert-sort-1', 'key:key-1', ?)"#,
     )
+    .bind(occurred_at)
     .bind(&payload)
     .execute(&pool)
     .await
@@ -899,7 +903,7 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
                VALUES (18, 'auth_token_log', ?, ?, ?, 'key:key-1', ?)"#,
         )
         .bind(format!("catalog-source-{index}"))
-        .bind(1_700_000_100_i64 + index)
+        .bind(occurred_at + 100 + index)
         .bind(format!("catalog-sort-{index:020}"))
         .bind(&payload)
         .execute(&pool)
@@ -921,7 +925,7 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
     .fetch_one(&pool)
     .await
     .expect("read the durable catalog checkpoint");
-    assert_eq!(catalog_checkpoint, (1_700_000_149, false));
+    assert_eq!(catalog_checkpoint, (occurred_at + 149, false));
     let resumed_catalog = {
         let mut catalog = None;
         for _ in 0..16 {

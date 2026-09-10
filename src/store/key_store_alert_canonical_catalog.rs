@@ -57,10 +57,12 @@ impl KeyStore {
             "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
              FROM observability.admin_alert_canonical_group_events \
              WHERE build_generation = ? \
+               AND occurred_at >= ? \
                AND (occurred_at > ? OR (occurred_at = ? AND row_sort_id > ?)) \
              ORDER BY occurred_at ASC, row_sort_id ASC LIMIT ?",
         )
         .bind(build_generation)
+        .bind(self.alert_projection_retention_since())
         .bind(cursor_occurred_at)
         .bind(cursor_occurred_at)
         .bind(&cursor_row_sort_id)
@@ -503,11 +505,7 @@ impl KeyStore {
                 .collect()
         };
         Ok(AlertCatalog {
-            retention_days: self
-                .effective_auth_token_log_retention_days_for_operation(
-                    SqliteOperation::AdminAlertsCacheWarm,
-                )
-                .await?,
+            retention_days: ALERT_PROJECTION_RETENTION_DAYS,
             types: types
                 .into_iter()
                 .map(|item| LogFacetOption {

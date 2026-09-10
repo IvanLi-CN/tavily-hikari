@@ -1,4 +1,30 @@
 const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_EVENT_ROWS: i64 = 8;
+const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX: usize = 16;
+// A canonical group is a summary. Keep inline history only while it fits in
+// one existing read fragment; the drawer already loads request records from
+// its paginated source when an administrator asks to inspect a child window.
+const ADMIN_ALERT_CANONICAL_INLINE_CHILD_EVENTS_MAX_BYTES: i64 =
+    ALERT_EVENT_PROJECTION_MAX_BYTES as i64;
+
+fn append_bounded_semantic_payload_chunks(
+    payload: &str,
+    byte_offset: &mut usize,
+    chunks: &mut Vec<String>,
+) -> bool {
+    let Some(remaining) = payload.get(*byte_offset..) else {
+        return false;
+    };
+    let mut iterator = canonical_alert_payload_chunks_iter(remaining);
+    while chunks.len() < ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX {
+        let Some(chunk) = iterator.next() else {
+            *byte_offset = payload.len();
+            return true;
+        };
+        *byte_offset += chunk.len();
+        chunks.push(chunk);
+    }
+    iterator.next().is_none()
+}
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct SemanticChildReduction {
@@ -51,6 +77,18 @@ struct SemanticOutputProgress {
     child_ordinal: i64,
     next_event_position: i64,
     next_chunk_position: i64,
+    #[serde(default)]
+    stage_chunk_position: i64,
+    #[serde(default)]
+    stage_event_position: i64,
+    #[serde(default)]
+    stage_event_byte_offset: i64,
+    #[serde(default)]
+    inline_child_event_bytes: i64,
+    #[serde(default)]
+    current_child_event_bytes: i64,
+    #[serde(default)]
+    omit_current_child_events: bool,
     output_position: i64,
     stage: String,
 }
@@ -76,6 +114,30 @@ impl Default for SemanticClassifyingProgress {
 }
 
 impl KeyStore {
+    async fn admin_alert_canonical_semantic_child_event_bytes(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        partition_key: &str,
+        child_ordinal: i64,
+    ) -> Result<i64, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let result = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COALESCE(SUM(length(event_json)), 0)
+                  FROM observability.admin_alert_canonical_group_reduction_events
+                 WHERE build_generation = ? AND partition_key = ? AND child_ordinal = ?"#,
+        )
+        .bind(snapshot.build_generation)
+        .bind(partition_key)
+        .bind(child_ordinal)
+        .fetch_one(&mut *session)
+        .await;
+        let value = session.query(result).await;
+        session.finish().await?;
+        value
+    }
+
     async fn advance_admin_alert_canonical_semantic_reduction(
         &self,
         snapshot: AdminAlertsCanonicalSnapshot,
@@ -310,12 +372,11 @@ impl KeyStore {
                     .as_ref()
                     .map(|child| child.ordinal)
                     .ok_or_else(|| ProxyError::Other("semantic reducer lost active child".to_string()))?;
+                let (_, event_json) = serialize_alert_event_record_for_projection(event)?;
                 staged_events.push((
                     event_position,
                     child_ordinal,
-                    serde_json::to_string(&event).map_err(|error| {
-                        ProxyError::Other(format!("serialize semantic canonical event: {error}"))
-                    })?,
+                    event_json,
                 ));
             }
             position + 1
@@ -331,6 +392,12 @@ impl KeyStore {
                 child_ordinal: 0,
                 next_event_position: 0,
                 next_chunk_position: 0,
+                stage_chunk_position: 0,
+                stage_event_position: 0,
+                stage_event_byte_offset: 0,
+                inline_child_event_bytes: 0,
+                current_child_event_bytes: 0,
+                omit_current_child_events: false,
                 output_position: state.build_next_position,
                 stage: "mother_header".to_string(),
             };
@@ -412,9 +479,7 @@ impl KeyStore {
                         .bind(child.first_seen)
                         .bind(child.last_seen)
                         .bind(child.event_count)
-                        .bind(serde_json::to_string(&child.latest_event).map_err(|error| {
-                            ProxyError::Other(format!("serialize semantic child latest event: {error}"))
-                        })?)
+                        .bind(serialize_alert_event_record_for_projection(child.latest_event.clone())?.1)
                         .bind(child.semantic_kind)
                         .bind(child.semantic_window_minutes)
                         .bind(child.semantic_window_start)
@@ -442,9 +507,7 @@ impl KeyStore {
                         .bind(mother.last_seen)
                         .bind(mother.event_count)
                         .bind(mother.child_count)
-                        .bind(serde_json::to_string(&mother.latest_event).map_err(|error| {
-                            ProxyError::Other(format!("serialize semantic mother latest event: {error}"))
-                        })?)
+                        .bind(serialize_alert_event_record_for_projection(mother.latest_event.clone())?.1)
                         .bind(mother.semantic_kind.clone())
                         .bind(mother.semantic_window_minutes)
                         .bind(mother.semantic_window_start)
@@ -634,7 +697,7 @@ impl KeyStore {
                 semantic.window_key = Some(semantic_window_key.to_string());
             }
         }
-        event
+        bound_alert_event_record_for_projection(event)
     }
 
     fn semantic_child_group_record(child: &SemanticChildReduction) -> AlertGroupRecord {
@@ -735,7 +798,7 @@ impl KeyStore {
         partition_key: &str,
         child_ordinal: i64,
         next_event_position: i64,
-    ) -> Result<Vec<(i64, AlertEventRecord)>, ProxyError> {
+    ) -> Result<Vec<(i64, AlertEventRecord, String)>, ProxyError> {
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -757,9 +820,9 @@ impl KeyStore {
         session.finish().await?;
         rows.into_iter()
             .map(|(position, event_json)| {
-                serde_json::from_str(&event_json)
-                    .map(|event| (position, event))
-                    .map_err(|_| ProxyError::Other("invalid semantic reduction event".to_string()))
+            serde_json::from_str(&event_json)
+                .map(|event| (position, event, event_json))
+                .map_err(|_| ProxyError::Other("invalid semantic reduction event".to_string()))
             })
             .collect()
     }
@@ -785,19 +848,39 @@ impl KeyStore {
                     None,
                     write_position,
                     true,
+                    true,
                 )
                 .await;
         };
         let mut chunks = Vec::new();
+        let mut stage_complete = true;
+        let mut stage_byte_offset = progress.stage_event_byte_offset.max(0) as usize;
+        macro_rules! append_chunks {
+            ($payload:expr) => {
+                if stage_complete {
+                    stage_complete = append_bounded_semantic_payload_chunks(
+                        $payload,
+                        &mut stage_byte_offset,
+                        &mut chunks,
+                    );
+                }
+            };
+        }
         let mut accepted_group = None;
         match progress.stage.as_str() {
             "mother_header" => {
-                chunks.push(Self::canonical_group_json_prefix(
+                let prefix = Self::canonical_group_json_prefix(
                     &Self::semantic_mother_group_record(&mother),
                     "children",
-                )?);
-                progress.child_ordinal = mother.last_child_ordinal;
-                progress.stage = "child_header".to_string();
+                )?;
+                append_chunks!(&prefix);
+                progress.stage_event_byte_offset = stage_byte_offset as i64;
+                if stage_complete {
+                    progress.child_ordinal = mother.last_child_ordinal;
+                    progress.stage = "child_header".to_string();
+                    progress.stage_event_position = 0;
+                    progress.stage_event_byte_offset = 0;
+                }
             }
             "child_header" => {
                 let child = self
@@ -810,15 +893,38 @@ impl KeyStore {
                     .ok_or_else(|| {
                         ProxyError::Other("semantic canonical child is unavailable".to_string())
                     })?;
-                if progress.child_ordinal != mother.last_child_ordinal {
-                    chunks.push(",".to_string());
-                }
-                chunks.push(Self::canonical_group_json_prefix(
+                let prefix = Self::canonical_group_json_prefix(
                     &Self::semantic_child_group_record(&child),
                     "child_events",
-                )?);
-                progress.next_event_position = child.last_event_position;
-                progress.stage = "child_events".to_string();
+                )?;
+                let header = if progress.child_ordinal != mother.last_child_ordinal {
+                    format!(",{prefix}")
+                } else {
+                    prefix
+                };
+                progress.current_child_event_bytes = self
+                    .admin_alert_canonical_semantic_child_event_bytes(
+                        snapshot,
+                        partition,
+                        child.ordinal,
+                    )
+                    .await?;
+                progress.omit_current_child_events = progress
+                    .inline_child_event_bytes
+                    .saturating_add(progress.current_child_event_bytes)
+                    > ADMIN_ALERT_CANONICAL_INLINE_CHILD_EVENTS_MAX_BYTES;
+                append_chunks!(&header);
+                progress.stage_event_byte_offset = stage_byte_offset as i64;
+                if stage_complete {
+                    progress.next_event_position = child.last_event_position;
+                    progress.stage_event_position = child.last_event_position;
+                    progress.stage_event_byte_offset = 0;
+                    progress.stage = if progress.omit_current_child_events {
+                        "child_suffix".to_string()
+                    } else {
+                        "child_events".to_string()
+                    };
+                }
             }
             "child_events" => {
                 let child = self
@@ -836,16 +942,15 @@ impl KeyStore {
                         snapshot,
                         partition,
                         child.ordinal,
-                        progress.next_event_position,
+                        progress.stage_event_position,
                     )
                     .await?;
-                for (position, event) in &events {
-                    if *position != child.last_event_position {
-                        chunks.push(",".to_string());
-                    }
-                    let event = if *position == child.last_event_position {
-                        Self::normalized_semantic_latest_event(
-                            event.clone(),
+                let events_empty = events.is_empty();
+                for (position, event, _event_json) in events {
+                    let event_prefix = if position != child.last_event_position { "," } else { "" };
+                    let event_payload = if position == child.last_event_position {
+                        let event = Self::normalized_semantic_latest_event(
+                            event,
                             &child.semantic_kind,
                             child.semantic_window_start,
                             child.semantic_window_end,
@@ -853,40 +958,69 @@ impl KeyStore {
                                 .semantic_window_key
                                 .as_deref()
                                 .or(Some(child.window_group_key.as_str())),
-                        )
+                        );
+                        serialize_alert_event_record_for_projection(event)?.1
                     } else {
-                        event.clone()
+                        serialize_alert_event_record_for_projection(event)?.1
                     };
-                    chunks.extend(canonical_alert_payload_chunks(&serde_json::to_string(&event).map_err(
-                        |error| ProxyError::Other(format!("serialize semantic child event: {error}")),
-                    )?));
+                    let event_payload = format!("{event_prefix}{event_payload}");
+                    append_chunks!(&event_payload);
+                    progress.stage_event_byte_offset = stage_byte_offset as i64;
+                    if stage_complete {
+                        progress.next_event_position = position - 1;
+                        progress.stage_event_position = position - 1;
+                        progress.stage_event_byte_offset = 0;
+                        stage_byte_offset = 0;
+                        if position <= child.first_event_position {
+                            progress.stage = "child_suffix".to_string();
+                            break;
+                        }
+                    }
+                    if !stage_complete {
+                        break;
+                    }
                 }
-                if let Some((position, _)) = events.last() {
-                    progress.next_event_position = position - 1;
-                }
-                if events.len() < ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_EVENT_ROWS as usize
-                    || progress.next_event_position < child.first_event_position
-                {
+                if events_empty {
                     progress.stage = "child_suffix".to_string();
+                    progress.stage_event_position = 0;
+                    progress.stage_event_byte_offset = 0;
                 }
             }
             "child_suffix" => {
-                chunks.push("]}".to_string());
-                if progress.child_ordinal > mother.first_child_ordinal {
-                    progress.child_ordinal -= 1;
-                    progress.stage = "child_header".to_string();
-                } else {
-                    progress.stage = "mother_suffix".to_string();
+                append_chunks!("]}");
+                progress.stage_event_byte_offset = stage_byte_offset as i64;
+                if stage_complete {
+                    if !progress.omit_current_child_events {
+                        progress.inline_child_event_bytes = progress
+                            .inline_child_event_bytes
+                            .saturating_add(progress.current_child_event_bytes);
+                    }
+                    progress.current_child_event_bytes = 0;
+                    progress.omit_current_child_events = false;
+                    if progress.child_ordinal > mother.first_child_ordinal {
+                        progress.child_ordinal -= 1;
+                        progress.stage = "child_header".to_string();
+                    } else {
+                        progress.stage = "mother_suffix".to_string();
+                    }
+                    progress.stage_event_byte_offset = 0;
                 }
             }
             "mother_suffix" => {
-                chunks.push("],\"child_events\":[]}".to_string());
-                accepted_group = Some(Self::semantic_mother_group_record(&mother));
-                progress.mother_ordinal += 1;
-                progress.child_ordinal = 0;
-                progress.next_event_position = 0;
-                progress.stage = "mother_header".to_string();
-                progress.output_position += 1;
+                append_chunks!("],\"child_events\":[]}");
+                progress.stage_event_byte_offset = stage_byte_offset as i64;
+                if stage_complete {
+                    accepted_group = Some(Self::semantic_mother_group_record(&mother));
+                    progress.mother_ordinal += 1;
+                    progress.child_ordinal = 0;
+                    progress.next_event_position = 0;
+                    progress.inline_child_event_bytes = 0;
+                    progress.current_child_event_bytes = 0;
+                    progress.omit_current_child_events = false;
+                    progress.stage = "mother_header".to_string();
+                    progress.stage_event_byte_offset = 0;
+                    progress.output_position += 1;
+                }
             }
             _ => {
                 return Err(ProxyError::Other(
@@ -902,6 +1036,7 @@ impl KeyStore {
             accepted_group,
             write_position,
             false,
+            stage_complete,
         )
         .await
     }
@@ -916,16 +1051,45 @@ impl KeyStore {
         accepted_group: Option<AlertGroupRecord>,
         write_position: i64,
         finish_partition: bool,
+        stage_complete: bool,
     ) -> Result<(), ProxyError> {
         let partition = state.build_partition_key.clone();
         let prior_progress_json = state.build_partition_events_json.clone();
         let mut progress = progress;
         let chunk_start_position = progress.next_chunk_position;
-        progress.next_chunk_position = if accepted_group.is_some() {
-            0
+        let stage_chunk_start_position = progress.stage_chunk_position;
+        let emitted_chunks = chunks
+            .len()
+            .min(ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX);
+        let chunk_end_position = chunk_start_position
+            + emitted_chunks as i64;
+        let partial = accepted_group.is_none()
+            && !stage_complete;
+        if partial {
+            let stage_event_position = progress.stage_event_position;
+            let stage_event_byte_offset = progress.stage_event_byte_offset;
+            let prior_progress = serde_json::from_str::<SemanticReductionProgress>(&prior_progress_json)
+                .map_err(|error| ProxyError::Other(format!("invalid semantic output progress: {error}")))?;
+            if let SemanticReductionProgress::Outputting(prior_output) = prior_progress {
+                // Re-run the exact same logical stage on the next slice. Only
+                // the durable payload cursor advances; stage ordinals/event
+                // cursors must not advance until the complete stage payload
+                // is written.
+                progress = prior_output;
+            }
+            progress.stage_event_position = stage_event_position;
+            progress.stage_event_byte_offset = stage_event_byte_offset;
+            progress.next_chunk_position = chunk_end_position;
+            progress.stage_chunk_position = stage_chunk_start_position
+                + (chunk_end_position - chunk_start_position);
         } else {
-            chunk_start_position + chunks.len() as i64
-        };
+            progress.next_chunk_position = if accepted_group.is_some() {
+                0
+            } else {
+                chunk_end_position
+            };
+            progress.stage_chunk_position = 0;
+        }
         let next_progress_json = serde_json::to_string(&SemanticReductionProgress::Outputting(
             progress.clone(),
         ))
@@ -935,7 +1099,10 @@ impl KeyStore {
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
                     let mut chunk_position = chunk_start_position;
-                    for payload_chunk in chunks {
+                    for payload_chunk in chunks
+                        .into_iter()
+                        .take(ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX)
+                    {
                         sqlx::query(
                             r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_chunks
                                    (build_generation, position, chunk_position, payload_chunk)
@@ -966,7 +1133,23 @@ impl KeyStore {
                         .execute(&mut **tx)
                         .await?;
                     }
-                    let changed = if finish_partition {
+                    let changed = if partial {
+                        sqlx::query(
+                            r#"UPDATE observability.admin_alert_canonical_groups_state
+                                  SET build_partition_events_json = ?
+                                WHERE singleton = 1 AND build_generation = ?
+                                  AND build_projection_revision = ? AND build_phase = 'aggregating'
+                                  AND build_partition_key = ?
+                                  AND build_partition_events_json = ?"#,
+                        )
+                        .bind(next_progress_json)
+                        .bind(snapshot.build_generation)
+                        .bind(snapshot.projection_revision)
+                        .bind(&partition)
+                        .bind(&prior_progress_json)
+                        .execute(&mut **tx)
+                        .await?
+                    } else if finish_partition {
                         sqlx::query(
                             r#"UPDATE observability.admin_alert_canonical_groups_state
                                   SET build_partition_key = '', build_partition_after_key = ?,

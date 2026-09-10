@@ -9,20 +9,57 @@ struct CompatGroupReductionState {
     latest_event: AlertEventRecord,
 }
 
+enum CanonicalAlertFragmentPayload {
+    Events(String),
+    OversizedEventChunks(Vec<String>),
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CanonicalAlertOversizedEventMarker {
+    #[serde(rename = "__canonical_event_chunks")]
+    chunk_count: i64,
+}
+
+const PAYLOAD_ASSEMBLY_LEVEL_SHIFT: u32 = 32;
+
+fn encode_payload_assembly_cursor(level: i64, position: i64) -> i64 {
+    -2 - ((level << PAYLOAD_ASSEMBLY_LEVEL_SHIFT) + position)
+}
+
+fn decode_payload_assembly_cursor(cursor: i64) -> (i64, i64) {
+    if cursor == -1 {
+        return (0, 0);
+    }
+    let encoded = (-cursor - 2).max(0);
+    (
+        encoded >> PAYLOAD_ASSEMBLY_LEVEL_SHIFT,
+        encoded & ((1_i64 << PAYLOAD_ASSEMBLY_LEVEL_SHIFT) - 1),
+    )
+}
+
+fn encode_payload_assembly_segment(level: i64, position: i64) -> i64 {
+    (level << PAYLOAD_ASSEMBLY_LEVEL_SHIFT) + position
+}
+
 fn canonical_alert_event_fragment_payloads(
     events: Vec<AlertEventRecord>,
-) -> Result<Vec<String>, ProxyError> {
+) -> Result<Vec<CanonicalAlertFragmentPayload>, ProxyError> {
     let mut fragments = Vec::new();
     let mut fragment = String::from("[");
     let mut has_event = false;
     for event in events {
-        let event_json = serde_json::to_string(&event)
-            .map_err(|error| ProxyError::Other(format!("serialize canonical alert event: {error}")))?;
+        let (_, event_json) = serialize_alert_event_record_for_projection(event)?;
         if event_json.len() + 2 > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES {
-            return Err(ProxyError::Deferred {
-                operation: "admin_alerts_cache_warm",
-                reason: "groups_event_payload_exceeds_fragment_budget".to_string(),
-            });
+            if has_event {
+                fragment.push(']');
+                fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
+                fragment = String::from("[");
+                has_event = false;
+            }
+            fragments.push(CanonicalAlertFragmentPayload::OversizedEventChunks(
+                canonical_alert_payload_chunks(&event_json),
+            ));
+            continue;
         }
         let separator_bytes = usize::from(has_event);
         if has_event
@@ -30,7 +67,7 @@ fn canonical_alert_event_fragment_payloads(
                 > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES
         {
             fragment.push(']');
-            fragments.push(fragment);
+            fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
             fragment = String::from("[");
             has_event = false;
         }
@@ -42,27 +79,43 @@ fn canonical_alert_event_fragment_payloads(
     }
     if has_event {
         fragment.push(']');
-        fragments.push(fragment);
+        fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
     }
     Ok(fragments)
 }
 
 fn canonical_alert_payload_chunks(payload: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for character in payload.chars() {
-        if !current.is_empty()
-            && current.len() + character.len_utf8() > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES
-        {
-            chunks.push(current);
-            current = String::new();
+    canonical_alert_payload_chunks_iter(payload).collect()
+}
+
+struct CanonicalAlertPayloadChunkIter<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    current: String,
+}
+
+impl<'a> Iterator for CanonicalAlertPayloadChunkIter<'a> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(character) = self.chars.peek().copied() {
+            if !self.current.is_empty()
+                && self.current.len() + character.len_utf8()
+                    > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES
+            {
+                return Some(std::mem::take(&mut self.current));
+            }
+            self.chars.next();
+            self.current.push(character);
         }
-        current.push(character);
+        (!self.current.is_empty()).then(|| std::mem::take(&mut self.current))
     }
-    if !current.is_empty() {
-        chunks.push(current);
+}
+
+fn canonical_alert_payload_chunks_iter(payload: &str) -> CanonicalAlertPayloadChunkIter<'_> {
+    CanonicalAlertPayloadChunkIter {
+        chars: payload.chars().peekable(),
+        current: String::new(),
     }
-    chunks
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +144,10 @@ struct AdminAlertCanonicalGroupsState {
     build_partition_fragment_next_position: i64,
     build_partition_finalize_fragment_position: i64,
     build_next_position: i64,
+    payload_read_generation: i64,
+    payload_read_position: i64,
+    payload_read_chunk_position: i64,
+    payload_read_json: String,
 }
 
 impl KeyStore {
@@ -109,7 +166,9 @@ impl KeyStore {
         &self,
     ) -> Result<(PaginatedAlertGroups, AdminAlertsCanonicalSnapshot), ProxyError> {
         let current_fence = self.admin_alerts_canonical_warm_projection_fence().await?;
-        let state = self.load_admin_alert_canonical_groups_state().await?;
+        let state = self
+            .load_admin_alert_canonical_groups_state()
+            .await?;
         if state.build_generation == 0
             && state.active_generation > 0
             && state.active_source_fence == current_fence
@@ -184,7 +243,9 @@ impl KeyStore {
                        build_partition_events_json,
                        build_partition_source_complete, build_partition_fragment_next_position,
                        build_partition_finalize_fragment_position,
-                       build_next_position
+                       build_next_position,
+                       payload_read_generation, payload_read_position,
+                       payload_read_chunk_position, payload_read_json
                   FROM observability.admin_alert_canonical_groups_state
                  WHERE singleton = 1"#,
         )
@@ -225,6 +286,10 @@ impl KeyStore {
             build_partition_finalize_fragment_position: row
                 .try_get("build_partition_finalize_fragment_position")?,
             build_next_position: row.try_get("build_next_position")?,
+            payload_read_generation: row.try_get("payload_read_generation")?,
+            payload_read_position: row.try_get("payload_read_position")?,
+            payload_read_chunk_position: row.try_get("payload_read_chunk_position")?,
+            payload_read_json: row.try_get("payload_read_json")?,
         })
     }
 
@@ -283,7 +348,11 @@ impl KeyStore {
                                   build_partition_source_complete = 0,
                                   build_partition_fragment_next_position = 1,
                                   build_partition_finalize_fragment_position = 1,
-                                  build_next_position = 1
+                                  build_next_position = 1,
+                                  payload_read_generation = 0,
+                                  payload_read_position = 0,
+                                  payload_read_chunk_position = 0,
+                                  payload_read_json = ''
                             WHERE singleton = 1"#,
                     )
                     .bind(build_generation)
@@ -329,7 +398,11 @@ impl KeyStore {
                                   build_partition_source_complete = 0,
                                   build_partition_fragment_next_position = 1,
                                   build_partition_finalize_fragment_position = 1,
-                                  build_next_position = 1
+                                  build_next_position = 1,
+                                  payload_read_generation = 0,
+                                  payload_read_position = 0,
+                                  payload_read_chunk_position = 0,
+                                  payload_read_json = ''
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?
                               AND build_source_recent_generation = ?
@@ -411,6 +484,7 @@ impl KeyStore {
                         "admin_alert_canonical_group_reduction_children",
                         "admin_alert_canonical_group_reduction_mothers",
                         "admin_alert_canonical_group_payload_chunks",
+                        "admin_alert_canonical_group_payload_read_chunks_v2",
                         "admin_alert_canonical_catalog_facets",
                         "admin_alert_canonical_catalog_payloads",
                         "admin_alert_canonical_catalog_payload_items",
@@ -436,6 +510,7 @@ impl KeyStore {
                         "admin_alert_canonical_group_reduction_children",
                         "admin_alert_canonical_group_reduction_mothers",
                         "admin_alert_canonical_group_payload_chunks",
+                        "admin_alert_canonical_group_payload_read_chunks_v2",
                         "admin_alert_canonical_catalog_facets",
                         "admin_alert_canonical_catalog_payloads",
                         "admin_alert_canonical_catalog_payload_items",
@@ -467,7 +542,11 @@ impl KeyStore {
                                       build_partition_source_complete = 0,
                                       build_partition_fragment_next_position = 1,
                                       build_partition_finalize_fragment_position = 1,
-                                      build_next_position = 1
+                                      build_next_position = 1,
+                                      payload_read_generation = 0,
+                                      payload_read_position = 0,
+                                      payload_read_chunk_position = 0,
+                                      payload_read_json = ''
                                 WHERE singleton = 1 AND build_generation = ?
                                   AND build_projection_revision = ? AND build_phase = 'clearing'"#,
                         )
@@ -522,17 +601,19 @@ impl KeyStore {
                        COALESCE(override.row_sort_id, current.row_sort_id) AS row_sort_id,
                        COALESCE(override.payload_json, current.payload_json) AS payload_json
                   FROM observability.dashboard_alert_projection_events AS current
-                  LEFT JOIN observability.admin_alert_canonical_group_overrides AS override
+                 LEFT JOIN observability.admin_alert_canonical_group_overrides AS override
                     ON override.build_generation = ?
                    AND override.source_kind = current.source_kind
                    AND override.source_id = current.source_id
                  WHERE current.rowid > ? AND current.rowid <= ?
+                   AND current.occurred_at >= ?
                  ORDER BY current.rowid ASC
                  LIMIT ?"#,
         )
         .bind(snapshot.build_generation)
         .bind(state.build_cursor_source_rowid)
         .bind(state.build_source_rowid_upper_bound)
+        .bind(self.alert_projection_retention_since())
         .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
         .fetch_all(&mut *session)
         .await;
@@ -553,10 +634,19 @@ impl KeyStore {
                 let source_id = row.try_get::<String, _>("source_id")?;
                 let occurred_at = row.try_get::<i64, _>("occurred_at")?;
                 let row_sort_id = row.try_get::<String, _>("row_sort_id")?;
-                let payload_json = row.try_get::<String, _>("payload_json")?;
                 let projection = Self::decode_default_alert_event_projection_row(row)?;
+                let payload_json = serialize_alert_event_projection_payload(projection.clone())?;
                 let event = Self::build_alert_event_from_projection(projection);
                 let partition_key = event.as_ref().map_or_else(String::new, canonical_alert_group_partition_key);
+                // The legacy in-memory grouping contract breaks ties by the
+                // canonical AlertEventRecord identity. Keep that identity in
+                // the sidecar seek key so a resumable reducer cannot select a
+                // different latest event when projection row_sort_id uses a
+                // different encoding (for example, numeric source IDs).
+                let row_sort_id = event
+                    .as_ref()
+                    .map(|event| event.id.clone())
+                    .unwrap_or(row_sort_id);
                 Ok::<_, ProxyError>((
                     source_kind,
                     source_id,
@@ -935,10 +1025,21 @@ impl KeyStore {
             .collect::<Vec<_>>();
         let fragments = canonical_alert_event_fragment_payloads(events)?;
         let fragment_position = state.build_partition_fragment_next_position;
-        for (offset, events_json) in fragments.iter().enumerate() {
+        let fragment_count = fragments.len();
+        for (offset, fragment_payload) in fragments.into_iter().enumerate() {
+            let position = fragment_position + offset as i64;
+            let (events_json, oversized_chunks) = match fragment_payload {
+                CanonicalAlertFragmentPayload::Events(events_json) => (events_json, None),
+                CanonicalAlertFragmentPayload::OversizedEventChunks(chunks) => {
+                    let marker = format!(
+                        r#"{{"__canonical_event_chunks":{}}}"#,
+                        chunks.len()
+                    );
+                    (marker, Some(chunks))
+                }
+            };
             self.ensure_admin_alerts_cache_warm_write_admitted()?;
             let partition = partition.clone();
-            let events_json = events_json.clone();
             self.sqlite_runtime
                 .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                     Box::pin(async move {
@@ -949,7 +1050,7 @@ impl KeyStore {
                         )
                         .bind(snapshot.build_generation)
                         .bind(partition)
-                        .bind(fragment_position + offset as i64)
+                        .bind(position)
                         .bind(events_json)
                         .execute(&mut **tx)
                         .await?;
@@ -957,9 +1058,34 @@ impl KeyStore {
                     })
                 })
                 .await?;
+            if let Some(chunks) = oversized_chunks {
+                for (chunk_position, payload_chunk) in chunks.into_iter().enumerate() {
+                    let chunk_position = chunk_position as i64;
+                    let chunk_key = -position;
+                    self.ensure_admin_alerts_cache_warm_write_admitted()?;
+                    self.sqlite_runtime
+                        .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                            Box::pin(async move {
+                                sqlx::query(
+                                    r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_chunks
+                                           (build_generation, position, chunk_position, payload_chunk)
+                                       VALUES (?, ?, ?, ?)"#,
+                                )
+                                .bind(snapshot.build_generation)
+                                .bind(chunk_key)
+                                .bind(chunk_position)
+                                .bind(payload_chunk)
+                                .execute(&mut **tx)
+                                .await?;
+                                Ok::<_, ProxyError>(())
+                            })
+                        })
+                        .await?;
+                }
+            }
         }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
-        let next_fragment_position = fragment_position + fragments.len() as i64;
+        let next_fragment_position = fragment_position + fragment_count as i64;
         let changed = self
             .sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
@@ -1035,14 +1161,32 @@ impl KeyStore {
         .fetch_optional(&mut *session)
         .await;
         let row = session.query(result).await?;
-        let finish = session.finish().await;
-        finish?;
-        row.map(|(position, events_json)| {
-            serde_json::from_str::<Vec<AlertEventRecord>>(&events_json)
-                .map(|events| (position, events))
-                .map_err(|_| ProxyError::Other("invalid canonical alert group fragment".to_string()))
-        })
-        .transpose()
+        let Some((position, events_json)) = row else {
+            session.finish().await?;
+            return Ok(None);
+        };
+        session.finish().await?;
+        if let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(&events_json) {
+            return Ok(Some((position, events)));
+        }
+        let marker = serde_json::from_str::<CanonicalAlertOversizedEventMarker>(&events_json)
+            .map_err(|_| ProxyError::Other("invalid canonical alert group fragment".to_string()))?;
+        if marker.chunk_count <= 0 {
+            return Err(ProxyError::Other(
+                "canonical oversized alert event has no chunks".to_string(),
+            ));
+        }
+        let event_json = self
+            .read_admin_alert_canonical_group_payload_chunks(snapshot, -position, Some(marker.chunk_count))
+            .await?;
+        let event = serde_json::from_str::<AlertEventRecord>(&event_json)
+            .map_err(|_| ProxyError::Other("invalid canonical oversized alert event".to_string()))?;
+        self.clear_admin_alert_canonical_group_payload_read(
+            snapshot,
+            -position,
+        )
+        .await?;
+        Ok(Some((position, vec![event])))
     }
 
     async fn select_admin_alert_canonical_groups_partition(
@@ -1132,7 +1276,11 @@ impl KeyStore {
                                   build_partition_source_complete = 0,
                                   build_partition_fragment_next_position = 1,
                                   build_partition_finalize_fragment_position = 1,
-                                  build_next_position = 1
+                                  build_next_position = 1,
+                                  payload_read_generation = 0,
+                                  payload_read_position = 0,
+                                  payload_read_chunk_position = 0,
+                                  payload_read_json = ''
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?
                               AND build_source_recent_generation = (
@@ -1287,6 +1435,21 @@ impl KeyStore {
                     .execute(&mut **tx)
                     .await?
                     .rows_affected();
+                    let cleanup_group_payload_read_chunks = sqlx::query(
+                        r#"DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks_v2
+                             WHERE rowid IN (
+                                 SELECT rowid
+                                   FROM observability.admin_alert_canonical_group_payload_read_chunks_v2
+                                  WHERE build_generation <> ? AND build_generation <> ?
+                                  ORDER BY build_generation ASC, position ASC, chunk_position ASC
+                                  LIMIT 25
+                             )"#,
+                    )
+                    .bind(active_generation)
+                    .bind(build_generation)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected();
                     let cleanup_catalog = sqlx::query(
                         r#"DELETE FROM observability.admin_alert_canonical_catalog_facets
                              WHERE rowid IN (
@@ -1355,6 +1518,7 @@ impl KeyStore {
                         || cleanup_reduction_children > 0
                         || cleanup_reduction_mothers > 0
                         || cleanup_group_payload_chunks > 0
+                        || cleanup_group_payload_read_chunks > 0
                         || cleanup_catalog > 0
                         || cleanup_catalog_payloads > 0
                         || cleanup_catalog_payload_items > 0
@@ -1578,7 +1742,9 @@ impl KeyStore {
                         .fetch_one(&mut **tx)
                         .await?;
                         Ok::<_, ProxyError>(
-                            retired_before_remaining || retired_after_remaining || cleanup_remaining,
+                            retired_before_remaining
+                                || retired_after_remaining
+                                || cleanup_remaining,
                         )
                     }
                 })
@@ -1586,56 +1752,788 @@ impl KeyStore {
             .await
     }
 
-    async fn read_admin_alert_canonical_group_payload(
+    async fn reset_admin_alert_canonical_group_payload_read(
         &self,
-        build_generation: i64,
+        snapshot: AdminAlertsCanonicalSnapshot,
         position: i64,
-    ) -> Result<AlertGroupRecord, ProxyError> {
-        const PAYLOAD_CHUNK_READ_ROWS: i64 = 8;
-        let mut next_chunk_position = 0_i64;
-        let mut payload = String::new();
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                          WHERE build_generation = ? AND build_projection_revision = ? \
+                            AND source_recent_generation = ? AND source_history_generation = ? \
+                            AND position = ?",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_generation = ?, payload_read_position = ?, \
+                                payload_read_chunk_position = 0, \
+                                payload_read_json = '' \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) ",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(result.rows_affected() == 1)
+                })
+            })
+            .await?;
+        if !changed {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_replaced".to_string(),
+            });
+        }
+        Ok(())
+    }
 
-        loop {
-            let mut session = self
-                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+    async fn checkpoint_admin_alert_canonical_group_payload_read(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        prior_chunk_position: i64,
+        next_chunk_position: i64,
+        chunks: Vec<(i64, String)>,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let owner = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating'))) ",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                    if !owner {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_owner_lost".to_string(),
+                        });
+                    }
+                    for (chunk_position, payload_chunk) in chunks {
+                        sqlx::query(
+                            "INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                             (build_generation, build_projection_revision, source_recent_generation, \
+                              source_history_generation, position, chunk_position, payload_chunk) \
+                             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        )
+                        .bind(snapshot.build_generation)
+                        .bind(snapshot.projection_revision)
+                        .bind(snapshot.source_fence.0)
+                        .bind(snapshot.source_fence.1)
+                        .bind(position)
+                        .bind(chunk_position)
+                        .bind(payload_chunk)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_chunk_position = ? \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) \
+                            AND payload_read_generation = ? AND payload_read_position = ? \
+                            AND payload_read_chunk_position = ?",
+                    )
+                    .bind(next_chunk_position)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .bind(prior_chunk_position)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() != 1 {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_replaced".to_string(),
+                        });
+                    }
+                    Ok::<_, ProxyError>(true)
+                })
+            })
+            .await?;
+        if !changed {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_replaced".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn mark_admin_alert_canonical_group_payload_read_ready(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        prior_chunk_position: i64,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let owner = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')))",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                    if !owner {
+                        return Ok::<_, ProxyError>(false);
+                    }
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_chunk_position = ?, payload_read_json = '' \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) \
+                            AND payload_read_generation = ? AND payload_read_position = ? \
+                            AND payload_read_chunk_position = ?",
+                    )
+                    .bind(encode_payload_assembly_cursor(0, 0))
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .bind(prior_chunk_position)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(result.rows_affected() == 1)
+                })
+            })
+            .await?;
+        if !changed {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_payload_read_state_changed".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn checkpoint_admin_alert_canonical_group_payload_assembly(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        prior_chunk_position: i64,
+        next_chunk_position: i64,
+        segment_position: i64,
+        segment_payload: String,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let owner = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating'))) ",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                    if !owner {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_owner_lost".to_string(),
+                        });
+                    }
+                    if !segment_payload.is_empty() {
+                        sqlx::query(
+                            "INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                             (build_generation, build_projection_revision, source_recent_generation, \
+                              source_history_generation, position, chunk_position, payload_chunk) \
+                             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        )
+                        .bind(snapshot.build_generation)
+                        .bind(snapshot.projection_revision)
+                        .bind(snapshot.source_fence.0)
+                        .bind(snapshot.source_fence.1)
+                        .bind(position)
+                        .bind(segment_position)
+                        .bind(segment_payload)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_chunk_position = ? \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) \
+                            AND payload_read_generation = ? AND payload_read_position = ? \
+                            AND payload_read_chunk_position = ?",
+                    )
+                    .bind(next_chunk_position)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .bind(prior_chunk_position)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(result.rows_affected())
+                })
+            })
+            .await?;
+        if changed != 1 {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_replaced".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn complete_admin_alert_canonical_group_payload(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        payload: String,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let owner = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')))",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                    if !owner {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_owner_lost".to_string(),
+                        });
+                    }
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups \
+                            SET payload_json = ? \
+                          WHERE build_generation = ? AND position = ?",
+                    )
+                    .bind(payload)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() != 1 {
+                        return Err(ProxyError::Other(
+                            "canonical alert group payload row is unavailable".to_string(),
+                        ));
+                    }
+                    sqlx::query(
+                        "DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                          WHERE build_generation = ? AND build_projection_revision = ? \
+                            AND source_recent_generation = ? AND source_history_generation = ? \
+                            AND position = ?",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    let state = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_generation = 0, payload_read_position = 0, \
+                                payload_read_chunk_position = 0, payload_read_json = '' \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) \
+                            AND payload_read_generation = ? AND payload_read_position = ?",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    if state.rows_affected() != 1 {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_replaced".to_string(),
+                        });
+                    }
+                    Ok::<_, ProxyError>(true)
+                })
+            })
+            .await?;
+        if !changed {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_payload_read_state_changed".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn clear_admin_alert_canonical_group_payload_read(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let changed = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let result = sqlx::query(
+                        "UPDATE observability.admin_alert_canonical_groups_state \
+                            SET payload_read_generation = 0, payload_read_position = 0, \
+                                payload_read_chunk_position = 0, \
+                                payload_read_json = '' \
+                          WHERE singleton = 1 \
+                            AND ((active_generation = ? AND active_projection_revision = ? \
+                                  AND source_recent_generation = ? AND source_history_generation = ? \
+                                  AND build_generation = 0) \
+                              OR (build_generation = ? AND build_projection_revision = ? \
+                                  AND build_source_recent_generation = ? \
+                                  AND build_source_history_generation = ? \
+                                  AND build_phase = 'aggregating')) \
+                            AND payload_read_generation = ? AND payload_read_position = ?",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(snapshot.build_generation)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() != 1 {
+                        return Err(ProxyError::Deferred {
+                            operation: "admin_alerts_cache_warm",
+                            reason: "groups_snapshot_replaced".to_string(),
+                        });
+                    }
+                    sqlx::query(
+                        "DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                          WHERE build_generation = ? AND build_projection_revision = ? \
+                            AND source_recent_generation = ? AND source_history_generation = ? \
+                            AND position = ?",
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
+                    .bind(position)
+                    .execute(&mut **tx)
+                    .await?;
+                    Ok::<_, ProxyError>(true)
+                })
+            })
+            .await?;
+        if !changed {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_payload_read_state_changed".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn read_admin_alert_canonical_group_payload_chunks(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        expected_chunks: Option<i64>,
+    ) -> Result<String, ProxyError> {
+        const PAYLOAD_CHUNK_READ_ROWS: i64 = 16;
+        let state = self.load_admin_alert_canonical_groups_state().await?;
+        let state_matches = state.payload_read_generation
+            == snapshot.build_generation
+            && state.payload_read_position == position
+            && ((state.build_generation == 0
+                && state.active_generation == snapshot.build_generation
+                && state.active_projection_revision == snapshot.projection_revision
+                && state.active_source_fence == snapshot.source_fence)
+                || (state.build_generation == snapshot.build_generation
+                    && state.build_projection_revision == snapshot.projection_revision
+                    && state.build_source_fence == snapshot.source_fence
+                    && state.build_phase == "aggregating"))
+        ;
+        if !state_matches {
+            self.reset_admin_alert_canonical_group_payload_read(snapshot, position)
                 .await?;
-            let result = sqlx::query_as::<_, (i64, String)>(
-                "SELECT chunk_position, payload_chunk \
-                 FROM observability.admin_alert_canonical_group_payload_chunks \
-                 WHERE build_generation = ? AND position = ? AND chunk_position >= ? \
-                 ORDER BY chunk_position ASC LIMIT ?",
-            )
-            .bind(build_generation)
-            .bind(position)
-            .bind(next_chunk_position)
-            .bind(PAYLOAD_CHUNK_READ_ROWS)
-            .fetch_all(&mut *session)
-            .await;
-            let rows = session.query(result).await;
-            let finish = session.finish().await;
-            finish?;
-            let rows = rows?;
-            if rows.is_empty() {
+        }
+
+        let state = if state_matches {
+            state
+        } else {
+            self.load_admin_alert_canonical_groups_state().await?
+        };
+        let mut next_chunk_position = state.payload_read_chunk_position;
+        let legacy_assembly_position = (!state.payload_read_json.is_empty())
+            .then_some(next_chunk_position);
+        let mut assembling = state_matches
+            && (next_chunk_position < 0 || legacy_assembly_position.is_some());
+
+        if !assembling {
+            let limit = expected_chunks
+                .map(|expected| (expected - next_chunk_position).min(PAYLOAD_CHUNK_READ_ROWS))
+                .unwrap_or(PAYLOAD_CHUNK_READ_ROWS);
+            if limit <= 0 {
                 return Err(ProxyError::Other(
                     "canonical alert group payload chunks are incomplete".to_string(),
                 ));
             }
-            let complete = rows.len() < PAYLOAD_CHUNK_READ_ROWS as usize;
-            for (chunk_position, chunk) in rows {
-                if chunk_position != next_chunk_position {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            let rows_result = sqlx::query_as::<_, (i64, String)>(
+                "SELECT chunk_position, payload_chunk \
+                   FROM observability.admin_alert_canonical_group_payload_chunks \
+                  WHERE build_generation = ? AND position = ? AND chunk_position >= ? \
+                  ORDER BY chunk_position ASC LIMIT ?",
+            )
+            .bind(snapshot.build_generation)
+            .bind(position)
+            .bind(next_chunk_position)
+            .bind(limit)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(rows_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let rows = rows?;
+            if rows.is_empty() {
+                if expected_chunks.is_none() && next_chunk_position > 0 {
+                    self.mark_admin_alert_canonical_group_payload_read_ready(
+                        snapshot,
+                        position,
+                        next_chunk_position,
+                    )
+                    .await?;
+                    next_chunk_position = encode_payload_assembly_cursor(0, 0);
+                    assembling = true;
+                } else {
                     return Err(ProxyError::Other(
-                        "canonical alert group payload chunks are non-contiguous".to_string(),
+                        "canonical alert group payload chunks are incomplete".to_string(),
                     ));
                 }
-                payload.push_str(&chunk);
-                next_chunk_position += 1;
             }
-            if complete {
-                return serde_json::from_str(&payload).map_err(|_| {
-                    ProxyError::Other("invalid canonical alert group payload".to_string())
-                });
+            if !rows.is_empty() {
+                let prior_chunk_position = next_chunk_position;
+                for (chunk_position, _chunk) in &rows {
+                    if *chunk_position != next_chunk_position {
+                        return Err(ProxyError::Other(
+                            "canonical alert group payload chunks are non-contiguous".to_string(),
+                        ));
+                    }
+                    next_chunk_position += 1;
+                }
+                if expected_chunks.is_some_and(|expected| next_chunk_position > expected) {
+                    return Err(ProxyError::Other(
+                        "canonical alert group payload chunks exceed marker".to_string(),
+                    ));
+                }
+                let batch_len = rows.len();
+                self.checkpoint_admin_alert_canonical_group_payload_read(
+                    snapshot,
+                    position,
+                    prior_chunk_position,
+                    next_chunk_position,
+                    rows.into_iter().collect(),
+                )
+                .await?;
+                let source_complete = expected_chunks
+                    .is_some_and(|expected| next_chunk_position >= expected)
+                    || batch_len < PAYLOAD_CHUNK_READ_ROWS as usize;
+                if !source_complete {
+                    return Err(ProxyError::Deferred {
+                        operation: "admin_alerts_cache_warm",
+                        reason: "groups_build_in_progress".to_string(),
+                    });
+                }
+                self.mark_admin_alert_canonical_group_payload_read_ready(
+                    snapshot,
+                    position,
+                    next_chunk_position,
+                )
+                .await?;
+                next_chunk_position = encode_payload_assembly_cursor(0, 0);
+                assembling = true;
             }
         }
+
+        if assembling {
+            let (assembly_level, assembly_position) = if legacy_assembly_position.is_some() {
+                (0, 0)
+            } else {
+                decode_payload_assembly_cursor(next_chunk_position)
+            };
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            let source_level = assembly_level == 0;
+            let source_position = if source_level {
+                assembly_position
+            } else {
+                encode_payload_assembly_segment(assembly_level, assembly_position)
+            };
+            let source_upper_bound = if source_level {
+                encode_payload_assembly_segment(1, 0)
+            } else {
+                encode_payload_assembly_segment(assembly_level, assembly_position + 16)
+            };
+            let rows_result = sqlx::query_as::<_, (i64, String)>(
+                "SELECT chunk_position, payload_chunk \
+                   FROM observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+                  WHERE build_generation = ? AND build_projection_revision = ? \
+                    AND source_recent_generation = ? AND source_history_generation = ? \
+                    AND position = ? AND chunk_position >= ? AND chunk_position < ? \
+                  ORDER BY chunk_position ASC LIMIT ?",
+            )
+            .bind(snapshot.build_generation)
+            .bind(snapshot.projection_revision)
+            .bind(snapshot.source_fence.0)
+            .bind(snapshot.source_fence.1)
+            .bind(position)
+            .bind(source_position)
+            .bind(source_upper_bound)
+            .bind(PAYLOAD_CHUNK_READ_ROWS)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(rows_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let rows = rows?;
+            if rows.is_empty() {
+                if assembly_level == 0 && assembly_position == 0 {
+                    return Err(ProxyError::Other(
+                        "canonical alert group payload chunks are incomplete".to_string(),
+                    ));
+                }
+                let next_cursor = encode_payload_assembly_cursor(assembly_level + 1, 0);
+                self.checkpoint_admin_alert_canonical_group_payload_assembly(
+                    snapshot,
+                    position,
+                    next_chunk_position,
+                    next_cursor,
+                    encode_payload_assembly_segment(assembly_level + 1, 0),
+                    String::new(),
+                )
+                .await?;
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "groups_build_in_progress".to_string(),
+                });
+            }
+            let mut after_position = assembly_position;
+            let mut segment_payload = String::new();
+            for (chunk_position, chunk) in &rows {
+                let expected_position = if source_level {
+                    after_position
+                } else {
+                    encode_payload_assembly_segment(assembly_level, after_position)
+                };
+                if *chunk_position != expected_position {
+                    return Err(ProxyError::Other(format!(
+                        "canonical alert group staged chunks are non-contiguous (expected {expected_position}, got {chunk_position})",
+                    )));
+                }
+                segment_payload.push_str(chunk);
+                after_position += 1;
+            }
+            if rows.len() == PAYLOAD_CHUNK_READ_ROWS as usize {
+                let next_output_index = assembly_position / 16;
+                let next_cursor = encode_payload_assembly_cursor(assembly_level, after_position);
+                self.checkpoint_admin_alert_canonical_group_payload_assembly(
+                    snapshot,
+                    position,
+                    next_chunk_position,
+                    next_cursor,
+                    encode_payload_assembly_segment(assembly_level + 1, next_output_index),
+                    segment_payload,
+                )
+                .await?;
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "groups_build_in_progress".to_string(),
+                });
+            }
+            if assembly_level > 0 && assembly_position == 0 && rows.len() == 1 {
+                return Ok(segment_payload);
+            }
+            let next_output_index = assembly_position / 16;
+            let next_cursor = encode_payload_assembly_cursor(assembly_level + 1, 0);
+            self.checkpoint_admin_alert_canonical_group_payload_assembly(
+                snapshot,
+                position,
+                next_chunk_position,
+                next_cursor,
+                encode_payload_assembly_segment(assembly_level + 1, next_output_index),
+                segment_payload,
+            )
+            .await?;
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_build_in_progress".to_string(),
+            });
+        }
+        Err(ProxyError::Other(
+            "canonical alert group payload chunks are incomplete".to_string(),
+        ))
+    }
+
+    async fn read_admin_alert_canonical_group_payload(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+    ) -> Result<AlertGroupRecord, ProxyError> {
+        let payload = self
+            .read_admin_alert_canonical_group_payload_chunks(snapshot, position, None)
+            .await?;
+        let group = serde_json::from_str(&payload)
+            .map_err(|_| ProxyError::Other("invalid canonical alert group payload".to_string()))?;
+        self.complete_admin_alert_canonical_group_payload(snapshot, position, payload)
+            .await?;
+        Ok(group)
     }
 
     async fn read_admin_alert_canonical_groups_model(
@@ -1670,21 +2568,23 @@ impl KeyStore {
             }
             let total_result = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
-                 WHERE build_generation = ? AND position <= ?",
+                 WHERE build_generation = ? AND position <= ? AND last_seen >= ?",
             )
             .bind(generation)
             .bind(row_count)
+            .bind(self.alert_projection_retention_since())
             .fetch_one(&mut *session)
             .await;
             let total = session.query(total_result).await?;
-            let rows_result = sqlx::query_scalar::<_, i64>(
-                "SELECT position FROM observability.admin_alert_canonical_groups \
-                 WHERE build_generation = ? AND position <= ? \
+            let rows_result = sqlx::query_as::<_, (i64, String)>(
+                "SELECT position, payload_json FROM observability.admin_alert_canonical_groups \
+                 WHERE build_generation = ? AND position <= ? AND last_seen >= ? \
                  ORDER BY last_seen DESC, total_count DESC, alert_type DESC, group_id DESC \
                  LIMIT 20 OFFSET 0",
             )
             .bind(generation)
             .bind(row_count)
+            .bind(self.alert_projection_retention_since())
             .fetch_all(&mut *session)
             .await;
             Ok::<_, ProxyError>((total, session.query(rows_result).await?))
@@ -1694,11 +2594,17 @@ impl KeyStore {
         finish?;
         let (total, positions) = result?;
         let mut items = Vec::with_capacity(positions.len());
-        for position in positions {
-            items.push(
-                self.read_admin_alert_canonical_group_payload(snapshot.build_generation, position)
-                    .await?,
-            );
+        for (position, payload_json) in positions {
+            if payload_json.is_empty() {
+                items.push(
+                    self.read_admin_alert_canonical_group_payload(snapshot, position)
+                        .await?,
+                );
+            } else {
+                items.push(serde_json::from_str(&payload_json).map_err(|_| {
+                    ProxyError::Other("invalid canonical alert group payload".to_string())
+                })?);
+            }
         }
         Ok(PaginatedAlertGroups {
             items,
