@@ -63,6 +63,60 @@ fn redact_sensitive_json(value: &mut serde_json::Value) {
     }
 }
 
+fn quoted_alert_suffix_is_structural(value: &str) -> bool {
+    let mut remainder = value.trim_start();
+    while !remainder.is_empty() {
+        let Some((_, separator)) = remainder.char_indices().next() else {
+            return true;
+        };
+        if !matches!(
+            separator,
+            ',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | ')' | ':' | '='
+        ) {
+            return false;
+        }
+        remainder = remainder[separator.len_utf8()..].trim_start();
+        if matches!(separator, '}' | ']' | ')') {
+            return true;
+        }
+        if remainder.is_empty() {
+            return true;
+        }
+
+        let segment_end = remainder
+            .char_indices()
+            .find(|(_, character)| {
+                matches!(
+                    character,
+                    ',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | ')'
+                )
+            })
+            .map(|(offset, _)| offset)
+            .unwrap_or(remainder.len());
+        let segment = remainder[..segment_end].trim();
+        let Some((delimiter_offset, delimiter)) = segment
+            .char_indices()
+            .find(|(_, character)| matches!(character, ':' | '='))
+        else {
+            return false;
+        };
+        let raw_key = segment[..delimiter_offset].trim();
+        let raw_value = segment[delimiter_offset + delimiter.len_utf8()..].trim();
+        if raw_key.is_empty()
+            || (is_sensitive_alert_display_key(raw_key)
+                && !matches!(
+                    raw_value,
+                    "***redacted***" | "\"***redacted***\"" | "'***redacted***'"
+                ))
+        {
+            return false;
+        }
+        debug_assert!(matches!(delimiter, ':' | '='));
+        remainder = remainder[segment_end..].trim_start();
+    }
+    true
+}
+
 fn redact_sensitive_labeled_values(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
@@ -136,13 +190,7 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
             output.push_str("***redacted***");
             if let Some(closing_quote) = closing_quote {
                 let after_quote = &value[closing_quote + 1..];
-                let trimmed_after_quote = after_quote.trim_start();
-                let has_safe_boundary = match trimmed_after_quote.chars().next() {
-                    None => true,
-                    Some(',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | ')' | ':' | '=') => true,
-                    Some(_) => false,
-                };
-                if has_safe_boundary {
+                if quoted_alert_suffix_is_structural(after_quote) {
                     output.push(quote as char);
                     cursor = closing_quote + 1;
                 } else {
@@ -754,6 +802,16 @@ mod tests {
 
         let redacted = redact_sensitive_alert_display_text(
             r#"usage_http 429: authorization: "prefix" sk_live_secret: ignored"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: "prefix";sk_live_secret"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: "prefix";sk_live_secret: ignored"#,
         );
         assert!(!redacted.contains("sk_live_secret"));
     }
