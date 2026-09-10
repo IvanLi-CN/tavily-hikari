@@ -155,6 +155,12 @@ impl KeyStore {
         self.sqlite_runtime.preflight_reconciliation_projection_admission()
     }
 
+    pub(crate) fn preflight_upstream_reconciliation_research_drain(
+        &self,
+    ) -> Result<(), SqliteAdmissionDeferReason> {
+        self.sqlite_runtime.preflight_research_drain_admission()
+    }
+
     pub(crate) async fn prewarm_upstream_reconciliation_projection_capacity(
         &self,
     ) -> Result<(), ProxyError> {

@@ -24,7 +24,8 @@ pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
-    SqliteMaintenanceBulkPermit, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
+    SqliteMaintenanceBulkPermit, SqliteMaintenanceRunLease, SqliteOperation, SqliteReadSnapshot,
+    SqliteRuntime,
 };
 
 pub(crate) struct ObservabilityOfflineGuard {

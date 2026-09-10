@@ -159,6 +159,24 @@ impl TavilyProxy {
             .maintenance_runs_shutting_down()
     }
 
+    pub fn try_start_sqlite_maintenance_run(
+        &self,
+    ) -> Option<crate::store::SqliteMaintenanceRunLease> {
+        self.key_store.sqlite_runtime.try_start_maintenance_run()
+    }
+
+    pub fn preflight_reconciliation_projection_admission(&self) -> Result<(), &'static str> {
+        self.key_store
+            .preflight_upstream_reconciliation_projection()
+            .map_err(|reason| reason.as_str())
+    }
+
+    pub fn preflight_reconciliation_research_drain(&self) -> Result<(), &'static str> {
+        self.key_store
+            .preflight_upstream_reconciliation_research_drain()
+            .map_err(|reason| reason.as_str())
+    }
+
     pub async fn run_dashboard_rollup_integrity_slice(
         &self,
     ) -> Result<DashboardRollupIntegrityRun, ProxyError> {

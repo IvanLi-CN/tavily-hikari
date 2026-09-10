@@ -444,6 +444,7 @@ impl KeyStore {
 
     async fn prune_expired_alert_projection_slice(&self) -> Result<bool, ProxyError> {
         let retention_since = self.alert_projection_retention_since();
+        let observed_at = self.backend_time.now_ts();
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
@@ -466,6 +467,24 @@ impl KeyStore {
                         sqlx::query(
                             "UPDATE observability.dashboard_alert_projection_revision_state \
                              SET revision = revision + 1 WHERE singleton = 1",
+                        )
+                        .execute(&mut **tx)
+                        .await?;
+                        // Retention changes the canonical Groups input just as
+                        // a newly projected event does. Advance both source
+                        // generations in the same transaction so a warm
+                        // Groups build cannot publish counts from before the
+                        // prune boundary.
+                        sqlx::query(
+                            "UPDATE observability.dashboard_alert_projection_state \
+                             SET generation = generation + 1, observed_at = ?, stale_reason = 'retention_pruned'",
+                        )
+                        .bind(observed_at)
+                        .execute(&mut **tx)
+                        .await?;
+                        sqlx::query(
+                            "UPDATE observability.dashboard_alert_projection_history_state \
+                             SET generation = generation + 1",
                         )
                         .execute(&mut **tx)
                         .await?;

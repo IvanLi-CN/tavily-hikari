@@ -226,6 +226,25 @@ impl TavilyProxy {
         reconciliation_turn: Option<&crate::ReconciliationTurn>,
     ) -> Result<ClaimedResearchDrainOutcome, ProxyError> {
         let now = self.backend_time.now_ts();
+        let Some(_run_lease) = self.key_store.sqlite_runtime.try_start_maintenance_run() else {
+            return Ok(ClaimedResearchDrainOutcome::Deferred {
+                reason: crate::ResearchDrainDeferReason::ControlDefer,
+                retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
+            });
+        };
+        if let Err(reason) = self
+            .key_store
+            .preflight_upstream_reconciliation_research_drain()
+        {
+            let reason = match reason.as_str() {
+                "foreground_pressure" => crate::ResearchDrainDeferReason::ForegroundPressure,
+                _ => crate::ResearchDrainDeferReason::ControlDefer,
+            };
+            return Ok(ClaimedResearchDrainOutcome::Deferred {
+                reason,
+                retry_at: now.saturating_add(Self::RESEARCH_DRAIN_DEFER_SECS),
+            });
+        }
         let page = match self
             .key_store
             .next_upstream_reconciliation_research_candidates(80)

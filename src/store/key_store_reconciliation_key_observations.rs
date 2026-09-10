@@ -47,19 +47,24 @@ impl KeyStore {
     pub(crate) async fn reconciliation_key_observations(
         &self,
         candidate: &UpstreamReconciliationCandidate,
-        _work_generation: i64,
+        work_generation: i64,
         key_ids: &[String],
     ) -> Result<std::collections::HashMap<String, i64>, ProxyError> {
         if key_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
-        let source_identity = self
-            .reconciliation_key_observation_source_identity(candidate)
-            .await?;
         let mut session = self
             .sqlite_runtime
             .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
             .await?;
+        let source_rows_result = self
+            .reconciliation_key_observation_source_rows(&mut session, candidate)
+            .await;
+        let source_rows = session.query(source_rows_result).await?;
+        let source_identity = Self::reconciliation_key_observation_source_identity_from_rows(
+            candidate,
+            source_rows,
+        );
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT key_id, upstream_usage, key_source_identity \
              FROM upstream_reconciliation_key_observations WHERE token_id = ",
@@ -91,7 +96,10 @@ impl KeyStore {
                 .push_bind(source_identity.key_identity(key_id))
                 .push(")");
         }
-        query.push(") ORDER BY observed_at DESC");
+        query
+            .push(") AND work_generation <= ")
+            .push_bind(work_generation)
+            .push(" ORDER BY observed_at DESC");
         let rows_result = query
             .build_query_as::<(String, i64, String)>()
             .fetch_all(&mut *session)

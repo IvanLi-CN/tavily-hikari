@@ -116,7 +116,7 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
 }
 
 #[derive(Debug)]
-pub(crate) struct SqliteMaintenanceRunLease {
+pub struct SqliteMaintenanceRunLease {
     _permit: OwnedSemaphorePermit,
 }
 
@@ -806,6 +806,36 @@ impl SqliteRuntime {
         if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
             self.record_deferred(operation, reason);
             return Err(reason);
+        }
+        Ok(())
+    }
+
+    /// Research drain's aged turn may bypass only the foreground-RPS
+    /// heuristic. It still has to respect maintenance shutdown, pool
+    /// capacity, recent contention, and the shared bulk slot.
+    pub(crate) fn preflight_research_drain_admission(
+        &self,
+    ) -> Result<(), SqliteAdmissionDeferReason> {
+        let operation = SqliteOperation::ReconciliationProjection;
+        if self
+            .inner
+            .maintenance_shutdown
+            .load(AtomicOrdering::Acquire)
+        {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        }
+        if self.recent_contention_active() {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
+            return Err(SqliteAdmissionDeferReason::RecentContention);
+        }
+        if !self.has_foreground_pool_capacity() {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::PoolPressure);
+            return Err(SqliteAdmissionDeferReason::PoolPressure);
+        }
+        if self.inner.maintenance_bulk.available_permits() == 0 {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
         Ok(())
     }
@@ -2571,6 +2601,42 @@ impl SqliteReadSnapshot {
 }
 
 impl ReconciliationReadSession {
+    /// Execute an intermediate statement without closing the read snapshot.
+    ///
+    /// Reconciliation source identity and partial observations must be read
+    /// from one SQLite snapshot. On an error or an expired cooperative budget
+    /// this method consumes the snapshot through the normal completion path so
+    /// the connection is restored safely instead of being detached by Drop.
+    pub(crate) async fn query<T>(
+        &mut self,
+        query_result: Result<T, sqlx::Error>,
+    ) -> Result<T, ProxyError> {
+        let deadline_expired = self
+            .snapshot
+            .as_ref()
+            .expect("SQLite reconciliation read snapshot")
+            .cooperative_run_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        match query_result {
+            Ok(value) if !deadline_expired => Ok(value),
+            result => {
+                let outcome = self
+                    .snapshot
+                    .take()
+                    .expect("SQLite reconciliation read snapshot")
+                    .complete_reconciliation_read(self.kind, result)
+                    .await?;
+                match outcome {
+                    SqliteCooperativeQueryOutcome::Completed(value) => Ok(value),
+                    SqliteCooperativeQueryOutcome::DeadlineExceeded => Err(ProxyError::Deferred {
+                        operation: "reconciliation_projection",
+                        reason: "projection_read_budget".to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
     pub(crate) async fn complete_query<T>(
         mut self,
         query_result: Result<T, sqlx::Error>,

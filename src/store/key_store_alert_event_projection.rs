@@ -8,8 +8,81 @@ pub(crate) const ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS: usize = 1024;
 pub(crate) const ALERT_EVENT_PROJECTION_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const ALERT_EVENT_IDENTIFIER_MAX_CHARS: usize = 256;
 
+fn is_sensitive_alert_display_key(key: &str) -> bool {
+    let key = key
+        .trim()
+        .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':' | ' '))
+        .to_ascii_lowercase();
+    key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("access_token")
+        || key.contains("refresh_token")
+        || key == "token"
+        || key.ends_with("_token")
+        || key.contains("password")
+        || key.contains("secret")
+        || key.contains("authorization")
+        || key.contains("credential")
+        || key.contains("private_key")
+}
+
+fn redact_sensitive_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields.iter_mut() {
+                if is_sensitive_alert_display_key(key) {
+                    *value = serde_json::Value::String("***redacted***".to_string());
+                } else {
+                    redact_sensitive_json(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_sensitive_json(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive_query_parameters(value: &str) -> String {
+    let mut redacted = String::with_capacity(value.len());
+    for (index, segment) in value.split('&').enumerate() {
+        if index > 0 {
+            redacted.push('&');
+        }
+        let Some(equal) = segment.find('=') else {
+            redacted.push_str(segment);
+            continue;
+        };
+        let raw_key = segment[..equal]
+            .rsplit(['?', ' ', '\t', '"', '\'', ':'])
+            .next()
+            .unwrap_or(&segment[..equal]);
+        if is_sensitive_alert_display_key(raw_key) {
+            redacted.push_str(&segment[..=equal]);
+            redacted.push_str("***redacted***");
+        } else {
+            redacted.push_str(segment);
+        }
+    }
+    redacted
+}
+
+fn redact_sensitive_alert_display_text(value: &str) -> String {
+    let normalized = serde_json::from_str::<serde_json::Value>(value)
+        .map(|mut json| {
+            redact_sensitive_json(&mut json);
+            serde_json::to_string(&json).unwrap_or_else(|_| value.to_string())
+        })
+        .unwrap_or_else(|_| value.to_string());
+    redact_sensitive_query_parameters(&normalized)
+}
+
 fn bounded_alert_event_display_text(value: Option<String>) -> Option<String> {
     value.map(|value| {
+        let value = redact_sensitive_alert_display_text(&value);
         crate::analysis::truncate_text(&value, ALERT_EVENT_DISPLAY_TEXT_MAX_CHARS.saturating_sub(1))
     })
 }
@@ -281,4 +354,32 @@ pub(crate) fn serialize_alert_event_record_for_projection(
         ));
     }
     Ok((event, payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_sensitive_alert_display_text;
+
+    #[test]
+    fn alert_projection_redacts_sensitive_query_parameters() {
+        let redacted = redact_sensitive_alert_display_text(
+            "https://example.test/mcp?api_key=secret&password=hunter2&q=public",
+        );
+        assert!(redacted.contains("api_key=***redacted***"));
+        assert!(redacted.contains("password=***redacted***"));
+        assert!(redacted.contains("q=public"));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("hunter2"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_sensitive_json_fields() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"{"error":"failed","access_token":"secret","nested":{"private_key":"key"}}"#,
+        );
+        assert!(redacted.contains("\"access_token\":\"***redacted***\""));
+        assert!(redacted.contains("\"private_key\":\"***redacted***\""));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("\"key\""));
+    }
 }
