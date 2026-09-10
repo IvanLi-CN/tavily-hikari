@@ -341,6 +341,18 @@ fn contains_opaque_sensitive_token(value: &str) -> bool {
 }
 
 fn decode_alert_unicode_escapes(value: &str) -> Result<String, ()> {
+    let mut decoded = value.to_string();
+    for _ in 0..4 {
+        let next = decode_alert_unicode_escapes_once(&decoded)?;
+        if next == decoded {
+            return Ok(decoded);
+        }
+        decoded = next;
+    }
+    Err(())
+}
+
+fn decode_alert_unicode_escapes_once(value: &str) -> Result<String, ()> {
     let bytes = value.as_bytes();
     let mut decoded = String::with_capacity(value.len());
     let mut offset = 0;
@@ -986,6 +998,16 @@ mod tests {
             r#"usage_http 429: {"error":"\\u0073k_live_secret"}"#,
         );
         assert!(!escaped_value.contains("sk_live_secret"));
+
+        let nested_key = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"\\u005cu0074oken":"secret-value"}"#,
+        );
+        assert!(!nested_key.contains("secret-value"));
+
+        let nested_value = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"error":"\\u005cu0073k_live_secret"}"#,
+        );
+        assert!(!nested_value.contains("sk_live_secret"));
     }
 
     #[test]
