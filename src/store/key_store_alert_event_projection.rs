@@ -88,8 +88,6 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
                     | b'?'
                     | b'\n'
                     | b'\r'
-                    | b'"'
-                    | b'\''
                     | b':'
                     | b'='
             )
@@ -126,7 +124,7 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
                             escaped = true;
                             return None;
                         }
-                        (character as u8 == quote).then_some(content_start + offset)
+                        (character == quote as char).then_some(content_start + offset)
                     });
             output.push_str(&value[cursor..value_start + 1]);
             output.push_str("***redacted***");
@@ -615,6 +613,26 @@ mod tests {
             r#"usage_http 429: authorization: "secret-value"; safe: visible"#,
         );
         assert!(redacted.contains("authorization: \"***redacted***\""));
+        assert!(redacted.contains("safe: visible"));
+        assert!(!redacted.contains("secret-value"));
+    }
+
+    #[test]
+    fn alert_projection_keeps_unicode_sensitive_values_redacted() {
+        let redacted = redact_sensitive_alert_display_text(
+            "usage_http 429: authorization: \"Ģsecret-value\"; safe: visible",
+        );
+        assert!(redacted.contains("authorization: \"***redacted***\""));
+        assert!(redacted.contains("safe: visible"));
+        assert!(!redacted.contains("Ģsecret-value"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_quoted_sensitive_labels() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: "authorization": "secret-value"; safe: visible"#,
+        );
+        assert!(redacted.contains("\"authorization\": \"***redacted***\""));
         assert!(redacted.contains("safe: visible"));
         assert!(!redacted.contains("secret-value"));
     }
