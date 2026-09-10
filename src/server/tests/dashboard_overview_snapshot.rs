@@ -472,7 +472,10 @@ async fn dashboard_overview_snapshot_serves_last_good_while_quota_recovery_runs(
     );
     drop(cache);
 
-    tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+    // This is only a test rendezvous for a background task. CI can spend
+    // several seconds scheduling the task while backend lanes run in parallel;
+    // the production freshness and HTTP budgets remain unchanged.
+    tokio::time::timeout(Duration::from_secs(10), pause.wait_until_arrived())
         .await
         .expect("background overview refresh reached the controlled pause");
     expire_dashboard_overview_freshness_probe(&state).await;
