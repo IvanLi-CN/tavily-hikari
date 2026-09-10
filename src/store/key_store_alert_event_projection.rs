@@ -106,21 +106,51 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
         while value_start < value.len() && value.as_bytes()[value_start].is_ascii_whitespace() {
             value_start += 1;
         }
-        let value_end = value[value_start..]
-            .char_indices()
-            .find(|(_, character)| {
-                matches!(
-                    character,
-                    ',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | '"' | '\''
-                )
-            })
-            .map(|(offset, _)| value_start + offset)
-            .unwrap_or(value.len());
+        let quoted = value
+            .as_bytes()
+            .get(value_start)
+            .copied()
+            .filter(|character| matches!(character, b'"' | b'\''));
+        if let Some(quote) = quoted {
+            let content_start = value_start + 1;
+            let mut escaped = false;
+            let closing_quote =
+                value[content_start..]
+                    .char_indices()
+                    .find_map(|(offset, character)| {
+                        if escaped {
+                            escaped = false;
+                            return None;
+                        }
+                        if character == '\\' {
+                            escaped = true;
+                            return None;
+                        }
+                        (character as u8 == quote).then_some(content_start + offset)
+                    });
+            output.push_str(&value[cursor..value_start + 1]);
+            output.push_str("***redacted***");
+            if let Some(closing_quote) = closing_quote {
+                output.push(quote as char);
+                cursor = closing_quote + 1;
+            } else {
+                cursor = value.len();
+            }
+            scan_offset = cursor;
+        } else {
+            let value_end = value[value_start..]
+                .char_indices()
+                .find(|(_, character)| {
+                    matches!(character, ',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']')
+                })
+                .map(|(offset, _)| value_start + offset)
+                .unwrap_or(value.len());
 
-        output.push_str(&value[cursor..value_start]);
-        output.push_str("***redacted***");
-        cursor = value_end;
-        scan_offset = value_end;
+            output.push_str(&value[cursor..value_start]);
+            output.push_str("***redacted***");
+            cursor = value_end;
+            scan_offset = value_end;
+        }
         changed = true;
     }
 
@@ -575,6 +605,16 @@ mod tests {
             r#"usage_http 429: authorization: Bearer secret-value; safe: visible"#,
         );
         assert!(redacted.contains("authorization: ***redacted***"));
+        assert!(redacted.contains("safe: visible"));
+        assert!(!redacted.contains("secret-value"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_quoted_colon_delimited_sensitive_values() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: "secret-value"; safe: visible"#,
+        );
+        assert!(redacted.contains("authorization: \"***redacted***\""));
         assert!(redacted.contains("safe: visible"));
         assert!(!redacted.contains("secret-value"));
     }
