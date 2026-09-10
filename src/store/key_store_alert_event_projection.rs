@@ -51,30 +51,134 @@ fn redact_sensitive_json(value: &mut serde_json::Value) {
             if let Some(redacted) = redact_embedded_json_text(text) {
                 *text = redacted;
             }
+            *text = redact_sensitive_labeled_values(text);
         }
         _ => {}
     }
 }
 
-fn redact_embedded_json_text(value: &str) -> Option<String> {
-    value.char_indices().find_map(|(index, character)| {
-        if !matches!(character, '{' | '[') {
-            return None;
+fn redact_sensitive_labeled_values(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let mut scan_offset = 0;
+    let mut changed = false;
+
+    while scan_offset < value.len() {
+        let Some((relative_index, character)) = value[scan_offset..]
+            .char_indices()
+            .find(|(_, character)| matches!(character, ':' | '='))
+        else {
+            break;
+        };
+        let delimiter = scan_offset + relative_index;
+        let bytes = value.as_bytes();
+        let mut key_start = delimiter;
+        while key_start > 0
+            && !matches!(
+                bytes[key_start - 1],
+                b'{' | b'}'
+                    | b'['
+                    | b']'
+                    | b'('
+                    | b')'
+                    | b','
+                    | b';'
+                    | b'|'
+                    | b'&'
+                    | b'?'
+                    | b'\n'
+                    | b'\r'
+                    | b'"'
+                    | b'\''
+                    | b':'
+                    | b'='
+            )
+        {
+            key_start -= 1;
         }
+        let raw_key = value[key_start..delimiter].trim();
+        if !is_sensitive_alert_display_key(raw_key) {
+            scan_offset = delimiter + character.len_utf8();
+            continue;
+        }
+
+        let mut value_start = delimiter + character.len_utf8();
+        while value_start < value.len() && value.as_bytes()[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        let value_end = value[value_start..]
+            .char_indices()
+            .find(|(_, character)| {
+                matches!(
+                    character,
+                    ',' | ';' | '|' | '&' | '\n' | '\r' | '}' | ']' | '"' | '\''
+                )
+            })
+            .map(|(offset, _)| value_start + offset)
+            .unwrap_or(value.len());
+
+        output.push_str(&value[cursor..value_start]);
+        output.push_str("***redacted***");
+        cursor = value_end;
+        scan_offset = value_end;
+        changed = true;
+    }
+
+    if !changed {
+        value.to_string()
+    } else {
+        output.push_str(&value[cursor..]);
+        output
+    }
+}
+
+fn redact_embedded_json_text(value: &str) -> Option<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let mut scan_offset = 0;
+    let mut changed = false;
+
+    while scan_offset < value.len() {
+        let Some((relative_index, character)) = value[scan_offset..]
+            .char_indices()
+            .find(|(_, character)| matches!(character, '{' | '['))
+        else {
+            break;
+        };
+        let index = scan_offset + relative_index;
         let suffix = &value[index..];
         let mut stream =
             serde_json::Deserializer::from_str(suffix).into_iter::<serde_json::Value>();
-        let mut json = stream.next()?.ok()?;
+        let Some(Ok(mut json)) = stream.next() else {
+            scan_offset = index + character.len_utf8();
+            continue;
+        };
         let consumed = stream.byte_offset();
+        let Ok(serialized) = serde_json::to_string(&json) else {
+            scan_offset = index + character.len_utf8();
+            continue;
+        };
         redact_sensitive_json(&mut json);
-        let serialized = serde_json::to_string(&json).ok()?;
-        Some(format!(
-            "{}{}{}",
-            &value[..index],
-            serialized,
-            &suffix[consumed..]
-        ))
-    })
+        let Ok(redacted) = serde_json::to_string(&json) else {
+            scan_offset = index + character.len_utf8();
+            continue;
+        };
+        output.push_str(&value[cursor..index]);
+        if serialized == redacted {
+            output.push_str(&suffix[..consumed]);
+        } else {
+            output.push_str(&redacted);
+        }
+        cursor = index + consumed;
+        scan_offset = cursor;
+        changed |= serialized != redacted;
+    }
+
+    if !changed {
+        return None;
+    }
+    output.push_str(&value[cursor..]);
+    Some(output)
 }
 
 fn redact_sensitive_query_parameters(value: &str) -> String {
@@ -110,7 +214,8 @@ fn redact_sensitive_alert_display_text(value: &str) -> String {
         .ok()
         .or_else(|| redact_embedded_json_text(value))
         .unwrap_or_else(|| value.to_string());
-    redact_sensitive_query_parameters(&normalized)
+    let normalized = redact_sensitive_query_parameters(&normalized);
+    redact_sensitive_labeled_values(&normalized)
 }
 
 fn bounded_alert_event_display_text(value: Option<String>) -> Option<String> {
@@ -450,5 +555,36 @@ mod tests {
         assert!(redacted.contains("***redacted***"));
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("key"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_all_embedded_json_error_payloads() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"message":"first","accessToken":"first-secret"} then [{"apiKey":"second-secret"}]"#,
+        );
+        assert!(redacted.contains("usage_http 429"));
+        assert!(redacted.contains("then"));
+        assert!(!redacted.contains("first-secret"));
+        assert!(!redacted.contains("second-secret"));
+        assert_eq!(redacted.matches("***redacted***").count(), 2);
+    }
+
+    #[test]
+    fn alert_projection_redacts_colon_delimited_sensitive_values() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: authorization: Bearer secret-value; safe: visible"#,
+        );
+        assert!(redacted.contains("authorization: ***redacted***"));
+        assert!(redacted.contains("safe: visible"));
+        assert!(!redacted.contains("secret-value"));
+    }
+
+    #[test]
+    fn alert_projection_redacts_colon_delimited_values_inside_json_strings() {
+        let redacted = redact_sensitive_alert_display_text(
+            r#"{"error":"authorization: Bearer secret-value"}"#,
+        );
+        assert!(redacted.contains("***redacted***"));
+        assert!(!redacted.contains("secret-value"));
     }
 }
