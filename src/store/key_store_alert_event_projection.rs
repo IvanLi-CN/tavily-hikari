@@ -75,9 +75,33 @@ fn quoted_alert_suffix_is_structural(value: &str) -> bool {
         ) {
             return false;
         }
-        remainder = remainder[separator.len_utf8()..].trim_start();
+        let after_separator = &remainder[separator.len_utf8()..];
+        let had_whitespace = after_separator.len() != after_separator.trim_start().len();
+        remainder = after_separator.trim_start();
         if matches!(separator, '}' | ']' | ')') {
-            return true;
+            if remainder.is_empty() {
+                return true;
+            }
+            if matches!(remainder.chars().next(), Some('}' | ']' | ')')) {
+                continue;
+            }
+            if matches!(
+                remainder.chars().next(),
+                Some(',' | ';' | '|' | '&' | '\n' | '\r' | ':' | '=')
+            ) {
+                continue;
+            }
+            let token_end = remainder
+                .char_indices()
+                .find(|(_, character)| {
+                    !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+                })
+                .map(|(offset, _)| offset)
+                .unwrap_or(remainder.len());
+            let token = &remainder[..token_end];
+            let token_is_sensitive = is_sensitive_alert_display_key(token)
+                || token.to_ascii_lowercase().starts_with("sk_");
+            return had_whitespace && !token_is_sensitive;
         }
         if remainder.is_empty() {
             return true;
@@ -812,6 +836,16 @@ mod tests {
 
         let redacted = redact_sensitive_alert_display_text(
             r#"usage_http 429: authorization: "prefix";sk_live_secret: ignored"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"}sk_live_secret"#,
+        );
+        assert!(!redacted.contains("sk_live_secret"));
+
+        let redacted = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"authorization":"prefix"} sk_live_secret"#,
         );
         assert!(!redacted.contains("sk_live_secret"));
     }
