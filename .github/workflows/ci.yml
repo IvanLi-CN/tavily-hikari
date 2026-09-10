@@ -254,7 +254,7 @@ jobs:
     name: Backend Test Lane (${{ matrix.lane.name }})
     runs-on: ubuntu-24.04
     needs: [backend-shard-plan]
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
