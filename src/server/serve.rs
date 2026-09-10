@@ -655,11 +655,13 @@ async fn serve_with_shutdown(
     .with_graceful_shutdown(async move {
         shutdown.await;
         fence_admin_privacy_status_refresh(shutdown_state.as_ref()).await;
+        fence_admin_alerts_workers(shutdown_state.as_ref()).await;
         shutdown_proxy.begin_sqlite_maintenance_run_shutdown();
         shutdown_proxy.nudge_request_stats_flush().await;
     })
     .await?;
     shutdown_admin_privacy_status_refresh(post_shutdown_state.as_ref()).await;
+    shutdown_admin_alerts_workers(post_shutdown_state.as_ref()).await;
     if let Err(err) = post_shutdown_state
         .proxy
         .shutdown_request_stats_coalescer(Duration::from_secs(20))

@@ -99,7 +99,7 @@ impl KeyStore {
         query
             .push(") AND work_generation <= ")
             .push_bind(work_generation)
-            .push(" ORDER BY observed_at DESC");
+            .push(" ORDER BY work_generation DESC, observed_at DESC");
         let rows_result = query
             .build_query_as::<(String, i64, String)>()
             .fetch_all(&mut *session)

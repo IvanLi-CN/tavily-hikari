@@ -12,13 +12,18 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
     let key = key
         .trim()
         .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':'));
-    let decoded = urlencoding::decode(key).unwrap_or_else(|_| key.into());
+    let decoded = match urlencoding::decode(key) {
+        Ok(decoded) => decoded.into_owned(),
+        Err(_) => return true,
+    };
     // Fallback diagnostics can contain a malformed JSON fragment whose key
     // still uses JSON unicode escapes (for example, `\u0061piKey`). Decode
     // those escapes before normalizing the label so malformed input cannot
     // bypass the sensitive-key filter.
-    let decoded = serde_json::from_str::<String>(&format!("\"{decoded}\""))
-        .unwrap_or_else(|_| decoded.into_owned());
+    let decoded = match decode_alert_unicode_escapes(&decoded) {
+        Ok(decoded) => decoded,
+        Err(()) => return true,
+    };
     let key: String = decoded
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
@@ -258,6 +263,18 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
 }
 
 fn redact_opaque_sensitive_tokens(value: &str) -> String {
+    let decoded = match urlencoding::decode(value) {
+        Ok(decoded) => decoded.into_owned(),
+        Err(_) => return "***redacted***".to_string(),
+    };
+    let decoded = match decode_alert_unicode_escapes(&decoded) {
+        Ok(decoded) => decoded,
+        Err(()) => return "***redacted***".to_string(),
+    };
+    if decoded != value && contains_opaque_sensitive_token(&decoded) {
+        return "***redacted***".to_string();
+    }
+
     let mut output = String::with_capacity(value.len());
     let mut cursor = 0;
     let mut scan_offset = 0;
@@ -297,6 +314,60 @@ fn redact_opaque_sensitive_tokens(value: &str) -> String {
         output.push_str(&value[cursor..]);
         output
     }
+}
+
+fn contains_opaque_sensitive_token(value: &str) -> bool {
+    let mut scan_offset = 0;
+    while let Some(relative_index) = [
+        value[scan_offset..].find("sk_"),
+        value[scan_offset..].find("tvly-"),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
+        let start = scan_offset + relative_index;
+        let is_boundary = start == 0
+            || !value[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        if is_boundary {
+            return true;
+        }
+        scan_offset = start.saturating_add(3);
+    }
+    false
+}
+
+fn decode_alert_unicode_escapes(value: &str) -> Result<String, ()> {
+    let bytes = value.as_bytes();
+    let mut decoded = String::with_capacity(value.len());
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'\\' && bytes.get(offset + 1) == Some(&b'u') {
+            if offset + 6 > bytes.len() {
+                return Err(());
+            }
+            let mut codepoint = 0_u32;
+            for byte in &bytes[offset + 2..offset + 6] {
+                codepoint = codepoint.checked_mul(16).ok_or(())?
+                    + match byte {
+                        b'0'..=b'9' => u32::from(byte - b'0'),
+                        b'a'..=b'f' => u32::from(byte - b'a' + 10),
+                        b'A'..=b'F' => u32::from(byte - b'A' + 10),
+                        _ => return Err(()),
+                    };
+            }
+            decoded.push(char::from_u32(codepoint).ok_or(())?);
+            offset += 6;
+            continue;
+        }
+        let character = value[offset..].chars().next().ok_or(())?;
+        decoded.push(character);
+        offset += character.len_utf8();
+    }
+    Ok(decoded)
 }
 
 fn redact_embedded_json_text(value: &str) -> Option<String> {
@@ -880,6 +951,24 @@ mod tests {
         assert!(!redacted.contains("tvly-dev-unicode-value"));
         assert!(!redacted.contains("sk_unicode_value"));
         assert_eq!(redacted.matches("***redacted***").count(), 2);
+    }
+
+    #[test]
+    fn alert_projection_fails_closed_for_malformed_or_encoded_credentials() {
+        let malformed_key = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"\uZZZZapiKey": "secret-value"}"#,
+        );
+        assert!(!malformed_key.contains("secret-value"));
+
+        let encoded_value = redact_sensitive_alert_display_text(
+            "usage_http 429: query=tvly%2Ddev%2Dopaque%2Dvalue",
+        );
+        assert!(!encoded_value.contains("tvly%2Ddev%2Dopaque%2Dvalue"));
+
+        let escaped_value = redact_sensitive_alert_display_text(
+            r#"usage_http 429: {"error":"\\u0073k_live_secret"}"#,
+        );
+        assert!(!escaped_value.contains("sk_live_secret"));
     }
 
     #[test]

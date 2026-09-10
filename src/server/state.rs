@@ -96,6 +96,10 @@ struct DashboardOverviewCacheState {
     admin_alerts_groups_build_in_flight: bool,
     admin_alerts_groups_build_owner: u64,
     admin_alerts_next_flight_owner: u64,
+    admin_alerts_shutting_down: bool,
+    admin_alerts_shutdown_notify: Arc<tokio::sync::Notify>,
+    admin_alerts_prewarm_task: Option<tokio::task::JoinHandle<()>>,
+    admin_alerts_groups_reclaimer_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(test)]
     admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
@@ -135,6 +139,10 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_groups_build_in_flight: false,
             admin_alerts_groups_build_owner: 0,
             admin_alerts_next_flight_owner: 1,
+            admin_alerts_shutting_down: false,
+            admin_alerts_shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            admin_alerts_prewarm_task: None,
+            admin_alerts_groups_reclaimer_task: None,
             #[cfg(test)]
             admin_alerts_warm_after_catalog_pause: None,
             #[cfg(test)]
@@ -153,6 +161,22 @@ impl Default for DashboardOverviewCacheState {
 const ADMIN_ALERTS_CACHE_CAPACITY: usize = 64;
 const ADMIN_ALERTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+async fn wait_for_admin_alerts_shutdown_or(
+    shutdown_notify: &Arc<tokio::sync::Notify>,
+    delay: std::time::Duration,
+) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        _ = shutdown_notify.notified() => true,
+    }
+}
+
+async fn admin_alerts_shutdown_requested(
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
+) -> bool {
+    cache.lock().await.admin_alerts_shutting_down
+}
 
 fn admin_alerts_warm_deferred(reason: &'static str) -> tavily_hikari::ProxyError {
     tavily_hikari::ProxyError::Deferred {
@@ -653,22 +677,32 @@ fn default_admin_alert_cache_key(kind: &str) -> String {
 
 pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
-    let owner = {
+    let (owner, shutdown_notify) = {
         let mut cache = cache.lock().await;
+        if cache.admin_alerts_shutting_down {
+            return;
+        }
         let Some(owner) = cache.start_admin_alerts_prewarm(tokio::time::Instant::now()) else {
             return;
         };
-        owner
+        (owner, cache.admin_alerts_shutdown_notify.clone())
     };
     let flight_guard = AdminAlertsFlightGuard::new(
         cache.clone(),
         AdminAlertsFlightKind::Prewarm,
         owner,
     );
-    tokio::spawn(async move {
+    let task_cache = cache.clone();
+    let task = tokio::spawn(async move {
+        let cache = task_cache;
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
         loop {
+            if admin_alerts_shutdown_requested(&cache).await {
+                cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                flight_guard.disarm();
+                return;
+            }
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())
@@ -682,7 +716,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     retry_after_secs = delay.as_secs(),
                     "deferred canonical administrator Alerts cache before SQLite admission"
                 );
-                tokio::time::sleep(delay).await;
+                if wait_for_admin_alerts_shutdown_or(&shutdown_notify, delay).await {
+                    cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                    flight_guard.disarm();
+                    return;
+                }
                 continue;
             }
             let generation = match snapshot_cache_generation {
@@ -806,7 +844,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         "deferred canonical administrator Alerts cache"
                     );
                     spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
-                    tokio::time::sleep(delay).await;
+                    if wait_for_admin_alerts_shutdown_or(&shutdown_notify, delay).await {
+                        cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                        flight_guard.disarm();
+                        return;
+                    }
                 }
                 Err(error) => {
                     tracing::error!(
@@ -826,6 +868,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             }
         }
     });
+    cache.lock().await.admin_alerts_prewarm_task = Some(task);
 }
 
 async fn admin_alerts_canonical_groups_for_warm(
@@ -866,29 +909,48 @@ async fn admin_alerts_canonical_groups_for_warm(
 
 async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
-    let owner = {
+    let (owner, shutdown_notify) = {
         let mut cache_state = cache.lock().await;
+        if cache_state.admin_alerts_shutting_down {
+            return;
+        }
         let Some(owner) = cache_state.start_admin_alerts_groups_reclaimer() else {
             return;
         };
-        owner
+        (owner, cache_state.admin_alerts_shutdown_notify.clone())
     };
     let reclaimer_guard = AdminAlertsFlightGuard::new(
         cache.clone(),
         AdminAlertsFlightKind::GroupsReclaimer,
         owner,
     );
-    tokio::spawn(async move {
+    let task_cache = cache.clone();
+    let task = tokio::spawn(async move {
+        let cache = task_cache;
         let mut reclaimer_guard = reclaimer_guard;
         let mut defers = 0_u8;
         loop {
+            if admin_alerts_shutdown_requested(&cache).await {
+                cache.lock().await.finish_admin_alerts_groups_reclaimer(owner);
+                reclaimer_guard.disarm();
+                return;
+            }
             let batch_owner = {
                 let cache = dashboard_overview_cache_for_state(state.as_ref());
                 let mut cache_state = cache.lock().await;
                 cache_state.start_admin_alerts_groups_reclaim_batch()
             };
             let Some(batch_owner) = batch_owner else {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if wait_for_admin_alerts_shutdown_or(
+                    &shutdown_notify,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+                {
+                    cache.lock().await.finish_admin_alerts_groups_reclaimer(owner);
+                    reclaimer_guard.disarm();
+                    return;
+                }
                 continue;
             };
             let mut batch_guard = AdminAlertsFlightGuard::new(
@@ -916,7 +978,16 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
                 }
                 Ok(true) => {
                     defers = 0;
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if wait_for_admin_alerts_shutdown_or(
+                        &shutdown_notify,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await
+                    {
+                        cache.lock().await.finish_admin_alerts_groups_reclaimer(owner);
+                        reclaimer_guard.disarm();
+                        return;
+                    }
                 }
                 Err(error)
                     if error.is_deferred()
@@ -930,7 +1001,16 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
                         retry_after_secs = delay,
                         "deferred retired canonical Alerts groups reclamation"
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                    if wait_for_admin_alerts_shutdown_or(
+                        &shutdown_notify,
+                        std::time::Duration::from_secs(delay),
+                    )
+                    .await
+                    {
+                        cache.lock().await.finish_admin_alerts_groups_reclaimer(owner);
+                        reclaimer_guard.disarm();
+                        return;
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -949,6 +1029,7 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
             }
         }
     });
+    cache.lock().await.admin_alerts_groups_reclaimer_task = Some(task);
 }
 
 #[cfg(test)]
@@ -1247,6 +1328,44 @@ pub(crate) async fn prewarm_admin_privacy_status(state: Arc<AppState>) {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }));
+}
+
+pub(crate) async fn fence_admin_alerts_workers(state: &AppState) {
+    let cache = dashboard_overview_cache_for_state(state);
+    let shutdown_notify = {
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_shutting_down = true;
+        cache.admin_alerts_shutdown_notify.clone()
+    };
+    shutdown_notify.notify_waiters();
+}
+
+pub(crate) async fn shutdown_admin_alerts_workers(state: &AppState) {
+    fence_admin_alerts_workers(state).await;
+    let (prewarm_task, reclaimer_task) = {
+        let cache = dashboard_overview_cache_for_state(state);
+        let mut cache = cache.lock().await;
+        (
+            cache.admin_alerts_prewarm_task.take(),
+            cache.admin_alerts_groups_reclaimer_task.take(),
+        )
+    };
+    for (name, task) in [
+        ("alerts_canonical_warm", prewarm_task),
+        ("alerts_groups_reclaimer", reclaimer_task),
+    ] {
+        if let Some(task) = task
+            && let Err(error) = task.await
+        {
+            tracing::warn!(
+                component = "shutdown",
+                event = "admin_alerts_worker_join_failed",
+                worker = name,
+                error = %error,
+                "administrator Alerts worker ended before its cooperative shutdown boundary"
+            );
+        }
+    }
 }
 
 pub(crate) async fn shutdown_admin_privacy_status_refresh(state: &AppState) {
