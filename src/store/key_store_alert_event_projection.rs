@@ -954,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn alert_projection_fails_closed_for_malformed_or_encoded_credentials() {
+    fn alert_projection_redacts_malformed_or_encoded_credentials() {
         let malformed_key = redact_sensitive_alert_display_text(
             r#"usage_http 429: {"\uZZZZapiKey": "secret-value"}"#,
         );
