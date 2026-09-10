@@ -133,17 +133,9 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
     .fetch_one(&pool)
     .await
     .expect("read v32 key-observation source identity index");
-    assert_eq!(key_observation_identity_index, 1);
-    let key_observation_identity_index_sql: String = sqlx::query_scalar(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' \
-         AND name = 'idx_reconciliation_key_observations_source_identity'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("read v32 current identity lookup index");
-    assert!(
-        key_observation_identity_index_sql.contains("key_source_identity"),
-        "v32 must index the per-Key logical source identity"
+    assert_eq!(
+        key_observation_identity_index, 0,
+        "v32 must not scan the durable observation table during startup"
     );
     let canonical_groups_state: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT active_generation, active_row_count, source_recent_generation, source_history_generation \

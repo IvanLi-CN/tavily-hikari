@@ -6,7 +6,7 @@ const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION: i64 = 32;
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_NAME: &str =
     "reconciliation-key-observation-source-identity-v1";
 const RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_CHECKSUM: &str =
-    "sha256:298f687879854438c25978d82fd424baa0d0da16b2e0e5c9cfefc99d1297e493";
+    "sha256:4c7d7ecf7de2645c1dc7aa22b22ff7f57c7c2fd14fa3b4230d236bf35c6dbbc3";
 const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_VERSION: i64 = 33;
 const ADMIN_ALERT_CANONICAL_GROUPS_SLOT_STATE_NAME: &str =
     "admin-alert-canonical-groups-slot-state-v1";
@@ -323,13 +323,6 @@ impl KeyStore {
                     .table_column_exists(
                         "upstream_reconciliation_key_observations",
                         "key_source_identity",
-                    )
-                    .await?
-                || !self
-                    .schema_named_object_exists(
-                        "main",
-                        "index",
-                        "idx_reconciliation_key_observations_source_identity",
                     )
                     .await?)
         {
@@ -934,15 +927,11 @@ impl KeyStore {
                 sqlx::query(definition).execute(&self.pool).await?;
             }
         }
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_reconciliation_key_observations_source_identity \
-             ON upstream_reconciliation_key_observations(\
-                 token_id, period_code, candidate_identity, key_set_identity, key_id, \
-                 key_source_identity, observed_at DESC\
-             )",
-        )
-        .execute(&self.pool)
-        .await?;
+        // Do not build an index over the durable observations table during
+        // startup. CREATE INDEX scans the complete historical table while
+        // holding a schema write lock. The existing primary-key index already
+        // narrows reads by token/period/work generation/key; identity columns
+        // are applied as residual predicates in the bounded read session.
         self.record_schema_migration(
             RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_VERSION,
             RECONCILIATION_KEY_OBSERVATION_SOURCE_IDENTITY_NAME,
