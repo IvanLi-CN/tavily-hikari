@@ -12,7 +12,7 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
     let key = key
         .trim()
         .trim_matches(|character| matches!(character, '?' | '&' | '"' | '\'' | ':'));
-    let decoded = match decode_alert_percent_escapes(key) {
+    let decoded = match decode_alert_credential_layers(key) {
         Ok(decoded) => decoded,
         Err(()) => return true,
     };
@@ -20,10 +20,6 @@ fn is_sensitive_alert_display_key(key: &str) -> bool {
     // still uses JSON unicode escapes (for example, `\u0061piKey`). Decode
     // those escapes before normalizing the label so malformed input cannot
     // bypass the sensitive-key filter.
-    let decoded = match decode_alert_unicode_escapes(&decoded) {
-        Ok(decoded) => decoded,
-        Err(()) => return true,
-    };
     let key: String = decoded
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
@@ -263,11 +259,7 @@ fn redact_sensitive_labeled_values(value: &str) -> String {
 }
 
 fn redact_opaque_sensitive_tokens(value: &str) -> String {
-    let decoded = match decode_alert_percent_escapes(value) {
-        Ok(decoded) => decoded,
-        Err(()) => return "***redacted***".to_string(),
-    };
-    let decoded = match decode_alert_unicode_escapes(&decoded) {
+    let decoded = match decode_alert_credential_layers(value) {
         Ok(decoded) => decoded,
         Err(()) => return "***redacted***".to_string(),
     };
@@ -340,18 +332,6 @@ fn contains_opaque_sensitive_token(value: &str) -> bool {
     false
 }
 
-fn decode_alert_unicode_escapes(value: &str) -> Result<String, ()> {
-    let mut decoded = value.to_string();
-    for _ in 0..4 {
-        let next = decode_alert_unicode_escapes_once(&decoded)?;
-        if next == decoded {
-            return Ok(decoded);
-        }
-        decoded = next;
-    }
-    Err(())
-}
-
 fn decode_alert_unicode_escapes_once(value: &str) -> Result<String, ()> {
     let bytes = value.as_bytes();
     let mut decoded = String::with_capacity(value.len());
@@ -382,10 +362,11 @@ fn decode_alert_unicode_escapes_once(value: &str) -> Result<String, ()> {
     Ok(decoded)
 }
 
-fn decode_alert_percent_escapes(value: &str) -> Result<String, ()> {
+fn decode_alert_credential_layers(value: &str) -> Result<String, ()> {
     let mut decoded = value.to_string();
-    for _ in 0..4 {
-        let next = urlencoding::decode(&decoded).map_err(|_| ())?.into_owned();
+    for _ in 0..8 {
+        let percent_decoded = urlencoding::decode(&decoded).map_err(|_| ())?.into_owned();
+        let next = decode_alert_unicode_escapes_once(&percent_decoded)?;
         if next == decoded {
             return Ok(decoded);
         }
@@ -1008,6 +989,11 @@ mod tests {
             r#"usage_http 429: {"error":"\\u005cu0073k_live_secret"}"#,
         );
         assert!(!nested_value.contains("sk_live_secret"));
+
+        let mixed_value = redact_sensitive_alert_display_text(
+            r#"usage_http 429: query=\\u0025\\u0037\\u0033k_live_secret"#,
+        );
+        assert!(!mixed_value.contains("sk_live_secret"));
     }
 
     #[test]
