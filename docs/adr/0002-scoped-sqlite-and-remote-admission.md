@@ -126,8 +126,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   its one idle connection, while a foreground checkout or waiter causes a typed defer. It stages
   all three values behind one projection-generation fence and publishes them together. A deferred
   warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
-  HTTP to trigger a rebuild. If no slice has been accepted for 120 seconds, one liveness slot may
-  bypass only the foreground-rate and lazy-pool-idle heuristics every 5 seconds. One slot covers
+  HTTP to trigger a rebuild. If no complete canonical generation has published for 120 seconds,
+  one liveness slot may bypass only the foreground-rate and lazy-pool-idle heuristics every 5
+  seconds. Partial slices remain separately observable and do not reset this liveness anchor. One slot covers
   one logical canonical stage and its fenced micro-transactions; the next key acquires a new slot.
   Real waiters, contention, writer pressure, and native budgets still defer it.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads

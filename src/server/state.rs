@@ -89,6 +89,7 @@ struct DashboardOverviewCacheState {
     admin_alerts_prewarm_owner: u64,
     admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
     admin_alerts_prewarm_defers: u8,
+    admin_alerts_prewarm_last_accepted_slice_at: Option<tokio::time::Instant>,
     admin_alerts_prewarm_last_progress_at: Option<tokio::time::Instant>,
     admin_alerts_groups_reclaimer_in_flight: bool,
     admin_alerts_groups_reclaimer_owner: u64,
@@ -135,6 +136,7 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_prewarm_owner: 0,
             admin_alerts_prewarm_not_before: None,
             admin_alerts_prewarm_defers: 0,
+            admin_alerts_prewarm_last_accepted_slice_at: None,
             admin_alerts_prewarm_last_progress_at: None,
             admin_alerts_groups_reclaimer_in_flight: false,
             admin_alerts_groups_reclaimer_owner: 0,
@@ -308,6 +310,7 @@ impl DashboardOverviewCacheState {
         self.admin_alerts_prewarm_in_flight = false;
         self.admin_alerts_prewarm_owner = 0;
         self.admin_alerts_prewarm_defers = 0;
+        self.admin_alerts_prewarm_last_accepted_slice_at = None;
         self.admin_alerts_prewarm_last_progress_at = None;
         self.admin_alerts_prewarm_not_before = Some(
             tokio::time::Instant::now() + ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
@@ -339,8 +342,11 @@ impl DashboardOverviewCacheState {
             .is_some_and(|at| now.saturating_duration_since(at) >= ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
     }
 
-    fn record_admin_alerts_prewarm_progress(&mut self, now: tokio::time::Instant) {
-        self.admin_alerts_prewarm_last_progress_at = Some(now);
+    fn record_admin_alerts_prewarm_slice(&mut self, now: tokio::time::Instant) {
+        // Partial work is observable progress, but it cannot satisfy liveness
+        // until the complete three-key generation publishes. Keep the aged
+        // anchor so a large build can continue one bounded stage every 5s.
+        self.admin_alerts_prewarm_last_accepted_slice_at = Some(now);
         self.admin_alerts_prewarm_defers = 0;
     }
 
@@ -816,6 +822,10 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 let (groups, build_generation, recent_generation, history_generation) =
                     groups_result?;
+                cache
+                    .lock()
+                    .await
+                    .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_groups_for_test(state.as_ref()).await;
                 if liveness_slot
@@ -844,6 +854,10 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .finish_admin_alerts_cache_warm_liveness_stage();
                 }
                 let catalog = catalog_result?;
+                cache
+                    .lock()
+                    .await
+                    .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_catalog_for_test(state.as_ref()).await;
                 if liveness_slot
@@ -866,12 +880,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .proxy
                     .admin_default_projected_alert_events_page_for_canonical_warm()
                     .await;
-                if liveness_slot {
-                    state
-                        .proxy
-                        .finish_admin_alerts_cache_warm_liveness_stage();
-                }
                 let events = events_result?;
+                cache
+                    .lock()
+                    .await
+                    .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -890,6 +903,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
+                }
+                if liveness_slot {
+                    state
+                        .proxy
+                        .finish_admin_alerts_cache_warm_liveness_stage();
                 }
                 if !publish_admin_alerts_canonical(
                     state.as_ref(),
@@ -940,7 +958,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     cache
                         .lock()
                         .await
-                        .record_admin_alerts_prewarm_progress(tokio::time::Instant::now());
+                        .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                     snapshot_cache_generation.get_or_insert(generation);
                     if liveness_slot {
                         state
@@ -1780,9 +1798,13 @@ mod admin_alerts_prewarm_tests {
             now + std::time::Duration::from_secs(120)
         ));
 
-        cache.record_admin_alerts_prewarm_progress(now + std::time::Duration::from_secs(120));
-        assert!(!cache.admin_alerts_prewarm_liveness_due(
-            now + std::time::Duration::from_secs(239)
+        cache.record_admin_alerts_prewarm_slice(now + std::time::Duration::from_secs(120));
+        assert_eq!(
+            cache.admin_alerts_prewarm_last_accepted_slice_at,
+            Some(now + std::time::Duration::from_secs(120))
+        );
+        assert!(cache.admin_alerts_prewarm_liveness_due(
+            now + std::time::Duration::from_secs(121)
         ));
         assert!(cache.admin_alerts_prewarm_liveness_due(
             now + std::time::Duration::from_secs(240)

@@ -49,7 +49,8 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   acquire and `250ms` native read deadline; all three staged values publish only at one unchanged
   projection generation. Defers retry after `5s`, `5s`, then `30s`, while a generation change
   re-arms one controller run.
-  If no warm slice has been accepted for `120s`, the controller receives a liveness slot every `5s`.
+  If no complete canonical generation has published for `120s`, the controller receives a liveness
+  slot every `5s`; partial slices are tracked separately and do not reset this anchor.
   One slot admits at most one logical stage (Groups, Catalog, or Events); the stage may contain
   several fenced micro-transactions, but it cannot spill into the next canonical key. The slot
   bypasses only the foreground-rate and lazy-pool-idle heuristics; acquire waiters, recent
