@@ -799,6 +799,38 @@ async fn admin_alerts_canonical_events_use_bounded_projection_reads() {
         "canonical Events count must use a projection index: {count_plan}"
     );
 
+    let groups_plan_rows = sqlx::query(
+        r#"EXPLAIN QUERY PLAN
+             SELECT current.rowid
+               FROM observability.dashboard_alert_projection_events AS current
+                    INDEXED BY idx_dashboard_alert_projection_events_time
+              WHERE current.rowid <= ?
+                AND current.occurred_at >= ?
+                AND (current.occurred_at, current.row_sort_id) < (?, ?)
+              ORDER BY current.occurred_at DESC, current.row_sort_id DESC
+              LIMIT 50"#,
+    )
+    .bind(i64::MAX)
+    .bind(occurred_at.saturating_sub(86_400))
+    .bind(char::MAX.to_string())
+    .bind(char::MAX.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("explain canonical groups time-keyset page");
+    let groups_plan = groups_plan_rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("detail").ok())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        groups_plan.contains("idx_dashboard_alert_projection_events_time"),
+        "canonical Groups source page must use the projection time index: {groups_plan}"
+    );
+    assert!(
+        !groups_plan.contains("USE TEMP B-TREE"),
+        "canonical Groups source page must not materialize an unbounded sort: {groups_plan}"
+    );
+
     let events = proxy
         .admin_default_projected_alert_events_page_for_canonical_warm()
         .await
@@ -1569,6 +1601,65 @@ async fn admin_alerts_warm_defers_before_final_fence_when_pressure_arrives_betwe
         "the deferred warmer must not consume the final fence read budget"
     );
 
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn admin_alerts_warm_rechecks_pressure_before_catalog_after_groups() {
+    let db_path = temp_db_path("admin-alerts-groups-catalog-pressure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-groups-catalog-pressure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-groups-catalog-pressure-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    let pause = super::super::install_admin_alerts_warm_after_groups_pause_for_test(state.as_ref())
+        .await;
+    let warm = tokio::spawn(super::super::prewarm_admin_alerts(state.clone()));
+    tokio::time::timeout(std::time::Duration::from_secs(8), pause.wait_until_arrived())
+        .await
+        .expect("the warm reaches the Groups-to-catalog boundary");
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes pressure before catalog admission"
+    );
+    pause.release();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            if cache.lock().await.admin_alerts_prewarm_defers > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("catalog admission is deferred after Groups finishes");
+    warm.abort();
+    let _ = warm.await;
     let _ = std::fs::remove_file(db_path);
 }
 

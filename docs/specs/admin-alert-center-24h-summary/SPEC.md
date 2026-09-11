@@ -31,7 +31,10 @@
   projection generation 才能一起发布；任一 defer、取消或 generation 变化都丢弃 staged
   值并保留 last-good。warm admission 只要求一个 bounded read slot、前台速率不超过 `5 rps`
   且最近 `5s` 无 SQLite contention；不预热或保留第二条连接，前台 checkout/等待者会产生
-  typed defer，失败按 `5s/5s/30s` 退避。冷启动且没有连接等待者时允许第一条 bounded read
+  typed defer，失败按 `5s/5s/30s` 退避。若连续 `120s` 没有接受任何 warm slice，controller
+  每 `5s` 获得一次 liveness slot；一个 slot 最多覆盖一个 canonical 逻辑阶段及其 fenced 微事务，
+  下一个 key 必须重新获取 slot；该 slot 只绕过前台速率与 lazy-pool idle 启发式，acquire waiter、
+  contention、writer pressure 和两个原生预算仍会 defer。冷启动且没有连接等待者时允许第一条 bounded read
   惰性建立连接；HTTP 对 canonical key 只读 exact-key
   cache：同 generation 为 fresh，generation 落后但未过期为 stale，cold/过期为
   `503 Retry-After: 1`，绝不触发重建。
@@ -48,7 +51,8 @@
   `EXPLAIN QUERY PLAN` 证据再另立投影/索引任务，不能提高读预算或恢复 raw fallback。
   默认 Groups `1/20` 使用本机 observability 的 canonical-groups read model，而不在 warm
   路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence
-  与固定 source-row membership boundary，以 rowid/keyset slices 暂存该 snapshot 的事件、复用既有
+  与固定 source-row membership boundary，以 retention-bounded `(occurred_at, row_sort_id)` time-keyset
+  加 rowid upper bound 暂存该 snapshot 的事件、复用既有
   Rust grouping 语义，并在全部 slice 成功后切换 active generation。每个分区 slice 在继续前持久化一个有界
   event fragment；投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot 值；每条分区 source
   statement 都独立受预算限制，且不得将增长中的 partition JSON 反复持久化。final reduction 从 immutable fragments

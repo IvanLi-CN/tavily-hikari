@@ -73,7 +73,11 @@ reads:
   cache slots. An AppState-owned controller builds them in short `AdminAlertsCacheWarm` read slices
   when one bounded read slot is available, foreground activity is at most `5 rps`, and recent
   contention is clear. It does not reserve two idle connections or grow a lazy pool before the
-  check; a foreground checkout or waiter produces a typed defer. It stages the three values and
+  check; a foreground checkout or waiter produces a typed defer. After `120s` without an accepted
+  warm slice, the controller retries a liveness slot every `5s`; a slot covers one logical canonical
+  stage and its fenced micro-transactions, and bypasses only foreground-rate and lazy-pool-idle
+  heuristics. The next key acquires a new slot. Real acquire waiters, recent contention, writer pressure,
+  and native read budgets still defer it. It stages the three values and
   publishes them atomically from one immutable projection snapshot. A newer projection revision
   makes that complete cache entry stale rather than mixed; only an incomplete or failed snapshot is
   discarded. Retry true defers at `5s/5s/30s`.
@@ -95,7 +99,9 @@ reads:
   increasing the deadline or restoring a raw fallback is not an admissible containment.
 - When default Groups aggregation cannot meet that budget from the generic projection CTE, build a
   local observability read model from complete-history events in source-fenced bounded membership
-  slices. Capture a projection revision and source-row upper bound before the first slice; projection
+  slices. Capture a projection revision and source-row upper bound before the first slice; each source
+  slice seeks the retention-bounded `(occurred_at, row_sort_id)` time-keyset and applies that rowid
+  upper bound, so projection
   writers retain the pre-update event once for that build, so later writes cannot extend its immutable
   source set. Every source statement is independently bounded; persist bounded event fragments and stage
   final groups as bounded payload chunks plus metadata instead of an ever-growing JSON accumulator.

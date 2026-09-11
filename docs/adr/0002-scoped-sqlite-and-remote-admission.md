@@ -126,7 +126,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   its one idle connection, while a foreground checkout or waiter causes a typed defer. It stages
   all three values behind one projection-generation fence and publishes them together. A deferred
   warm retries at `5s`, `5s`, then `30s`; a generation change re-arms one warm without allowing
-  HTTP to trigger a rebuild.
+  HTTP to trigger a rebuild. If no slice has been accepted for 120 seconds, one liveness slot may
+  bypass only the foreground-rate and lazy-pool-idle heuristics every 5 seconds. One slot covers
+  one logical canonical stage and its fenced micro-transactions; the next key acquires a new slot.
+  Real waiters, contention, writer pressure, and native budgets still defer it.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads
   `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
   stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per
@@ -138,7 +141,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   projection/index change; this ADR does not authorize a larger deadline or raw fallback.
 - The canonical Groups page is served from a local observability read model. A build captures one
   immutable projection revision and a fixed source-row membership boundary, then uses independently
-  admitted rowid/keyset read slices and existing Rust grouping semantics. Projection writes preserve a
+  admitted retention-bounded `(occurred_at, row_sort_id)` time-keyset slices plus the captured rowid
+  upper bound and existing Rust grouping semantics. Projection writes preserve a
   pre-snapshot row once when they advance during that build. A source-fence change rejects and discards
   the staged generation before publication, so catalog, Events, and Groups never publish a mixed or
   stale replacement. No state row repeatedly serializes an accumulating partition payload: each

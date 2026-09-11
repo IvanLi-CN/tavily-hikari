@@ -823,6 +823,131 @@ async fn admin_alerts_cache_warm_admits_with_one_idle_connection() {
 }
 
 #[tokio::test]
+async fn admin_alerts_cache_warm_liveness_ignores_lazy_idle_heuristic() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("SQLite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("lazy three connection pool"),
+        3,
+    );
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "aged canonical warm may probe a lazy pool when no waiter or recent contention exists"
+    );
+    runtime.consume_admin_alerts_cache_warm_liveness_permit();
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::PoolPressure),
+        "the liveness exception is consumed by the first admitted slice"
+    );
+    drop(held_connection);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("SQLite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("lazy three connection pool"),
+        3,
+    );
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "an active liveness stage may use the lazy pool once"
+    );
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::PoolPressure),
+        "finishing a stage must prevent its bypass from leaking into the next stage"
+    );
+
+    drop(held_connection);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn admin_alerts_cache_warm_liveness_still_defers_at_pool_capacity() {
+    let runtime = SqliteRuntime::with_max_connections(
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .expect("SQLite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("lazy three connection pool"),
+        3,
+    );
+    let first = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("first connection");
+    let second = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("second connection");
+    let third = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("third connection");
+    assert_eq!(runtime.inner.pool.size(), 3);
+    assert_eq!(runtime.inner.pool.num_idle(), 0);
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::PoolPressure),
+        "liveness must not queue behind a full pool of foreground-held connections"
+    );
+
+    drop((first, second, third));
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_admits_an_empty_lazy_pool_without_waiters() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()

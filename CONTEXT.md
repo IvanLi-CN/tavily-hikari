@@ -49,6 +49,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   acquire and `250ms` native read deadline; all three staged values publish only at one unchanged
   projection generation. Defers retry after `5s`, `5s`, then `30s`, while a generation change
   re-arms one controller run.
+  If no warm slice has been accepted for `120s`, the controller receives a liveness slot every `5s`.
+  One slot admits at most one logical stage (Groups, Catalog, or Events); the stage may contain
+  several fenced micro-transactions, but it cannot spill into the next canonical key. The slot
+  bypasses only the foreground-rate and lazy-pool-idle heuristics; acquire waiters, recent
+  contention, writer pressure, the `100ms` acquire budget, and the `250ms` native deadline still defer
+  the slice. Liveness never reserves a foreground connection or publishes a partial generation.
   Canonical HTTP handlers never trigger or wait for warm work: a current entry is fresh, an older
   entry within five minutes is stale, and a cold/expired entry returns `503 Retry-After: 1`.
   These cache-only payload responses do not count as synthetic SQLite foreground activity. A configured
@@ -67,8 +73,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   requires query-plan evidence and a separate projection task, never a larger read budget or raw fallback.
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
   atomically captures a complete projection revision, source fence, and fixed source-row membership
-  boundary. Source rows are copied by that bounded rowid range, so later projection writes cannot
-  extend a build's final scan. A projection write that advances during a build retains the previous row
+  boundary. Source rows are copied by a retention-bounded `(occurred_at, row_sort_id)` time-keyset
+  with that rowid upper bound, so later projection writes cannot extend a build's final scan. A projection
+  write that advances during a build retains the previous row
   once for that snapshot. Each partition checkpoints bounded event fragments. Final reduction reads those
   immutable fragments, stages each resulting group as bounded payload chunks plus a small metadata row,
   then atomically accepts the partition cursor. A cancellation recomputes only the unaccepted partition;

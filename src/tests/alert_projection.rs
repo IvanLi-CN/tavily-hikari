@@ -1027,6 +1027,108 @@ async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_mo
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_resets_legacy_rowid_cursor_before_resume() {
+    let db_path = temp_db_path("alert-canonical-groups-legacy-cursor");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_300;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-legacy-cursor".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "legacy-cursor-source", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let _active = warm_canonical_alert_groups_until_published(&proxy).await;
+
+    let (revision, recent_generation, history_generation): (i64, i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1),
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source fence");
+    sqlx::query(
+        "UPDATE observability.admin_alert_canonical_groups_state
+            SET build_generation = 99,
+                build_projection_revision = ?,
+                build_source_recent_generation = ?,
+                build_source_history_generation = ?,
+                build_cursor_occurred_at = -9223372036854775808,
+                build_cursor_row_sort_id = '',
+                build_phase = 'copying'
+          WHERE singleton = 1",
+    )
+    .bind(revision)
+    .bind(recent_generation)
+    .bind(history_generation)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed legacy in-flight cursor");
+
+    let reset = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("legacy rowid cursor must be discarded before resume");
+    assert!(matches!(
+        reset,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_legacy_cursor_reset"
+    ));
+    let build_generation: i64 = sqlx::query_scalar(
+        "SELECT build_generation FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read discarded legacy build");
+    assert_eq!(build_generation, 0);
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state
+            SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("make the resumed build necessary");
+
+    let mut resumed_cursor = (i64::MIN, String::new());
+    for _ in 0..4 {
+        let _ = proxy
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await;
+        resumed_cursor = sqlx::query_as(
+            "SELECT build_cursor_occurred_at, build_cursor_row_sort_id
+               FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read resumed time cursor");
+        if resumed_cursor != (i64::MIN, String::new()) {
+            break;
+        }
+    }
+    assert_ne!(
+        resumed_cursor,
+        (i64::MIN, String::new()),
+        "a resumed build must start from the stable time-keyset sentinel"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_retired_generations() {
     let db_path = temp_db_path("alert-canonical-groups-generation-reclaim");
     let db_string = db_path.to_string_lossy().to_string();
@@ -1308,10 +1410,13 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
         .admin_alert_canonical_groups_page_for_warm()
         .await
         .expect_err("the completed partition still needs a separate publish slice");
-    assert!(matches!(
-        first,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-    ));
+    assert!(
+        matches!(
+            first,
+            ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+        ),
+        "unexpected first aggregate result: {first:?}"
+    );
     let (first_cursor, first_complete, first_fragment_position): (i64, bool, i64) = sqlx::query_as(
         "SELECT build_partition_cursor_occurred_at, build_partition_source_complete, \
                 build_partition_fragment_next_position \
@@ -1320,7 +1425,7 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read the first durable aggregate checkpoint");
-    assert_eq!((first_cursor, first_complete), (now + 249, false));
+    assert_eq!((first_cursor, first_complete), (now + 24, false));
     let first_fragment_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments \
          WHERE build_generation = 2 AND partition_key = 'partition'",
@@ -1353,21 +1458,28 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("read the second durable aggregate checkpoint");
-    assert_eq!((second_cursor, second_complete), (now + 499, false));
+    assert_eq!((second_cursor, second_complete), (now + 49, false));
     assert!(
         second_fragment_position > first_fragment_position,
         "the next call resumes after the accepted first slice instead of rescanning it"
     );
 
-    let third = proxy
-        .key_store
-        .admin_alert_canonical_groups_page_for_warm()
+    for _ in 0..32 {
+        let _ = proxy
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await;
+        let complete: bool = sqlx::query_scalar(
+            "SELECT build_partition_source_complete FROM observability.admin_alert_canonical_groups_state \
+             WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
         .await
-        .expect_err("the final source fragment must commit before reduction starts");
-    assert!(matches!(
-        third,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-    ));
+        .expect("read the source-complete aggregate checkpoint");
+        if complete {
+            break;
+        }
+    }
     let source_complete: (bool, String) = sqlx::query_as(
         "SELECT build_partition_source_complete, build_partition_events_json \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",

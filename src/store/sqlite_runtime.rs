@@ -464,6 +464,9 @@ struct SqliteRuntimeInner {
     last_contention_at: Mutex<Option<Instant>>,
     contention_warning_active: AtomicBool,
     foreground_activity: ForegroundActivityMeter,
+    admin_alerts_cache_warm_liveness: AtomicBool,
+    admin_alerts_cache_warm_liveness_permit: AtomicBool,
+    admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
     workload: Mutex<WorkloadWindow>,
@@ -630,6 +633,9 @@ impl SqliteRuntime {
                 last_contention_at: Mutex::new(None),
                 contention_warning_active: AtomicBool::new(false),
                 foreground_activity: ForegroundActivityMeter::new(),
+                admin_alerts_cache_warm_liveness: AtomicBool::new(false),
+                admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
+                admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
@@ -1033,15 +1039,35 @@ impl SqliteRuntime {
     pub(crate) fn admin_alerts_cache_warm_defer_reason(
         &self,
     ) -> Option<SqliteAdmissionDeferReason> {
+        self.admin_alerts_cache_warm_defer_reason_with_liveness(true)
+    }
+
+    pub(crate) fn admin_alerts_cache_warm_defer_reason_without_liveness(
+        &self,
+    ) -> Option<SqliteAdmissionDeferReason> {
+        self.admin_alerts_cache_warm_defer_reason_with_liveness(false)
+    }
+
+    fn admin_alerts_cache_warm_defer_reason_with_liveness(
+        &self,
+        allow_liveness: bool,
+    ) -> Option<SqliteAdmissionDeferReason> {
         // Canonical Alerts warmup is deliberately lower priority than both
         // foreground work and ordinary admin reads. It uses one bounded read
         // slot; requiring two already-idle connections starves a lazy pool
         // under the normal one-connection foreground workload.
-        if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+        let liveness = allow_liveness
+            && self
+                .inner
+                .admin_alerts_cache_warm_liveness
+                .load(AtomicOrdering::Acquire)
+            && (self.admin_alerts_cache_warm_liveness_permit_active()
+                || self.admin_alerts_cache_warm_liveness_stage_active());
+        if !liveness && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if self.admin_alerts_cache_warm_has_pool_pressure() {
+        } else if self.admin_alerts_cache_warm_has_pool_pressure(liveness) {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else {
             None
@@ -1049,21 +1075,91 @@ impl SqliteRuntime {
     }
 
     pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
-        if self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+        let liveness = self
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+            && (self.admin_alerts_cache_warm_liveness_permit_active()
+                || self.admin_alerts_cache_warm_liveness_stage_active());
+        if !liveness && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure.as_str())
         } else if self.recent_contention_active() {
             Some(SqliteAdmissionDeferReason::RecentContention.as_str())
-        } else if self.admin_alerts_cache_warm_has_pool_pressure() {
+        } else if self.admin_alerts_cache_warm_has_pool_pressure(liveness) {
             Some(SqliteAdmissionDeferReason::PoolPressure.as_str())
         } else {
             None
         }
     }
 
-    fn admin_alerts_cache_warm_has_pool_pressure(&self) -> bool {
+    fn admin_alerts_cache_warm_has_pool_pressure(&self, liveness: bool) -> bool {
         let has_open_connection = self.inner.pool.size() > 0;
-        (has_open_connection && self.inner.pool.num_idle() == 0)
-            || self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+        let pool_at_capacity = self.inner.pool.size() >= self.inner.maximum_connections;
+        self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
+            || ((!liveness || pool_at_capacity)
+                && has_open_connection
+                && self.inner.pool.num_idle() == 0)
+    }
+
+    pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {
+        self.inner
+            .admin_alerts_cache_warm_liveness
+            .store(enabled, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_liveness_permit
+            .store(enabled, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_liveness_stage_active
+            .store(false, AtomicOrdering::Release);
+    }
+
+    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+        if !self
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+        {
+            return;
+        }
+        if self
+            .inner
+            .admin_alerts_cache_warm_liveness_permit
+            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+        {
+            self.inner
+                .admin_alerts_cache_warm_liveness_stage_active
+                .store(true, AtomicOrdering::Release);
+        }
+    }
+
+    pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
+        self.inner
+            .admin_alerts_cache_warm_liveness_stage_active
+            .store(false, AtomicOrdering::Release);
+    }
+
+    /// Test-only knob for asserting the spent-permit pressure path. Production
+    /// warm attempts keep the reservation for their controller-owned attempt
+    /// and clear it when that attempt yields or publishes.
+    #[cfg(test)]
+    pub(crate) fn consume_admin_alerts_cache_warm_liveness_permit(&self) {
+        let _ = self
+            .inner
+            .admin_alerts_cache_warm_liveness_permit
+            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire);
+    }
+
+    fn admin_alerts_cache_warm_liveness_permit_active(&self) -> bool {
+        self.inner
+            .admin_alerts_cache_warm_liveness_permit
+            .load(AtomicOrdering::Acquire)
+    }
+
+    fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
+        self.inner
+            .admin_alerts_cache_warm_liveness_stage_active
+            .load(AtomicOrdering::Acquire)
     }
 
     fn maintenance_bulk_defer_reason_for(
@@ -2028,11 +2124,39 @@ impl KeyStore {
     }
 
     pub(crate) fn ensure_admin_alerts_cache_warm_write_admitted(&self) -> Result<(), ProxyError> {
-        if let Some(reason) = self.admin_alerts_cache_warm_defer_reason() {
+        self.ensure_admin_alerts_cache_warm_write_admitted_with_liveness(true)
+    }
+
+    pub(crate) fn ensure_admin_alerts_cache_warm_reclaimer_write_admitted(
+        &self,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted_with_liveness(false)
+    }
+
+    fn ensure_admin_alerts_cache_warm_write_admitted_with_liveness(
+        &self,
+        allow_liveness: bool,
+    ) -> Result<(), ProxyError> {
+        let reason = if allow_liveness {
+            self.sqlite_runtime.admin_alerts_cache_warm_defer_reason()
+        } else {
+            self.sqlite_runtime
+                .admin_alerts_cache_warm_defer_reason_without_liveness()
+        };
+        if let Some(reason) = reason {
+            self.sqlite_runtime
+                .record_deferred(SqliteOperation::AdminAlertsCacheWarm, reason);
             return Err(ProxyError::Deferred {
                 operation: "admin_alerts_cache_warm",
-                reason: reason.to_string(),
+                reason: reason.as_str().to_string(),
             });
+        }
+        // The controller acquires one quantum before entering a logical stage.
+        // Its bounded read/write steps share that stage lease; the controller
+        // releases it before the next canonical key is attempted.
+        if allow_liveness {
+            self.sqlite_runtime
+                .begin_admin_alerts_cache_warm_liveness_stage();
         }
         Ok(())
     }
@@ -2040,6 +2164,21 @@ impl KeyStore {
     pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
         self.sqlite_runtime
             .admin_alerts_cache_warm_pressure_reason()
+    }
+
+    pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {
+        self.sqlite_runtime
+            .set_admin_alerts_cache_warm_liveness(enabled);
+    }
+
+    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+        self.sqlite_runtime
+            .begin_admin_alerts_cache_warm_liveness_stage();
+    }
+
+    pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
+        self.sqlite_runtime
+            .finish_admin_alerts_cache_warm_liveness_stage();
     }
 
     pub(crate) fn record_admin_alerts_warm_slice(&self) {
@@ -2083,8 +2222,9 @@ impl KeyStore {
                 reason: reason.to_string(),
             });
         }
+        let snapshot = self.sqlite_runtime.begin_read_snapshot(operation).await?;
         Ok(AdminAlertsReadSession {
-            snapshot: Some(self.sqlite_runtime.begin_read_snapshot(operation).await?),
+            snapshot: Some(snapshot),
             operation,
         })
     }
