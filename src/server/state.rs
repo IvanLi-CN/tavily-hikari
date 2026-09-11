@@ -308,7 +308,6 @@ impl DashboardOverviewCacheState {
         self.admin_alerts_prewarm_in_flight = false;
         self.admin_alerts_prewarm_owner = 0;
         self.admin_alerts_prewarm_defers = 0;
-        self.admin_alerts_prewarm_last_progress_at = None;
         self.admin_alerts_prewarm_not_before = Some(
             tokio::time::Instant::now() + ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
         );
@@ -1836,6 +1835,17 @@ mod admin_alerts_prewarm_tests {
         assert!(cache.admin_alerts_prewarm_liveness_due(
             published_at + std::time::Duration::from_secs(120)
         ));
+
+        cache.admin_alerts_prewarm_not_before = None;
+        let failed_owner = cache
+            .start_admin_alerts_prewarm(tokio::time::Instant::now())
+            .expect("retry owner after a completed publish");
+        cache.finish_admin_alerts_prewarm_owner(failed_owner);
+        assert_eq!(
+            cache.admin_alerts_prewarm_last_progress_at,
+            Some(published_at),
+            "a failed retry must not erase the last complete publish anchor"
+        );
     }
 
     #[tokio::test]
