@@ -1052,10 +1052,6 @@ impl SqliteRuntime {
         &self,
         allow_liveness: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
-        // Canonical Alerts warmup is deliberately lower priority than both
-        // foreground work and ordinary admin reads. It uses one bounded read
-        // slot; requiring two already-idle connections starves a lazy pool
-        // under the normal one-connection foreground workload.
         let liveness = allow_liveness
             && self
                 .inner
@@ -2151,9 +2147,6 @@ impl KeyStore {
                 reason: reason.as_str().to_string(),
             });
         }
-        // The controller acquires one quantum before entering a logical stage.
-        // Its bounded read/write steps share that stage lease; the controller
-        // releases it before the next canonical key is attempted.
         if allow_liveness {
             self.sqlite_runtime
                 .begin_admin_alerts_cache_warm_liveness_stage();
