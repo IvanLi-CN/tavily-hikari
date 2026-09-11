@@ -320,6 +320,13 @@ impl DashboardOverviewCacheState {
         }
     }
 
+    fn publish_admin_alerts_prewarm_owner(&mut self, owner: u64, published_at: tokio::time::Instant) {
+        if self.admin_alerts_prewarm_owner == owner {
+            self.finish_admin_alerts_prewarm();
+            self.admin_alerts_prewarm_last_progress_at = Some(published_at);
+        }
+    }
+
     fn defer_admin_alerts_prewarm(&mut self, now: tokio::time::Instant) -> std::time::Duration {
         self.admin_alerts_prewarm_defers = self.admin_alerts_prewarm_defers.saturating_add(1);
         let delay = match self.admin_alerts_prewarm_defers {
@@ -934,7 +941,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
                         .await
-                        .finish_admin_alerts_prewarm_owner(owner);
+                        .publish_admin_alerts_prewarm_owner(owner, tokio::time::Instant::now());
                     flight_guard.disarm();
                     tracing::debug!(
                         component = "admin_read",
@@ -1801,6 +1808,33 @@ mod admin_alerts_prewarm_tests {
         ));
         assert!(cache.admin_alerts_prewarm_liveness_due(
             now + std::time::Duration::from_secs(240)
+        ));
+    }
+
+    #[test]
+    fn completed_admin_alerts_prewarm_keeps_publish_time_as_liveness_anchor() {
+        let mut cache = DashboardOverviewCacheState::default();
+        let started_at = tokio::time::Instant::now();
+        let owner = cache
+            .start_admin_alerts_prewarm(started_at)
+            .expect("prewarm owner");
+        let published_at = started_at + std::time::Duration::from_secs(7);
+
+        cache.publish_admin_alerts_prewarm_owner(owner, published_at);
+
+        assert_eq!(
+            cache.admin_alerts_prewarm_last_progress_at,
+            Some(published_at),
+            "a complete canonical publish is the liveness anchor"
+        );
+        assert!(
+            !cache.admin_alerts_prewarm_liveness_due(
+                published_at + std::time::Duration::from_secs(119)
+            ),
+            "the next liveness slot waits 120s from the complete publish"
+        );
+        assert!(cache.admin_alerts_prewarm_liveness_due(
+            published_at + std::time::Duration::from_secs(120)
         ));
     }
 
