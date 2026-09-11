@@ -187,6 +187,25 @@ async fn wait_for_admin_alerts_shutdown_or(
     }
 }
 
+async fn reacquire_admin_alerts_liveness_stage_or_shutdown(
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
+    shutdown_notify: &Arc<tokio::sync::Notify>,
+    proxy: &TavilyProxy,
+) -> bool {
+    if wait_for_admin_alerts_shutdown_or(
+        cache,
+        shutdown_notify,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    {
+        return true;
+    }
+    proxy.set_admin_alerts_cache_warm_liveness(true);
+    proxy.begin_admin_alerts_cache_warm_liveness_stage();
+    false
+}
+
 async fn admin_alerts_shutdown_requested(
     cache: &Arc<Mutex<DashboardOverviewCacheState>>,
 ) -> bool {
@@ -320,7 +339,6 @@ impl DashboardOverviewCacheState {
             .is_some_and(|at| now.saturating_duration_since(at) >= ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
     }
 
-    #[cfg(test)]
     fn record_admin_alerts_prewarm_progress(&mut self, now: tokio::time::Instant) {
         self.admin_alerts_prewarm_last_progress_at = Some(now);
         self.admin_alerts_prewarm_defers = 0;
@@ -800,6 +818,19 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     groups_result?;
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_groups_for_test(state.as_ref()).await;
+                if liveness_slot
+                    && reacquire_admin_alerts_liveness_stage_or_shutdown(
+                        &cache,
+                        &shutdown_notify,
+                        &state.proxy,
+                    )
+                    .await
+                {
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "shutdown".to_string(),
+                    });
+                }
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -815,6 +846,19 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 let catalog = catalog_result?;
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_catalog_for_test(state.as_ref()).await;
+                if liveness_slot
+                    && reacquire_admin_alerts_liveness_stage_or_shutdown(
+                        &cache,
+                        &shutdown_notify,
+                        &state.proxy,
+                    )
+                    .await
+                {
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "shutdown".to_string(),
+                    });
+                }
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -893,6 +937,10 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     // Groups and Catalog each commit one bounded slice before
                     // asking the controller for the next independently-admitted
                     // slice. This is forward progress, not a failed warm attempt.
+                    cache
+                        .lock()
+                        .await
+                        .record_admin_alerts_prewarm_progress(tokio::time::Instant::now());
                     snapshot_cache_generation.get_or_insert(generation);
                     if liveness_slot {
                         state
@@ -954,6 +1002,13 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         return;
                     }
                     tokio::task::yield_now().await;
+                }
+                Err(tavily_hikari::ProxyError::Deferred { reason, .. })
+                    if reason == "shutdown" =>
+                {
+                    cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                    flight_guard.disarm();
+                    return;
                 }
                 Err(error)
                     if tavily_hikari::is_transient_sqlite_write_error(&error)
