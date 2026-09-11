@@ -882,6 +882,13 @@ async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
         .await
         .expect("hold the only open connection");
 
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+    assert!(
+        runtime.foreground_activity_rps() > 5,
+        "fixture establishes foreground pressure for the aged liveness stage"
+    );
     runtime.set_admin_alerts_cache_warm_liveness(true);
     runtime.begin_admin_alerts_cache_warm_liveness_stage();
     assert_eq!(
@@ -892,7 +899,7 @@ async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
     runtime.finish_admin_alerts_cache_warm_liveness_stage();
     assert_eq!(
         runtime.admin_alerts_cache_warm_defer_reason(),
-        Some(SqliteAdmissionDeferReason::PoolPressure),
+        Some(SqliteAdmissionDeferReason::ForegroundPressure),
         "finishing a stage must prevent its bypass from leaking into the next stage"
     );
 

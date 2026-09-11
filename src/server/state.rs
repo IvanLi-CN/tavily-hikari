@@ -89,7 +89,6 @@ struct DashboardOverviewCacheState {
     admin_alerts_prewarm_owner: u64,
     admin_alerts_prewarm_not_before: Option<tokio::time::Instant>,
     admin_alerts_prewarm_defers: u8,
-    admin_alerts_prewarm_last_accepted_slice_at: Option<tokio::time::Instant>,
     admin_alerts_prewarm_last_progress_at: Option<tokio::time::Instant>,
     admin_alerts_groups_reclaimer_in_flight: bool,
     admin_alerts_groups_reclaimer_owner: u64,
@@ -136,7 +135,6 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_prewarm_owner: 0,
             admin_alerts_prewarm_not_before: None,
             admin_alerts_prewarm_defers: 0,
-            admin_alerts_prewarm_last_accepted_slice_at: None,
             admin_alerts_prewarm_last_progress_at: None,
             admin_alerts_groups_reclaimer_in_flight: false,
             admin_alerts_groups_reclaimer_owner: 0,
@@ -310,7 +308,6 @@ impl DashboardOverviewCacheState {
         self.admin_alerts_prewarm_in_flight = false;
         self.admin_alerts_prewarm_owner = 0;
         self.admin_alerts_prewarm_defers = 0;
-        self.admin_alerts_prewarm_last_accepted_slice_at = None;
         self.admin_alerts_prewarm_last_progress_at = None;
         self.admin_alerts_prewarm_not_before = Some(
             tokio::time::Instant::now() + ADMIN_ALERTS_PREWARM_MIN_INTERVAL,
@@ -342,11 +339,11 @@ impl DashboardOverviewCacheState {
             .is_some_and(|at| now.saturating_duration_since(at) >= ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
     }
 
-    fn record_admin_alerts_prewarm_slice(&mut self, now: tokio::time::Instant) {
-        // Partial work is observable progress, but it cannot satisfy liveness
-        // until the complete three-key generation publishes. Keep the aged
-        // anchor so a large build can continue one bounded stage every 5s.
-        self.admin_alerts_prewarm_last_accepted_slice_at = Some(now);
+    fn record_admin_alerts_prewarm_slice(&mut self, _now: tokio::time::Instant) {
+        // Partial work is observable through the workload window, but it cannot
+        // satisfy liveness until the complete three-key generation publishes.
+        // Keep the aged anchor so a large build can continue one bounded stage
+        // every 5s under sustained foreground load.
         self.admin_alerts_prewarm_defers = 0;
     }
 
@@ -1799,10 +1796,6 @@ mod admin_alerts_prewarm_tests {
         ));
 
         cache.record_admin_alerts_prewarm_slice(now + std::time::Duration::from_secs(120));
-        assert_eq!(
-            cache.admin_alerts_prewarm_last_accepted_slice_at,
-            Some(now + std::time::Duration::from_secs(120))
-        );
         assert!(cache.admin_alerts_prewarm_liveness_due(
             now + std::time::Duration::from_secs(121)
         ));
