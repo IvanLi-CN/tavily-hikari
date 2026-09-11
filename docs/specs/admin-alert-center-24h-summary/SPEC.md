@@ -31,8 +31,8 @@
   projection generation 才能一起发布；任一 defer、取消或 generation 变化都丢弃 staged
   值并保留 last-good。warm admission 只要求一个 bounded read slot、前台速率不超过 `5 rps`
   且最近 `5s` 无 SQLite contention；不预热或保留第二条连接，前台 checkout/等待者会产生
-  typed defer，失败按 `5s/5s/30s` 退避。若连续 `120s` 没有接受任何 warm slice，controller
-  每 `5s` 获得一次 liveness slot；一个 slot 最多覆盖一个 canonical 逻辑阶段及其 fenced 微事务，
+  typed defer，失败按 `5s/5s/30s` 退避。若连续 `120s` 没有发布完整 canonical generation，controller
+  每 `5s` 获得一次 liveness slot；partial slices 单独记录且不重置该锚点。一个 slot 最多覆盖一个 canonical 逻辑阶段及其 fenced 微事务，
   下一个 key 必须重新获取 slot；该 slot 只绕过前台速率与 lazy-pool idle 启发式，acquire waiter、
   contention、writer pressure 和两个原生预算仍会 defer。冷启动且没有连接等待者时允许第一条 bounded read
   惰性建立连接；HTTP 对 canonical key 只读 exact-key
