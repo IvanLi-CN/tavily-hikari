@@ -44,7 +44,7 @@ RUN test ! -e /context/.env \
 ########## Stage 2: import the official Xray runtime ##########
 FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e AS xray-downloader
 
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0 \
