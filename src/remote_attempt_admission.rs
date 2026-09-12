@@ -648,9 +648,6 @@ impl RemoteAttemptAdmissionController {
                 .min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
         );
-        let active_attempts = self.active_attempts.fetch_add(1, Ordering::AcqRel) + 1;
-        self.peak_active_attempts
-            .fetch_max(active_attempts, Ordering::AcqRel);
         let mut lease = self.make_lease(permit);
         lease.followup_in_flight = true;
         Ok(lease)
@@ -986,6 +983,7 @@ mod tests {
             .acquire_followup_attempt()
             .await
             .expect("main may issue its bounded second request");
+        assert_eq!(controller.metrics().active_attempts, 1);
         assert!(controller.reconciliation_turn_required());
         assert!(
             controller
@@ -993,6 +991,7 @@ mod tests {
                 .is_none()
         );
         drop(followup);
+        assert_eq!(controller.metrics().active_attempts, 0);
         assert!(!controller.reconciliation_turn_required());
     }
 
