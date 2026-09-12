@@ -758,6 +758,7 @@ impl TavilyProxy {
             reconciliation_turn,
             manual_remote_attempt,
             try_remote_attempt: false,
+            allow_main_followup: false,
             attempt_deadline: None,
         };
         let admit_local_projection = || self.admit_upstream_reconciliation_projection();
@@ -1386,6 +1387,7 @@ impl TavilyProxy {
                         attempted_candidate_count += 1;
                         candidate_attempted = true;
                     }
+                    let allow_main_followup = remote_request_count > 0;
                     remote_request_started = true;
                     if remote_request_count == 0 {
                         first_remote_ms = Some(
@@ -1398,7 +1400,9 @@ impl TavilyProxy {
                             &key_id,
                             usage_base,
                             &candidate.project_id,
-                            remote_attempt_context.with_attempt_deadline(main_remote_deadline),
+                            remote_attempt_context
+                                .with_attempt_deadline(main_remote_deadline)
+                                .with_main_followup_if(allow_main_followup),
                         )
                         .await;
                     match usage_result {

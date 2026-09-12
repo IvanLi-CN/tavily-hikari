@@ -183,6 +183,17 @@ impl ReconciliationTurn {
             .await
     }
 
+    /// Acquire the second bounded Main request without consuming another
+    /// fairness turn. A newly reserved automatic turn wins over this
+    /// follow-up, so the current run defers instead of overtaking Research.
+    #[doc(hidden)]
+    pub async fn acquire_followup_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
+        if !self.consumed.load(Ordering::Acquire) {
+            return Err("remote_attempt_budget");
+        }
+        self.controller.acquire_followup_automatic_attempt().await
+    }
+
     #[doc(hidden)]
     pub fn try_acquire_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
         if self.consumed.load(Ordering::Acquire) {
@@ -517,6 +528,17 @@ impl RemoteAttemptAdmissionController {
         })
     }
 
+    async fn acquire_followup_automatic_attempt(
+        self: &Arc<Self>,
+    ) -> Result<RemoteAttemptLease, &'static str> {
+        let lease = self.acquire_attempt_inner().await?;
+        if self.reconciliation_turn_required() {
+            drop(lease);
+            return Err("remote_attempt_budget");
+        }
+        Ok(lease)
+    }
+
     pub fn metrics(&self) -> RemoteAttemptMetrics {
         RemoteAttemptMetrics {
             active_attempts: self.active_attempts.load(Ordering::Acquire),
@@ -782,6 +804,50 @@ mod tests {
             turn.acquire_attempt().await,
             Err("remote_attempt_budget")
         ));
+    }
+
+    #[tokio::test]
+    async fn consumed_main_turn_allows_one_followup_without_advancing_fairness() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("main reserves the first automatic turn");
+        let lease = turn
+            .acquire_attempt()
+            .await
+            .expect("the first request acquires the sole remote lease");
+        lease.mark_request_started();
+        drop(lease);
+
+        let followup = turn
+            .acquire_followup_attempt()
+            .await
+            .expect("main may issue its bounded second request");
+        assert!(!controller.reconciliation_turn_required());
+        drop(followup);
+    }
+
+    #[tokio::test]
+    async fn main_followup_defers_when_research_has_reserved_next_turn() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let main = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("main reserves the first automatic turn");
+        let lease = main
+            .acquire_attempt()
+            .await
+            .expect("the first request acquires the sole remote lease");
+        lease.mark_request_started();
+        drop(lease);
+        let research = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("research reserves the next automatic turn");
+
+        assert!(matches!(
+            main.acquire_followup_attempt().await,
+            Err("remote_attempt_budget")
+        ));
+        drop(research);
     }
 
     #[test]
