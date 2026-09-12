@@ -13,6 +13,130 @@ fn reconciliation_turn_eligible_since(job: &QueuedScheduledJob) -> i64 {
     }
 }
 
+async fn select_next_scheduled_candidate(
+    state: &AppState,
+    candidates: &[QueuedScheduledJob],
+) -> Result<(Option<QueuedScheduledJob>, Option<ReconciliationTurn>), ProxyError> {
+    let controller = remote_attempt_admission_for_state(state);
+    let mut selected = candidates
+        .iter()
+        .find(|candidate| {
+            scheduled_job_uses_remote_io(&candidate.job_type)
+                && scheduled_job_is_manual_remote(candidate)
+        })
+        .cloned();
+    let mut reconciliation_turn = None;
+
+    if selected.is_none() {
+        let aged_main = state
+            .proxy
+            .fetch_aged_queued_scheduled_job_by_type(
+                "upstream_reconciliation",
+                RECONCILIATION_REMOTE_TURN_WAIT_SECS,
+            )
+            .await?;
+        let aged_research = state
+            .proxy
+            .fetch_aged_queued_scheduled_job_by_type(
+                RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+                RECONCILIATION_REMOTE_TURN_WAIT_SECS,
+            )
+            .await?;
+        let resumed_kind = controller.resumable_reconciliation_turn_kind();
+        let aged = match (resumed_kind, aged_main, aged_research) {
+            (Some(ReconciliationTurnKind::ResearchDrain), _, Some(research)) => {
+                Some((research, ReconciliationTurnKind::ResearchDrain))
+            }
+            (Some(ReconciliationTurnKind::Main), Some(main), _) => {
+                Some((main, ReconciliationTurnKind::Main))
+            }
+            (Some(_), _, _) => None,
+            (None, Some(main), Some(research))
+                if reconciliation_turn_eligible_since(&research)
+                    < reconciliation_turn_eligible_since(&main) =>
+            {
+                Some((research, ReconciliationTurnKind::ResearchDrain))
+            }
+            (None, Some(main), _) => Some((main, ReconciliationTurnKind::Main)),
+            (None, None, Some(research)) => {
+                Some((research, ReconciliationTurnKind::ResearchDrain))
+            }
+            (None, None, None) => None,
+        };
+        if let Some((aged_job, kind)) = aged {
+            let turn = match kind {
+                ReconciliationTurnKind::Main => controller.reserve_aged_reconciliation_turn(),
+                ReconciliationTurnKind::ResearchDrain => {
+                    controller.reserve_aged_research_drain_turn()
+                }
+            };
+            if let Some(turn) = turn {
+                reconciliation_turn = Some(turn);
+                selected = Some(aged_job);
+            }
+        }
+    }
+
+    if selected.is_none() && !controller.reconciliation_turn_required() {
+        let main_available = candidates
+            .iter()
+            .any(|candidate| candidate.job_type == "upstream_reconciliation");
+        let research_available = candidates
+            .iter()
+            .any(|candidate| candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE);
+        if let Some(turn) = controller
+            .reserve_next_automatic_reconciliation_turn(main_available, research_available)
+        {
+            let selected_job = candidates.iter().find(|candidate| match turn.kind() {
+                ReconciliationTurnKind::Main => candidate.job_type == "upstream_reconciliation",
+                ReconciliationTurnKind::ResearchDrain => {
+                    candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                }
+            });
+            if let Some(selected_job) = selected_job {
+                reconciliation_turn = Some(turn);
+                selected = Some(selected_job.clone());
+            }
+        }
+    }
+
+    if selected.is_none() {
+        for candidate in candidates {
+            if scheduled_job_uses_remote_io(&candidate.job_type)
+                && controller.reconciliation_turn_required()
+            {
+                let reserved_kind = reconciliation_turn.as_ref().map(|turn| turn.kind());
+                let is_reconciliation = matches!(
+                    candidate.job_type.as_str(),
+                    "upstream_reconciliation" | RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                );
+                let matches_reservation = match reserved_kind {
+                    Some(ReconciliationTurnKind::Main) => {
+                        candidate.job_type == "upstream_reconciliation"
+                    }
+                    Some(ReconciliationTurnKind::ResearchDrain) => {
+                        candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                    }
+                    None => false,
+                };
+                if is_reconciliation && !matches_reservation {
+                    continue;
+                }
+            }
+            selected = Some(candidate.clone());
+            break;
+        }
+    }
+
+    if selected.is_none() {
+        selected = state
+            .proxy
+            .fetch_next_queued_scheduled_job_excluding_types(&REMOTE_IO_SCHEDULED_JOB_TYPES)
+            .await?;
+    }
+    Ok((selected, reconciliation_turn))
+}
+
 #[cfg(test)]
 #[test]
 fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
