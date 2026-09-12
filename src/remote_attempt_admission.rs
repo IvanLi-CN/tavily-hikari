@@ -32,6 +32,7 @@ struct ReconciliationTurnState {
     id: u64,
     kind: Option<ReconciliationTurnKind>,
     resumable: bool,
+    followup_in_flight: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,7 @@ pub struct RemoteAttemptLease {
     reconciliation_turn_id: AtomicU64,
     reconciliation_turn_kind: Option<ReconciliationTurnKind>,
     reconciliation_turn_consumed: Option<Arc<AtomicBool>>,
+    followup_in_flight: bool,
     started_at: Instant,
 }
 
@@ -277,6 +279,9 @@ impl RemoteAttemptAdmissionController {
                 .reconciliation_turn
                 .lock()
                 .expect("reconciliation turn state lock is not poisoned");
+            if state.followup_in_flight {
+                return None;
+            }
             if state.id != 0 {
                 if state.kind == Some(kind) && state.resumable {
                     state.resumable = false;
@@ -335,7 +340,11 @@ impl RemoteAttemptAdmissionController {
     }
 
     pub fn reconciliation_turn_required(&self) -> bool {
-        self.reconciliation_turn_id() != 0
+        let state = self
+            .reconciliation_turn
+            .lock()
+            .expect("reconciliation turn state lock is not poisoned");
+        state.id != 0 || state.followup_in_flight
     }
 
     fn clear_reconciliation_turn(&self, turn_id: u64) {
@@ -435,6 +444,7 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_id: AtomicU64::new(turn_id),
             reconciliation_turn_kind: Some(kind),
             reconciliation_turn_consumed: Some(consumed),
+            followup_in_flight: false,
             started_at: Instant::now(),
         })
     }
@@ -480,6 +490,7 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_id: AtomicU64::new(0),
             reconciliation_turn_kind: None,
             reconciliation_turn_consumed: None,
+            followup_in_flight: false,
             started_at: Instant::now(),
         }
     }
@@ -524,6 +535,7 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_id: AtomicU64::new(0),
             reconciliation_turn_kind: None,
             reconciliation_turn_consumed: None,
+            followup_in_flight: false,
             started_at: Instant::now(),
         })
     }
@@ -531,11 +543,41 @@ impl RemoteAttemptAdmissionController {
     async fn acquire_followup_automatic_attempt(
         self: &Arc<Self>,
     ) -> Result<RemoteAttemptLease, &'static str> {
-        let lease = self.acquire_attempt_inner().await?;
-        if self.reconciliation_turn_required() {
-            drop(lease);
+        let waiting_started_at = Instant::now();
+        let permit = self
+            .attempt_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "remote_attempt_admission_closed")?;
+        let admitted = {
+            let mut state = self
+                .reconciliation_turn
+                .lock()
+                .expect("reconciliation turn state lock is not poisoned");
+            if state.id == 0 && !state.followup_in_flight {
+                state.followup_in_flight = true;
+                true
+            } else {
+                false
+            }
+        };
+        if !admitted {
+            drop(permit);
             return Err("remote_attempt_budget");
         }
+        self.total_wait_ms.fetch_add(
+            waiting_started_at
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        let active_attempts = self.active_attempts.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak_active_attempts
+            .fetch_max(active_attempts, Ordering::AcqRel);
+        let mut lease = self.make_lease(permit);
+        lease.followup_in_flight = true;
         Ok(lease)
     }
 
@@ -572,10 +614,31 @@ impl RemoteAttemptAdmissionController {
             self.reconciliation_turn_cleared.notify_waiters();
         }
     }
+
+    fn clear_followup_attempt(&self) {
+        let cleared = {
+            let mut state = self
+                .reconciliation_turn
+                .lock()
+                .expect("reconciliation turn state lock is not poisoned");
+            if state.followup_in_flight {
+                state.followup_in_flight = false;
+                true
+            } else {
+                false
+            }
+        };
+        if cleared {
+            self.reconciliation_turn_cleared.notify_waiters();
+        }
+    }
 }
 
 impl Drop for RemoteAttemptLease {
     fn drop(&mut self) {
+        if self.followup_in_flight {
+            self.controller.clear_followup_attempt();
+        }
         self.controller.total_hold_ms.fetch_add(
             self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
@@ -823,8 +886,14 @@ mod tests {
             .acquire_followup_attempt()
             .await
             .expect("main may issue its bounded second request");
-        assert!(!controller.reconciliation_turn_required());
+        assert!(controller.reconciliation_turn_required());
+        assert!(
+            controller
+                .reserve_next_automatic_reconciliation_turn(true, true)
+                .is_none()
+        );
         drop(followup);
+        assert!(!controller.reconciliation_turn_required());
     }
 
     #[tokio::test]
