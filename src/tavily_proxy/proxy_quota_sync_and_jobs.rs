@@ -1362,12 +1362,12 @@ impl TavilyProxy {
                         budget_exhausted = true;
                         break;
                     }
-                    let reservation = self
+                    let reservation_id = match self
                         .key_store
                         .reserve_upstream_usage_attempt(&key_id)
-                        .await?;
-                    match reservation {
-                        Ok(()) => {}
+                        .await?
+                    {
+                        Ok(reservation_id) => reservation_id,
                         Err(next_attempt_at) => {
                             retry_at = Some(next_attempt_at);
                             retry_reason =
@@ -1376,10 +1376,13 @@ impl TavilyProxy {
                             retry_outcome = Some(ReconciliationOutcome::LocalPressure);
                             break;
                         }
-                    }
+                    };
                     if !remote_request_started
                         && std::time::Instant::now() >= preparation_deadline
                     {
+                        self.key_store
+                            .release_upstream_usage_attempt(&reservation_id)
+                            .await?;
                         budget_exhausted = true;
                         break 'candidates;
                     }
@@ -1411,6 +1414,9 @@ impl TavilyProxy {
                             // Admission failure means no outbound request was made. Keep
                             // metrics and retry semantics distinct from transport/semantic
                             // failures, and let the durable representative retry later.
+                            self.key_store
+                                .release_upstream_usage_attempt(&reservation_id)
+                                .await?;
                             remote_request_count = remote_request_count.saturating_sub(1);
                             if remote_request_count == 0 {
                                 remote_request_started = false;
