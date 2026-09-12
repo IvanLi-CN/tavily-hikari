@@ -339,6 +339,7 @@ impl TavilyProxy {
             reconciliation_turn,
             manual_remote_attempt: false,
             try_remote_attempt: true,
+            allow_main_followup: false,
             attempt_deadline: Some(request_deadline),
         };
         let result = self

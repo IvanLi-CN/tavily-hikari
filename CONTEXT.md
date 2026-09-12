@@ -164,6 +164,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   reset its wait. Main wins an exact tie. A turn is consumed only when HTTP begins. After an
   accepted Research `remote_lease` continuation, its aged turn remains reserved until that resumed
   request starts; ordinary automatic remote work may prepare locally but cannot acquire its lease.
+  When ordinary Main and Research representatives are both runnable, the automatic preference
+  alternates `Main -> Research -> Main -> Research`. Only the request-start marker advances this
+  preference; a local defer, cancellation, or lease contention before HTTP leaves it unchanged.
 - `foreground_rps`: the instance-local recent request-rate heuristic used to protect foreground
   traffic. It is not a CPU, SQLite-pool, cgroup, or host-load metric. A non-aged Research drain
   defers above five requests per second; an aged Research turn may use its reserved turn only when it

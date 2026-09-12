@@ -98,7 +98,10 @@
   tie. An accepted Research lease-contention continuation retains its aged turn until its next
   actual HTTP start, so ordinary automatic work cannot reclaim that request opportunity despite
   continuing its local preparation. Manual priority and one actual HTTP request at a time remain
-  unchanged.
+  unchanged. When both representatives are ordinary and runnable, automatic request turns
+  alternate `main -> Research -> main -> Research`; only the request-start marker advances the
+  sequence. Local admission, cancellation, lease contention, and other no-request defers leave
+  the same channel preferred for retry.
 - Multi-key main candidates persist successful per-key observations by current work generation.
   A run fills no more than two missing keys and uses a claim-fenced `remote_attempt_budget`
   continuation when the candidate is still incomplete; cross-key summation and terminalization wait

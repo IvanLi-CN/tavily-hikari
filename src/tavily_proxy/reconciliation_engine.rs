@@ -211,6 +211,7 @@ struct ReconciliationRemoteAttemptContext<'a> {
     /// Research drain turns lease contention into a durable short defer. It
     /// never spends the whole remote preparation budget waiting locally.
     try_remote_attempt: bool,
+    allow_main_followup: bool,
     attempt_deadline: Option<std::time::Instant>,
 }
 
@@ -292,6 +293,21 @@ impl ReconciliationRemoteAttemptContext<'_> {
         }
     }
 
+    fn with_main_followup(self) -> Self {
+        Self {
+            allow_main_followup: true,
+            ..self
+        }
+    }
+
+    fn with_main_followup_if(self, allow: bool) -> Self {
+        if allow {
+            self.with_main_followup()
+        } else {
+            self
+        }
+    }
+
     async fn acquire(self) -> Result<Option<crate::RemoteAttemptLease>, &'static str> {
         if self.try_remote_attempt {
             return match (self.reconciliation_turn, self.remote_attempt_admission) {
@@ -302,6 +318,12 @@ impl ReconciliationRemoteAttemptContext<'_> {
         }
         let acquire = async {
             match (self.reconciliation_turn, self.remote_attempt_admission) {
+                (Some(turn), _)
+                    if self.allow_main_followup
+                        && turn.kind() == crate::ReconciliationTurnKind::Main =>
+                {
+                    turn.acquire_followup_attempt().await.map(Some)
+                }
                 (Some(turn), _) => turn.acquire_attempt().await.map(Some),
                 (None, Some(controller)) if self.manual_remote_attempt => {
                     controller.acquire_manual_attempt().await.map(Some)

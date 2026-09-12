@@ -355,107 +355,8 @@ async fn dequeue_next_scheduled_job(
         return Ok(None);
     }
 
-    let controller = remote_attempt_admission_for_state(state);
-    let mut selected = None;
-    let mut reconciliation_turn = None;
-
-    // A manual maintenance request retains its existing priority over the
-    // automatic reconciliation fairness turn. Neither branch reserves the
-    // outbound lease: local work can overlap until a real HTTP request starts.
-    if let Some(manual_remote) = candidates
-        .iter()
-        .find(|candidate| {
-            scheduled_job_uses_remote_io(&candidate.job_type)
-                && scheduled_job_is_manual_remote(candidate)
-        })
-        .cloned()
-    {
-        selected = Some(manual_remote);
-    }
-
-    if selected.is_none() {
-        let aged_main = state
-            .proxy
-            .fetch_aged_queued_scheduled_job_by_type(
-                "upstream_reconciliation",
-                RECONCILIATION_REMOTE_TURN_WAIT_SECS,
-            )
-            .await?;
-        let aged_research = state
-            .proxy
-            .fetch_aged_queued_scheduled_job_by_type(
-                RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
-                RECONCILIATION_REMOTE_TURN_WAIT_SECS,
-            )
-            .await?;
-        // A claim-fenced `remote_lease` continuation retains its already-won
-        // aged turn. Resume it before running another automatic candidate;
-        // manual work still won the branch above.
-        let resumed_kind = controller.resumable_reconciliation_turn_kind();
-        let aged = match (resumed_kind, aged_main, aged_research) {
-            (Some(ReconciliationTurnKind::ResearchDrain), _, Some(research)) => {
-                Some((research, ReconciliationTurnKind::ResearchDrain))
-            }
-            (Some(ReconciliationTurnKind::Main), Some(main), _) => {
-                Some((main, ReconciliationTurnKind::Main))
-            }
-            (Some(_), _, _) => None,
-            (None, Some(main), Some(research))
-                if reconciliation_turn_eligible_since(&research)
-                    < reconciliation_turn_eligible_since(&main) =>
-            {
-                Some((research, ReconciliationTurnKind::ResearchDrain))
-            }
-            (None, Some(main), _) => Some((main, ReconciliationTurnKind::Main)),
-            (None, None, Some(research)) => {
-                Some((research, ReconciliationTurnKind::ResearchDrain))
-            }
-            (None, None, None) => None,
-        };
-        if let Some((aged_job, kind)) = aged {
-            let turn = match kind {
-                ReconciliationTurnKind::Main => controller.reserve_aged_reconciliation_turn(),
-                ReconciliationTurnKind::ResearchDrain => {
-                    controller.reserve_aged_research_drain_turn()
-                }
-            };
-            if let Some(turn) = turn {
-                reconciliation_turn = Some(turn);
-                selected = Some(aged_job);
-            }
-        }
-    }
-
-    for candidate in candidates {
-        if selected.is_some() {
-            break;
-        }
-        if scheduled_job_uses_remote_io(&candidate.job_type) {
-            if matches!(
-                candidate.job_type.as_str(),
-                "upstream_reconciliation" | RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
-            ) && controller.reconciliation_turn_required()
-            {
-                // The aged representative owns the next HTTP turn; other work may prepare locally.
-                continue;
-            }
-            selected = Some(candidate);
-            break;
-        }
-
-        selected = Some(candidate);
-        break;
-    }
-
-    if selected.is_none() {
-        // Do not let an arbitrarily long remote queue hide eligible local
-        // maintenance behind the first dequeue page while an aged
-        // reconciliation turn is already in progress.
-        selected = state
-            .proxy
-            .fetch_next_queued_scheduled_job_excluding_types(&REMOTE_IO_SCHEDULED_JOB_TYPES)
-            .await?;
-    }
+    let (selected, reconciliation_turn) =
+        select_next_scheduled_candidate(state, &candidates).await?;
 
     let Some(candidate) = selected else {
         return Ok(None);
@@ -2673,9 +2574,9 @@ async fn run_manual_claimed_job(
         "upstream_reconciliation" => {
             drop(_job_execution_gate);
             let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
-            let aged_main_turn = reconciliation_turn.as_ref().is_some_and(|turn| {
-                turn.kind() == ReconciliationTurnKind::Main
-            });
+            let aged_main_turn = reconciliation_turn
+                .as_ref()
+                .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::Main && turn.is_aged());
             if state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS
                 && !aged_main_turn
             {

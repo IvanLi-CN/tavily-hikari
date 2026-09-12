@@ -758,6 +758,7 @@ impl TavilyProxy {
             reconciliation_turn,
             manual_remote_attempt,
             try_remote_attempt: false,
+            allow_main_followup: false,
             attempt_deadline: None,
         };
         let admit_local_projection = || self.admit_upstream_reconciliation_projection();
@@ -1361,12 +1362,12 @@ impl TavilyProxy {
                         budget_exhausted = true;
                         break;
                     }
-                    let reservation = self
+                    let reservation_id = match self
                         .key_store
                         .reserve_upstream_usage_attempt(&key_id)
-                        .await?;
-                    match reservation {
-                        Ok(()) => {}
+                        .await?
+                    {
+                        Ok(reservation_id) => reservation_id,
                         Err(next_attempt_at) => {
                             retry_at = Some(next_attempt_at);
                             retry_reason =
@@ -1375,10 +1376,13 @@ impl TavilyProxy {
                             retry_outcome = Some(ReconciliationOutcome::LocalPressure);
                             break;
                         }
-                    }
+                    };
                     if !remote_request_started
                         && std::time::Instant::now() >= preparation_deadline
                     {
+                        self.key_store
+                            .release_upstream_usage_attempt(&reservation_id)
+                            .await?;
                         budget_exhausted = true;
                         break 'candidates;
                     }
@@ -1386,6 +1390,7 @@ impl TavilyProxy {
                         attempted_candidate_count += 1;
                         candidate_attempted = true;
                     }
+                    let allow_main_followup = remote_request_count > 0;
                     remote_request_started = true;
                     if remote_request_count == 0 {
                         first_remote_ms = Some(
@@ -1398,7 +1403,9 @@ impl TavilyProxy {
                             &key_id,
                             usage_base,
                             &candidate.project_id,
-                            remote_attempt_context.with_attempt_deadline(main_remote_deadline),
+                            remote_attempt_context
+                                .with_attempt_deadline(main_remote_deadline)
+                                .with_main_followup_if(allow_main_followup),
                         )
                         .await;
                     match usage_result {
@@ -1407,6 +1414,9 @@ impl TavilyProxy {
                             // Admission failure means no outbound request was made. Keep
                             // metrics and retry semantics distinct from transport/semantic
                             // failures, and let the durable representative retry later.
+                            self.key_store
+                                .release_upstream_usage_attempt(&reservation_id)
+                                .await?;
                             remote_request_count = remote_request_count.saturating_sub(1);
                             if remote_request_count == 0 {
                                 remote_request_started = false;
