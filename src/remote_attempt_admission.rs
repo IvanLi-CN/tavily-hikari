@@ -20,6 +20,7 @@ pub struct RemoteAttemptAdmissionController {
     reconciliation_turn: Mutex<ReconciliationTurnState>,
     next_automatic_reconciliation_kind: AtomicU8,
     next_reconciliation_turn_id: AtomicU64,
+    next_automatic_attempt_token: AtomicU64,
     reconciliation_turn_cleared: Notify,
     active_attempts: AtomicUsize,
     peak_active_attempts: AtomicUsize,
@@ -33,6 +34,7 @@ struct ReconciliationTurnState {
     kind: Option<ReconciliationTurnKind>,
     resumable: bool,
     followup_in_flight: bool,
+    automatic_in_flight: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,7 @@ pub struct RemoteAttemptLease {
     reconciliation_turn_kind: Option<ReconciliationTurnKind>,
     reconciliation_turn_consumed: Option<Arc<AtomicBool>>,
     followup_in_flight: bool,
+    automatic_in_flight_token: AtomicU64,
     started_at: Instant,
 }
 
@@ -223,6 +226,7 @@ impl Default for RemoteAttemptAdmissionController {
             reconciliation_turn: Mutex::new(ReconciliationTurnState::default()),
             next_automatic_reconciliation_kind: AtomicU8::new(0),
             next_reconciliation_turn_id: AtomicU64::new(1),
+            next_automatic_attempt_token: AtomicU64::new(1),
             reconciliation_turn_cleared: Notify::new(),
             active_attempts: AtomicUsize::new(0),
             peak_active_attempts: AtomicUsize::new(0),
@@ -280,6 +284,9 @@ impl RemoteAttemptAdmissionController {
                 .lock()
                 .expect("reconciliation turn state lock is not poisoned");
             if state.followup_in_flight {
+                return None;
+            }
+            if state.automatic_in_flight.is_some() {
                 return None;
             }
             if state.id != 0 {
@@ -344,7 +351,7 @@ impl RemoteAttemptAdmissionController {
             .reconciliation_turn
             .lock()
             .expect("reconciliation turn state lock is not poisoned");
-        state.id != 0 || state.followup_in_flight
+        state.id != 0 || state.followup_in_flight || state.automatic_in_flight.is_some()
     }
 
     fn clear_reconciliation_turn(&self, turn_id: u64) {
@@ -373,11 +380,11 @@ impl RemoteAttemptAdmissionController {
                     cleared.await;
                 }
             }
-            let lease = self.acquire_attempt_inner().await?;
-            if !self.reconciliation_turn_required() {
-                return Ok(lease);
+            match self.acquire_automatic_attempt_inner().await {
+                Ok(lease) => return Ok(lease),
+                Err("remote_lease_unavailable") => continue,
+                Err(reason) => return Err(reason),
             }
-            drop(lease);
         }
     }
 
@@ -401,10 +408,7 @@ impl RemoteAttemptAdmissionController {
     pub fn try_acquire_automatic_attempt(
         self: &Arc<Self>,
     ) -> Result<RemoteAttemptLease, &'static str> {
-        if self.reconciliation_turn_required() {
-            return Err("remote_lease_unavailable");
-        }
-        self.try_acquire_attempt_inner()
+        self.try_acquire_automatic_attempt_inner()
     }
 
     async fn acquire_reconciliation_attempt_for_turn(
@@ -445,6 +449,7 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_kind: Some(kind),
             reconciliation_turn_consumed: Some(consumed),
             followup_in_flight: false,
+            automatic_in_flight_token: AtomicU64::new(0),
             started_at: Instant::now(),
         })
     }
@@ -471,13 +476,54 @@ impl RemoteAttemptAdmissionController {
         Ok(self.make_reconciliation_turn_lease(permit, turn_id, kind, Some(consumed)))
     }
 
-    fn try_acquire_attempt_inner(self: &Arc<Self>) -> Result<RemoteAttemptLease, &'static str> {
+    /// Atomically closes the admission gap between an automatic lease and its
+    /// first outbound request. A pending fairness reservation cannot be
+    /// installed while this token is held; the token is cleared at request
+    /// start or when the lease is dropped without a request.
+    fn admit_automatic_attempt(&self) -> Result<u64, &'static str> {
+        let mut state = self
+            .reconciliation_turn
+            .lock()
+            .expect("reconciliation turn state lock is not poisoned");
+        if state.id != 0 || state.followup_in_flight || state.automatic_in_flight.is_some() {
+            return Err("remote_lease_unavailable");
+        }
+        let token = self
+            .next_automatic_attempt_token
+            .fetch_add(1, Ordering::AcqRel)
+            .max(1);
+        state.automatic_in_flight = Some(token);
+        Ok(token)
+    }
+
+    fn mark_automatic_attempt_admitted(
+        self: &Arc<Self>,
+        permit: OwnedSemaphorePermit,
+        token: u64,
+    ) -> RemoteAttemptLease {
+        let lease = self.make_lease(permit);
+        lease
+            .automatic_in_flight_token
+            .store(token, Ordering::Release);
+        lease
+    }
+
+    fn try_acquire_automatic_attempt_inner(
+        self: &Arc<Self>,
+    ) -> Result<RemoteAttemptLease, &'static str> {
         let permit = self
             .attempt_slot
             .clone()
             .try_acquire_owned()
             .map_err(|_| "remote_lease_unavailable")?;
-        Ok(self.make_lease(permit))
+        let token = match self.admit_automatic_attempt() {
+            Ok(token) => token,
+            Err(reason) => {
+                drop(permit);
+                return Err(reason);
+            }
+        };
+        Ok(self.mark_automatic_attempt_admitted(permit, token))
     }
 
     fn make_lease(self: &Arc<Self>, permit: OwnedSemaphorePermit) -> RemoteAttemptLease {
@@ -491,6 +537,7 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_kind: None,
             reconciliation_turn_consumed: None,
             followup_in_flight: false,
+            automatic_in_flight_token: AtomicU64::new(0),
             started_at: Instant::now(),
         }
     }
@@ -536,8 +583,36 @@ impl RemoteAttemptAdmissionController {
             reconciliation_turn_kind: None,
             reconciliation_turn_consumed: None,
             followup_in_flight: false,
+            automatic_in_flight_token: AtomicU64::new(0),
             started_at: Instant::now(),
         })
+    }
+
+    async fn acquire_automatic_attempt_inner(
+        self: &Arc<Self>,
+    ) -> Result<RemoteAttemptLease, &'static str> {
+        let waiting_started_at = Instant::now();
+        let permit = self
+            .attempt_slot
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "remote_attempt_admission_closed")?;
+        let token = match self.admit_automatic_attempt() {
+            Ok(token) => token,
+            Err(reason) => {
+                drop(permit);
+                return Err(reason);
+            }
+        };
+        self.total_wait_ms.fetch_add(
+            waiting_started_at
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        Ok(self.mark_automatic_attempt_admitted(permit, token))
     }
 
     async fn acquire_followup_automatic_attempt(
@@ -632,6 +707,27 @@ impl RemoteAttemptAdmissionController {
             self.reconciliation_turn_cleared.notify_waiters();
         }
     }
+
+    fn clear_automatic_attempt(&self, token: u64) {
+        if token == 0 {
+            return;
+        }
+        let cleared = {
+            let mut state = self
+                .reconciliation_turn
+                .lock()
+                .expect("reconciliation turn state lock is not poisoned");
+            if state.automatic_in_flight == Some(token) {
+                state.automatic_in_flight = None;
+                true
+            } else {
+                false
+            }
+        };
+        if cleared {
+            self.reconciliation_turn_cleared.notify_waiters();
+        }
+    }
 }
 
 impl Drop for RemoteAttemptLease {
@@ -639,6 +735,8 @@ impl Drop for RemoteAttemptLease {
         if self.followup_in_flight {
             self.controller.clear_followup_attempt();
         }
+        self.controller
+            .clear_automatic_attempt(self.automatic_in_flight_token.swap(0, Ordering::AcqRel));
         self.controller.total_hold_ms.fetch_add(
             self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
@@ -654,6 +752,8 @@ impl RemoteAttemptLease {
     /// while local preparation or lease acquisition is still reversible.
     #[doc(hidden)]
     pub fn mark_request_started(&self) {
+        self.controller
+            .clear_automatic_attempt(self.automatic_in_flight_token.swap(0, Ordering::AcqRel));
         let turn_id = self.reconciliation_turn_id.swap(0, Ordering::AcqRel);
         if turn_id != 0 {
             if let Some(consumed) = &self.reconciliation_turn_consumed {
@@ -1025,6 +1125,32 @@ mod tests {
             !controller.reconciliation_turn_required(),
             "a no-request path that was not durably continued releases its turn"
         );
+    }
+
+    #[tokio::test]
+    async fn automatic_lease_fences_aged_reservation_until_request_starts() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let lease = controller
+            .try_acquire_automatic_attempt()
+            .expect("ordinary automatic work acquires the request lease");
+
+        assert!(
+            controller.reserve_aged_research_drain_turn().is_none(),
+            "an aged reservation cannot overtake an admitted automatic request"
+        );
+        assert!(controller.reconciliation_turn_required());
+
+        lease.mark_request_started();
+        let research = controller
+            .reserve_aged_research_drain_turn()
+            .expect("Research can reserve after the automatic request starts");
+        drop(lease);
+        assert!(
+            controller.reconciliation_turn_required(),
+            "dropping the old lease cannot clear a newer Research reservation"
+        );
+        drop(research);
+        assert!(!controller.reconciliation_turn_required());
     }
 
     #[test]
