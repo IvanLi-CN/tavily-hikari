@@ -305,6 +305,93 @@ async fn remote_attempt_controller_fairly_serves_aged_research_after_main() {
 }
 
 #[tokio::test]
+async fn scheduler_alternates_ordinary_main_and_research_requests() {
+    let db_path = temp_db_path("reconciliation-ordinary-channel-alternation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-reconciliation-ordinary-channel-alternation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create reconciliation proxy");
+    let (_addr, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "reconciliation-ordinary-channel-alternation-password",
+    )
+    .await;
+    let now = state.proxy.backend_time().now_ts();
+    let main = state
+        .proxy
+        .scheduled_job_enqueue_at("upstream_reconciliation", "auto", None, 1, now)
+        .await
+        .expect("enqueue ordinary main reconciliation");
+    let research = state
+        .proxy
+        .scheduled_job_enqueue_at(
+            RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            "auto",
+            None,
+            1,
+            now,
+        )
+        .await
+        .expect("enqueue ordinary Research drain");
+
+    let controller = remote_attempt_admission_for_state(state.as_ref());
+    let mut expected = ReconciliationTurnKind::Main;
+    let mut main_id = main.job_id;
+    let mut research_id = research.job_id;
+    for _ in 0..4 {
+        let (job, turn) = dequeue_next_scheduled_job(state.as_ref())
+            .await
+            .expect("dequeue the next ordinary reconciliation")
+            .expect("an ordinary reconciliation is queued");
+        assert_eq!(turn.as_ref().expect("fairness turn").kind(), expected);
+        assert_eq!(
+            job.job_type,
+            match expected {
+                ReconciliationTurnKind::Main => "upstream_reconciliation",
+                ReconciliationTurnKind::ResearchDrain => RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE,
+            }
+        );
+        let lease = turn
+            .as_ref()
+            .expect("fairness turn")
+            .try_acquire_attempt()
+            .expect("sole remote lease");
+        lease.mark_request_started();
+        drop(lease);
+        let continuation = state
+            .proxy
+            .scheduled_job_finish_and_enqueue_auto_at(
+                job.id,
+                job.claim_generation,
+                &job.job_type,
+                None,
+                1,
+                Some("ordinary_fairness_test"),
+                state.proxy.backend_time().now_ts(),
+            )
+            .await
+            .expect("enqueue the next ordinary continuation");
+        match expected {
+            ReconciliationTurnKind::Main => main_id = continuation.job_id,
+            ReconciliationTurnKind::ResearchDrain => research_id = continuation.job_id,
+        }
+        expected = match expected {
+            ReconciliationTurnKind::Main => ReconciliationTurnKind::ResearchDrain,
+            ReconciliationTurnKind::ResearchDrain => ReconciliationTurnKind::Main,
+        };
+    }
+    assert!(main_id > 0 && research_id > 0);
+    assert!(!controller.reconciliation_turn_required());
+
+    drop(state);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn remote_attempt_controller_uses_research_wait_anchor_for_aged_fairness() {
     let db_path = temp_db_path("reconciliation-aged-research-anchor-order");
     let db_str = db_path.to_string_lossy().to_string();
@@ -657,6 +744,10 @@ async fn non_aged_research_defers_for_foreground_pressure() {
         .await
         .expect("claim Research drain")
         .expect("Research drain becomes running");
+    let ordinary_turn = remote_attempt_admission_for_state(state.as_ref())
+        .reserve_next_automatic_reconciliation_turn(false, true)
+        .expect("ordinary Research receives its alternating turn");
+    assert!(!ordinary_turn.is_aged());
 
     let run_started_at = state.proxy.backend_time().now_ts();
     assert!(
@@ -669,7 +760,7 @@ async fn non_aged_research_defers_for_foreground_pressure() {
                 claim_generation: claim.claim_generation,
                 _job_execution_gate: None,
             },
-            None,
+            Some(ordinary_turn),
             false,
         )
         .await,

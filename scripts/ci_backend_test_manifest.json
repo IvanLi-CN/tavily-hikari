@@ -932,6 +932,7 @@
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_reconciliation_",
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_research_",
         "server::tests::alerts_and_ha_source_and_recovery::remote_attempt_",
+        "server::tests::alerts_and_ha_source_and_recovery::scheduler_alternates_ordinary_main_and_research_requests",
         "server::tests::alerts_and_ha_source_and_recovery::reconciliation_",
         "server::tests::alerts_and_ha_source_and_recovery::research_",
         "server::tests::alerts_and_ha_sync_recovery::ha_",

@@ -132,7 +132,10 @@
   eligible for 120 seconds compete for the next non-manual request turn. Main reconciliation is
   ordered by `available_at`; Research is ordered by its durable queue-time `queued_at` anchor, so a
   defer cannot erase its wait; main wins an exact tie. An accepted poll or Key cooldown starts a
-  new Research interval. A turn is consumed only when HTTP starts.
+  new Research interval. A turn is consumed only when HTTP starts. When both representatives are
+  ordinary and runnable, automatic request turns alternate `main -> Research -> main -> Research`;
+  only the request-start marker advances the sequence. Local preparation, cancellation, lease
+  contention, and no-request defers leave the same channel preferred for retry.
 - Projection SQL shape remains unchanged unless scoped read-deadline and connection-level evidence
   shows this source read still dominates candidate performance. A query/index rewrite requires a
   separate bounded change.

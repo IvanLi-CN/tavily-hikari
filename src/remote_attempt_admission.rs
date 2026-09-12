@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -18,6 +18,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 pub struct RemoteAttemptAdmissionController {
     attempt_slot: Arc<Semaphore>,
     reconciliation_turn: Mutex<ReconciliationTurnState>,
+    next_automatic_reconciliation_kind: AtomicU8,
     next_reconciliation_turn_id: AtomicU64,
     reconciliation_turn_cleared: Notify,
     active_attempts: AtomicUsize,
@@ -48,6 +49,7 @@ pub struct RemoteAttemptLease {
     controller: Arc<RemoteAttemptAdmissionController>,
     _permit: OwnedSemaphorePermit,
     reconciliation_turn_id: AtomicU64,
+    reconciliation_turn_kind: Option<ReconciliationTurnKind>,
     started_at: Instant,
 }
 
@@ -124,6 +126,7 @@ pub struct ReconciliationTurn {
     controller: Arc<RemoteAttemptAdmissionController>,
     turn_id: u64,
     kind: ReconciliationTurnKind,
+    aged: bool,
     clear_on_drop: AtomicBool,
 }
 
@@ -131,6 +134,11 @@ impl ReconciliationTurn {
     #[doc(hidden)]
     pub fn kind(&self) -> ReconciliationTurnKind {
         self.kind
+    }
+
+    #[doc(hidden)]
+    pub fn is_aged(&self) -> bool {
+        self.aged
     }
 
     /// Preserve an aged Research reservation after its claim-fenced
@@ -160,7 +168,7 @@ impl ReconciliationTurn {
             return Err("reconciliation_turn_stale");
         }
         self.controller
-            .acquire_reconciliation_attempt_for_turn(self.turn_id)
+            .acquire_reconciliation_attempt_for_turn(self.turn_id, self.kind)
             .await
     }
 
@@ -174,7 +182,7 @@ impl ReconciliationTurn {
             return Err("reconciliation_turn_stale");
         }
         self.controller
-            .try_acquire_reconciliation_attempt_for_turn(self.turn_id)
+            .try_acquire_reconciliation_attempt_for_turn(self.turn_id, self.kind)
     }
 }
 
@@ -183,6 +191,7 @@ impl Default for RemoteAttemptAdmissionController {
         Self {
             attempt_slot: Arc::new(Semaphore::new(1)),
             reconciliation_turn: Mutex::new(ReconciliationTurnState::default()),
+            next_automatic_reconciliation_kind: AtomicU8::new(0),
             next_reconciliation_turn_id: AtomicU64::new(1),
             reconciliation_turn_cleared: Notify::new(),
             active_attempts: AtomicUsize::new(0),
@@ -202,9 +211,38 @@ impl RemoteAttemptAdmissionController {
         self.reserve_aged_turn(ReconciliationTurnKind::ResearchDrain)
     }
 
-    fn reserve_aged_turn(
+    /// Reserve the next automatic reconciliation slot when both channels are
+    /// ordinary (not aged) candidates. The preferred channel advances only
+    /// after an actual request starts, so local preparation and no-request
+    /// defers cannot consume fairness.
+    #[doc(hidden)]
+    pub fn reserve_next_automatic_reconciliation_turn(
+        self: &Arc<Self>,
+        main_available: bool,
+        research_available: bool,
+    ) -> Option<ReconciliationTurn> {
+        let preferred = if self
+            .next_automatic_reconciliation_kind
+            .load(Ordering::Acquire)
+            == 1
+        {
+            ReconciliationTurnKind::ResearchDrain
+        } else {
+            ReconciliationTurnKind::Main
+        };
+        let kind = match (main_available, research_available, preferred) {
+            (false, false, _) => return None,
+            (true, false, _) => ReconciliationTurnKind::Main,
+            (false, true, _) => ReconciliationTurnKind::ResearchDrain,
+            (true, true, kind) => kind,
+        };
+        self.reserve_turn(kind, false)
+    }
+
+    fn reserve_turn(
         self: &Arc<Self>,
         kind: ReconciliationTurnKind,
+        aged: bool,
     ) -> Option<ReconciliationTurn> {
         let turn_id = {
             let mut state = self
@@ -233,8 +271,16 @@ impl RemoteAttemptAdmissionController {
             controller: self.clone(),
             turn_id,
             kind,
+            aged,
             clear_on_drop: AtomicBool::new(true),
         })
+    }
+
+    fn reserve_aged_turn(
+        self: &Arc<Self>,
+        kind: ReconciliationTurnKind,
+    ) -> Option<ReconciliationTurn> {
+        self.reserve_turn(kind, true)
     }
 
     fn reconciliation_turn_id(&self) -> u64 {
@@ -326,6 +372,7 @@ impl RemoteAttemptAdmissionController {
     async fn acquire_reconciliation_attempt_for_turn(
         self: &Arc<Self>,
         turn_id: u64,
+        kind: ReconciliationTurnKind,
     ) -> Result<RemoteAttemptLease, &'static str> {
         let waiting_started_at = Instant::now();
         let permit = self
@@ -352,6 +399,7 @@ impl RemoteAttemptAdmissionController {
             controller: self.clone(),
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(turn_id),
+            reconciliation_turn_kind: Some(kind),
             started_at: Instant::now(),
         })
     }
@@ -359,6 +407,7 @@ impl RemoteAttemptAdmissionController {
     fn try_acquire_reconciliation_attempt_for_turn(
         self: &Arc<Self>,
         turn_id: u64,
+        kind: ReconciliationTurnKind,
     ) -> Result<RemoteAttemptLease, &'static str> {
         let permit = self
             .attempt_slot
@@ -369,7 +418,7 @@ impl RemoteAttemptAdmissionController {
             drop(permit);
             return Err("reconciliation_turn_stale");
         }
-        Ok(self.make_reconciliation_turn_lease(permit, turn_id))
+        Ok(self.make_reconciliation_turn_lease(permit, turn_id, kind))
     }
 
     fn try_acquire_attempt_inner(self: &Arc<Self>) -> Result<RemoteAttemptLease, &'static str> {
@@ -389,6 +438,7 @@ impl RemoteAttemptAdmissionController {
             controller: self.clone(),
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(0),
+            reconciliation_turn_kind: None,
             started_at: Instant::now(),
         }
     }
@@ -397,11 +447,13 @@ impl RemoteAttemptAdmissionController {
         self: &Arc<Self>,
         permit: OwnedSemaphorePermit,
         turn_id: u64,
+        kind: ReconciliationTurnKind,
     ) -> RemoteAttemptLease {
-        let lease = self.make_lease(permit);
+        let mut lease = self.make_lease(permit);
         lease
             .reconciliation_turn_id
             .store(turn_id, Ordering::Release);
+        lease.reconciliation_turn_kind = Some(kind);
         lease
     }
 
@@ -427,6 +479,7 @@ impl RemoteAttemptAdmissionController {
             controller: self.clone(),
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(0),
+            reconciliation_turn_kind: None,
             started_at: Instant::now(),
         })
     }
@@ -437,6 +490,31 @@ impl RemoteAttemptAdmissionController {
             peak_active_attempts: self.peak_active_attempts.load(Ordering::Acquire),
             total_wait_ms: self.total_wait_ms.load(Ordering::Relaxed),
             total_hold_ms: self.total_hold_ms.load(Ordering::Relaxed),
+        }
+    }
+
+    fn consume_reconciliation_turn(&self, turn_id: u64, kind: ReconciliationTurnKind) {
+        let consumed = {
+            let mut state = self
+                .reconciliation_turn
+                .lock()
+                .expect("reconciliation turn state lock is not poisoned");
+            if state.id != turn_id {
+                false
+            } else {
+                *state = ReconciliationTurnState::default();
+                self.next_automatic_reconciliation_kind.store(
+                    match kind {
+                        ReconciliationTurnKind::Main => 1,
+                        ReconciliationTurnKind::ResearchDrain => 0,
+                    },
+                    Ordering::Release,
+                );
+                true
+            }
+        };
+        if consumed {
+            self.reconciliation_turn_cleared.notify_waiters();
         }
     }
 }
@@ -460,7 +538,11 @@ impl RemoteAttemptLease {
     pub fn mark_request_started(&self) {
         let turn_id = self.reconciliation_turn_id.swap(0, Ordering::AcqRel);
         if turn_id != 0 {
-            self.controller.clear_reconciliation_turn(turn_id);
+            if let Some(kind) = self.reconciliation_turn_kind {
+                self.controller.consume_reconciliation_turn(turn_id, kind);
+            } else {
+                self.controller.clear_reconciliation_turn(turn_id);
+            }
         }
     }
 }
@@ -564,6 +646,7 @@ mod tests {
             .reserve_aged_research_drain_turn()
             .expect("aged Research reserves the next automatic turn");
         assert_eq!(turn.kind(), ReconciliationTurnKind::ResearchDrain);
+        assert!(turn.is_aged());
 
         let manual = controller
             .acquire_manual_attempt()
@@ -581,6 +664,47 @@ mod tests {
             .expect("aged Research receives the next automatic request");
         assert_eq!(controller.metrics().peak_active_attempts, 1);
         drop(lease);
+    }
+
+    #[tokio::test]
+    async fn remote_attempt_controller_alternates_ordinary_reconciliation_channels() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+
+        for expected_kind in [
+            ReconciliationTurnKind::Main,
+            ReconciliationTurnKind::ResearchDrain,
+            ReconciliationTurnKind::Main,
+            ReconciliationTurnKind::ResearchDrain,
+        ] {
+            let turn = controller
+                .reserve_next_automatic_reconciliation_turn(true, true)
+                .expect("the next automatic reconciliation channel reserves a turn");
+            assert_eq!(turn.kind(), expected_kind);
+            assert!(!turn.is_aged());
+            let lease = turn
+                .try_acquire_attempt()
+                .expect("the reserved channel acquires the sole request lease");
+            assert!(controller.reconciliation_turn_required());
+            lease.mark_request_started();
+            drop(lease);
+            drop(turn);
+            assert!(!controller.reconciliation_turn_required());
+        }
+    }
+
+    #[test]
+    fn ordinary_reconciliation_defer_does_not_advance_automatic_channel() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("main reserves the first automatic turn");
+        assert_eq!(turn.kind(), ReconciliationTurnKind::Main);
+        drop(turn);
+
+        let retry = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("a no-request defer leaves the same channel preferred");
+        assert_eq!(retry.kind(), ReconciliationTurnKind::Main);
     }
 
     #[tokio::test]

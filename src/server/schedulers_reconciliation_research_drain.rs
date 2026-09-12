@@ -78,7 +78,7 @@ async fn run_reconciliation_research_drain_claimed_job(
     let foreground_rps = state.proxy.foreground_activity_rps();
     let aged_research_turn = reconciliation_turn
         .as_ref()
-        .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::ResearchDrain);
+        .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::ResearchDrain && turn.is_aged());
     if foreground_rps > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS && !aged_research_turn {
         let retry_at = state.proxy.backend_time().now_ts().saturating_add(30);
         return persist_claimed_research_drain(

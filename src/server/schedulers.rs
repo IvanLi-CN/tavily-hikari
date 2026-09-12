@@ -426,18 +426,61 @@ async fn dequeue_next_scheduled_job(
         }
     }
 
+    // When neither channel is aged, retain a deterministic 1:1 automatic
+    // request order. The reservation is reversible until the request starts;
+    // a local defer therefore leaves the next channel unchanged.
+    if selected.is_none() && !controller.reconciliation_turn_required() {
+        let main_available = candidates
+            .iter()
+            .any(|candidate| candidate.job_type == "upstream_reconciliation");
+        let research_available = candidates.iter().any(|candidate| {
+            candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+        });
+        if let Some(turn) = controller
+            .reserve_next_automatic_reconciliation_turn(main_available, research_available)
+        {
+            let selected_kind = turn.kind();
+            let selected_job = candidates.iter().find(|candidate| match selected_kind {
+                ReconciliationTurnKind::Main => candidate.job_type == "upstream_reconciliation",
+                ReconciliationTurnKind::ResearchDrain => {
+                    candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                }
+            });
+            if let Some(selected_job) = selected_job {
+                reconciliation_turn = Some(turn);
+                selected = Some(selected_job.clone());
+            } else {
+                drop(turn);
+            }
+        }
+    }
+
     for candidate in candidates {
         if selected.is_some() {
             break;
         }
         if scheduled_job_uses_remote_io(&candidate.job_type) {
-            if matches!(
-                candidate.job_type.as_str(),
-                "upstream_reconciliation" | RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
-            ) && controller.reconciliation_turn_required()
-            {
-                // The aged representative owns the next HTTP turn; other work may prepare locally.
-                continue;
+            if controller.reconciliation_turn_required() {
+                // An automatic reconciliation reservation owns the next
+                // request. Other remote work may still be selected only when
+                // it is not one of the two alternating channels.
+                let reserved_kind = reconciliation_turn.as_ref().map(|turn| turn.kind());
+                let is_reconciliation = matches!(
+                    candidate.job_type.as_str(),
+                    "upstream_reconciliation" | RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                );
+                let matches_reservation = match reserved_kind {
+                    Some(ReconciliationTurnKind::Main) => {
+                        candidate.job_type == "upstream_reconciliation"
+                    }
+                    Some(ReconciliationTurnKind::ResearchDrain) => {
+                        candidate.job_type == RECONCILIATION_RESEARCH_DRAIN_JOB_TYPE
+                    }
+                    None => false,
+                };
+                if is_reconciliation && !matches_reservation {
+                    continue;
+                }
             }
             selected = Some(candidate);
             break;
@@ -2673,9 +2716,9 @@ async fn run_manual_claimed_job(
         "upstream_reconciliation" => {
             drop(_job_execution_gate);
             let remote_attempt_admission = remote_attempt_admission_for_state(state.as_ref());
-            let aged_main_turn = reconciliation_turn.as_ref().is_some_and(|turn| {
-                turn.kind() == ReconciliationTurnKind::Main
-            });
+            let aged_main_turn = reconciliation_turn
+                .as_ref()
+                .is_some_and(|turn| turn.kind() == ReconciliationTurnKind::Main && turn.is_aged());
             if state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS
                 && !aged_main_turn
             {

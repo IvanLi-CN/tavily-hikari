@@ -9,7 +9,10 @@ request-scoped single remote lease with main settlement. Main runs neither reser
 requests. After 120 eligible seconds, main and Research compete by oldest eligibility for the next non-manual
 request turn, with main winning an exact tie; an already-granted aged Main or Research turn bypasses only the
 foreground request-rate heuristic for one request. Both still require normal SQLite capacity and contention
-admission, the request-scoped lease, and claim-fenced finalization.
+admission, the request-scoped lease, and claim-fenced finalization. When both representatives are
+ordinary and runnable, the automatic request preference alternates Main and Research. The
+preference changes only after the selected lease marks HTTP as started; local preparation,
+cancellation, and no-request defers leave the same preference for retry.
 Research exhaustion is diagnostic follow-up, not primary local pressure. Local-pressure backoff (`30/60/120/300s`) is separate from the
 per-key upstream-429 cooldown (`5/10/20/30m`); a 429 only cools the affected `period_reconciliation` key,
 and non-429 failures do not reset that key's cooldown. A current claim that reaches a
