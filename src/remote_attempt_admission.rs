@@ -50,6 +50,7 @@ pub struct RemoteAttemptLease {
     _permit: OwnedSemaphorePermit,
     reconciliation_turn_id: AtomicU64,
     reconciliation_turn_kind: Option<ReconciliationTurnKind>,
+    reconciliation_turn_consumed: Option<Arc<AtomicBool>>,
     started_at: Instant,
 }
 
@@ -127,6 +128,7 @@ pub struct ReconciliationTurn {
     turn_id: u64,
     kind: ReconciliationTurnKind,
     aged: bool,
+    consumed: Arc<AtomicBool>,
     clear_on_drop: AtomicBool,
 }
 
@@ -147,6 +149,9 @@ impl ReconciliationTurn {
     /// consume the next outbound request opportunity.
     #[doc(hidden)]
     pub fn retain_for_continuation(&self) {
+        if !self.aged {
+            return;
+        }
         let mut state = self
             .controller
             .reconciliation_turn
@@ -160,29 +165,41 @@ impl ReconciliationTurn {
 
     #[doc(hidden)]
     pub async fn acquire_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
+        if self.consumed.load(Ordering::Acquire) {
+            return Err("remote_attempt_budget");
+        }
         let active_turn_id = self.controller.reconciliation_turn_id();
         if active_turn_id == 0 {
-            return self.controller.acquire_reconciliation_attempt().await;
+            // A consumed turn cannot be replaced by a generic automatic lease
+            // inside the same run: the next real request must come through the
+            // scheduler's next fairness turn.
+            return Err("remote_attempt_budget");
         }
         if active_turn_id != self.turn_id {
             return Err("reconciliation_turn_stale");
         }
         self.controller
-            .acquire_reconciliation_attempt_for_turn(self.turn_id, self.kind)
+            .acquire_reconciliation_attempt_for_turn(self.turn_id, self.kind, self.consumed.clone())
             .await
     }
 
     #[doc(hidden)]
     pub fn try_acquire_attempt(&self) -> Result<RemoteAttemptLease, &'static str> {
+        if self.consumed.load(Ordering::Acquire) {
+            return Err("remote_attempt_budget");
+        }
         let active_turn_id = self.controller.reconciliation_turn_id();
         if active_turn_id == 0 {
-            return self.controller.try_acquire_automatic_attempt();
+            return Err("remote_attempt_budget");
         }
         if active_turn_id != self.turn_id {
             return Err("reconciliation_turn_stale");
         }
-        self.controller
-            .try_acquire_reconciliation_attempt_for_turn(self.turn_id, self.kind)
+        self.controller.try_acquire_reconciliation_attempt_for_turn(
+            self.turn_id,
+            self.kind,
+            self.consumed.clone(),
+        )
     }
 }
 
@@ -272,6 +289,7 @@ impl RemoteAttemptAdmissionController {
             turn_id,
             kind,
             aged,
+            consumed: Arc::new(AtomicBool::new(false)),
             clear_on_drop: AtomicBool::new(true),
         })
     }
@@ -373,6 +391,7 @@ impl RemoteAttemptAdmissionController {
         self: &Arc<Self>,
         turn_id: u64,
         kind: ReconciliationTurnKind,
+        consumed: Arc<AtomicBool>,
     ) -> Result<RemoteAttemptLease, &'static str> {
         let waiting_started_at = Instant::now();
         let permit = self
@@ -381,6 +400,10 @@ impl RemoteAttemptAdmissionController {
             .acquire_owned()
             .await
             .map_err(|_| "remote_attempt_admission_closed")?;
+        if consumed.load(Ordering::Acquire) {
+            drop(permit);
+            return Err("remote_attempt_budget");
+        }
         if self.reconciliation_turn_id() != turn_id {
             drop(permit);
             return Err("reconciliation_turn_stale");
@@ -400,6 +423,7 @@ impl RemoteAttemptAdmissionController {
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(turn_id),
             reconciliation_turn_kind: Some(kind),
+            reconciliation_turn_consumed: Some(consumed),
             started_at: Instant::now(),
         })
     }
@@ -408,17 +432,22 @@ impl RemoteAttemptAdmissionController {
         self: &Arc<Self>,
         turn_id: u64,
         kind: ReconciliationTurnKind,
+        consumed: Arc<AtomicBool>,
     ) -> Result<RemoteAttemptLease, &'static str> {
         let permit = self
             .attempt_slot
             .clone()
             .try_acquire_owned()
             .map_err(|_| "remote_lease_unavailable")?;
+        if consumed.load(Ordering::Acquire) {
+            drop(permit);
+            return Err("remote_attempt_budget");
+        }
         if self.reconciliation_turn_id() != turn_id {
             drop(permit);
             return Err("reconciliation_turn_stale");
         }
-        Ok(self.make_reconciliation_turn_lease(permit, turn_id, kind))
+        Ok(self.make_reconciliation_turn_lease(permit, turn_id, kind, Some(consumed)))
     }
 
     fn try_acquire_attempt_inner(self: &Arc<Self>) -> Result<RemoteAttemptLease, &'static str> {
@@ -439,6 +468,7 @@ impl RemoteAttemptAdmissionController {
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(0),
             reconciliation_turn_kind: None,
+            reconciliation_turn_consumed: None,
             started_at: Instant::now(),
         }
     }
@@ -448,12 +478,14 @@ impl RemoteAttemptAdmissionController {
         permit: OwnedSemaphorePermit,
         turn_id: u64,
         kind: ReconciliationTurnKind,
+        consumed: Option<Arc<AtomicBool>>,
     ) -> RemoteAttemptLease {
         let mut lease = self.make_lease(permit);
         lease
             .reconciliation_turn_id
             .store(turn_id, Ordering::Release);
         lease.reconciliation_turn_kind = Some(kind);
+        lease.reconciliation_turn_consumed = consumed;
         lease
     }
 
@@ -480,6 +512,7 @@ impl RemoteAttemptAdmissionController {
             _permit: permit,
             reconciliation_turn_id: AtomicU64::new(0),
             reconciliation_turn_kind: None,
+            reconciliation_turn_consumed: None,
             started_at: Instant::now(),
         })
     }
@@ -538,6 +571,9 @@ impl RemoteAttemptLease {
     pub fn mark_request_started(&self) {
         let turn_id = self.reconciliation_turn_id.swap(0, Ordering::AcqRel);
         if turn_id != 0 {
+            if let Some(consumed) = &self.reconciliation_turn_consumed {
+                consumed.store(true, Ordering::Release);
+            }
             if let Some(kind) = self.reconciliation_turn_kind {
                 self.controller.consume_reconciliation_turn(turn_id, kind);
             } else {
@@ -690,6 +726,62 @@ mod tests {
             drop(turn);
             assert!(!controller.reconciliation_turn_required());
         }
+    }
+
+    #[test]
+    fn consumed_turn_defers_before_a_second_automatic_request() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("main reserves the first automatic turn");
+        let lease = turn
+            .try_acquire_attempt()
+            .expect("the first request acquires the sole remote lease");
+        lease.mark_request_started();
+        drop(lease);
+
+        assert!(matches!(
+            turn.try_acquire_attempt(),
+            Err("remote_attempt_budget")
+        ));
+    }
+
+    #[test]
+    fn ordinary_research_turn_is_not_retained_as_aged_continuation() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_next_automatic_reconciliation_turn(false, true)
+            .expect("ordinary Research reserves its turn");
+        assert_eq!(turn.kind(), ReconciliationTurnKind::ResearchDrain);
+        assert!(!turn.is_aged());
+
+        turn.retain_for_continuation();
+        drop(turn);
+
+        assert_eq!(controller.resumable_reconciliation_turn_kind(), None);
+        let retry = controller
+            .reserve_next_automatic_reconciliation_turn(false, true)
+            .expect("ordinary Research can retry without an aged reservation");
+        assert!(!retry.is_aged());
+    }
+
+    #[tokio::test]
+    async fn consumed_turn_defers_before_a_second_async_request() {
+        let controller = Arc::new(RemoteAttemptAdmissionController::default());
+        let turn = controller
+            .reserve_next_automatic_reconciliation_turn(true, true)
+            .expect("main reserves the first automatic turn");
+        let lease = turn
+            .acquire_attempt()
+            .await
+            .expect("the first request acquires the sole remote lease");
+        lease.mark_request_started();
+        drop(lease);
+
+        assert!(matches!(
+            turn.acquire_attempt().await,
+            Err("remote_attempt_budget")
+        ));
     }
 
     #[test]
