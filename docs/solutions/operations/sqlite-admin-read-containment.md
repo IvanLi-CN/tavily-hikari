@@ -104,7 +104,10 @@ reads:
   slice seeks the retention-bounded `(occurred_at, row_sort_id)` time-keyset and applies that rowid
   upper bound, so projection
   writers retain the pre-update event once for that build, so later writes cannot extend its immutable
-  source set. Every source statement is independently bounded; persist bounded event fragments and stage
+  source set. Source pages remain bounded at 250 rows and partition reads at 25 rows for deadline
+  and cancellation checks, while their rows are committed in batches of at most 100 to reduce
+  repeated short-transaction overhead. Every source statement is independently bounded; persist
+  bounded event fragments and stage
   final groups as bounded payload chunks plus metadata instead of an ever-growing JSON accumulator.
   Exact partition results remain recoverable by recomputing only an unaccepted partition from its staged
   source fragments. Preserve the group summary, counts, and latest event, but omit only optional nested
