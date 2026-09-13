@@ -1600,32 +1600,21 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read a valid projected event payload");
+    const HISTORICAL_ROWID_SENTINEL: i64 = 10_000_000;
     sqlx::query(
-        r#"WITH RECURSIVE history(value) AS (
-               VALUES (1)
-               UNION ALL
-               SELECT value + 1 FROM history WHERE value < 10000
-           )
-           INSERT INTO observability.dashboard_alert_projection_events
-                  (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
-                   projection_revision)
-           SELECT 'synthetic-history', printf('synthetic-history-%d', value), ?,
-                  printf('synthetic-history:%020d', value), ?, ?, 1
-             FROM history"#,
+        r#"INSERT INTO observability.dashboard_alert_projection_events
+                  (rowid, source_kind, source_id, occurred_at, row_sort_id, payload_json,
+                   projected_at, projection_revision)
+           VALUES (?, 'synthetic-history', 'synthetic-history-sentinel', ?,
+                   'synthetic-history:sentinel', ?, ?, 1)"#,
     )
+    .bind(HISTORICAL_ROWID_SENTINEL)
     .bind(now - 90 * 24 * 60 * 60)
     .bind(&payload_json)
     .bind(now)
     .execute(&proxy.key_store.pool)
     .await
-    .expect("seed historical rowid allocation");
-    sqlx::query(
-        "DELETE FROM observability.dashboard_alert_projection_events \
-         WHERE source_kind = 'synthetic-history'",
-    )
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("remove historical rows outside the retained snapshot");
+    .expect("seed a high historical rowid outside the retained snapshot");
     for index in 0..300_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -1677,6 +1666,10 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read captured source membership bound");
+    assert!(
+        source_rowid_upper_bound > HISTORICAL_ROWID_SENTINEL,
+        "snapshot bound must include the high historical rowid sentinel"
+    );
     for index in 0..1_000_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
