@@ -4,9 +4,9 @@ const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // payloads cannot turn one owned transaction into an unbounded writer hold.
 const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
 // Keep source reads on the conservative 250ms path while committing their
-// bounded rows in fewer short transactions. Historical rowid allocation is
+// bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
-const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS: usize = 100;
+const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS: usize = 25;
 const ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]

@@ -1600,6 +1600,32 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read a valid projected event payload");
+    sqlx::query(
+        r#"WITH RECURSIVE history(value) AS (
+               VALUES (1)
+               UNION ALL
+               SELECT value + 1 FROM history WHERE value < 10000
+           )
+           INSERT INTO observability.dashboard_alert_projection_events
+                  (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
+                   projection_revision)
+           SELECT 'synthetic-history', printf('synthetic-history-%d', value), ?,
+                  printf('synthetic-history:%020d', value), ?, ?, 1
+             FROM history"#,
+    )
+    .bind(now - 90 * 24 * 60 * 60)
+    .bind(&payload_json)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed historical rowid allocation");
+    sqlx::query(
+        "DELETE FROM observability.dashboard_alert_projection_events \
+         WHERE source_kind = 'synthetic-history'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("remove historical rows outside the retained snapshot");
     for index in 0..300_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -1626,6 +1652,24 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
         first,
         ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
+    let second = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the first source page must leave a multi-page build in progress");
+    assert!(matches!(
+        second,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let staged_source_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count the first bounded source page");
+    assert_eq!(
+        staged_source_rows, 250,
+        "historical rowid allocation must not widen the bounded source page"
+    );
     let source_rowid_upper_bound: i64 = sqlx::query_scalar(
         "SELECT build_source_rowid_upper_bound \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
