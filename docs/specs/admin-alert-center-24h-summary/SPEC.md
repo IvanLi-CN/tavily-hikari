@@ -61,7 +61,8 @@
   重建未接受的单个 partition，并将每个 group 写为有界 payload chunks 和 metadata；只有同一短事务接受该 partition
   cursor 后才进入下一分区。build 期间 source
   fence 改变时必须丢弃 staged generation 并重试，绝不将其作为 stale last-good 发布。staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台
-  回收，且永远排除 active 与 in-flight build generation。model slot 在复用前同样只按小批次清空，绝不参与 HTTP。
+  回收，且永远排除 active 与 in-flight build generation。build generation 使用单调递增身份，旧 generation
+  不会在残留 staged rows 仍存在时复用；绝不参与 HTTP。
   该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
   Catalog staged output 的 facet identity 同时包含 value 与 label；v39 的本机派生表因此保留同一
   用户值的多个历史 label。v40 的 semantic Groups reducer 将事件分类、child/mother 聚合和 payload

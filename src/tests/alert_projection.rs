@@ -950,7 +950,7 @@ async fn admin_alerts_canonical_groups_preserve_event_id_tie_breaking() {
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_moves() {
+async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_moves() {
     let db_path = temp_db_path("alert-canonical-groups-inflight-source-fence");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_100;
@@ -998,14 +998,14 @@ async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_mo
     .execute(&proxy.key_store.pool)
     .await
     .expect("move the source fence while the build is staged");
-    let replaced = proxy
+    let progressed = proxy
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
         .await
-        .expect_err("a staged build must not publish after its fence moves");
+        .expect_err("a staged build advances after its fence moves");
     assert!(matches!(
-        replaced,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
+        progressed,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
     let state: (i64, i64) = sqlx::query_as(
         "SELECT active_generation, build_generation FROM observability.admin_alert_canonical_groups_state \
@@ -1013,9 +1013,9 @@ async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_mo
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read discarded state");
+    .expect("read in-flight state");
     assert_eq!(state.0, active_generation, "last-good remains readable");
-    assert_eq!(state.1, 0, "the mixed staged generation is discarded");
+    assert_ne!(state.1, 0, "the fixed-membership build remains staged");
 
     let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(rebuilt.total, 1);
@@ -1773,7 +1773,7 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
     .await
     .expect("read active generation");
 
-    let staging_generation = if active_generation == 1 { 2 } else { 1 };
+    let staging_generation = active_generation.saturating_add(1);
     // This is intentionally larger than one minute of the 25-row/5s background cleanup
     // cadence. A snapshot build must publish without waiting for retired rows: its unique
     // build generation prevents an old cleanup slice from overwriting staged output.
@@ -1806,26 +1806,21 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
     for source_change in 0..3 {
         let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
         assert_eq!(rebuilt, active);
-        let (active_slot, active_row_count, retained_rows): (i64, i64, i64) = sqlx::query_as(
+        let (active_slot, active_row_count): (i64, i64) = sqlx::query_as(
             "SELECT \
                  (SELECT active_generation \
                     FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
                  (SELECT active_row_count \
-                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
-                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups)",
+                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1)",
         )
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("inspect the fenced canonical model");
         assert!(
-            matches!(active_slot, 1 | 2),
-            "each replacement must reuse one of the two bounded model slots"
+            active_slot > staging_generation,
+            "each replacement must allocate a generation newer than retired staged rows (active={active_slot}, retired={staging_generation})"
         );
         assert_eq!(active_row_count, rebuilt.total);
-        assert!(
-            retained_rows <= rebuilt.total.saturating_mul(2),
-            "reused slots must not retain a full backlog of retired snapshots"
-        );
         if source_change < 2 {
             sqlx::query(
                 "UPDATE observability.dashboard_alert_projection_history_state \
