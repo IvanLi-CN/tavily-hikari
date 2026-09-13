@@ -1002,10 +1002,10 @@ async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_mo
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
         .await
-        .expect_err("a staged build advances after its fence moves");
+        .expect_err("a staged build is discarded after its fence moves");
     assert!(matches!(
         progressed,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
     ));
     let state: (i64, i64) = sqlx::query_as(
         "SELECT active_generation, build_generation FROM observability.admin_alert_canonical_groups_state \
@@ -1015,7 +1015,7 @@ async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_mo
     .await
     .expect("read in-flight state");
     assert_eq!(state.0, active_generation, "last-good remains readable");
-    assert_ne!(state.1, 0, "the fixed-membership build remains staged");
+    assert_eq!(state.1, 0, "the fenced build is discarded before retry");
 
     let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(rebuilt.total, 1);

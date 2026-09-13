@@ -191,6 +191,18 @@ impl KeyStore {
                 reason: "groups_legacy_cursor_reset".to_string(),
             });
         }
+        // A staged build is tied to the source fence captured when it started.
+        // If either projection lane advances before the next slice, discard
+        // the staged generation so it can be rebuilt from one coherent fence.
+        // Keep the active generation intact for last-good HTTP responses.
+        if state.build_generation > 0 && state.build_source_fence != current_fence {
+            self.discard_admin_alert_canonical_groups_build(&state)
+                .await?;
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_source_fence_changed".to_string(),
+            });
+        }
         if state.build_generation == 0
             && state.active_generation > 0
             && state.active_source_fence == current_fence
