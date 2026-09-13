@@ -682,10 +682,10 @@ fn publish_admin_alerts_canonical_into_cache(
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
 ) -> bool {
-    // The controller validates the durable projection fence before this
-    // atomic cache publish. The in-memory generation must still match that
-    // attempt too; otherwise a concurrent projection update would mix a
-    // newly-read Events page with an older Catalog/Groups snapshot.
+    // The controller may stage each key through independently-admitted slices,
+    // but all three values must still belong to the cache generation captured
+    // at the start of the flight. A projection advance invalidates the staged
+    // payload; the prior complete last-good remains available to handlers.
     if cache.alert_projection_generation != generation {
         return false;
     }

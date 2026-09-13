@@ -84,8 +84,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   immutable fragments, stages each resulting group as bounded payload chunks plus a small metadata row,
   then atomically accepts the partition cursor. A cancellation recomputes only the unaccepted partition;
   it never rewrites an accumulating JSON state row. A changed source fence discards the staged generation
-  before publication, so it never publishes a cross-generation or stale replacement. The two model slots
-  are cleared in short slices before reuse.
+  before publication, so it never publishes a cross-generation or stale replacement. Build generations
+  are monotonic durable identities and retired rows are reclaimed in bounded background batches without
+  blocking a replacement publish.
   Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
   generations. This derived model never enters the HA outbox and does not change filtered Groups semantics.
   The lossless catalog payload slot retains the facet label in its staged-output identity, so two labels

@@ -2275,16 +2275,32 @@ impl KeyStore {
         row: sqlx::sqlite::SqliteRow,
     ) -> Result<AlertEventProjectionRow, ProxyError> {
         let payload_json = row.try_get::<String, _>("payload_json")?;
-        let mut projection = serde_json::from_str::<AlertEventProjectionRow>(&payload_json)
+        Self::decode_default_alert_event_projection_payload(
+            &row.try_get::<String, _>("source_kind")?,
+            &row.try_get::<String, _>("source_id")?,
+            row.try_get("occurred_at")?,
+            &row.try_get::<String, _>("row_sort_id")?,
+            &payload_json,
+        )
+    }
+
+    fn decode_default_alert_event_projection_payload(
+        source_kind: &str,
+        source_id: &str,
+        occurred_at: i64,
+        row_sort_id: &str,
+        payload_json: &str,
+    ) -> Result<AlertEventProjectionRow, ProxyError> {
+        let mut projection = serde_json::from_str::<AlertEventProjectionRow>(payload_json)
             .map_err(|_| ProxyError::Other("invalid alert projection payload".to_string()))?;
 
         // The ordering and source identity columns are authoritative for the
         // indexed read. Reapply them so a stale payload cannot alter paging
         // identity or the event's source reference.
-        projection.source_kind = row.try_get("source_kind")?;
-        projection.source_id = row.try_get("source_id")?;
-        projection.row_sort_id = row.try_get("row_sort_id")?;
-        projection.occurred_at = row.try_get("occurred_at")?;
+        projection.source_kind = source_kind.to_string();
+        projection.source_id = source_id.to_string();
+        projection.row_sort_id = row_sort_id.to_string();
+        projection.occurred_at = occurred_at;
         Ok(projection)
     }
 

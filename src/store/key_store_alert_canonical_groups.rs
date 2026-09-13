@@ -206,18 +206,6 @@ impl KeyStore {
                 .map(|groups| (groups, snapshot));
         }
 
-        // A staged snapshot is valid only for the projection fence captured
-        // before its first source slice. Publishing it after either lane moves
-        // would mix an old Groups payload with newer Catalog/Events data.
-        if state.build_generation > 0 && state.build_source_fence != current_fence {
-            self.discard_admin_alert_canonical_groups_build(&state)
-                .await?;
-            return Err(ProxyError::Deferred {
-                operation: "admin_alerts_cache_warm",
-                reason: "groups_source_fence_changed".to_string(),
-            });
-        }
-
         let snapshot = if state.build_generation > 0 {
             AdminAlertsCanonicalSnapshot {
                 build_generation: state.build_generation,
@@ -353,11 +341,47 @@ impl KeyStore {
                             .await?,
                         });
                     }
-                    let build_generation = match active {
-                        1 => 2,
-                        2 => 1,
-                        _ => 1,
-                    };
+                    // Build generations are durable identities for staged rows. Never reuse an
+                    // old generation while sidecar rows from a discarded build remain, otherwise
+                    // the bounded reclaimer must clear a large slot before the replacement can
+                    // make progress.
+                    let max_staged_generation = sqlx::query_scalar::<_, Option<i64>>(
+                        r#"SELECT MAX(build_generation)
+                             FROM (
+                               SELECT build_generation FROM observability.admin_alert_canonical_groups
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_events
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_overrides
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_fragments
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_reduction_events
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_reduction_children
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_reduction_mothers
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_payload_chunks
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_group_payload_read_chunks_v2
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_catalog_facets
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_catalog_payloads
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_catalog_payload_items
+                               UNION ALL
+                               SELECT build_generation FROM observability.admin_alert_canonical_catalog_payload_items_v2
+                             )"#,
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?
+                    .unwrap_or_default();
+                    let build_generation = active
+                        .max(building)
+                        .max(max_staged_generation)
+                        .saturating_add(1);
                     sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
                               SET build_generation = ?, build_projection_revision = ?,
@@ -620,23 +644,18 @@ impl KeyStore {
         // Projection writers encode the source kind into row_sort_id (atl:,
         // maint:, or job:) and use the source's primary key suffix, making
         // (occurred_at, row_sort_id) a stable total order for this snapshot.
-        // The source generation fence below rejects a page if a live row
-        // changes while it is being copied. Read the live projection values
-        // directly so the seek key and persisted cursor always use the same
-        // ordering; staged overrides are retained only for cleanup and older
-        // build compatibility.
+        // Keep the source scan on the projection's time index. A writer
+        // preserves the pre-build row in the override table before changing a
+        // live payload; those immutable values are merged below for this
+        // bounded batch instead of putting COALESCE expressions in ORDER BY.
         let query_result = sqlx::query(
-            r#"SELECT current.rowid AS source_rowid,
-                       current.source_kind AS source_kind,
-                       current.source_id AS source_id,
-                       current.occurred_at AS occurred_at,
-                       current.row_sort_id AS row_sort_id,
-                       current.payload_json AS payload_json
-                  FROM observability.dashboard_alert_projection_events AS current INDEXED BY idx_dashboard_alert_projection_events_time
-                 WHERE current.rowid <= ?
-                   AND current.occurred_at >= ?
-                   AND (current.occurred_at, current.row_sort_id) < (?, ?)
-                 ORDER BY current.occurred_at DESC, current.row_sort_id DESC
+            r#"SELECT rowid AS source_rowid,
+                       source_kind, source_id, occurred_at, row_sort_id, payload_json
+                  FROM observability.dashboard_alert_projection_events INDEXED BY idx_dashboard_alert_projection_events_time
+                 WHERE rowid <= ?
+                   AND occurred_at >= ?
+                   AND (occurred_at, row_sort_id) < (?, ?)
+                 ORDER BY occurred_at DESC, row_sort_id DESC
                  LIMIT ?"#,
         )
         .bind(state.build_source_rowid_upper_bound)
@@ -646,19 +665,82 @@ impl KeyStore {
         .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
         .fetch_all(&mut *session)
         .await;
-        let rows = session.query(query_result).await;
+        let rows = session.query(query_result).await?;
+        let source_ids = rows
+            .iter()
+            .map(|row| {
+                Ok::<_, ProxyError>((
+                    row.try_get::<String, _>("source_kind")?,
+                    row.try_get::<String, _>("source_id")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut overrides = StdHashMap::new();
+        if !source_ids.is_empty() {
+            let mut overrides_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+                   FROM observability.admin_alert_canonical_group_overrides \
+                  WHERE build_generation = ",
+            );
+            overrides_query.push_bind(snapshot.build_generation);
+            overrides_query.push(" AND (source_kind, source_id) IN (");
+            for (index, (source_kind, source_id)) in source_ids.iter().enumerate() {
+                if index > 0 {
+                    overrides_query.push(", ");
+                }
+                overrides_query
+                    .push("(")
+                    .push_bind(source_kind)
+                    .push(", ")
+                    .push_bind(source_id)
+                    .push(")");
+            }
+            overrides_query.push(")");
+            let override_query_result = overrides_query.build().fetch_all(&mut *session).await;
+            let override_rows = session.query(override_query_result).await?;
+            for row in override_rows {
+                overrides.insert(
+                    (
+                        row.try_get::<String, _>("source_kind")?,
+                        row.try_get::<String, _>("source_id")?,
+                    ),
+                    (
+                        row.try_get::<i64, _>("occurred_at")?,
+                        row.try_get::<String, _>("row_sort_id")?,
+                        row.try_get::<String, _>("payload_json")?,
+                    ),
+                );
+            }
+        }
         let finish = session.finish().await;
         finish?;
-        let rows = rows?;
         let row_count = rows.len();
         let staged: Vec<(String, String, i64, String, String, String, String)> = rows
             .into_iter()
             .map(|row| {
                 let source_kind = row.try_get::<String, _>("source_kind")?;
                 let source_id = row.try_get::<String, _>("source_id")?;
-                let occurred_at = row.try_get::<i64, _>("occurred_at")?;
-                let cursor_row_sort_id = row.try_get::<String, _>("row_sort_id")?;
-                let projection = Self::decode_default_alert_event_projection_row(row)?;
+                let fallback_occurred_at = row.try_get::<i64, _>("occurred_at")?;
+                let fallback_cursor_row_sort_id = row.try_get::<String, _>("row_sort_id")?;
+                let fallback_payload_json = row.try_get::<String, _>("payload_json")?;
+                let (occurred_at, cursor_row_sort_id, payload_json) = overrides
+                    .get(&(source_kind.clone(), source_id.clone()))
+                    .cloned()
+                    .unwrap_or((
+                        fallback_occurred_at,
+                        fallback_cursor_row_sort_id,
+                        fallback_payload_json,
+                    ));
+                let projection = Self::decode_default_alert_event_projection_payload(
+                    &source_kind,
+                    &source_id,
+                    occurred_at,
+                    &cursor_row_sort_id,
+                    &payload_json,
+                )?;
+                // Re-encode the decoded projection before persisting the sidecar row. The live
+                // projection may predate the display-size boundary, so copying its raw JSON
+                // would reintroduce an oversized diagnostic into the derived model.
                 let payload_json = serialize_alert_event_projection_payload(projection.clone())?;
                 let event = Self::build_alert_event_from_projection(projection);
                 let partition_key = event.as_ref().map_or_else(String::new, canonical_alert_group_partition_key);
@@ -773,14 +855,7 @@ impl KeyStore {
                                   AND build_projection_revision = ?
                                   AND build_cursor_occurred_at = ?
                                   AND build_cursor_row_sort_id = ?
-                                  AND build_source_recent_generation = (
-                                      SELECT COALESCE(SUM(generation), 0)
-                                        FROM observability.dashboard_alert_projection_state
-                                  )
-                                  AND build_source_history_generation = (
-                                      SELECT COALESCE(SUM(generation), 0)
-                                        FROM observability.dashboard_alert_projection_history_state
-                                  )"#,
+                                  "#,
                         )
                         .bind(committed_cursor.0)
                         .bind(&committed_cursor.1)
@@ -901,14 +976,7 @@ impl KeyStore {
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
                               AND build_partition_key = ?
                               AND build_partition_finalize_fragment_position = ?
-                              AND build_source_recent_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_state
-                              )
-                              AND build_source_history_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_history_state
-                              )"#,
+                              "#,
                     )
                     .bind(reduction_json)
                     .bind(fragment_position + 1)
@@ -1010,14 +1078,7 @@ impl KeyStore {
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
                               AND build_partition_key = ?
                               AND build_partition_finalize_fragment_position = ?
-                              AND build_source_recent_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_state
-                              )
-                              AND build_source_history_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_history_state
-                              )"#,
+                              "#,
                     )
                     .bind(&partition)
                     .bind(position + 1)
@@ -1163,14 +1224,7 @@ impl KeyStore {
                               AND build_partition_key = ?
                               AND build_partition_cursor_occurred_at = ?
                               AND build_partition_cursor_row_sort_id = ?
-                              AND build_source_recent_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_state
-                              )
-                              AND build_source_history_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_history_state
-                              )"#,
+                              "#,
                     )
                     .bind(next_cursor.0)
                     .bind(next_cursor.1)
@@ -1343,14 +1397,7 @@ impl KeyStore {
                                   payload_read_json = ''
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?
-                              AND build_source_recent_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_state
-                              )
-                              AND build_source_history_generation = (
-                                  SELECT COALESCE(SUM(generation), 0)
-                                    FROM observability.dashboard_alert_projection_history_state
-                              )"#,
+                              "#,
                     )
                     .bind(snapshot.build_generation)
                     .bind(row_count)

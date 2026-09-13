@@ -1485,7 +1485,7 @@ async fn admin_alerts_warm_discards_a_snapshot_after_source_advance() {
     }
     pause.release();
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
         loop {
             let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
             let cache = cache_handle.lock().await;

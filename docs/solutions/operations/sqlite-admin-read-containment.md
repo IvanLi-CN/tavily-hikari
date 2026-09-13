@@ -79,9 +79,9 @@ reads:
   micro-transactions, and bypasses only foreground-rate and lazy-pool-idle heuristics. The next key
   acquires a new slot. Real acquire waiters, recent contention, writer pressure,
   and native read budgets still defer it. It stages the three values and
-  publishes them atomically from one immutable projection snapshot. A newer projection revision
-  makes that complete cache entry stale rather than mixed; only an incomplete or failed snapshot is
-  discarded. Retry true defers at `5s/5s/30s`.
+  publishes them atomically from one immutable projection snapshot. A newer projection revision or
+  source-fence change discards the staged generation rather than publishing mixed data; only a complete
+  unchanged generation reaches the cache. Retry true defers at `5s/5s/30s`.
   Aged reconciliation scheduling exceptions never transfer to this controller: an Alerts warm
   slice cannot use them to grow the pool or take a foreground-reserved connection.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
@@ -113,9 +113,8 @@ reads:
   source fragments. Preserve the group summary, counts, and latest event, but omit only optional nested
   `child_events` once their inline detail exceeds one read fragment; the existing child drawer retrieves
   request details through its paginated source. A source-fence change discards the staged generation instead of publishing it
-  as stale. Reuse only the inactive one of two model slots after
-  clearing it in small write slices. Reclaim obsolete event, override, and group generations in small write
-  batches while excluding the active and in-flight build generations. Do not use the model for filtered
+  as stale. Allocate a monotonic build generation and reclaim obsolete event, override, and group
+  generations in small write batches while excluding the active and in-flight build generations. Do not use the model for filtered
   queries or replicate it through HA.
   The staged Catalog output table must key a facet by both value and label. The v39 local sidecar
   prevents a later label for the same user value from replacing an earlier label. Semantic Groups

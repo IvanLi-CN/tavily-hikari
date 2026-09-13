@@ -150,8 +150,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   accepted partition slice persists bounded event fragments, and final reduction writes independently
   bounded payload chunks plus small group metadata before atomically accepting that partition. If a
   finalization is interrupted, its immutable source fragments are reused and only the unaccepted
-  partition is recomputed. The two model slots are cleared in short slices before
-  reuse, and only a complete final payload is staged. A Groups summary never makes nested event history
+  partition is recomputed. Each build receives a monotonic generation that is not reused while retired
+  staged rows remain; the background reclaimer removes obsolete generations in short slices. Only a
+  complete final payload is staged. A Groups summary never makes nested event history
   unbounded: oversized optional `child_events` are omitted from the canonical item while counts and the
   latest event remain exact, and the existing child drawer loads request details through a paginated read.
   Incomplete staging is never visible, and short
