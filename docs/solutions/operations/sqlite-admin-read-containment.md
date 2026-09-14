@@ -104,8 +104,8 @@ reads:
   slice seeks the retention-bounded `(occurred_at, row_sort_id)` time-keyset and applies that rowid
   upper bound, so projection
   writers retain the pre-update event once for that build, so later writes cannot extend its immutable
-  source set. Source pages read at most 2,000 rows per independently-deadlined session and partition
-  reads at 25 rows for deadline and cancellation checks. Source rows are committed in adaptive batches of at most 100 rows and
+  source set. Source pages remain bounded at 250 rows and partition reads at 25 rows for deadline
+  and cancellation checks. Source rows are committed in adaptive batches of at most 100 rows and
   512 KiB of encoded text, so ordinary payloads amortize transaction setup while larger payloads
   still keep writer lock holds short. Every source statement is independently bounded; persist
   bounded event fragments and stage

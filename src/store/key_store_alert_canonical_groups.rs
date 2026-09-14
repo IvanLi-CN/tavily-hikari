@@ -1,7 +1,4 @@
-// Read a larger immutable page to amortize connection/admission overhead on
-// production-sized snapshots. The read session still enforces the native
-// 250ms deadline, while write transactions remain bounded independently.
-const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 2_000;
+const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // Reduction output is committed atomically with its cursor CAS. Keep the
 // write-side batches bounded by both row count and encoded payload bytes so
 // normal rows do not pay one transaction per 25 events while large rows still
