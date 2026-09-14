@@ -53,8 +53,8 @@
   路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence
   与固定 source-row membership boundary，以 retention-bounded `(occurred_at, row_sort_id)` time-keyset
   加 rowid upper bound 暂存该 snapshot 的事件、复用既有
-  Rust grouping 语义。源读取继续使用 250 行页、分区读取使用 25 行页，以保持读 deadline 和取消
-  测试的压力边界；每页行数据以最多 100 行且累计编码文本不超过 512 KiB 的自适应短事务批量提交，
+  Rust grouping 语义。源读取每个独立 session 最多读取 2,000 行、分区读取使用 25 行页，以保持
+  读 deadline 和取消测试的压力边界；每页行数据以最多 100 行且累计编码文本不超过 512 KiB 的自适应短事务批量提交，
   普通 payload 摊销事务开销，较大 payload 仍保持写锁持有时间有界而不依赖历史 rowid 判断快照规模。
   builder 在全部 slice 成功后切换 active generation。每个分区 slice 在继续前持久化一个有界
   event fragment；投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot 值；每条分区 source
