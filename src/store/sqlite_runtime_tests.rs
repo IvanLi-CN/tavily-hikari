@@ -908,7 +908,7 @@ async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
 }
 
 #[tokio::test]
-async fn admin_alerts_cache_warm_liveness_still_defers_at_pool_capacity() {
+async fn admin_alerts_cache_warm_liveness_uses_bounded_waiter_at_pool_capacity() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
             .min_connections(1)
@@ -946,8 +946,8 @@ async fn admin_alerts_cache_warm_liveness_still_defers_at_pool_capacity() {
     runtime.set_admin_alerts_cache_warm_liveness(true);
     assert_eq!(
         runtime.admin_alerts_cache_warm_defer_reason(),
-        Some(SqliteAdmissionDeferReason::PoolPressure),
-        "liveness must not queue behind a full pool of foreground-held connections"
+        None,
+        "liveness must reach the bounded acquire waiter instead of being rejected by the idle heuristic"
     );
 
     drop((first, second, third));
