@@ -1,12 +1,14 @@
 const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // Reduction output is committed atomically with its cursor CAS. Keep the
-// write-side slice smaller than the source read so a batch of large event
-// payloads cannot turn one owned transaction into an unbounded writer hold.
+// write-side batches bounded by both row count and encoded payload bytes so
+// normal rows do not pay one transaction per 25 events while large rows still
+// yield before turning one owned transaction into an unbounded writer hold.
 const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
+const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize = 100;
+const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
-const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS: usize = 25;
 const ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -125,6 +127,33 @@ fn canonical_alert_payload_chunks_iter(payload: &str) -> CanonicalAlertPayloadCh
     }
 }
 
+fn canonical_group_write_ranges(
+    staged: &[(String, String, i64, String, String, String, String)],
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut range_start = 0;
+    let mut range_bytes = 0_usize;
+    for (index, row) in staged.iter().enumerate() {
+        let row_bytes =
+            row.0.len() + row.1.len() + row.3.len() + row.4.len() + row.5.len() + row.6.len();
+        let row_count = index.saturating_sub(range_start);
+        if index > range_start
+            && (row_count >= ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS
+                || range_bytes.saturating_add(row_bytes)
+                    > ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES)
+        {
+            ranges.push(range_start..index);
+            range_start = index;
+            range_bytes = 0;
+        }
+        range_bytes = range_bytes.saturating_add(row_bytes);
+    }
+    if range_start < staged.len() || staged.is_empty() {
+        ranges.push(range_start..staged.len());
+    }
+    ranges
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AdminAlertsCanonicalSnapshot {
     pub(crate) build_generation: i64,
@@ -227,7 +256,8 @@ impl KeyStore {
         } else {
             self.start_admin_alert_canonical_groups_build().await?
         };
-        self.advance_admin_alert_canonical_groups_build(snapshot).await?;
+        self.advance_admin_alert_canonical_groups_build(snapshot)
+            .await?;
         let state = self.load_admin_alert_canonical_groups_state().await?;
         if state.build_generation > 0 {
             self.sqlite_runtime
@@ -507,10 +537,21 @@ impl KeyStore {
             });
         }
         match state.build_phase.as_str() {
-            "clearing" => self.clear_admin_alert_canonical_groups_build_slot(snapshot).await,
-            "copying" => self.copy_admin_alert_canonical_groups_snapshot_slice(snapshot, state).await,
-            "aggregating" => self.aggregate_admin_alert_canonical_groups_partition(snapshot, state).await,
-            _ => Err(ProxyError::Other("unknown canonical alert Groups build phase".to_string())),
+            "clearing" => {
+                self.clear_admin_alert_canonical_groups_build_slot(snapshot)
+                    .await
+            }
+            "copying" => {
+                self.copy_admin_alert_canonical_groups_snapshot_slice(snapshot, state)
+                    .await
+            }
+            "aggregating" => {
+                self.aggregate_admin_alert_canonical_groups_partition(snapshot, state)
+                    .await
+            }
+            _ => Err(ProxyError::Other(
+                "unknown canonical alert Groups build phase".to_string(),
+            )),
         }
     }
 
@@ -774,7 +815,9 @@ impl KeyStore {
                 // would reintroduce an oversized diagnostic into the derived model.
                 let payload_json = serialize_alert_event_projection_payload(projection.clone())?;
                 let event = Self::build_alert_event_from_projection(projection);
-                let partition_key = event.as_ref().map_or_else(String::new, canonical_alert_group_partition_key);
+                let partition_key = event
+                    .as_ref()
+                    .map_or_else(String::new, canonical_alert_group_partition_key);
                 // The legacy in-memory grouping contract breaks ties by the
                 // canonical AlertEventRecord identity. Keep that identity in
                 // the sidecar seek key so a resumable reducer cannot select a
@@ -796,22 +839,14 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let complete = row_count < ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
-        let chunk_count = if staged.is_empty() {
-            1
-        } else {
-            staged
-                .len()
-                .div_ceil(ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS)
-        };
+        let write_ranges = canonical_group_write_ranges(&staged);
+        let chunk_count = write_ranges.len();
         let mut expected_cursor = (
             state.build_cursor_occurred_at,
             state.build_cursor_row_sort_id.clone(),
         );
-        for (chunk_index, chunk) in staged
-            .chunks(ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_ROWS)
-            .chain((staged.is_empty()).then_some(&staged[..]))
-            .enumerate()
-        {
+        for (chunk_index, range) in write_ranges.iter().enumerate() {
+            let chunk = &staged[range.clone()];
             let chunk_cursor = chunk
                 .last()
                 .map(|row| (row.2, row.3.clone()))
@@ -970,28 +1005,27 @@ impl KeyStore {
                 .await;
         }
 
-        let current = serde_json::from_str::<CompatGroupReductionState>(
-            &state.build_partition_events_json,
-        )
-        .ok();
+        let current =
+            serde_json::from_str::<CompatGroupReductionState>(&state.build_partition_events_json)
+                .ok();
         let Some(latest_event) = events.last().cloned() else {
             return Err(ProxyError::Other(
                 "canonical alert group fragment cannot be empty".to_string(),
             ));
         };
         let next = CompatGroupReductionState {
-            event_count: current
-                .as_ref()
-                .map_or(events.len() as i64, |reduction| {
-                    reduction.event_count + events.len() as i64
-                }),
+            event_count: current.as_ref().map_or(events.len() as i64, |reduction| {
+                reduction.event_count + events.len() as i64
+            }),
             first_seen: current
                 .as_ref()
                 .map_or_else(|| events[0].occurred_at, |reduction| reduction.first_seen),
             latest_event,
         };
         let reduction_json = serde_json::to_string(&next).map_err(|error| {
-            ProxyError::Other(format!("serialize canonical compat reduction state: {error}"))
+            ProxyError::Other(format!(
+                "serialize canonical compat reduction state: {error}"
+            ))
         })?;
         let partition = state.build_partition_key.clone();
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
@@ -1038,20 +1072,21 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
-        let reduction = serde_json::from_str::<CompatGroupReductionState>(
-            &state.build_partition_events_json,
-        )
-        .map_err(|_| {
-            ProxyError::Other("canonical compat reduction state is unavailable".to_string())
-        })?;
-        let mut group = build_compat_group_record(std::slice::from_ref(&reduction.latest_event)).ok_or_else(|| {
-            ProxyError::Other("canonical compat reduction has no latest event".to_string())
-        })?;
+        let reduction =
+            serde_json::from_str::<CompatGroupReductionState>(&state.build_partition_events_json)
+                .map_err(|_| {
+                ProxyError::Other("canonical compat reduction state is unavailable".to_string())
+            })?;
+        let mut group = build_compat_group_record(std::slice::from_ref(&reduction.latest_event))
+            .ok_or_else(|| {
+                ProxyError::Other("canonical compat reduction has no latest event".to_string())
+            })?;
         group.count = reduction.event_count;
         group.event_count = reduction.event_count;
         group.first_seen = reduction.first_seen;
-        let payload_json = serde_json::to_string(&group)
-            .map_err(|error| ProxyError::Other(format!("serialize canonical alert group: {error}")))?;
+        let payload_json = serde_json::to_string(&group).map_err(|error| {
+            ProxyError::Other(format!("serialize canonical alert group: {error}"))
+        })?;
         let position = state.build_next_position;
         let payload_chunks = canonical_alert_payload_chunks(&payload_json);
         let partition = state.build_partition_key.clone();
@@ -1200,10 +1235,7 @@ impl KeyStore {
             let (events_json, oversized_chunks) = match fragment_payload {
                 CanonicalAlertFragmentPayload::Events(events_json) => (events_json, None),
                 CanonicalAlertFragmentPayload::OversizedEventChunks(chunks) => {
-                    let marker = format!(
-                        r#"{{"__canonical_event_chunks":{}}}"#,
-                        chunks.len()
-                    );
+                    let marker = format!(r#"{{"__canonical_event_chunks":{}}}"#, chunks.len());
                     (marker, Some(chunks))
                 }
             };
@@ -1322,15 +1354,17 @@ impl KeyStore {
             ));
         }
         let event_json = self
-            .read_admin_alert_canonical_group_payload_chunks(snapshot, -position, Some(marker.chunk_count))
+            .read_admin_alert_canonical_group_payload_chunks(
+                snapshot,
+                -position,
+                Some(marker.chunk_count),
+            )
             .await?;
-        let event = serde_json::from_str::<AlertEventRecord>(&event_json)
-            .map_err(|_| ProxyError::Other("invalid canonical oversized alert event".to_string()))?;
-        self.clear_admin_alert_canonical_group_payload_read(
-            snapshot,
-            -position,
-        )
-        .await?;
+        let event = serde_json::from_str::<AlertEventRecord>(&event_json).map_err(|_| {
+            ProxyError::Other("invalid canonical oversized alert event".to_string())
+        })?;
+        self.clear_admin_alert_canonical_group_payload_read(snapshot, -position)
+            .await?;
         Ok(Some((position, vec![event])))
     }
 
@@ -1356,7 +1390,10 @@ impl KeyStore {
         finish?;
         let Some(partition) = partition else {
             return self
-                .publish_admin_alert_canonical_groups_snapshot(snapshot, state.build_next_position - 1)
+                .publish_admin_alert_canonical_groups_snapshot(
+                    snapshot,
+                    state.build_next_position - 1,
+                )
                 .await;
         };
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
@@ -2419,8 +2456,7 @@ impl KeyStore {
     ) -> Result<String, ProxyError> {
         const PAYLOAD_CHUNK_READ_ROWS: i64 = 16;
         let state = self.load_admin_alert_canonical_groups_state().await?;
-        let state_matches = state.payload_read_generation
-            == snapshot.build_generation
+        let state_matches = state.payload_read_generation == snapshot.build_generation
             && state.payload_read_position == position
             && ((state.build_generation == 0
                 && state.active_generation == snapshot.build_generation
@@ -2429,8 +2465,7 @@ impl KeyStore {
                 || (state.build_generation == snapshot.build_generation
                     && state.build_projection_revision == snapshot.projection_revision
                     && state.build_source_fence == snapshot.source_fence
-                    && state.build_phase == "aggregating"))
-        ;
+                    && state.build_phase == "aggregating"));
         if !state_matches {
             self.reset_admin_alert_canonical_group_payload_read(snapshot, position)
                 .await?;
@@ -2442,10 +2477,10 @@ impl KeyStore {
             self.load_admin_alert_canonical_groups_state().await?
         };
         let mut next_chunk_position = state.payload_read_chunk_position;
-        let legacy_assembly_position = (!state.payload_read_json.is_empty())
-            .then_some(next_chunk_position);
-        let mut assembling = state_matches
-            && (next_chunk_position < 0 || legacy_assembly_position.is_some());
+        let legacy_assembly_position =
+            (!state.payload_read_json.is_empty()).then_some(next_chunk_position);
+        let mut assembling =
+            state_matches && (next_chunk_position < 0 || legacy_assembly_position.is_some());
 
         if !assembling {
             let limit = expected_chunks
@@ -2689,7 +2724,9 @@ impl KeyStore {
             )
             .fetch_optional(&mut *session)
             .await;
-            let Some((generation, row_count, revision, recent, history)) = session.query(state_result).await? else {
+            let Some((generation, row_count, revision, recent, history)) =
+                session.query(state_result).await?
+            else {
                 return Err(ProxyError::Deferred {
                     operation: "admin_alerts_cache_warm",
                     reason: "groups_model_unavailable".to_string(),
@@ -2750,5 +2787,56 @@ impl KeyStore {
             page: 1,
             per_page: 20,
         })
+    }
+}
+
+#[cfg(test)]
+mod canonical_group_tests {
+    use super::{
+        ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES,
+        ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS, canonical_group_write_ranges,
+    };
+
+    fn staged_row(payload: &str) -> (String, String, i64, String, String, String, String) {
+        (
+            "alert".to_string(),
+            "source".to_string(),
+            1,
+            "cursor".to_string(),
+            "id".to_string(),
+            "group".to_string(),
+            payload.to_string(),
+        )
+    }
+
+    #[test]
+    fn canonical_group_write_ranges_bound_normal_rows_by_count() {
+        let staged = (0..250)
+            .map(|index| staged_row(&index.to_string()))
+            .collect::<Vec<_>>();
+        let ranges = canonical_group_write_ranges(&staged);
+
+        assert_eq!(ranges.len(), 3);
+        assert!(ranges.iter().all(|range| {
+            range.end.saturating_sub(range.start)
+                <= ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS
+        }));
+        assert_eq!(ranges.last().map(|range| range.end), Some(staged.len()));
+    }
+
+    #[test]
+    fn canonical_group_write_ranges_shrink_for_large_payloads() {
+        let payload = "x".repeat(300 * 1024);
+        let staged = vec![staged_row(&payload); 3];
+        let ranges = canonical_group_write_ranges(&staged);
+
+        assert_eq!(ranges.len(), 3);
+        assert!(ranges.iter().all(|range| {
+            let bytes = range
+                .clone()
+                .map(|index| staged[index].6.len())
+                .sum::<usize>();
+            bytes <= ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES
+        }));
     }
 }
