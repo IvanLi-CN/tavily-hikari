@@ -1615,7 +1615,7 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed a high historical rowid outside the retained snapshot");
-    for index in 0..300_i64 {
+    for index in 0..1_999_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
                    (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at,
@@ -1656,8 +1656,8 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
             .await
             .expect("count the first bounded source page");
     assert_eq!(
-        staged_source_rows, 250,
-        "historical rowid allocation must not widen the bounded source page"
+        staged_source_rows, 2_000,
+        "the fixed membership boundary must include every retained source row"
     );
     let source_rowid_upper_bound: i64 = sqlx::query_scalar(
         "SELECT build_source_rowid_upper_bound \
