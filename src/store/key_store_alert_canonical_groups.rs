@@ -650,9 +650,6 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
-        let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
-            .await?;
         // Projection writers encode the source kind into row_sort_id (atl:,
         // maint:, or job:) and use the source's primary key suffix, making
         // (occurred_at, row_sort_id) a stable total order for this snapshot.
@@ -660,24 +657,38 @@ impl KeyStore {
         // preserves the pre-build row in the override table before changing a
         // live payload; those immutable values are merged below for this
         // bounded batch instead of putting COALESCE expressions in ORDER BY.
-        let query_result = sqlx::query(
-            r#"SELECT rowid AS source_rowid,
-                       source_kind, source_id, occurred_at, row_sort_id, payload_json
-                  FROM observability.dashboard_alert_projection_events INDEXED BY idx_dashboard_alert_projection_events_time
-                 WHERE rowid <= ?
-                   AND occurred_at >= ?
-                   AND (occurred_at, row_sort_id) < (?, ?)
-                 ORDER BY occurred_at DESC, row_sort_id DESC
-                 LIMIT ?"#,
-        )
-        .bind(state.build_source_rowid_upper_bound)
-        .bind(self.alert_projection_retention_since())
-        .bind(state.build_cursor_occurred_at)
-        .bind(&state.build_cursor_row_sort_id)
-        .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
-        .fetch_all(&mut *session)
-        .await;
-        let rows = session.query(query_result).await?;
+        let rows = {
+            // Keep the source scan's 250ms native deadline independent from
+            // the optional override lookup below. Both reads are fenced by
+            // the projection generation; sharing one session would make the
+            // second bounded statement inherit the first statement's elapsed
+            // budget and reject otherwise-valid slices on large snapshots.
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            let query_result = sqlx::query(
+                r#"SELECT rowid AS source_rowid,
+                           source_kind, source_id, occurred_at, row_sort_id, payload_json
+                      FROM observability.dashboard_alert_projection_events INDEXED BY idx_dashboard_alert_projection_events_time
+                     WHERE rowid <= ?
+                       AND occurred_at >= ?
+                       AND (occurred_at, row_sort_id) < (?, ?)
+                     ORDER BY occurred_at DESC, row_sort_id DESC
+                     LIMIT ?"#,
+            )
+            .bind(state.build_source_rowid_upper_bound)
+            .bind(self.alert_projection_retention_since())
+            .bind(state.build_cursor_occurred_at)
+            .bind(&state.build_cursor_row_sort_id)
+            .bind(ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(query_result).await?;
+            session.finish().await?;
+            rows
+        };
         let source_ids = rows
             .iter()
             .map(|row| {
@@ -689,6 +700,15 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?;
         let mut overrides = StdHashMap::new();
         if !source_ids.is_empty() {
+            // This is a separate bounded read session by design. The source
+            // page and override lookup are validated against the same durable
+            // fence before the staged rows are committed; if a projection
+            // writer advances that fence, the commit CAS rejects the slice.
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
             let mut overrides_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                 "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
                    FROM observability.admin_alert_canonical_group_overrides \
@@ -710,6 +730,7 @@ impl KeyStore {
             overrides_query.push(")");
             let override_query_result = overrides_query.build().fetch_all(&mut *session).await;
             let override_rows = session.query(override_query_result).await?;
+            session.finish().await?;
             for row in override_rows {
                 overrides.insert(
                     (
@@ -724,8 +745,6 @@ impl KeyStore {
                 );
             }
         }
-        let finish = session.finish().await;
-        finish?;
         let row_count = rows.len();
         let staged: Vec<(String, String, i64, String, String, String, String)> = rows
             .into_iter()
