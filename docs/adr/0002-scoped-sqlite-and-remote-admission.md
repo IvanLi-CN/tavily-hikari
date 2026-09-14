@@ -142,9 +142,8 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   projection/index change; this ADR does not authorize a larger deadline or raw fallback.
 - The canonical Groups page is served from a local observability read model. A build captures one
   immutable projection revision and a fixed source-row membership boundary, then uses independently
-  admitted retention-bounded `(occurred_at, row_sort_id)` time-keyset slices (at most 2,000 source
-  rows per read session) plus the captured rowid upper bound and existing Rust grouping semantics.
-  Projection writes preserve a
+  admitted retention-bounded `(occurred_at, row_sort_id)` time-keyset slices plus the captured rowid
+  upper bound and existing Rust grouping semantics. Projection writes preserve a
   pre-snapshot row once when they advance during that build. A source-fence change rejects and discards
   the staged generation before publication, so catalog, Events, and Groups never publish a mixed or
   stale replacement. No state row repeatedly serializes an accumulating partition payload: each
