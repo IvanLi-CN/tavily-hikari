@@ -1090,11 +1090,13 @@ impl SqliteRuntime {
 
     fn admin_alerts_cache_warm_has_pool_pressure(&self, liveness: bool) -> bool {
         let has_open_connection = self.inner.pool.size() > 0;
-        let pool_at_capacity = self.inner.pool.size() >= self.inner.maximum_connections;
         self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
-            || ((!liveness || pool_at_capacity)
-                && has_open_connection
-                && self.inner.pool.num_idle() == 0)
+            // An aged liveness slot must reach the bounded pool acquire even
+            // when all currently-open connections are checked out. The
+            // 100ms waiter is the safety boundary; treating a full pool as a
+            // pre-admission defer would starve the slot under sustained
+            // foreground traffic.
+            || (!liveness && has_open_connection && self.inner.pool.num_idle() == 0)
     }
 
     pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {
