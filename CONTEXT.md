@@ -77,8 +77,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   boundary. Source rows are copied by a retention-bounded `(occurred_at, row_sort_id)` time-keyset
   with that rowid upper bound, so later projection writes cannot extend a build's final scan. Source
   pages remain bounded at 250 rows and partition reads at 25 rows for the native deadline and
-  cancellation contract; those rows are committed in bounded batches of at most 25 to keep each
-  write transaction short without using historical rowid allocation as a size signal.
+  cancellation contract; source rows are committed in adaptive batches of at most 100 rows and
+  512 KiB of encoded text to amortize normal transaction setup without allowing larger payloads to
+  extend a writer hold or using historical rowid allocation as a size signal.
   A projection write that advances during a build retains the previous row
   once for that snapshot. Each partition checkpoints bounded event fragments. Final reduction reads those
   immutable fragments, stages each resulting group as bounded payload chunks plus a small metadata row,
