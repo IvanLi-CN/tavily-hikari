@@ -505,6 +505,7 @@
       "run_args": ["--lib"],
       "include_prefixes": [
         "tests::alert_projection::",
+        "store::canonical_group_tests::",
         "store::key_store_alert_event_projection::tests::alert_projection_redacts_"
       ]
     },
