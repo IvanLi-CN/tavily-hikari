@@ -1027,6 +1027,71 @@ async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_mo
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_keeps_building_when_recent_fence_moves() {
+    let db_path = temp_db_path("alert-canonical-groups-recent-fence");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_150;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-recent-fence".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-recent-fence", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let _active = warm_canonical_alert_groups_until_published(&proxy).await;
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the history fence for a replacement build");
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the replacement starts with a bounded slice");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+
+    // Recent-tail writes are append-only for the fixed rowid snapshot. They
+    // must not discard the staged build or force it back to the clearing phase.
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the recent fence while the build is staged");
+    let progressed = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await;
+    assert!(
+        !matches!(
+            progressed,
+            Err(ProxyError::Deferred { ref reason, .. }) if reason == "groups_source_fence_changed"
+        ),
+        "recent-tail movement must not discard the fixed snapshot"
+    );
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(groups.total, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_resets_legacy_rowid_cursor_before_resume() {
     let db_path = temp_db_path("alert-canonical-groups-legacy-cursor");
     let db_string = db_path.to_string_lossy().to_string();

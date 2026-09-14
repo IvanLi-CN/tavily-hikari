@@ -10,6 +10,21 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
 const ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES: usize = 64 * 1024;
+const ADMIN_ALERT_CANONICAL_GROUP_CLEAR_TABLES: &[&str] = &[
+    "admin_alert_canonical_groups",
+    "admin_alert_canonical_group_events",
+    "admin_alert_canonical_group_overrides",
+    "admin_alert_canonical_group_fragments",
+    "admin_alert_canonical_group_reduction_events",
+    "admin_alert_canonical_group_reduction_children",
+    "admin_alert_canonical_group_reduction_mothers",
+    "admin_alert_canonical_group_payload_chunks",
+    "admin_alert_canonical_group_payload_read_chunks_v2",
+    "admin_alert_canonical_catalog_facets",
+    "admin_alert_canonical_catalog_payloads",
+    "admin_alert_canonical_catalog_payload_items",
+    "admin_alert_canonical_catalog_payload_items_v2",
+];
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct CompatGroupReductionState {
@@ -224,7 +239,7 @@ impl KeyStore {
         // If either projection lane advances before the next slice, discard
         // the staged generation so it can be rebuilt from one coherent fence.
         // Keep the active generation intact for last-good HTTP responses.
-        if state.build_generation > 0 && state.build_source_fence != current_fence {
+        if state.build_generation > 0 && state.build_source_fence.1 != current_fence.1 {
             self.discard_admin_alert_canonical_groups_build(&state)
                 .await?;
             return Err(ProxyError::Deferred {
@@ -234,7 +249,7 @@ impl KeyStore {
         }
         if state.build_generation == 0
             && state.active_generation > 0
-            && state.active_source_fence == current_fence
+            && state.active_source_fence.1 == current_fence.1
         {
             let snapshot = AdminAlertsCanonicalSnapshot {
                 build_generation: state.active_generation,
@@ -559,106 +574,108 @@ impl KeyStore {
         &self,
         snapshot: AdminAlertsCanonicalSnapshot,
     ) -> Result<(), ProxyError> {
-        self.ensure_admin_alerts_cache_warm_write_admitted()?;
-        let advanced = self
-            .sqlite_runtime
-            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
-                Box::pin(async move {
-                    let still_current = sqlx::query_scalar::<_, bool>(
-                        "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
-                         WHERE singleton = 1 AND build_generation = ? \
-                           AND build_projection_revision = ? AND build_phase = 'clearing')",
-                    )
-                    .bind(snapshot.build_generation)
-                    .bind(snapshot.projection_revision)
-                    .fetch_one(&mut **tx)
-                    .await?;
-                    if !still_current {
-                        return Ok::<_, ProxyError>(false);
-                    }
-                    for table in [
-                        "admin_alert_canonical_groups",
-                        "admin_alert_canonical_group_events",
-                        "admin_alert_canonical_group_overrides",
-                        "admin_alert_canonical_group_fragments",
-                        "admin_alert_canonical_group_reduction_events",
-                        "admin_alert_canonical_group_reduction_children",
-                        "admin_alert_canonical_group_reduction_mothers",
-                        "admin_alert_canonical_group_payload_chunks",
-                        "admin_alert_canonical_group_payload_read_chunks_v2",
-                        "admin_alert_canonical_catalog_facets",
-                        "admin_alert_canonical_catalog_payloads",
-                        "admin_alert_canonical_catalog_payload_items",
-                        "admin_alert_canonical_catalog_payload_items_v2",
-                    ] {
+        // Clearing used to delete from every sidecar table and then scan every
+        // table for remaining rows inside one 250ms transaction. On the live
+        // observability database that transaction could hit the native
+        // deadline, leaving the build permanently in `clearing`. Advance one
+        // table at a time so every transaction remains independently bounded.
+        for table in ADMIN_ALERT_CANONICAL_GROUP_CLEAR_TABLES {
+            self.ensure_admin_alerts_cache_warm_write_admitted()?;
+            let table = *table;
+            let (still_current, deleted) = self
+                .sqlite_runtime
+                .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                    Box::pin(async move {
+                        let still_current = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                             WHERE singleton = 1 AND build_generation = ? \
+                               AND build_projection_revision = ? AND build_phase = 'clearing')",
+                        )
+                        .bind(snapshot.build_generation)
+                        .bind(snapshot.projection_revision)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        if !still_current {
+                            return Ok::<_, ProxyError>((false, false));
+                        }
                         let delete = format!(
                             "DELETE FROM observability.{table} WHERE rowid IN ( \
                              SELECT rowid FROM observability.{table} \
                               WHERE build_generation = ? LIMIT 25)"
                         );
-                        sqlx::query(&delete)
+                        let deleted = sqlx::query(&delete)
                             .bind(snapshot.build_generation)
                             .execute(&mut **tx)
-                            .await?;
-                    }
-                    let mut remaining = false;
-                    for table in [
-                        "admin_alert_canonical_groups",
-                        "admin_alert_canonical_group_events",
-                        "admin_alert_canonical_group_overrides",
-                        "admin_alert_canonical_group_fragments",
-                        "admin_alert_canonical_group_reduction_events",
-                        "admin_alert_canonical_group_reduction_children",
-                        "admin_alert_canonical_group_reduction_mothers",
-                        "admin_alert_canonical_group_payload_chunks",
-                        "admin_alert_canonical_group_payload_read_chunks_v2",
-                        "admin_alert_canonical_catalog_facets",
-                        "admin_alert_canonical_catalog_payloads",
-                        "admin_alert_canonical_catalog_payload_items",
-                        "admin_alert_canonical_catalog_payload_items_v2",
-                    ] {
-                        let exists = format!(
-                            "SELECT EXISTS(SELECT 1 FROM observability.{table} \
-                             WHERE build_generation = ?)"
-                        );
-                        if sqlx::query_scalar::<_, bool>(&exists)
-                            .bind(snapshot.build_generation)
-                            .fetch_one(&mut **tx)
                             .await?
-                        {
-                            remaining = true;
-                            break;
-                        }
-                    }
-                    let changed = if remaining {
-                        true
-                    } else {
-                        sqlx::query(
-                            r#"UPDATE observability.admin_alert_canonical_groups_state
-                                  SET build_phase = 'copying',
-                                      build_cursor_source_rowid = 0,
-                                      build_partition_key = '', build_partition_after_key = '',
-                                      build_partition_cursor_occurred_at = -9223372036854775808,
-                                      build_partition_cursor_row_sort_id = '',
-                                      build_partition_source_complete = 0,
-                                      build_partition_fragment_next_position = 1,
-                                      build_partition_finalize_fragment_position = 1,
-                                      build_next_position = 1,
-                                      payload_read_generation = 0,
-                                      payload_read_position = 0,
-                                      payload_read_chunk_position = 0,
-                                      payload_read_json = ''
-                                WHERE singleton = 1 AND build_generation = ?
-                                  AND build_projection_revision = ? AND build_phase = 'clearing'"#,
-                        )
-                        .bind(snapshot.build_generation)
-                        .bind(snapshot.projection_revision)
-                        .execute(&mut **tx)
-                        .await?
-                        .rows_affected()
-                            == 1
-                    };
-                    if !remaining && changed {
+                            .rows_affected()
+                            > 0;
+                        Ok::<_, ProxyError>((true, deleted))
+                    })
+                })
+                .await?;
+            if !still_current {
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "groups_build_replaced".to_string(),
+                });
+            }
+            if deleted {
+                self.record_admin_alerts_warm_slice();
+                self.sqlite_runtime
+                    .record_admin_alerts_canonical_group_build_slice();
+                return Ok(());
+            }
+        }
+
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let advanced = self
+            .sqlite_runtime
+            .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                Box::pin(async move {
+                    let changed = sqlx::query(
+                        r#"UPDATE observability.admin_alert_canonical_groups_state
+                              SET build_projection_revision = (
+                                      SELECT revision
+                                        FROM observability.dashboard_alert_projection_revision_state
+                                       WHERE singleton = 1
+                                  ),
+                                  build_source_recent_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_state
+                                  ),
+                                  build_source_history_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_history_state
+                                  ),
+                                  build_source_rowid_upper_bound = (
+                                      SELECT COALESCE(MAX(rowid), 0)
+                                        FROM observability.dashboard_alert_projection_events
+                                  ),
+                                  build_phase = 'copying',
+                                  build_cursor_source_rowid = 0,
+                                  build_cursor_occurred_at = 9223372036854775807,
+                                  build_cursor_row_sort_id = char(0x10ffff),
+                                  build_partition_key = '', build_partition_after_key = '',
+                                  build_partition_cursor_occurred_at = -9223372036854775808,
+                                  build_partition_cursor_row_sort_id = '',
+                                  build_partition_source_complete = 0,
+                                  build_partition_fragment_next_position = 1,
+                                  build_partition_finalize_fragment_position = 1,
+                                  build_next_position = 1,
+                                  payload_read_generation = 0,
+                                  payload_read_position = 0,
+                                  payload_read_chunk_position = 0,
+                                  payload_read_json = ''
+                            WHERE singleton = 1 AND build_generation = ?
+                              AND build_projection_revision = ? AND build_phase = 'clearing'"#,
+                    )
+                    .bind(snapshot.build_generation)
+                    .bind(snapshot.projection_revision)
+                    .execute(&mut **tx)
+                    .await?
+                    .rows_affected()
+                        == 1;
+                    if changed {
                         sqlx::query(
                             r#"UPDATE observability.admin_alert_canonical_catalog_state
                                   SET build_generation = ?,
