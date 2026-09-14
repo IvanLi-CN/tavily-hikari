@@ -932,6 +932,18 @@ for channel, before in candidate_gc["before"].items():
     if before["hasRetentionDebt"] and candidate_gc["deletedRowsDelta"].get(channel, 0) <= 0:
         raise SystemExit(f"candidate HA GC did not advance the debt-bearing {channel} channel")
 
+candidate_alerts = candidate["load"].get("alerts", {})
+candidate_alert_first_success = candidate_alerts.get("firstSuccessSecs", {})
+candidate_alert_post_warm_5xx = candidate_alerts.get("postWarm5xx", {})
+for route in ("catalog", "events", "groups"):
+    if route not in candidate_alert_first_success:
+        raise SystemExit(f"candidate canonical Alerts {route} never became available")
+    if candidate_alert_post_warm_5xx.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} returned 5xx after first warm success: "
+            f"count={candidate_alert_post_warm_5xx[route]}"
+        )
+
 baseline_red = baseline_dashboard_red or baseline_business_red
 if baseline_red:
     reasons = []

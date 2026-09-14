@@ -14,6 +14,8 @@ from pathlib import Path
 
 DASHBOARD_CLIENTS = 20
 DASHBOARD_INTERVAL_SECS = 60.0
+ALERT_ROUTES = ("catalog", "events", "groups")
+ALERT_INTERVAL_SECS = 5.0
 BUSINESS_CLIENTS = 5
 BUSINESS_INTERVAL_SECS = 1.0
 # A production-shaped snapshot may have bounded startup maintenance reclaiming
@@ -31,12 +33,26 @@ class Recorder:
         self.statuses: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.events: Counter[str] = Counter()
+        self.alert_first_success_secs: dict[str, float] = {}
+        self.alert_post_warm_5xx: Counter[str] = Counter()
+        self.started_at = time.monotonic()
+
+    def mark_started(self) -> None:
+        with self._lock:
+            self.started_at = time.monotonic()
 
     def status(self, lane: str, status: int, elapsed_ms: float) -> None:
         with self._lock:
             self.statuses[f"{lane}:{status}"] += 1
             if lane == "dashboard":
                 self.dashboard_ms.append(elapsed_ms)
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                elapsed_secs = time.monotonic() - self.started_at
+                if status == 200:
+                    self.alert_first_success_secs.setdefault(route, elapsed_secs)
+                elif status >= 500 and route in self.alert_first_success_secs:
+                    self.alert_post_warm_5xx[route] += 1
 
     def error(self, lane: str, error: BaseException) -> None:
         with self._lock:
@@ -62,6 +78,12 @@ class Recorder:
                 "dashboardRequests": len(ordered),
                 "dashboardP95Ms": p95,
                 "dashboardMaxMs": max(ordered) if ordered else None,
+                "alerts": {
+                    "routes": list(ALERT_ROUTES),
+                    "intervalSecs": ALERT_INTERVAL_SECS,
+                    "firstSuccessSecs": dict(sorted(self.alert_first_success_secs.items())),
+                    "postWarm5xx": dict(sorted(self.alert_post_warm_5xx.items())),
+                },
                 "statuses": dict(sorted(self.statuses.items())),
                 "errors": dict(sorted(self.errors.items())),
                 "events": dict(sorted(self.events.items())),
@@ -228,6 +250,25 @@ def business_lane(
     )
 
 
+def alerts_lane(
+    stop: threading.Event,
+    recorder: Recorder,
+    host: str,
+    port: int,
+    route: str,
+    route_index: int,
+) -> None:
+    path = f"/api/alerts/{route}"
+    if route != "catalog":
+        path += "?page=1&per_page=20"
+    periodic(
+        stop,
+        ALERT_INTERVAL_SECS,
+        lambda: request(recorder, f"alerts_{route}", "GET", host, port, path),
+        route_index * ALERT_INTERVAL_SECS / len(ALERT_ROUTES),
+    )
+
+
 def sse_lane(stop: threading.Event, recorder: Recorder, host: str, port: int) -> None:
     while not stop.is_set():
         connection = http.client.HTTPConnection(host, port, timeout=10)
@@ -303,6 +344,7 @@ def main() -> None:
     stop = threading.Event()
     create_test_api_key(args.host, args.port)
     access_token = create_test_access_token(args.host, args.port)
+    recorder.mark_started()
     threads = [
         threading.Thread(
             target=dashboard_lane,
@@ -310,6 +352,14 @@ def main() -> None:
             daemon=True,
         )
         for client_index in range(DASHBOARD_CLIENTS)
+    ]
+    threads += [
+        threading.Thread(
+            target=alerts_lane,
+            args=(stop, recorder, args.host, args.port, route, route_index),
+            daemon=True,
+        )
+        for route_index, route in enumerate(ALERT_ROUTES)
     ]
     threads += [
         threading.Thread(target=sse_lane, args=(stop, recorder, args.host, args.port), daemon=True)
