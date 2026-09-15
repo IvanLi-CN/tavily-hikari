@@ -90,6 +90,9 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   blocking a replacement publish.
   Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
   generations. This derived model never enters the HA outbox and does not change filtered Groups semantics.
+  When both the recent-tail and historical projection lanes have debt, the scheduler alternates one
+  bounded history slice with one recent slice so history cannot be starved by sustained foreground
+  writes. The turn is process-local; it does not alter cursor/fence persistence or read budgets.
   The lossless catalog payload slot retains the facet label in its staged-output identity, so two labels
   for one user value cannot overwrite one another. Semantic Groups reduction keeps classification input,
   child/mother aggregates, and output chunk position in local durable sidecar rows; an in-flight
