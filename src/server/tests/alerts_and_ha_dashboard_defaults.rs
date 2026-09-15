@@ -1633,6 +1633,24 @@ async fn admin_alerts_warm_discards_a_snapshot_after_recent_source_advance() {
     .await
     .expect("the recent-fenced retry publishes a complete replacement generation");
 
+    let current_fence = state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read the current projection fence");
+    let active_fence: (i64, i64) = sqlx::query_as(
+        "SELECT source_recent_generation, source_history_generation \
+           FROM observability.admin_alert_canonical_groups_state \
+          WHERE singleton = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the published Groups source fence");
+    assert_eq!(
+        active_fence, current_fence,
+        "the published Groups model must match both current projection fences"
+    );
+
     let _ = std::fs::remove_file(db_path);
 }
 
