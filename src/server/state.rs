@@ -826,12 +826,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 let (groups, build_generation, recent_generation, history_generation) =
                     groups_result?;
                 // Groups, catalog, and Events are all derived from the same
-                // bounded sidecar generation. A recent-tail advance is safe
-                // for the builder's fixed membership snapshot, but it makes
-                // that staged payload ineligible for a fresh three-key cache
-                // publish. Keep the generation captured before the flight and
-                // reject any source-fence movement below instead of relabeling
-                // old data as the new generation.
+                // bounded sidecar generation. Any recent or historical
+                // source-fence advance makes the staged payload ineligible for
+                // a fresh three-key cache publish. Keep the generation captured
+                // before the flight and reject movement below instead of
+                // relabeling old data as the new generation.
                 cache
                     .lock()
                     .await

@@ -1027,7 +1027,7 @@ async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_mo
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_keeps_building_when_recent_fence_moves() {
+async fn admin_alerts_canonical_groups_discards_build_when_recent_fence_moves() {
     let db_path = temp_db_path("alert-canonical-groups-recent-fence");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_150;
@@ -1063,25 +1063,36 @@ async fn admin_alerts_canonical_groups_keeps_building_when_recent_fence_moves() 
         ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
 
-    // Recent-tail writes are append-only for the fixed rowid snapshot. They
-    // must not discard the staged build or force it back to the clearing phase.
+    // Recent-tail movement invalidates the staged generation just like history
+    // movement, so the next slice must preserve last-good and restart fenced.
     sqlx::query(
         "UPDATE observability.dashboard_alert_projection_state SET generation = generation + 1",
     )
     .execute(&proxy.key_store.pool)
     .await
     .expect("advance the recent fence while the build is staged");
-    let progressed = proxy
+    let replaced = proxy
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
-        .await;
+        .await
+        .expect_err("a recent fence advance must discard the staged build");
     assert!(
-        !matches!(
-            progressed,
-            Err(ProxyError::Deferred { ref reason, .. }) if reason == "groups_source_fence_changed"
+        matches!(
+            replaced,
+            ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
         ),
-        "recent-tail movement must not discard the fixed snapshot"
+        "recent-tail movement must discard the fixed snapshot"
     );
+    let (active_generation, build_generation): (i64, i64) = sqlx::query_as(
+        "SELECT active_generation, build_generation
+           FROM observability.admin_alert_canonical_groups_state
+          WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read last-good and staged generations");
+    assert!(active_generation > 0, "last-good remains available");
+    assert_eq!(build_generation, 0, "the recent-fenced build is discarded");
     let groups = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(groups.total, 1);
 

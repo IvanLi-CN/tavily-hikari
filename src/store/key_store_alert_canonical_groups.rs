@@ -239,7 +239,7 @@ impl KeyStore {
         // If either projection lane advances before the next slice, discard
         // the staged generation so it can be rebuilt from one coherent fence.
         // Keep the active generation intact for last-good HTTP responses.
-        if state.build_generation > 0 && state.build_source_fence.1 != current_fence.1 {
+        if state.build_generation > 0 && state.build_source_fence != current_fence {
             self.discard_admin_alert_canonical_groups_build(&state)
                 .await?;
             return Err(ProxyError::Deferred {
