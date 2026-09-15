@@ -803,7 +803,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 continue;
             }
-            let mut generation = match snapshot_cache_generation {
+            let generation = match snapshot_cache_generation {
                 Some(generation) => generation,
                 None => current_admin_alerts_generation(state.as_ref()).await,
             };
@@ -823,14 +823,15 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .proxy
                         .finish_admin_alerts_cache_warm_liveness_stage();
                 }
-                let (groups, build_generation, _recent_generation, history_generation) =
+                let (groups, build_generation, recent_generation, history_generation) =
                     groups_result?;
                 // Groups, catalog, and Events are all derived from the same
-                // bounded sidecar generation. Recent-tail projection slices
-                // may continue while that snapshot is being assembled; use
-                // the current in-memory generation for the cache entry while
-                // keeping the history fence below as the invalidation guard.
-                generation = current_admin_alerts_generation(state.as_ref()).await;
+                // bounded sidecar generation. A recent-tail advance is safe
+                // for the builder's fixed membership snapshot, but it makes
+                // that staged payload ineligible for a fresh three-key cache
+                // publish. Keep the generation captured before the flight and
+                // reject any source-fence movement below instead of relabeling
+                // old data as the new generation.
                 cache
                     .lock()
                     .await
@@ -897,8 +898,8 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
-                if state.proxy.admin_alerts_canonical_warm_projection_fence().await?.1
-                    != history_generation
+                if state.proxy.admin_alerts_canonical_warm_projection_fence().await?
+                    != (recent_generation, history_generation)
                 {
                     return Err(tavily_hikari::ProxyError::Deferred {
                         operation: "admin_alerts_warm",
