@@ -912,13 +912,68 @@ impl KeyStore {
     }
 
     async fn ensure_admin_alert_projection_coverage_for_warm(&self) -> Result<(), ProxyError> {
-        let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
-            .await?;
-        let result = self.ensure_admin_alert_projection_coverage(&mut session).await;
-        let finish = session.finish().await;
-        finish?;
-        result
+        // Keep each coverage lane within its own native 250ms budget. A cold
+        // observability database can spend most of that budget opening the
+        // first B-tree page; sharing one session for recent and history turns
+        // two independently bounded probes into one cumulative deadline and
+        // starves the canonical warm controller before it can stage a slice.
+        let now = self.backend_time.now_ts();
+        let recent = {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let result = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
+                r#"SELECT COUNT(*),
+                          SUM(CASE WHEN phase = 'idle' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN observed_at IS NOT NULL AND observed_at >= ? THEN 1 ELSE 0 END),
+                          MAX(stale_reason)
+                     FROM observability.dashboard_alert_projection_state"#,
+            )
+            .bind(now.saturating_sub(ALERT_PROJECTION_STALE_SECS))
+            .fetch_one(&mut *session)
+            .await;
+            let recent = session.query(result).await;
+            session.finish().await?;
+            recent?
+        };
+        let (sources, idle_sources, fresh_sources, stale_reason) = recent;
+        if sources != ALERT_PROJECTION_SOURCES.len() as i64
+            || idle_sources != sources
+            || fresh_sources != sources
+            || stale_reason.is_some()
+        {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_warm",
+                reason: stale_reason.unwrap_or_else(|| "coverage_projecting".to_string()),
+            });
+        }
+
+        let history = {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let result = sqlx::query_as::<_, (i64, i64)>(
+                r#"SELECT COUNT(*),
+                          SUM(CASE WHEN phase = 'idle' THEN 1 ELSE 0 END)
+                     FROM observability.dashboard_alert_projection_history_state"#,
+            )
+            .fetch_one(&mut *session)
+            .await;
+            let history = session.query(result).await;
+            session.finish().await?;
+            history?
+        };
+        let (history_sources, idle_history_sources) = history;
+        if history_sources == ALERT_PROJECTION_SOURCES.len() as i64
+            && idle_history_sources == history_sources
+        {
+            Ok(())
+        } else {
+            Err(ProxyError::Deferred {
+                operation: "admin_alerts_warm",
+                reason: "history_projection_catching_up".to_string(),
+            })
+        }
     }
 
     pub(crate) async fn prepare_admin_alerts_canonical_warm(&self) -> Result<(), ProxyError> {
