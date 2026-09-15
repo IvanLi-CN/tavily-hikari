@@ -937,10 +937,16 @@ impl KeyStore {
             recent?
         };
         let (sources, idle_sources, fresh_sources, stale_reason) = recent;
+        // Retention pruning advances both projection generations and leaves a
+        // diagnostic marker behind; with all recent sources idle and fresh it
+        // is a completed fence that requires a new canonical snapshot, not a
+        // coverage gap that should starve the warm controller.
         if sources != ALERT_PROJECTION_SOURCES.len() as i64
             || idle_sources != sources
             || fresh_sources != sources
-            || stale_reason.is_some()
+            || stale_reason
+                .as_deref()
+                .is_some_and(|reason| reason != "retention_pruned")
         {
             return Err(ProxyError::Deferred {
                 operation: "admin_alerts_warm",

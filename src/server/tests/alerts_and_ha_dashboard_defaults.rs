@@ -1525,6 +1525,71 @@ async fn admin_alerts_warm_discards_a_snapshot_after_source_advance() {
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_accepts_fresh_projection_after_retention_prune() {
+    let db_path = temp_db_path("admin-alerts-retention-prune-warm");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-retention-prune-warm".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-retention-prune-warm-password",
+    )
+    .await;
+
+    let now = Utc::now().timestamp();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', observed_at = ?, stale_reason = 'retention_pruned'",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("seed a completed projection after retention pruning");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state \
+            SET phase = 'idle'",
+    )
+    .execute(&pool)
+    .await
+    .expect("mark historical projection complete");
+
+    state
+        .proxy
+        .prepare_admin_alerts_canonical_warm()
+        .await
+        .expect("a fresh completed projection must allow canonical warm after pruning");
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let canonical = cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .collect::<Vec<_>>();
+            if canonical.len() == 3 && !cache.admin_alerts_prewarm_in_flight {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("retention-pruned projection must publish all canonical Alerts keys");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_discards_a_snapshot_after_recent_source_advance() {
     let db_path = temp_db_path("admin-alerts-recent-fence-controller");
     let db_str = db_path.to_string_lossy().to_string();
