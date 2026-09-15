@@ -2478,6 +2478,112 @@ async fn alert_projection_preempts_backlog_for_a_new_idle_source() {
 }
 
 #[tokio::test]
+async fn alert_projection_gives_history_a_bounded_turn_while_recent_has_debt() {
+    let db_path = temp_db_path("alert-projection-history-fairness");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_575_150;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-projection-history-fairness".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    for index in 0..2 {
+        insert_projected_rate_limit_alert(
+            &proxy,
+            &format!("projection-history-fairness-{index}"),
+            now,
+        )
+        .await;
+    }
+    let max_id: i64 = sqlx::query_scalar("SELECT MAX(id) FROM auth_token_logs")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read source fence id");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state
+            SET cursor_occurred_at = 0, cursor_row_sort_id = '',
+                fence_occurred_at = NULL, fence_row_sort_id = NULL,
+                generation = 0, phase = 'catching_up'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed recent projection debt");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state
+            SET phase = 'idle'
+          WHERE source_kind <> 'auth_token_log'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep unrelated recent sources idle");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state
+            SET cursor_occurred_at = 0, cursor_row_sort_id = '',
+                fence_occurred_at = ?, fence_row_sort_id = ?,
+                generation = 0, phase = 'catching_up'
+          WHERE source_kind = 'auth_token_log'",
+    )
+    .bind(now)
+    .bind(format!("atl:{max_id:020}"))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed historical projection debt");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state
+            SET phase = 'idle'
+          WHERE source_kind <> 'auth_token_log'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep unrelated history sources idle");
+
+    proxy
+        .key_store
+        .advance_alert_projection_slice()
+        .await
+        .expect("advance the bounded history turn");
+    let history_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM observability.dashboard_alert_projection_history_state
+          WHERE source_kind = 'auth_token_log'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read history generation");
+    assert_eq!(
+        history_generation, 1,
+        "history must receive the first fair turn"
+    );
+
+    proxy
+        .key_store
+        .advance_alert_projection_slice()
+        .await
+        .expect("advance the alternating recent turn");
+    let recent_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM observability.dashboard_alert_projection_state
+          WHERE source_kind = 'auth_token_log'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recent generation");
+    assert_eq!(
+        recent_generation, 1,
+        "recent work remains serviced after history"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn alert_projection_idle_probe_does_not_persist_empty_cursors() {
     let db_path = temp_db_path("alert-projection-idle-no-write");
     let db_string = db_path.to_string_lossy().to_string();

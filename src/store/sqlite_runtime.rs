@@ -467,6 +467,10 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness: AtomicBool,
     admin_alerts_cache_warm_liveness_permit: AtomicBool,
     admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
+    // The projection scheduler alternates this turn when both recent and
+    // historical lanes have work. Keeping the turn in the runtime avoids
+    // persisting scheduler policy in the derived projection state.
+    alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
     workload: Mutex<WorkloadWindow>,
@@ -636,6 +640,7 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
+                alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
@@ -715,6 +720,12 @@ impl SqliteRuntime {
         self.inner
             .foreground_activity
             .low_pressure_since_floor_at(foreground_activity_slot())
+    }
+
+    pub(crate) fn take_alert_projection_history_turn(&self) -> bool {
+        self.inner
+            .alert_projection_history_turn
+            .fetch_xor(true, AtomicOrdering::AcqRel)
     }
 
     #[cfg(test)]

@@ -125,6 +125,10 @@ reads:
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.
+- When the recent and historical projection lanes are both catching up, alternate one bounded history
+  slice with one recent slice. This keeps the administrator completeness prerequisite live under
+  sustained recent writes without changing the existing pool admission, statement deadline, or
+  retention fence. The turn is intentionally process-local and is not a durable schema field.
 - Apply the same last-good boundary to the single-key privacy-status read. Keep the immutable
   successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
   while cold pressure fails fast with `503 Retry-After: 1`. The HTTP path is bounded to 250ms and,

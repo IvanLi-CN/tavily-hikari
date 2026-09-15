@@ -653,11 +653,18 @@ impl KeyStore {
             }
         }
         // The durable history lane owns catch-up whenever the selected recent
-        // source is already current. A bounded recent fence probe before each
-        // history slice keeps the Dashboard tail responsive without using tail
-        // generation bumps as an implicit round-robin clock.
+        // source is already current. When both lanes have debt, alternate a
+        // bounded history turn with recent work so sustained tail traffic
+        // cannot starve administrator completeness. The turn is consumed only
+        // when a history state is actually available; idle probes do not
+        // advance scheduler policy.
+        let history_turn = recent_has_debt
+            && history.is_some()
+            && self.sqlite_runtime.take_alert_projection_history_turn();
         let (state, fence) = match history {
-            Some(history) if !recent_has_debt && recent.phase == "idle" => (history, None),
+            Some(history) if (!recent_has_debt && recent.phase == "idle") || history_turn => {
+                (history, None)
+            }
             _ => (recent, recent_fence),
         };
         let fence = match (

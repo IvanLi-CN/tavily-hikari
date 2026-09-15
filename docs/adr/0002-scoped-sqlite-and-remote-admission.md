@@ -131,6 +131,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   seconds. Partial slices remain separately observable and do not reset this liveness anchor. One slot covers
   one logical canonical stage and its fenced micro-transactions; the next key acquires a new slot.
   Real waiters, contention, writer pressure, and native budgets still defer it.
+- If recent-tail and historical projection both have debt, the projection scheduler alternates one
+  history slice with one recent slice until either lane catches up. This fairness turn is process-local
+  scheduler state only; it is not persisted and does not relax admission, native deadlines, or source
+  fences.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads
   `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
   stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per

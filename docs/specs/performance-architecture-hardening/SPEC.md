@@ -128,6 +128,10 @@
   以恢复该低 sentinel 的边界所有权。空闲 source probe 不得写 cursor/generation；覆盖观察只能由
   独立低频 heartbeat 更新。Dashboard summary 只允许从 sidecar 执行时间窗固定、结果有界的 SQL 聚合，禁止
   把整窗 `payload_json` 拉回进程后再分组。
+- 当 recent tail 与 history lane 同时存在债务时，projection scheduler 必须按单 slice 交替服务
+  `history -> recent -> history -> recent`，直到其中一条 lane 追平；history 不得因持续 recent 流量
+  永久饥饿。该轮转只保存在实例内存中，不写入 projection schema，也不改变各 lane 的 cursor、fence
+  或 SQLite 预算。
 - 已应用的 projection migration 不得原地修改 checksum。若发现历史 cursor/fence 边界缺口，后续加法
   migration 只能重置可重建的 history lane，由后台小片幂等重放；recent tail、原始事件与账务真相保持不变。
 - 普通管理员 HA GET 只读取 peer observation cache；危险 HA 操作继续 live probe。
