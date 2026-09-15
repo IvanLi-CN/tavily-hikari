@@ -1525,6 +1525,118 @@ async fn admin_alerts_warm_discards_a_snapshot_after_source_advance() {
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_discards_a_snapshot_after_recent_source_advance() {
+    let db_path = temp_db_path("admin-alerts-recent-fence-controller");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-recent-fence-controller".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-recent-fence-controller-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    let initial_generation = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let canonical = cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .collect::<Vec<_>>();
+            if canonical.len() == 3 && !cache.admin_alerts_prewarm_in_flight {
+                break cache.alert_projection_generation;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial background warmer publishes canonical last-good values");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    let pause = super::super::install_admin_alerts_warm_before_projection_fence_pause_for_test(
+        state.as_ref(),
+    )
+    .await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        pause.wait_until_arrived(),
+    )
+    .await
+    .expect("the retry reaches the final fence boundary");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let changed = sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state SET generation = generation + 1",
+    )
+    .execute(&pool)
+    .await
+    .expect("commit a recent projection generation while the warm is staged");
+    assert_eq!(changed.rows_affected(), 3);
+    super::super::mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+
+    {
+        let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let cache = cache_handle.lock().await;
+        assert!(cache
+            .admin_alerts
+            .entries
+            .iter()
+            .filter(|entry| entry.canonical)
+            .all(|entry| entry.generation == initial_generation));
+    }
+    pause.release();
+
+    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let canonical = cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .collect::<Vec<_>>();
+            if canonical.len() == 3
+                && !cache.admin_alerts_prewarm_in_flight
+                && canonical
+                    .iter()
+                    .all(|entry| entry.generation == initial_generation + 1)
+            {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the recent-fenced retry publishes a complete replacement generation");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_defers_before_final_fence_when_pressure_arrives_between_slices() {
     let db_path = temp_db_path("admin-alerts-final-fence-pressure");
     let db_str = db_path.to_string_lossy().to_string();

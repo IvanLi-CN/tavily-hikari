@@ -249,6 +249,7 @@ impl KeyStore {
         }
         if state.build_generation == 0
             && state.active_generation > 0
+            && state.active_source_fence.0 == current_fence.0
             && state.active_source_fence.1 == current_fence.1
         {
             let snapshot = AdminAlertsCanonicalSnapshot {
