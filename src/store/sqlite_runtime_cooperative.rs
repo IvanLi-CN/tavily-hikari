@@ -1,5 +1,13 @@
 use super::*;
 
+impl SqliteRuntime {
+    pub(crate) fn take_alert_projection_history_turn(&self) -> bool {
+        self.inner
+            .alert_projection_history_turn
+            .fetch_xor(true, AtomicOrdering::AcqRel)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum SqliteCooperativeQueryOutcome<T> {
     Completed(T),
