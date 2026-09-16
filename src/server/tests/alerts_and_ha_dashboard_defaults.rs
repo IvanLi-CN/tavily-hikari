@@ -2158,6 +2158,7 @@ async fn admin_alerts_warm_releases_liveness_for_projection_after_coverage_defer
     }
     assert!(state.proxy.foreground_activity_rps() > 5);
 
+    state.proxy.force_next_admin_alert_read_deadline_for_test();
     super::super::prewarm_admin_alerts(state.clone()).await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {

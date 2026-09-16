@@ -1007,12 +1007,13 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 Err(tavily_hikari::ProxyError::Deferred { reason, .. })
                     if liveness_slot
                         && (reason == "coverage_projecting"
-                            || reason == "history_projection_catching_up") =>
+                            || reason == "history_projection_catching_up"
+                            || reason == "read_budget") =>
                 {
                     // Keep an aged liveness slot alive while projection coverage catches up.
-                    // The next retry gets a fresh stage, while the scheduler can admit bounded
-                    // projection slices during the backoff instead of losing this opportunity
-                    // when the coverage probe runs before the scheduler.
+                    // A bounded warm read can also defer before it reports the coverage reason;
+                    // the next retry gets a fresh stage, while the scheduler can admit bounded
+                    // projection slices during the backoff instead of losing this opportunity.
                     state
                         .proxy
                         .finish_admin_alerts_cache_warm_liveness_stage();
