@@ -955,6 +955,43 @@ async fn admin_alerts_cache_warm_liveness_uses_bounded_waiter_at_pool_capacity()
 }
 
 #[tokio::test]
+async fn admin_alerts_cache_warm_liveness_ignores_existing_pool_waiter() {
+    let runtime = single_connection_runtime().await;
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+    let waiter_runtime = runtime.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_runtime
+            .begin_read_snapshot(SqliteOperation::AdminAlertsRead)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.acquire_waiters.load(AtomicOrdering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded read must register a pool waiter");
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "an aged liveness slot must reach the bounded acquire despite an existing waiter"
+    );
+
+    waiter.abort();
+    let _ = waiter.await;
+    drop(held_connection);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_admits_an_empty_lazy_pool_without_waiters() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
