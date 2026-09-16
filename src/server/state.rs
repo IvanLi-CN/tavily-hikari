@@ -1016,6 +1016,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     state
                         .proxy
                         .finish_admin_alerts_cache_warm_liveness_stage();
+                    // Transfer one aged slot to the projection scheduler so coverage can make
+                    // progress during this retry without bypassing its bounded admission.
+                    state.proxy.set_admin_alerts_cache_warm_liveness(true);
                     state.proxy.record_admin_alerts_warm_defer();
                     let delay = dashboard_overview_cache_for_state(state.as_ref())
                         .lock()

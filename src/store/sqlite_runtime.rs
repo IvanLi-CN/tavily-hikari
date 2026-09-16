@@ -1196,6 +1196,19 @@ impl SqliteRuntime {
                 || self.admin_alerts_cache_warm_liveness_stage_active())
     }
 
+    pub(crate) fn claim_admin_alerts_cache_warm_liveness_for_projection(&self) -> bool {
+        if !self.admin_alerts_cache_warm_liveness_admission_active() {
+            return false;
+        }
+        if self.admin_alerts_cache_warm_liveness_stage_active() {
+            return true;
+        }
+        self.inner
+            .admin_alerts_cache_warm_liveness_permit
+            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+    }
+
     fn maintenance_bulk_defer_reason_for(
         &self,
         operation: SqliteOperation,

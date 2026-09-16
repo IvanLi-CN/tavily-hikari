@@ -1891,7 +1891,7 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 
     let pool = connect_sqlite_test_pool(&db_str).await;
     let occurred_at = Utc::now().timestamp().saturating_sub(60);
-    for index in 0..26_i64 {
+    for index in 0..51_i64 {
         let source_id = format!("alert-liveness-{index:04}");
         let row_sort_id = format!("alert-liveness-sort-{index:04}");
         let payload = serde_json::json!({
@@ -2079,6 +2079,119 @@ async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressur
 
     let published = published.expect("aged warm must publish the complete canonical Alerts set");
     assert!(published);
+}
+
+#[tokio::test]
+async fn admin_alerts_warm_releases_liveness_for_projection_after_coverage_defer() {
+    let db_path = temp_db_path("admin-alerts-liveness-coverage-defer");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-coverage-defer".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-coverage-defer-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..26_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind("token-alert-liveness")
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed source alert");
+    }
+
+    let (dashboard_dirty, idle) = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step()
+        .await
+        .expect("advance the first source projection slice");
+    assert!(dashboard_dirty);
+    assert!(!idle);
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM observability.dashboard_alert_projection_state \
+         WHERE source_kind = 'auth_token_log'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read partial projection phase");
+    assert_eq!(phase, "catching_up");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(state.proxy.foreground_activity_rps() > 5);
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            if cache.lock().await.admin_alerts_prewarm_defers > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("warm must defer on incomplete projection coverage");
+
+    let step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("projection liveness attempt");
+    assert!(
+        step.canonical_alerts_dirty,
+        "coverage defer must leave one liveness permit for a projection slice"
+    );
+    let follow_up = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("follow-up projection attempt");
+    assert!(
+        !follow_up.canonical_alerts_dirty,
+        "one coverage defer must transfer only one projection liveness slice"
+    );
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]

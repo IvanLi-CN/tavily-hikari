@@ -500,7 +500,7 @@ impl KeyStore {
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
         let canonical_warm_liveness = self
             .sqlite_runtime
-            .admin_alerts_cache_warm_liveness_admission_active();
+            .claim_admin_alerts_cache_warm_liveness_for_projection();
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
