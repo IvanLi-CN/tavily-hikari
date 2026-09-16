@@ -2002,6 +2002,86 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressure() {
+    let db_path = temp_db_path("admin-alerts-liveness-projection-coverage");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-projection-coverage".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-projection-coverage-password",
+    )
+    .await;
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes sustained foreground pressure"
+    );
+
+    let projection_state = state.clone();
+    let projection = tokio::spawn(async move {
+        loop {
+            let _ = projection_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await;
+            tokio::task::yield_now().await;
+        }
+    });
+    super::super::prewarm_admin_alerts(state.clone()).await;
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    projection.abort();
+    let _ = projection.await;
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+
+    let published = published.expect("aged warm must publish the complete canonical Alerts set");
+    assert!(published);
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_read_waits_for_history_projection_coverage() {
     let db_path = temp_db_path("admin-alerts-history-coverage");
     let db_str = db_path.to_string_lossy().to_string();

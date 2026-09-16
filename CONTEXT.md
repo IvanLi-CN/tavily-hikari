@@ -249,6 +249,10 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   exact-query last-good cache for transient pressure. A cold or expired key returns an explicit
   retryable response instead of starting an expensive raw alert CTE, so incomplete history is never
   shown as empty.
+  While an aged canonical warm liveness slot is active, the scheduler may admit one bounded
+  `AlertProjection` slice despite foreground-rate and lazy-pool-idle pressure so warm coverage can
+  recover. The exception still requires no existing pool waiter, clear recent contention, and the
+  normal single bulk permit, `100ms` acquire budget, and native read deadline.
 - `idle alert probe`: a source-fence check that finds no work. It is not projection progress: it
   never advances a cursor or generation, and a separate low-frequency observation heartbeat keeps
   recent-tail coverage explicit.

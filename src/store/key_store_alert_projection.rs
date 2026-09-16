@@ -498,14 +498,24 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        let canonical_warm_liveness = self
+            .sqlite_runtime
+            .admin_alerts_cache_warm_liveness_admission_active();
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
         // whether the slice can run.
-        self.sqlite_runtime
-            .prewarm_maintenance_bulk_capacity()
-            .await?;
-        let _admission = match self.try_admit_alert_projection() {
+        if !canonical_warm_liveness {
+            self.sqlite_runtime
+                .prewarm_maintenance_bulk_capacity()
+                .await?;
+        }
+        let _admission = match if canonical_warm_liveness {
+            self.sqlite_runtime
+                .try_admit_alert_projection_for_canonical_warm_liveness()
+        } else {
+            self.try_admit_alert_projection()
+        } {
             Ok(permit) => permit,
             Err(reason) => {
                 tracing::debug!(

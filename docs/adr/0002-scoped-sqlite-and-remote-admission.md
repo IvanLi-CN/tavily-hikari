@@ -135,6 +135,10 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   history slice with one recent slice until either lane catches up. This fairness turn is process-local
   scheduler state only; it is not persisted and does not relax admission, native deadlines, or source
   fences.
+- When an aged canonical Alerts warm liveness slot is active, `AlertProjection` may admit one bounded
+  slice despite foreground-rate and lazy-pool-idle pressure so the warm coverage fence can recover.
+  The slot does not bypass existing pool waiters, recent contention, the single maintenance bulk
+  permit, the `100ms` acquire budget, or the native read deadline.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads
   `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
   stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per

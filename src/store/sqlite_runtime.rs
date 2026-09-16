@@ -796,7 +796,16 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.try_admit_maintenance_bulk_with_foreground_policy(operation)
+        self.try_admit_maintenance_bulk_with_foreground_policy(operation, false)
+    }
+
+    pub(crate) fn try_admit_alert_projection_for_canonical_warm_liveness(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_maintenance_bulk_with_foreground_policy(
+            SqliteOperation::AlertProjection,
+            true,
+        )
     }
 
     /// Research drain has an aged-turn exception for the foreground-RPS
@@ -858,6 +867,7 @@ impl SqliteRuntime {
     fn try_admit_maintenance_bulk_with_foreground_policy(
         &self,
         operation: SqliteOperation,
+        allow_foreground_pressure: bool,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
         if self
@@ -868,7 +878,19 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        let reason = self.maintenance_bulk_defer_reason_for(operation);
+        let reason = if allow_foreground_pressure {
+            if self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
+                Some(SqliteAdmissionDeferReason::PoolPressure)
+            } else if self.recent_contention_active() {
+                Some(SqliteAdmissionDeferReason::RecentContention)
+            } else if self.inner.maintenance_bulk.available_permits() == 0 {
+                Some(SqliteAdmissionDeferReason::BulkBusy)
+            } else {
+                None
+            }
+        } else {
+            self.maintenance_bulk_defer_reason_for(operation)
+        };
         if let Some(reason) = reason {
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -1164,6 +1186,14 @@ impl SqliteRuntime {
         self.inner
             .admin_alerts_cache_warm_liveness_stage_active
             .load(AtomicOrdering::Acquire)
+    }
+
+    pub(crate) fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
+        self.inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+            && (self.admin_alerts_cache_warm_liveness_permit_active()
+                || self.admin_alerts_cache_warm_liveness_stage_active())
     }
 
     fn maintenance_bulk_defer_reason_for(

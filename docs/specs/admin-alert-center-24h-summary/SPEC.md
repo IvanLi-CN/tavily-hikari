@@ -41,6 +41,9 @@
   每个 warm slice 在开始时重新检查前台速率与 SQLite contention；任何已 aged 的
   reconciliation 调度例外也不适用于该 warm controller。它不得因别的维护工作获得 RPS
   例外而预热、扩张或占用前台保留连接。
+  当该 aged liveness slot 正在恢复不完整 projection coverage 时，AlertProjection scheduler 可让一个
+  bounded projection slice 同样绕过前台速率与 lazy-pool idle 启发式；已有 acquire waiter、recent
+  contention、single bulk permit、`100ms` acquire 和 `250ms` native deadline 仍然生效。
   默认 Events `1/20` 的 canonical slice 从 `dashboard_alert_projection_events` 的时间索引读取计数和
   页面，并在 Rust 解码已物化的 `payload_json`。Catalog facet 从同代 immutable Groups event snapshot
   每次接受 `50` 行到本机 facet model，并以每次 `250` 行的持久化 output cursor 写入独立 output rows；重试不能重扫

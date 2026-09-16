@@ -82,6 +82,9 @@ reads:
   publishes them atomically from one immutable projection snapshot. A newer projection revision or
   source-fence change discards the staged generation rather than publishing mixed data; only a complete
   unchanged generation reaches the cache. Retry true defers at `5s/5s/30s`.
+  While that aged slot is recovering incomplete projection coverage, one bounded `AlertProjection`
+  slice may use the same foreground-rate and lazy-pool-idle exception. Its pool waiter, recent
+  contention, single bulk permit, `100ms` acquire, and native read deadline checks remain active.
   Aged reconciliation scheduling exceptions never transfer to this controller: an Alerts warm
   slice cannot use them to grow the pool or take a foreground-reserved connection.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
