@@ -579,7 +579,9 @@ impl KeyStore {
         // table for remaining rows inside one 250ms transaction. On the live
         // observability database that transaction could hit the native
         // deadline, leaving the build permanently in `clearing`. Advance one
-        // table at a time so every transaction remains independently bounded.
+        // bounded batch from every table so no sidecar table is starved by a
+        // large first table.
+        let mut made_progress = false;
         for table in ADMIN_ALERT_CANONICAL_GROUP_CLEAR_TABLES {
             self.ensure_admin_alerts_cache_warm_write_admitted()?;
             let table = *table;
@@ -621,11 +623,15 @@ impl KeyStore {
                 });
             }
             if deleted {
-                self.record_admin_alerts_warm_slice();
-                self.sqlite_runtime
-                    .record_admin_alerts_canonical_group_build_slice();
-                return Ok(());
+                made_progress = true;
             }
+        }
+
+        if made_progress {
+            self.record_admin_alerts_warm_slice();
+            self.sqlite_runtime
+                .record_admin_alerts_canonical_group_build_slice();
+            return Ok(());
         }
 
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
