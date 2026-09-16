@@ -682,10 +682,10 @@ fn publish_admin_alerts_canonical_into_cache(
     events: PaginatedAlertEvents,
     groups: PaginatedAlertGroups,
 ) -> bool {
-    // The controller validates the durable projection fence before this
-    // atomic cache publish. The in-memory generation must still match that
-    // attempt too; otherwise a concurrent projection update would mix a
-    // newly-read Events page with an older Catalog/Groups snapshot.
+    // The controller may stage each key through independently-admitted slices,
+    // but all three values must still belong to the cache generation captured
+    // at the start of the flight. A projection advance invalidates the staged
+    // payload; the prior complete last-good remains available to handlers.
     if cache.alert_projection_generation != generation {
         return false;
     }
@@ -825,6 +825,12 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 let (groups, build_generation, recent_generation, history_generation) =
                     groups_result?;
+                // Groups, catalog, and Events are all derived from the same
+                // bounded sidecar generation. Any recent or historical
+                // source-fence advance makes the staged payload ineligible for
+                // a fresh three-key cache publish. Keep the generation captured
+                // before the flight and reject movement below instead of
+                // relabeling old data as the new generation.
                 cache
                     .lock()
                     .await
@@ -881,7 +887,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 let events_result = state
                     .proxy
-                    .admin_default_projected_alert_events_page_for_canonical_warm()
+                    .admin_alert_events_page_for_canonical_snapshot(build_generation, 1, 20)
                     .await;
                 let events = events_result?;
                 cache
@@ -891,10 +897,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
-                if state
-                    .proxy
-                    .admin_alerts_canonical_warm_projection_fence()
-                    .await?
+                #[cfg(test)]
+                pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
+                if state.proxy.admin_alerts_canonical_warm_projection_fence().await?
                     != (recent_generation, history_generation)
                 {
                     return Err(tavily_hikari::ProxyError::Deferred {
@@ -902,8 +907,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         reason: "groups_source_fence_changed".to_string(),
                     });
                 }
-                #[cfg(test)]
-                pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }

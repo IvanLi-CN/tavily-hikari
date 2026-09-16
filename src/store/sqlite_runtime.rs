@@ -467,6 +467,7 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness: AtomicBool,
     admin_alerts_cache_warm_liveness_permit: AtomicBool,
     admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
+    alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
     workload: Mutex<WorkloadWindow>,
@@ -636,6 +637,7 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
+                alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
@@ -1090,11 +1092,13 @@ impl SqliteRuntime {
 
     fn admin_alerts_cache_warm_has_pool_pressure(&self, liveness: bool) -> bool {
         let has_open_connection = self.inner.pool.size() > 0;
-        let pool_at_capacity = self.inner.pool.size() >= self.inner.maximum_connections;
         self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
-            || ((!liveness || pool_at_capacity)
-                && has_open_connection
-                && self.inner.pool.num_idle() == 0)
+            // An aged liveness slot must reach the bounded pool acquire even
+            // when all currently-open connections are checked out. The
+            // 100ms waiter is the safety boundary; treating a full pool as a
+            // pre-admission defer would starve the slot under sustained
+            // foreground traffic.
+            || (!liveness && has_open_connection && self.inner.pool.num_idle() == 0)
     }
 
     pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {

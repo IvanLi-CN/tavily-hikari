@@ -75,16 +75,24 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   Default Groups `1/20` is served from a local observability canonical-groups model. Its builder
   atomically captures a complete projection revision, source fence, and fixed source-row membership
   boundary. Source rows are copied by a retention-bounded `(occurred_at, row_sort_id)` time-keyset
-  with that rowid upper bound, so later projection writes cannot extend a build's final scan. A projection
-  write that advances during a build retains the previous row
+  with that rowid upper bound, so later projection writes cannot extend a build's final scan. Source
+  pages remain bounded at 250 rows and partition reads at 25 rows for the native deadline and
+  cancellation contract; source rows are committed in adaptive batches of at most 100 rows and
+  512 KiB of encoded text to amortize normal transaction setup without allowing larger payloads to
+  extend a writer hold or using historical rowid allocation as a size signal.
+  A projection write that advances during a build retains the previous row
   once for that snapshot. Each partition checkpoints bounded event fragments. Final reduction reads those
   immutable fragments, stages each resulting group as bounded payload chunks plus a small metadata row,
   then atomically accepts the partition cursor. A cancellation recomputes only the unaccepted partition;
   it never rewrites an accumulating JSON state row. A changed source fence discards the staged generation
-  before publication, so it never publishes a cross-generation or stale replacement. The two model slots
-  are cleared in short slices before reuse.
+  before publication, so it never publishes a cross-generation or stale replacement. Build generations
+  are monotonic durable identities and retired rows are reclaimed in bounded background batches without
+  blocking a replacement publish.
   Incomplete staging never reaches HTTP, and reclaimer slices exclude the active and in-flight build
   generations. This derived model never enters the HA outbox and does not change filtered Groups semantics.
+  When both the recent-tail and historical projection lanes have debt, the scheduler alternates one
+  bounded history slice with one recent slice so history cannot be starved by sustained foreground
+  writes. The turn is process-local; it does not alter cursor/fence persistence or read budgets.
   The lossless catalog payload slot retains the facet label in its staged-output identity, so two labels
   for one user value cannot overwrite one another. Semantic Groups reduction keeps classification input,
   child/mother aggregates, and output chunk position in local durable sidecar rows; an in-flight
