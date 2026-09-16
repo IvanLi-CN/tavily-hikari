@@ -1020,10 +1020,17 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     // progress during this retry without bypassing its bounded admission.
                     state.proxy.set_admin_alerts_cache_warm_liveness(true);
                     state.proxy.record_admin_alerts_warm_defer();
-                    let delay = dashboard_overview_cache_for_state(state.as_ref())
+                    let backoff = dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
                         .await
                         .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                    // Once aged, let the projection scheduler consume one bounded permit on
+                    // each normal tick instead of stretching coverage catch-up to 30s turns.
+                    let delay = if liveness_slot {
+                        std::time::Duration::from_secs(5)
+                    } else {
+                        backoff
+                    };
                     tracing::debug!(
                         component = "admin_read",
                         event = "alerts_canonical_warm_deferred",
