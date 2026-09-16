@@ -817,7 +817,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
-                let groups_result = admin_alerts_canonical_groups_for_warm(state.as_ref()).await;
+                let groups_result = if liveness_slot {
+                    admin_alerts_canonical_groups_for_warm_liveness_stage(state.as_ref()).await
+                } else {
+                    admin_alerts_canonical_groups_for_warm(state.as_ref()).await
+                };
                 if liveness_slot {
                     state
                         .proxy
@@ -853,10 +857,18 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
-                let catalog_result = state
-                    .proxy
-                    .admin_alert_catalog_for_canonical_snapshot(build_generation)
-                    .await;
+                let catalog_result = if liveness_slot {
+                    admin_alert_catalog_for_canonical_snapshot_liveness_stage(
+                        state.as_ref(),
+                        build_generation,
+                    )
+                    .await
+                } else {
+                    state
+                        .proxy
+                        .admin_alert_catalog_for_canonical_snapshot(build_generation)
+                        .await
+                };
                 if liveness_slot {
                     state
                         .proxy

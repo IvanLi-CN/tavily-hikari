@@ -1673,7 +1673,7 @@ async fn admin_alerts_warm_discards_a_snapshot_after_recent_source_advance() {
     }
     pause.release();
 
-    tokio::time::timeout(std::time::Duration::from_secs(12), async {
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
         loop {
             let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
             let cache = cache_handle.lock().await;
@@ -1855,6 +1855,149 @@ async fn admin_alerts_warm_rechecks_pressure_before_catalog_after_groups() {
     .expect("catalog admission is deferred after Groups finishes");
     warm.abort();
     let _ = warm.await;
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure() {
+    let db_path = temp_db_path("admin-alerts-liveness-slice-pressure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-slice-pressure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-slice-pressure-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before warming admin cache");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..26_i64 {
+        let source_id = format!("alert-liveness-{index:04}");
+        let row_sort_id = format!("alert-liveness-sort-{index:04}");
+        let payload = serde_json::json!({
+            "source_kind": "auth_token_log",
+            "source_id": source_id,
+            "row_sort_id": row_sort_id,
+            "alert_type": "upstream_rate_limited_429",
+            "occurred_at": occurred_at - index,
+            "token_id": "token-liveness",
+            "key_id": "key-liveness",
+            "request_log_id": null,
+            "method": "POST",
+            "path": "/mcp",
+            "query": null,
+            "request_kind_key": "tavily_search",
+            "request_kind_label": "Tavily Search",
+            "request_kind_detail": "POST /mcp",
+            "result_status": "error",
+            "failure_kind": "upstream_rate_limited_429",
+            "error_message": "HTTP 429",
+            "counts_business_quota": true,
+            "user_id": "user-liveness",
+            "user_display_name": "Liveness User",
+            "user_username": "liveness",
+            "reason_code": null,
+            "reason_summary": null,
+            "reason_detail": null,
+            "job_id": null,
+            "job_type": null,
+            "job_trigger_source": null,
+            "job_status": null,
+            "job_attempt": null,
+            "job_message": null,
+            "job_queued_at": null,
+            "job_started_at": null,
+            "job_finished_at": null
+        });
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                   (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
+               VALUES ('auth_token_log', ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&source_id)
+        .bind(occurred_at - index)
+        .bind(&row_sort_id)
+        .bind(payload.to_string())
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed multi-slice projected alert event");
+    }
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes sustained foreground pressure"
+    );
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let published = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if published && same_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("an aged canonical warm must publish all three keys in one logical stage");
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     let _ = std::fs::remove_file(db_path);
 }
 
