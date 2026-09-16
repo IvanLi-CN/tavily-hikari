@@ -1861,7 +1861,9 @@ impl SqliteRuntime {
         err: &ProxyError,
     ) {
         let transient = is_transient_sqlite_write_error(err);
-        let contention_entered = if transient {
+        let pool_timeout = matches!(err, ProxyError::Database(sqlx::Error::PoolTimedOut));
+        let sqlite_contention = transient && !pool_timeout;
+        let contention_entered = if sqlite_contention {
             *self
                 .inner
                 .last_contention_at
@@ -1874,7 +1876,13 @@ impl SqliteRuntime {
         } else {
             false
         };
-        let error_category = if transient { "sqlite_busy" } else { "database" };
+        let error_category = if pool_timeout {
+            "pool_timeout"
+        } else if transient {
+            "sqlite_busy"
+        } else {
+            "database"
+        };
         if !transient || contention_entered {
             let process_write_bytes = read_process_write_bytes();
             let cgroup_write_bytes = read_cgroup_write_bytes();

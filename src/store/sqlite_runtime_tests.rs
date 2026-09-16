@@ -992,6 +992,41 @@ async fn admin_alerts_cache_warm_liveness_ignores_existing_pool_waiter() {
 }
 
 #[tokio::test]
+async fn admin_alerts_cache_warm_pool_timeout_does_not_poison_recent_contention() {
+    let runtime = single_connection_runtime().await;
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+
+    let error = runtime
+        .begin_read_snapshot(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect_err("warm read must report bounded pool pressure");
+    assert!(matches!(
+        error,
+        ProxyError::Database(sqlx::Error::PoolTimedOut)
+    ));
+    drop(held_connection);
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "a released pool timeout must not block an aged warm slot as SQLite contention"
+    );
+    runtime.mark_recent_contention_for_test();
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::RecentContention),
+        "actual SQLite contention must continue to defer the aged warm slot"
+    );
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_admits_an_empty_lazy_pool_without_waiters() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
