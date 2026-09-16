@@ -1046,6 +1046,37 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     flight_guard.disarm();
                     return;
                 }
+                Err(tavily_hikari::ProxyError::Deferred { reason, .. })
+                    if liveness_slot
+                        && (reason == "coverage_projecting"
+                            || reason == "history_projection_catching_up") =>
+                {
+                    // Keep an aged liveness slot alive while projection coverage catches up.
+                    // The next retry gets a fresh stage, while the scheduler can admit bounded
+                    // projection slices during the backoff instead of losing this opportunity
+                    // when the coverage probe runs before the scheduler.
+                    state
+                        .proxy
+                        .finish_admin_alerts_cache_warm_liveness_stage();
+                    state.proxy.record_admin_alerts_warm_defer();
+                    let delay = dashboard_overview_cache_for_state(state.as_ref())
+                        .lock()
+                        .await
+                        .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                    tracing::debug!(
+                        component = "admin_read",
+                        event = "alerts_canonical_warm_deferred",
+                        reason = reason.as_str(),
+                        retry_after_secs = delay.as_secs(),
+                        "deferred canonical administrator Alerts cache while projection catches up"
+                    );
+                    if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
+                        state.proxy.set_admin_alerts_cache_warm_liveness(false);
+                        cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                        flight_guard.disarm();
+                        return;
+                    }
+                }
                 Err(error)
                     if tavily_hikari::is_transient_sqlite_write_error(&error)
                         || error.is_deferred() =>
