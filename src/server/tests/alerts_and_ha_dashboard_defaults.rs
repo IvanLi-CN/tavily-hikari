@@ -2353,6 +2353,41 @@ async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressur
     )
     .await;
 
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before seeding coverage debt");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..26_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind("token-alert-liveness-pressure")
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed source alert for coverage debt");
+    }
+    let (dashboard_dirty, idle) = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step()
+        .await
+        .expect("advance one source projection slice before warming Alerts");
+    assert!(dashboard_dirty);
+    assert!(!idle);
+
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
     {
         let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
@@ -2379,6 +2414,15 @@ async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressur
                 .advance_dashboard_alert_projection_scheduler_step_with_alerts()
                 .await;
             tokio::task::yield_now().await;
+        }
+    });
+    let foreground_state = state.clone();
+    let foreground = tokio::spawn(async move {
+        loop {
+            for _ in 0..6 {
+                foreground_state.proxy.record_foreground_activity();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
     super::super::prewarm_admin_alerts(state.clone()).await;
@@ -2409,6 +2453,8 @@ async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressur
 
     projection.abort();
     let _ = projection.await;
+    foreground.abort();
+    let _ = foreground.await;
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     let _ = std::fs::remove_file(db_path);
 

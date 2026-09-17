@@ -471,6 +471,7 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness: AtomicBool,
     admin_alerts_cache_warm_liveness_permit: AtomicBool,
     admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
+    admin_alerts_cache_warm_liveness_projection_turn: AtomicBool,
     alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
@@ -596,6 +597,40 @@ pub(crate) struct SqliteRuntime {
     inner: Arc<SqliteRuntimeInner>,
 }
 
+#[derive(Debug)]
+pub(crate) struct SqliteAlertProjectionLivenessPermit {
+    runtime: SqliteRuntime,
+}
+
+impl Drop for SqliteAlertProjectionLivenessPermit {
+    fn drop(&mut self) {
+        if !self
+            .runtime
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+        {
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .store(false, AtomicOrdering::Release);
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_liveness_permit
+                .store(false, AtomicOrdering::Release);
+            return;
+        }
+        self.runtime
+            .inner
+            .admin_alerts_cache_warm_liveness_projection_turn
+            .store(false, AtomicOrdering::Release);
+        self.runtime
+            .inner
+            .admin_alerts_cache_warm_liveness_permit
+            .store(true, AtomicOrdering::Release);
+    }
+}
+
 impl SqliteRuntime {
     #[cfg(debug_assertions)]
     pub(crate) fn discarded_connections_for_test(&self, operation: SqliteOperation) -> u64 {
@@ -641,6 +676,7 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
+                admin_alerts_cache_warm_liveness_projection_turn: AtomicBool::new(false),
                 alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
@@ -1137,6 +1173,9 @@ impl SqliteRuntime {
         self.inner
             .admin_alerts_cache_warm_liveness_stage_active
             .store(false, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_liveness_projection_turn
+            .store(false, AtomicOrdering::Release);
     }
 
     pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
@@ -1165,6 +1204,25 @@ impl SqliteRuntime {
             .store(false, AtomicOrdering::Release);
     }
 
+    pub(crate) fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        if !self
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+        {
+            return;
+        }
+        self.inner
+            .admin_alerts_cache_warm_liveness_stage_active
+            .store(false, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_liveness_projection_turn
+            .store(true, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_liveness_permit
+            .store(true, AtomicOrdering::Release);
+    }
+
     /// Test-only knob for asserting the spent-permit pressure path. Production
     /// warm attempts keep the reservation for their controller-owned attempt
     /// and clear it when that attempt yields or publishes.
@@ -1188,6 +1246,7 @@ impl SqliteRuntime {
             .load(AtomicOrdering::Acquire)
     }
 
+    #[cfg(test)]
     pub(crate) fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
         self.inner
             .admin_alerts_cache_warm_liveness
@@ -1196,20 +1255,33 @@ impl SqliteRuntime {
                 || self.admin_alerts_cache_warm_liveness_stage_active())
     }
 
-    pub(crate) fn claim_admin_alerts_cache_warm_liveness_for_projection(&self) -> bool {
-        if !self.admin_alerts_cache_warm_liveness_admission_active() {
-            return false;
+    pub(crate) fn claim_admin_alerts_cache_warm_liveness_for_projection(
+        &self,
+    ) -> Option<SqliteAlertProjectionLivenessPermit> {
+        if !self
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+            || !self
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .load(AtomicOrdering::Acquire)
+        {
+            return None;
         }
         if self.admin_alerts_cache_warm_liveness_stage_active() {
             // The canonical controller owns the liveness slot for its active
             // stage. Projection may claim a transferred permit only after the
             // stage has deferred and released that ownership.
-            return false;
+            return None;
         }
         self.inner
             .admin_alerts_cache_warm_liveness_permit
             .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .is_ok()
+            .then(|| SqliteAlertProjectionLivenessPermit {
+                runtime: self.clone(),
+            })
     }
 
     fn maintenance_bulk_defer_reason_for(
@@ -2147,6 +2219,11 @@ impl KeyStore {
     pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
         self.sqlite_runtime
             .finish_admin_alerts_cache_warm_liveness_stage();
+    }
+
+    pub(crate) fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        self.sqlite_runtime
+            .transfer_admin_alerts_cache_warm_liveness_to_projection();
     }
 
     pub(crate) fn record_admin_alerts_warm_slice(&self) {

@@ -946,10 +946,44 @@ async fn alert_projection_cannot_claim_an_active_canonical_warm_stage() {
     runtime.begin_admin_alerts_cache_warm_liveness_stage();
 
     assert!(
-        !runtime.claim_admin_alerts_cache_warm_liveness_for_projection(),
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
         "projection liveness must wait for the canonical stage to release its slot"
     );
 
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("coverage defer must transfer one liveness turn to projection");
+    assert!(
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
+        "one projection slice must own the transferred turn"
+    );
+
+    drop(projection_turn);
+    assert!(
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
+        "projection must close its turn when the bounded slice returns"
+    );
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+    assert!(
+        runtime.admin_alerts_cache_warm_liveness_admission_active(),
+        "the returned turn must be available to canonical warm"
+    );
     runtime.finish_admin_alerts_cache_warm_liveness_stage();
     runtime.set_admin_alerts_cache_warm_liveness(false);
 }

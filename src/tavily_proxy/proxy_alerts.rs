@@ -83,6 +83,12 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        self.key_store
+            .transfer_admin_alerts_cache_warm_liveness_to_projection();
+    }
+
+    #[doc(hidden)]
     #[doc(hidden)]
     pub async fn prepare_admin_alerts_canonical_warm(&self) -> Result<(), ProxyError> {
         self.key_store.prepare_admin_alerts_canonical_warm().await

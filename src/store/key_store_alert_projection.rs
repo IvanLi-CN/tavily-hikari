@@ -501,16 +501,18 @@ impl KeyStore {
         let canonical_warm_liveness = self
             .sqlite_runtime
             .claim_admin_alerts_cache_warm_liveness_for_projection();
+        let has_canonical_warm_liveness = canonical_warm_liveness.is_some();
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
         // whether the slice can run.
-        if !canonical_warm_liveness {
+        if !has_canonical_warm_liveness {
             self.sqlite_runtime
                 .prewarm_maintenance_bulk_capacity()
                 .await?;
         }
-        let _admission = match if canonical_warm_liveness {
+        let _canonical_warm_liveness = canonical_warm_liveness;
+        let _admission = match if has_canonical_warm_liveness {
             self.sqlite_runtime
                 .try_admit_alert_projection_for_canonical_warm_liveness()
         } else {
