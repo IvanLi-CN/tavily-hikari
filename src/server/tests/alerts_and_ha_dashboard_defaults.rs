@@ -2456,10 +2456,6 @@ async fn alert_projection_liveness_waits_for_an_active_canonical_warm_stage() {
     assert!(first_step.0);
     assert!(!first_step.1);
 
-    for _ in 0..6 {
-        state.proxy.record_foreground_activity();
-    }
-    assert!(state.proxy.foreground_activity_rps() > 5);
     state.proxy.set_admin_alerts_cache_warm_liveness(true);
     state.proxy.begin_admin_alerts_cache_warm_liveness_stage();
 

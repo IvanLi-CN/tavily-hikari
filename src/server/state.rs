@@ -780,11 +780,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 } else {
                     admin_alerts_canonical_groups_for_warm(state.as_ref()).await
                 };
-                if liveness_slot {
-                    state
-                        .proxy
-                        .finish_admin_alerts_cache_warm_liveness_stage();
-                }
                 let (groups, build_generation, recent_generation, history_generation) =
                     groups_result?;
                 // Groups, catalog, and Events are all derived from the same
@@ -799,19 +794,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_groups_for_test(state.as_ref()).await;
-                if liveness_slot
-                    && reacquire_admin_alerts_liveness_stage_or_shutdown(
-                        &cache,
-                        &shutdown_notify,
-                        &state.proxy,
-                    )
-                    .await
-                {
-                    return Err(tavily_hikari::ProxyError::Deferred {
-                        operation: "admin_alerts_warm",
-                        reason: "shutdown".to_string(),
-                    });
-                }
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -827,11 +809,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .admin_alert_catalog_for_canonical_snapshot(build_generation)
                         .await
                 };
-                if liveness_slot {
-                    state
-                        .proxy
-                        .finish_admin_alerts_cache_warm_liveness_stage();
-                }
                 let catalog = catalog_result?;
                 cache
                     .lock()
@@ -839,19 +816,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_catalog_for_test(state.as_ref()).await;
-                if liveness_slot
-                    && reacquire_admin_alerts_liveness_stage_or_shutdown(
-                        &cache,
-                        &shutdown_notify,
-                        &state.proxy,
-                    )
-                    .await
-                {
-                    return Err(tavily_hikari::ProxyError::Deferred {
-                        operation: "admin_alerts_warm",
-                        reason: "shutdown".to_string(),
-                    });
-                }
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
@@ -879,11 +843,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
-                }
-                if liveness_slot {
-                    state
-                        .proxy
-                        .finish_admin_alerts_cache_warm_liveness_stage();
                 }
                 if !publish_admin_alerts_canonical(
                     state.as_ref(),

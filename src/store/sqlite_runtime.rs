@@ -1240,7 +1240,7 @@ impl SqliteRuntime {
             .load(AtomicOrdering::Acquire)
     }
 
-    fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
+    pub(crate) fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
         self.inner
             .admin_alerts_cache_warm_liveness_stage_active
             .load(AtomicOrdering::Acquire)

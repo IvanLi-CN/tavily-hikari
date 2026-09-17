@@ -15,25 +15,6 @@ async fn wait_for_admin_alerts_shutdown_or(
     }
 }
 
-async fn reacquire_admin_alerts_liveness_stage_or_shutdown(
-    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
-    shutdown_notify: &Arc<tokio::sync::Notify>,
-    proxy: &TavilyProxy,
-) -> bool {
-    if wait_for_admin_alerts_shutdown_or(
-        cache,
-        shutdown_notify,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        return true;
-    }
-    proxy.set_admin_alerts_cache_warm_liveness(true);
-    proxy.begin_admin_alerts_cache_warm_liveness_stage();
-    false
-}
-
 async fn admin_alerts_shutdown_requested(
     cache: &Arc<Mutex<DashboardOverviewCacheState>>,
 ) -> bool {

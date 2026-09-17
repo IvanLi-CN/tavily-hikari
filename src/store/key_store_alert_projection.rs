@@ -502,6 +502,19 @@ impl KeyStore {
             .sqlite_runtime
             .claim_admin_alerts_cache_warm_liveness_for_projection();
         let has_canonical_warm_liveness = canonical_warm_liveness.is_some();
+        if !has_canonical_warm_liveness
+            && self
+                .sqlite_runtime
+                .admin_alerts_cache_warm_liveness_stage_active()
+        {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::AlertProjection,
+                SqliteAdmissionDeferReason::BulkBusy,
+            );
+            return Ok(AlertProjectionSliceOutcome::Deferred {
+                reason: SqliteAdmissionDeferReason::BulkBusy,
+            });
+        }
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
