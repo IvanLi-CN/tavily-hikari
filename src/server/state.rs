@@ -303,6 +303,27 @@ impl DashboardOverviewCacheState {
             .is_some_and(|at| now.saturating_duration_since(at) >= ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
     }
 
+    fn admin_alerts_canonical_warm_liveness_due(&self, now: tokio::time::Instant) -> bool {
+        !self.has_fresh_complete_default_admin_alerts_cache() || self.admin_alerts_prewarm_liveness_due(now)
+    }
+
+    fn has_fresh_complete_default_admin_alerts_cache(&self) -> bool {
+        [
+            "catalog".to_string(),
+            default_admin_alert_cache_key("events"),
+            default_admin_alert_cache_key("groups"),
+        ]
+        .into_iter()
+        .all(|key| {
+            self.admin_alerts.entries.iter().any(|entry| {
+                entry.key == key
+                    && entry.canonical
+                    && entry.generation == self.alert_projection_generation
+                    && entry.stored_at.elapsed() <= ADMIN_ALERTS_CACHE_TTL
+            })
+        })
+    }
+
     fn record_admin_alerts_prewarm_slice(&mut self, _now: tokio::time::Instant) {
         // Partial work is observable through the workload window, but it cannot
         // satisfy liveness until the complete three-key generation publishes.
@@ -733,7 +754,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             }
             let liveness_slot = {
                 let cache_state = cache.lock().await;
-                cache_state.admin_alerts_prewarm_liveness_due(tokio::time::Instant::now())
+                cache_state.admin_alerts_canonical_warm_liveness_due(tokio::time::Instant::now())
             };
             state
                 .proxy
