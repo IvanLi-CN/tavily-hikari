@@ -2120,6 +2120,150 @@ async fn admin_alerts_warm_liveness_drains_same_fence_clearing_build_under_press
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_publishes_all_keys_after_groups_write_lock_recovery() {
+    let db_path = temp_db_path("admin-alerts-liveness-write-lock-recovery");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-write-lock-recovery".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-write-lock-recovery-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..126_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind("token-alert-liveness-write-lock")
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed source alert");
+    }
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the source projection before warming Alerts");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+
+    let mut writer = pool.acquire().await.expect("acquire lock writer");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .expect("hold the observability writer lock");
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if super::super::dashboard_overview_cache_for_state(state.as_ref())
+                .lock()
+                .await
+                .admin_alerts_prewarm_defers
+                > 0
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the bounded Groups write must defer on the held SQLite lock");
+    assert!(
+        state.proxy.admin_alerts_cache_warm_liveness_admission_active(),
+        "a transient Groups write defer must retain the aged canonical warm liveness turn"
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *writer)
+        .await
+        .expect("release the observability writer lock");
+
+    let foreground = state.clone();
+    let foreground_task = tokio::spawn(async move {
+        loop {
+            for _ in 0..6 {
+                foreground.proxy.record_foreground_activity();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    foreground_task.abort();
+    let _ = foreground_task.await;
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    drop(writer);
+    let _ = std::fs::remove_file(db_path);
+
+    assert!(
+        published.is_ok(),
+        "a recovered canonical warm must publish catalog, Events 1/20, and Groups 1/20"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_reclaims_stage_after_scheduler_coverage_turn() {
     let db_path = temp_db_path("admin-alerts-liveness-scheduler-coverage");
     let db_str = db_path.to_string_lossy().to_string();

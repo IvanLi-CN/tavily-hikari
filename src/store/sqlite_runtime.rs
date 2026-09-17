@@ -1246,7 +1246,6 @@ impl SqliteRuntime {
             .load(AtomicOrdering::Acquire)
     }
 
-    #[cfg(test)]
     pub(crate) fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
         self.inner
             .admin_alerts_cache_warm_liveness

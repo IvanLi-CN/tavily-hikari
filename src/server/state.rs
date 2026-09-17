@@ -1049,6 +1049,35 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     }
                 }
                 Err(error)
+                    if liveness_slot
+                        && (tavily_hikari::is_transient_sqlite_write_error(&error)
+                            || error.is_deferred()) =>
+                {
+                    state
+                        .proxy
+                        .finish_admin_alerts_cache_warm_liveness_stage();
+                    state.proxy.set_admin_alerts_cache_warm_liveness(true);
+                    state.proxy.record_admin_alerts_warm_defer();
+                    let delay = dashboard_overview_cache_for_state(state.as_ref())
+                        .lock()
+                        .await
+                        .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                    tracing::debug!(
+                        component = "admin_read",
+                        event = "alerts_canonical_warm_deferred",
+                        reason = admin_alerts_warm_error_reason(&error),
+                        retry_after_secs = delay.as_secs(),
+                        "deferred canonical administrator Alerts cache while retaining liveness"
+                    );
+                    spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
+                    if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
+                        state.proxy.set_admin_alerts_cache_warm_liveness(false);
+                        cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                        flight_guard.disarm();
+                        return;
+                    }
+                }
+                Err(error)
                     if tavily_hikari::is_transient_sqlite_write_error(&error)
                         || error.is_deferred() =>
                 {
