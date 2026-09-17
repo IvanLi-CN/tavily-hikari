@@ -1164,17 +1164,31 @@ impl SqliteRuntime {
     }
 
     pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {
-        self.inner
+        let was_enabled = self
+            .inner
             .admin_alerts_cache_warm_liveness
-            .store(enabled, AtomicOrdering::Release);
-        self.inner
-            .admin_alerts_cache_warm_liveness_permit
-            .store(enabled, AtomicOrdering::Release);
+            .swap(enabled, AtomicOrdering::AcqRel);
+        if !enabled || !was_enabled {
+            self.inner
+                .admin_alerts_cache_warm_liveness_permit
+                .store(enabled, AtomicOrdering::Release);
+            self.inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .store(false, AtomicOrdering::Release);
+        } else if !self
+            .inner
+            .admin_alerts_cache_warm_liveness_projection_turn
+            .load(AtomicOrdering::Acquire)
+        {
+            // A retry may re-arm the canonical controller after it handed one
+            // liveness turn to projection. Preserve that handoff while making
+            // an unclaimed turn available to the next canonical stage.
+            self.inner
+                .admin_alerts_cache_warm_liveness_permit
+                .store(true, AtomicOrdering::Release);
+        }
         self.inner
             .admin_alerts_cache_warm_liveness_stage_active
-            .store(false, AtomicOrdering::Release);
-        self.inner
-            .admin_alerts_cache_warm_liveness_projection_turn
             .store(false, AtomicOrdering::Release);
     }
 
