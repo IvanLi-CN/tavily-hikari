@@ -1201,7 +1201,10 @@ impl SqliteRuntime {
             return false;
         }
         if self.admin_alerts_cache_warm_liveness_stage_active() {
-            return true;
+            // The canonical controller owns the liveness slot for its active
+            // stage. Projection may claim a transferred permit only after the
+            // stage has deferred and released that ownership.
+            return false;
         }
         self.inner
             .admin_alerts_cache_warm_liveness_permit

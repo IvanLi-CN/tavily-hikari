@@ -940,6 +940,21 @@ async fn alert_projection_liveness_admission_preserves_safety_guards() {
 }
 
 #[tokio::test]
+async fn alert_projection_cannot_claim_an_active_canonical_warm_stage() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+
+    assert!(
+        !runtime.claim_admin_alerts_cache_warm_liveness_for_projection(),
+        "projection liveness must wait for the canonical stage to release its slot"
+    );
+
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()

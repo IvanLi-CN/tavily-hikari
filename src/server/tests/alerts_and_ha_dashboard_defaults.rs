@@ -2002,6 +2002,341 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_liveness_drains_same_fence_clearing_build_under_pressure() {
+    let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-clearing-build".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-clearing-build-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let (revision, recent_generation, history_generation, source_rowid_upper_bound): (i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT
+                (SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1),
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state),
+                (SELECT COALESCE(MAX(rowid), 0) FROM observability.dashboard_alert_projection_events)",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read the current canonical warm fence");
+    for index in 0..625_i64 {
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_events
+                   (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                    partition_key, payload_json)
+               VALUES (1, 'auth_token_log', ?, ?, ?, 'key:stale', '{}')"#,
+        )
+        .bind(format!("stale-clearing-{index:04}"))
+        .bind(index)
+        .bind(format!("stale-clearing:{index:04}"))
+        .execute(&pool)
+        .await
+        .expect("seed bounded clearing debt");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET build_generation = 1,
+                  build_projection_revision = ?,
+                  build_source_recent_generation = ?,
+                  build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = ?,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'clearing'
+            WHERE singleton = 1"#,
+    )
+    .bind(revision)
+    .bind(recent_generation)
+    .bind(history_generation)
+    .bind(source_rowid_upper_bound)
+    .execute(&pool)
+    .await
+    .expect("seed same-fence clearing build state");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(state.proxy.foreground_activity_rps() > 5);
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("same-fence clearing debt must not block canonical Alerts publication");
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn admin_alerts_warm_liveness_reclaims_stage_after_scheduler_coverage_turn() {
+    let db_path = temp_db_path("admin-alerts-liveness-scheduler-coverage");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-scheduler-coverage".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-scheduler-coverage-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before seeding coverage debt");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..126_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind("token-alert-liveness-scheduler")
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed source alert");
+    }
+
+    let (dashboard_dirty, idle) = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step()
+        .await
+        .expect("advance the first source projection slice");
+    assert!(dashboard_dirty);
+    assert!(!idle);
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(state.proxy.foreground_activity_rps() > 5);
+
+    let writer_pool = pool.clone();
+    let writer = tokio::spawn(async move {
+        for index in 126..626_i64 {
+            sqlx::query(
+                r#"INSERT INTO auth_token_logs (
+                       token_id, method, path, result_status, error_message, failure_kind,
+                       key_effect_code, binding_effect_code, selection_effect_code,
+                       counts_business_quota, created_at
+                   ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                             'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+            )
+            .bind("token-alert-liveness-scheduler-live")
+            .bind(occurred_at - index)
+            .execute(&writer_pool)
+            .await
+            .expect("append a bounded live alert projection write");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    });
+
+    let scheduler_state = state.clone();
+    let scheduler = tokio::spawn(async move {
+        loop {
+            let _ = scheduler_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await;
+            super::super::prewarm_admin_alerts(scheduler_state.clone()).await;
+            tokio::task::yield_now().await;
+        }
+    });
+    super::super::prewarm_admin_alerts(state.clone()).await;
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    scheduler.abort();
+    let _ = scheduler.await;
+    writer.abort();
+    let _ = writer.await;
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+
+    assert!(
+        published.is_ok(),
+        "canonical warm must reclaim liveness after scheduler coverage slices"
+    );
+}
+
+#[tokio::test]
+async fn alert_projection_liveness_waits_for_an_active_canonical_warm_stage() {
+    let db_path = temp_db_path("admin-alerts-liveness-active-stage");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-active-stage".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-active-stage-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before seeding source debt");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..126_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind("token-alert-liveness-active-stage")
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed source alert");
+    }
+
+    let first_step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step()
+        .await
+        .expect("advance the first source projection slice");
+    assert!(first_step.0);
+    assert!(!first_step.1);
+
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(state.proxy.foreground_activity_rps() > 5);
+    state.proxy.set_admin_alerts_cache_warm_liveness(true);
+    state.proxy.begin_admin_alerts_cache_warm_liveness_stage();
+
+    let step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("active canonical stage must produce a bounded projection decision");
+
+    state.proxy.finish_admin_alerts_cache_warm_liveness_stage();
+    state.proxy.set_admin_alerts_cache_warm_liveness(false);
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+
+    assert!(
+        !step.canonical_alerts_dirty,
+        "projection liveness must defer while canonical warm owns the active stage"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressure() {
     let db_path = temp_db_path("admin-alerts-liveness-projection-coverage");
     let db_str = db_path.to_string_lossy().to_string();
