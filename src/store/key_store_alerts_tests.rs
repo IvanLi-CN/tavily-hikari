@@ -705,6 +705,69 @@ async fn fetch_alert_groups_page_executes_sqlite_grouped_query_for_mother_and_co
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_clear_round_robin_progresses_all_tables() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let db_path = temp_dir.path().join("alerts-canonical-clear-round-robin.db");
+    let db_str = db_path.to_string_lossy().to_string();
+    let store = KeyStore::new_with_time(&db_str, BackendTime::system())
+        .await
+        .expect("create key store");
+    let snapshot = store
+        .start_admin_alert_canonical_groups_build()
+        .await
+        .expect("start canonical Groups build");
+
+    sqlx::query(
+        r#"INSERT INTO observability.admin_alert_canonical_groups
+               (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json)
+           VALUES (?, 1, 1, 1, 'upstream_rate_limited_429', 'staged-group', '{}')"#,
+    )
+    .bind(snapshot.build_generation)
+    .execute(&store.pool)
+    .await
+    .expect("seed staged canonical group row");
+    sqlx::query(
+        r#"INSERT INTO observability.admin_alert_canonical_group_events
+               (build_generation, source_kind, source_id, occurred_at, row_sort_id, partition_key, payload_json)
+           VALUES (?, 'auth_token_log', 'staged-event', 1, 'staged-event', 'key:staged', '{}')"#,
+    )
+    .bind(snapshot.build_generation)
+    .execute(&store.pool)
+    .await
+    .expect("seed staged canonical event row");
+
+    let result = store.admin_alert_canonical_groups_page_for_warm().await;
+    assert!(matches!(
+        result,
+        Err(ProxyError::Deferred { ref reason, .. }) if reason == "groups_build_in_progress"
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+             WHERE build_generation = ?",
+        )
+        .bind(snapshot.build_generation)
+        .fetch_one(&store.pool)
+        .await
+        .expect("count staged canonical group rows"),
+        0,
+        "the clearing slice must drain the first sidecar table"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = ?",
+        )
+        .bind(snapshot.build_generation)
+        .fetch_one(&store.pool)
+        .await
+        .expect("count staged canonical event rows"),
+        0,
+        "the same clearing slice must not starve the next sidecar table"
+    );
+}
+
+#[tokio::test]
 async fn recent_alerts_summary_uses_latest_event_window_minutes_for_business_call_caps() {
     let temp_dir = tempdir().expect("create temp dir");
     let db_path = temp_dir.path().join("alerts-recent-summary-window-minutes.db");

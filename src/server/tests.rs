@@ -35,6 +35,7 @@ mod tests {
     mod admin_users_and_tokens;
     mod admin_users_shadow_daily_projection;
     mod alerts_and_ha;
+    mod admin_alerts_canonical_warm;
     mod alerts_and_ha_dashboard_defaults;
     mod alerts_and_ha_event_exports;
     mod alerts_and_ha_node_detail;

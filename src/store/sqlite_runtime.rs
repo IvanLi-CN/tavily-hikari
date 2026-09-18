@@ -12,10 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrde
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::{debug, error, info, warn};
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use tracing::debug;
+use tracing::{info, warn};
 
 #[path = "sqlite_runtime_cooperative.rs"]
 mod cooperative;
+#[path = "sqlite_runtime_error_logging.rs"]
+mod error_logging;
 pub(crate) use cooperative::SqliteCooperativeQueryOutcome;
 
 #[cfg(test)]
@@ -467,6 +471,8 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness: AtomicBool,
     admin_alerts_cache_warm_liveness_permit: AtomicBool,
     admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
+    admin_alerts_cache_warm_liveness_projection_turn: AtomicBool,
+    alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
     workload: Mutex<WorkloadWindow>,
@@ -591,6 +597,40 @@ pub(crate) struct SqliteRuntime {
     inner: Arc<SqliteRuntimeInner>,
 }
 
+#[derive(Debug)]
+pub(crate) struct SqliteAlertProjectionLivenessPermit {
+    runtime: SqliteRuntime,
+}
+
+impl Drop for SqliteAlertProjectionLivenessPermit {
+    fn drop(&mut self) {
+        if !self
+            .runtime
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+        {
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .store(false, AtomicOrdering::Release);
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_liveness_permit
+                .store(false, AtomicOrdering::Release);
+            return;
+        }
+        self.runtime
+            .inner
+            .admin_alerts_cache_warm_liveness_projection_turn
+            .store(false, AtomicOrdering::Release);
+        self.runtime
+            .inner
+            .admin_alerts_cache_warm_liveness_permit
+            .store(true, AtomicOrdering::Release);
+    }
+}
+
 impl SqliteRuntime {
     #[cfg(debug_assertions)]
     pub(crate) fn discarded_connections_for_test(&self, operation: SqliteOperation) -> u64 {
@@ -636,6 +676,8 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
+                admin_alerts_cache_warm_liveness_projection_turn: AtomicBool::new(false),
+                alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
                 workload: Mutex::new(WorkloadWindow::default()),
@@ -790,7 +832,16 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.try_admit_maintenance_bulk_with_foreground_policy(operation)
+        self.try_admit_maintenance_bulk_with_foreground_policy(operation, false)
+    }
+
+    pub(crate) fn try_admit_alert_projection_for_canonical_warm_liveness(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_maintenance_bulk_with_foreground_policy(
+            SqliteOperation::AlertProjection,
+            true,
+        )
     }
 
     /// Research drain has an aged-turn exception for the foreground-RPS
@@ -852,6 +903,7 @@ impl SqliteRuntime {
     fn try_admit_maintenance_bulk_with_foreground_policy(
         &self,
         operation: SqliteOperation,
+        allow_foreground_pressure: bool,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
         if self
@@ -862,7 +914,19 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        let reason = self.maintenance_bulk_defer_reason_for(operation);
+        let reason = if allow_foreground_pressure {
+            if self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0 {
+                Some(SqliteAdmissionDeferReason::PoolPressure)
+            } else if self.recent_contention_active() {
+                Some(SqliteAdmissionDeferReason::RecentContention)
+            } else if self.inner.maintenance_bulk.available_permits() == 0 {
+                Some(SqliteAdmissionDeferReason::BulkBusy)
+            } else {
+                None
+            }
+        } else {
+            self.maintenance_bulk_defer_reason_for(operation)
+        };
         if let Some(reason) = reason {
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -1034,128 +1098,6 @@ impl SqliteRuntime {
         } else {
             None
         }
-    }
-
-    pub(crate) fn admin_alerts_cache_warm_defer_reason(
-        &self,
-    ) -> Option<SqliteAdmissionDeferReason> {
-        self.admin_alerts_cache_warm_defer_reason_with_liveness(true)
-    }
-
-    pub(crate) fn admin_alerts_cache_warm_defer_reason_without_liveness(
-        &self,
-    ) -> Option<SqliteAdmissionDeferReason> {
-        self.admin_alerts_cache_warm_defer_reason_with_liveness(false)
-    }
-
-    fn admin_alerts_cache_warm_defer_reason_with_liveness(
-        &self,
-        allow_liveness: bool,
-    ) -> Option<SqliteAdmissionDeferReason> {
-        let liveness = allow_liveness
-            && self
-                .inner
-                .admin_alerts_cache_warm_liveness
-                .load(AtomicOrdering::Acquire)
-            && (self.admin_alerts_cache_warm_liveness_permit_active()
-                || self.admin_alerts_cache_warm_liveness_stage_active());
-        if !liveness && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
-            Some(SqliteAdmissionDeferReason::ForegroundPressure)
-        } else if self.recent_contention_active() {
-            Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if self.admin_alerts_cache_warm_has_pool_pressure(liveness) {
-            Some(SqliteAdmissionDeferReason::PoolPressure)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn admin_alerts_cache_warm_pressure_reason(&self) -> Option<&'static str> {
-        let liveness = self
-            .inner
-            .admin_alerts_cache_warm_liveness
-            .load(AtomicOrdering::Acquire)
-            && (self.admin_alerts_cache_warm_liveness_permit_active()
-                || self.admin_alerts_cache_warm_liveness_stage_active());
-        if !liveness && self.foreground_activity_rps() > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
-            Some(SqliteAdmissionDeferReason::ForegroundPressure.as_str())
-        } else if self.recent_contention_active() {
-            Some(SqliteAdmissionDeferReason::RecentContention.as_str())
-        } else if self.admin_alerts_cache_warm_has_pool_pressure(liveness) {
-            Some(SqliteAdmissionDeferReason::PoolPressure.as_str())
-        } else {
-            None
-        }
-    }
-
-    fn admin_alerts_cache_warm_has_pool_pressure(&self, liveness: bool) -> bool {
-        let has_open_connection = self.inner.pool.size() > 0;
-        let pool_at_capacity = self.inner.pool.size() >= self.inner.maximum_connections;
-        self.inner.acquire_waiters.load(AtomicOrdering::Acquire) > 0
-            || ((!liveness || pool_at_capacity)
-                && has_open_connection
-                && self.inner.pool.num_idle() == 0)
-    }
-
-    pub(crate) fn set_admin_alerts_cache_warm_liveness(&self, enabled: bool) {
-        self.inner
-            .admin_alerts_cache_warm_liveness
-            .store(enabled, AtomicOrdering::Release);
-        self.inner
-            .admin_alerts_cache_warm_liveness_permit
-            .store(enabled, AtomicOrdering::Release);
-        self.inner
-            .admin_alerts_cache_warm_liveness_stage_active
-            .store(false, AtomicOrdering::Release);
-    }
-
-    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
-        if !self
-            .inner
-            .admin_alerts_cache_warm_liveness
-            .load(AtomicOrdering::Acquire)
-        {
-            return;
-        }
-        if self
-            .inner
-            .admin_alerts_cache_warm_liveness_permit
-            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
-            .is_ok()
-        {
-            self.inner
-                .admin_alerts_cache_warm_liveness_stage_active
-                .store(true, AtomicOrdering::Release);
-        }
-    }
-
-    pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
-        self.inner
-            .admin_alerts_cache_warm_liveness_stage_active
-            .store(false, AtomicOrdering::Release);
-    }
-
-    /// Test-only knob for asserting the spent-permit pressure path. Production
-    /// warm attempts keep the reservation for their controller-owned attempt
-    /// and clear it when that attempt yields or publishes.
-    #[cfg(test)]
-    pub(crate) fn consume_admin_alerts_cache_warm_liveness_permit(&self) {
-        let _ = self
-            .inner
-            .admin_alerts_cache_warm_liveness_permit
-            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire);
-    }
-
-    fn admin_alerts_cache_warm_liveness_permit_active(&self) -> bool {
-        self.inner
-            .admin_alerts_cache_warm_liveness_permit
-            .load(AtomicOrdering::Acquire)
-    }
-
-    fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
-        self.inner
-            .admin_alerts_cache_warm_liveness_stage_active
-            .load(AtomicOrdering::Acquire)
     }
 
     fn maintenance_bulk_defer_reason_for(
@@ -1856,86 +1798,7 @@ impl SqliteRuntime {
         begin_wait: Duration,
         err: &ProxyError,
     ) {
-        let transient = is_transient_sqlite_write_error(err);
-        let contention_entered = if transient {
-            *self
-                .inner
-                .last_contention_at
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
-            self.inner
-                .contention_warning_active
-                .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
-                .is_ok()
-        } else {
-            false
-        };
-        let error_category = if transient { "sqlite_busy" } else { "database" };
-        if !transient || contention_entered {
-            let process_write_bytes = read_process_write_bytes();
-            let cgroup_write_bytes = read_cgroup_write_bytes();
-            if transient {
-                warn!(
-                    component = "db",
-                    event = "sqlite_runtime_contention_entered",
-                    operation = operation.as_str(),
-                    workload_class = operation.workload_class(),
-                    pool_wait_ms = pool_wait.as_millis() as u64,
-                    begin_wait_ms = begin_wait.as_millis() as u64,
-                    error_category,
-                    process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
-                    cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
-                    "SQLite workload contention entered"
-                );
-            } else {
-                error!(
-                    component = "db",
-                    event = "sqlite_runtime_error",
-                    operation = operation.as_str(),
-                    workload_class = operation.workload_class(),
-                    pool_wait_ms = pool_wait.as_millis() as u64,
-                    begin_wait_ms = begin_wait.as_millis() as u64,
-                    error_category,
-                    process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
-                    cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
-                    "sqlite runtime operation failed"
-                );
-            }
-        } else {
-            debug!(
-                component = "db",
-                event = "sqlite_runtime_contention",
-                operation = operation.as_str(),
-                workload_class = operation.workload_class(),
-                pool_wait_ms = pool_wait.as_millis() as u64,
-                begin_wait_ms = begin_wait.as_millis() as u64,
-                error_category,
-                "SQLite workload contention remains active"
-            );
-        }
-        let maintenance_transient_defer = transient
-            && (operation.is_maintenance_bulk()
-                || matches!(
-                    operation,
-                    SqliteOperation::ScheduledJobControl | SqliteOperation::HaOutboxGcWatchdog
-                ));
-        let maintenance_defer_reason = maintenance_transient_defer.then_some(
-            if matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
-                SqliteAdmissionDeferReason::PoolPressure
-            } else {
-                SqliteAdmissionDeferReason::RecentContention
-            },
-        );
-        self.record(
-            operation,
-            pool_wait,
-            begin_wait,
-            Duration::ZERO,
-            0,
-            !maintenance_transient_defer,
-            false,
-            maintenance_defer_reason,
-        );
+        error_logging::record_error(self, operation, pool_wait, begin_wait, err);
     }
 
     fn record_discard(
@@ -2172,6 +2035,16 @@ impl KeyStore {
     pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
         self.sqlite_runtime
             .finish_admin_alerts_cache_warm_liveness_stage();
+    }
+
+    pub(crate) fn retain_admin_alerts_cache_warm_liveness_for_retry(&self) {
+        self.sqlite_runtime
+            .retain_admin_alerts_cache_warm_liveness_for_retry();
+    }
+
+    pub(crate) fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        self.sqlite_runtime
+            .transfer_admin_alerts_cache_warm_liveness_to_projection();
     }
 
     pub(crate) fn record_admin_alerts_warm_slice(&self) {
@@ -3544,3 +3417,5 @@ fn parse_cgroup_write_bytes(content: &str) -> Option<u64> {
     }
     found.then_some(total)
 }
+
+include!("sqlite_runtime_alerts.rs");

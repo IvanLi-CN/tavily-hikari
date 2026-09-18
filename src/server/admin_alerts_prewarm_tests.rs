@@ -110,6 +110,31 @@ fn admin_alerts_prewarm_gets_a_liveness_slot_after_two_minutes_without_progress(
 }
 
 #[test]
+fn cold_default_admin_alerts_cache_gets_an_initial_liveness_slot() {
+    let cache = DashboardOverviewCacheState::default();
+    let now = tokio::time::Instant::now();
+
+    assert!(cache.admin_alerts_canonical_warm_liveness_due(now));
+}
+
+#[test]
+fn complete_default_admin_alerts_cache_keeps_the_initial_slot_bounded() {
+    let mut cache = DashboardOverviewCacheState::default();
+    let now = tokio::time::Instant::now();
+
+    assert!(publish_admin_alerts_canonical_into_cache(
+        &mut cache,
+        0,
+        0,
+        now,
+        empty_catalog(),
+        empty_events(),
+        empty_groups(),
+    ));
+    assert!(!cache.admin_alerts_canonical_warm_liveness_due(now));
+}
+
+#[test]
 fn completed_admin_alerts_prewarm_keeps_publish_time_as_liveness_anchor() {
     let mut cache = DashboardOverviewCacheState::default();
     let started_at = tokio::time::Instant::now();

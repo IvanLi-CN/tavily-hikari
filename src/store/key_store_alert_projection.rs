@@ -498,14 +498,39 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        let canonical_warm_liveness = self
+            .sqlite_runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection();
+        let has_canonical_warm_liveness = canonical_warm_liveness.is_some();
+        if !has_canonical_warm_liveness
+            && self
+                .sqlite_runtime
+                .admin_alerts_cache_warm_liveness_stage_active()
+        {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::AlertProjection,
+                SqliteAdmissionDeferReason::BulkBusy,
+            );
+            return Ok(AlertProjectionSliceOutcome::Deferred {
+                reason: SqliteAdmissionDeferReason::BulkBusy,
+            });
+        }
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
         // whether the slice can run.
-        self.sqlite_runtime
-            .prewarm_maintenance_bulk_capacity()
-            .await?;
-        let _admission = match self.try_admit_alert_projection() {
+        if !has_canonical_warm_liveness {
+            self.sqlite_runtime
+                .prewarm_maintenance_bulk_capacity()
+                .await?;
+        }
+        let _canonical_warm_liveness = canonical_warm_liveness;
+        let _admission = match if has_canonical_warm_liveness {
+            self.sqlite_runtime
+                .try_admit_alert_projection_for_canonical_warm_liveness()
+        } else {
+            self.try_admit_alert_projection()
+        } {
             Ok(permit) => permit,
             Err(reason) => {
                 tracing::debug!(
@@ -653,11 +678,18 @@ impl KeyStore {
             }
         }
         // The durable history lane owns catch-up whenever the selected recent
-        // source is already current. A bounded recent fence probe before each
-        // history slice keeps the Dashboard tail responsive without using tail
-        // generation bumps as an implicit round-robin clock.
+        // source is already current. When both lanes have debt, alternate a
+        // bounded history turn with recent work so sustained tail traffic
+        // cannot starve administrator completeness. The turn is consumed only
+        // when a history state is actually available; idle probes do not
+        // advance scheduler policy.
+        let history_turn = recent_has_debt
+            && history.is_some()
+            && self.sqlite_runtime.take_alert_projection_history_turn();
         let (state, fence) = match history {
-            Some(history) if !recent_has_debt && recent.phase == "idle" => (history, None),
+            Some(history) if (!recent_has_debt && recent.phase == "idle") || history_turn => {
+                (history, None)
+            }
             _ => (recent, recent_fence),
         };
         let fence = match (

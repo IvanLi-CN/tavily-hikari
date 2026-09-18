@@ -861,6 +861,164 @@ async fn admin_alerts_cache_warm_liveness_ignores_lazy_idle_heuristic() {
 }
 
 #[tokio::test]
+async fn alert_projection_liveness_admission_preserves_safety_guards() {
+    let runtime = three_connection_runtime().await;
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+    assert!(runtime.foreground_activity_rps() > 5);
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+            .expect_err("ordinary projection remains deferred under foreground pressure"),
+        SqliteAdmissionDeferReason::ForegroundPressure
+    );
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    let liveness_permit = runtime
+        .try_admit_alert_projection_for_canonical_warm_liveness()
+        .expect("canonical warm liveness may admit one projection slice under rate pressure");
+    drop(liveness_permit);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+
+    let runtime = single_connection_runtime().await;
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only pool connection");
+    let waiter_runtime = runtime.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_runtime
+            .begin_read_snapshot(SqliteOperation::AdminAlertsRead)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.acquire_waiters.load(AtomicOrdering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("foreground read registers a pool waiter");
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime
+            .try_admit_alert_projection_for_canonical_warm_liveness()
+            .expect_err("liveness must preserve an existing foreground pool waiter"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+    waiter.abort();
+    let _ = waiter.await;
+    drop(held_connection);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+
+    let runtime = three_connection_runtime().await;
+    runtime.mark_recent_contention_for_test();
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime
+            .try_admit_alert_projection_for_canonical_warm_liveness()
+            .expect_err("liveness must preserve recent SQLite contention"),
+        SqliteAdmissionDeferReason::RecentContention
+    );
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    let held_bulk = runtime
+        .try_admit_alert_projection_for_canonical_warm_liveness()
+        .expect("first liveness projection owns the bulk slot");
+    assert_eq!(
+        runtime
+            .try_admit_alert_projection_for_canonical_warm_liveness()
+            .expect_err("liveness must preserve the single bulk slot"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    drop(held_bulk);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn alert_projection_cannot_claim_an_active_canonical_warm_stage() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+
+    assert!(
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
+        "projection liveness must wait for the canonical stage to release its slot"
+    );
+
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("coverage defer must transfer one liveness turn to projection");
+    assert!(
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
+        "one projection slice must own the transferred turn"
+    );
+
+    drop(projection_turn);
+    assert!(
+        runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection()
+            .is_none(),
+        "projection must close its turn when the bounded slice returns"
+    );
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+    assert!(
+        runtime.admin_alerts_cache_warm_liveness_admission_active(),
+        "the returned turn must be available to canonical warm"
+    );
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn rearming_canonical_warm_liveness_preserves_a_transferred_projection_turn() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+
+    // The warm controller re-arms liveness at the top of its next retry. That
+    // must not erase the projection turn it handed off before sleeping.
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("a warm retry must preserve the transferred projection turn");
+    drop(projection_turn);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn retrying_canonical_warm_liveness_transfers_a_projection_turn() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+
+    runtime.retain_admin_alerts_cache_warm_liveness_for_retry();
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("a generic warm retry must transfer one liveness turn to projection");
+    drop(projection_turn);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
@@ -908,7 +1066,7 @@ async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
 }
 
 #[tokio::test]
-async fn admin_alerts_cache_warm_liveness_still_defers_at_pool_capacity() {
+async fn admin_alerts_cache_warm_liveness_uses_bounded_waiter_at_pool_capacity() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()
             .min_connections(1)
@@ -946,11 +1104,83 @@ async fn admin_alerts_cache_warm_liveness_still_defers_at_pool_capacity() {
     runtime.set_admin_alerts_cache_warm_liveness(true);
     assert_eq!(
         runtime.admin_alerts_cache_warm_defer_reason(),
-        Some(SqliteAdmissionDeferReason::PoolPressure),
-        "liveness must not queue behind a full pool of foreground-held connections"
+        None,
+        "liveness must reach the bounded acquire waiter instead of being rejected by the idle heuristic"
     );
 
     drop((first, second, third));
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn admin_alerts_cache_warm_liveness_ignores_existing_pool_waiter() {
+    let runtime = single_connection_runtime().await;
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+    let waiter_runtime = runtime.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_runtime
+            .begin_read_snapshot(SqliteOperation::AdminAlertsRead)
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.acquire_waiters.load(AtomicOrdering::Acquire) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded read must register a pool waiter");
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "an aged liveness slot must reach the bounded acquire despite an existing waiter"
+    );
+
+    waiter.abort();
+    let _ = waiter.await;
+    drop(held_connection);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn admin_alerts_cache_warm_pool_timeout_does_not_poison_recent_contention() {
+    let runtime = single_connection_runtime().await;
+    let held_connection = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("hold the only open connection");
+
+    let error = runtime
+        .begin_read_snapshot(SqliteOperation::AdminAlertsCacheWarm)
+        .await
+        .expect_err("warm read must report bounded pool pressure");
+    assert!(matches!(
+        error,
+        ProxyError::Database(sqlx::Error::PoolTimedOut)
+    ));
+    drop(held_connection);
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        None,
+        "a released pool timeout must not block an aged warm slot as SQLite contention"
+    );
+    runtime.mark_recent_contention_for_test();
+    assert_eq!(
+        runtime.admin_alerts_cache_warm_defer_reason(),
+        Some(SqliteAdmissionDeferReason::RecentContention),
+        "actual SQLite contention must continue to defer the aged warm slot"
+    );
     runtime.set_admin_alerts_cache_warm_liveness(false);
 }
 

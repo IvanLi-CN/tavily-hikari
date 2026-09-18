@@ -83,6 +83,25 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn retain_admin_alerts_cache_warm_liveness_for_retry(&self) {
+        self.key_store
+            .retain_admin_alerts_cache_warm_liveness_for_retry();
+    }
+
+    #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
+        self.key_store
+            .sqlite_runtime
+            .admin_alerts_cache_warm_liveness_admission_active()
+    }
+
+    #[doc(hidden)]
+    pub fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        self.key_store
+            .transfer_admin_alerts_cache_warm_liveness_to_projection();
+    }
+
+    #[doc(hidden)]
     #[doc(hidden)]
     pub async fn prepare_admin_alerts_canonical_warm(&self) -> Result<(), ProxyError> {
         self.key_store.prepare_admin_alerts_canonical_warm().await
