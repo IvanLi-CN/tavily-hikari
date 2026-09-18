@@ -4,6 +4,38 @@ use super::linuxdo_oauth_and_admin_keys::*;
 use super::upstream_support_and_manual_jobs::*;
 use tavily_hikari::SqliteAdmissionOutcome;
 
+async fn seed_complete_default_admin_alerts_cache_for_test(state: &AppState) {
+    let cache_handle = dashboard_overview_cache_for_state(state);
+    let mut cache = cache_handle.lock().await;
+    let generation = cache.alert_projection_generation;
+    assert!(publish_admin_alerts_canonical_into_cache(
+        &mut cache,
+        generation,
+        0,
+        tokio::time::Instant::now(),
+        AlertCatalog {
+            retention_days: 30,
+            types: Vec::new(),
+            request_kind_options: Vec::new(),
+            users: Vec::new(),
+            tokens: Vec::new(),
+            keys: Vec::new(),
+        },
+        PaginatedAlertEvents {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        },
+        PaginatedAlertGroups {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        },
+    ));
+}
+
 #[tokio::test]
 async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
     let db_path = temp_db_path("alerts-dashboard-default-window");
@@ -1750,6 +1782,7 @@ async fn admin_alerts_warm_defers_before_final_fence_when_pressure_arrives_betwe
     }
     assert!(projection_ready, "empty projection must complete before warming admin cache");
 
+    seed_complete_default_admin_alerts_cache_for_test(state.as_ref()).await;
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
     let pause = super::super::install_admin_alerts_warm_before_projection_fence_pause_for_test(
         state.as_ref(),
@@ -1826,6 +1859,7 @@ async fn admin_alerts_warm_rechecks_pressure_before_catalog_after_groups() {
             break;
         }
     }
+    seed_complete_default_admin_alerts_cache_for_test(state.as_ref()).await;
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
     let pause = super::super::install_admin_alerts_warm_after_groups_pause_for_test(state.as_ref())
         .await;
@@ -2002,7 +2036,7 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 }
 
 #[tokio::test]
-async fn admin_alerts_warm_liveness_drains_same_fence_clearing_build_under_pressure() {
+async fn admin_alerts_warm_liveness_returns_projection_turn_after_groups_defer() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -2089,32 +2123,55 @@ async fn admin_alerts_warm_liveness_drains_same_fence_clearing_build_under_press
     }
     assert!(state.proxy.foreground_activity_rps() > 5);
 
+    let groups_defer_pause =
+        super::super::install_admin_alerts_warm_after_groups_defer_pause_for_test(state.as_ref())
+            .await;
     super::super::prewarm_admin_alerts(state.clone()).await;
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
-            let cache = cache.lock().await;
-            let keys = [
-                "catalog".to_string(),
-                super::super::default_admin_alert_cache_key("events"),
-                super::super::default_admin_alert_cache_key("groups"),
-            ];
-            if keys.iter().all(|key| {
-                cache
-                    .admin_alerts
-                    .entries
-                    .iter()
-                    .any(|entry| entry.canonical && entry.key == *key)
-            }) {
-                break;
-            }
-            drop(cache);
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    let handoff_reached = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        groups_defer_pause.wait_until_arrived(),
+    )
+    .await;
+    if handoff_reached.is_err() {
+        let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let cache = cache_handle.lock().await;
+        let phase: String = sqlx::query_scalar(
+            "SELECT build_phase FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read canonical Groups build phase after handoff timeout");
+        panic!(
+            "warm did not reach Groups build defer: in_flight={}, defers={}, groups_build_in_flight={}, liveness={}, phase={phase}",
+            cache.admin_alerts_prewarm_in_flight,
+            cache.admin_alerts_prewarm_defers,
+            cache.admin_alerts_groups_build_in_flight,
+            state.proxy.admin_alerts_cache_warm_liveness_admission_active(),
+        );
+    }
+    sqlx::query(
+        r#"INSERT INTO auth_token_logs (
+               token_id, method, path, result_status, error_message, failure_kind,
+               key_effect_code, binding_effect_code, selection_effect_code,
+               counts_business_quota, created_at
+           ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                     'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+    )
+    .bind("token-alert-liveness-groups-defer-handoff")
+    .bind(state.proxy.backend_time().now_ts())
+    .execute(&pool)
     .await
-    .expect("same-fence clearing debt must not block canonical Alerts publication");
-
+    .expect("seed a new alert while Groups yielded its liveness stage");
+    let projection_step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("advance projection after Groups yielded its liveness stage");
+    groups_defer_pause.release();
+    assert!(
+        projection_step.canonical_alerts_dirty,
+        "Groups build defer must transfer one liveness turn to projection"
+    );
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     let _ = std::fs::remove_file(db_path);
 }

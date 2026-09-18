@@ -107,6 +107,8 @@ struct DashboardOverviewCacheState {
     admin_alerts_warm_after_groups_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
     admin_alerts_warm_before_projection_fence_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
+    admin_alerts_warm_after_groups_defer_pause: Option<AdminAlertsWarmPause>,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -153,6 +155,8 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_warm_after_groups_pause: None,
             #[cfg(test)]
             admin_alerts_warm_before_projection_fence_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_after_groups_defer_pause: None,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -1311,6 +1315,18 @@ pub(crate) async fn install_admin_alerts_warm_before_projection_fence_pause_for_
 }
 
 #[cfg(test)]
+pub(crate) async fn install_admin_alerts_warm_after_groups_defer_pause_for_test(
+    state: &AppState,
+) -> AdminAlertsWarmPause {
+    let pause = AdminAlertsWarmPause::new();
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_groups_defer_pause = Some(pause.clone());
+    pause
+}
+
+#[cfg(test)]
 pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
     dashboard_overview_cache_for_state(state)
         .lock()
@@ -1350,6 +1366,19 @@ async fn pause_admin_alerts_warm_before_projection_fence_for_test(state: &AppSta
         .lock()
         .await
         .admin_alerts_warm_before_projection_fence_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_groups_defer_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_groups_defer_pause
         .take();
     let Some(pause) = pause else {
         return;
