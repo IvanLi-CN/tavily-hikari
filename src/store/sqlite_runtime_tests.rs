@@ -1005,6 +1005,20 @@ async fn rearming_canonical_warm_liveness_preserves_a_transferred_projection_tur
 }
 
 #[tokio::test]
+async fn retrying_canonical_warm_liveness_transfers_a_projection_turn() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+
+    runtime.retain_admin_alerts_cache_warm_liveness_for_retry();
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("a generic warm retry must transfer one liveness turn to projection");
+    drop(projection_turn);
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn admin_alerts_cache_warm_liveness_quantum_ends_between_stages() {
     let runtime = SqliteRuntime::with_max_connections(
         SqlitePoolOptions::new()

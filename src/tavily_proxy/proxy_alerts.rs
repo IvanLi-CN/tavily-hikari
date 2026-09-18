@@ -83,6 +83,12 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn retain_admin_alerts_cache_warm_liveness_for_retry(&self) {
+        self.key_store
+            .retain_admin_alerts_cache_warm_liveness_for_retry();
+    }
+
+    #[doc(hidden)]
     pub fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
         self.key_store
             .sqlite_runtime

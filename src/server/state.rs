@@ -1039,8 +1039,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 {
                     state
                         .proxy
-                        .finish_admin_alerts_cache_warm_liveness_stage();
-                    state.proxy.set_admin_alerts_cache_warm_liveness(true);
+                        .retain_admin_alerts_cache_warm_liveness_for_retry();
                     state.proxy.record_admin_alerts_warm_defer();
                     let delay = dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
@@ -1279,53 +1278,6 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
 }
 
 #[cfg(test)]
-pub(crate) async fn install_admin_alerts_warm_after_catalog_pause_for_test(
-    state: &AppState,
-) -> AdminAlertsWarmPause {
-    let pause = AdminAlertsWarmPause::new();
-    dashboard_overview_cache_for_state(state)
-        .lock()
-        .await
-        .admin_alerts_warm_after_catalog_pause = Some(pause.clone());
-    pause
-}
-
-#[cfg(test)]
-pub(crate) async fn install_admin_alerts_warm_after_groups_pause_for_test(
-    state: &AppState,
-) -> AdminAlertsWarmPause {
-    let pause = AdminAlertsWarmPause::new();
-    dashboard_overview_cache_for_state(state)
-        .lock()
-        .await
-        .admin_alerts_warm_after_groups_pause = Some(pause.clone());
-    pause
-}
-
-#[cfg(test)]
-pub(crate) async fn install_admin_alerts_warm_before_projection_fence_pause_for_test(
-    state: &AppState,
-) -> AdminAlertsWarmPause {
-    let pause = AdminAlertsWarmPause::new();
-    dashboard_overview_cache_for_state(state)
-        .lock()
-        .await
-        .admin_alerts_warm_before_projection_fence_pause = Some(pause.clone());
-    pause
-}
-
-#[cfg(test)]
-pub(crate) async fn install_admin_alerts_warm_after_groups_defer_pause_for_test(
-    state: &AppState,
-) -> AdminAlertsWarmPause {
-    let pause = AdminAlertsWarmPause::new();
-    dashboard_overview_cache_for_state(state)
-        .lock()
-        .await
-        .admin_alerts_warm_after_groups_defer_pause = Some(pause.clone());
-    pause
-}
-
 #[cfg(test)]
 pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
     dashboard_overview_cache_for_state(state)
