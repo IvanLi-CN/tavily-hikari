@@ -116,6 +116,118 @@ async fn warm_canonical_alert_groups_until_published(proxy: &TavilyProxy) -> Pag
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_advances_after_exact_source_page() {
+    let db_path = temp_db_path("alert-canonical-groups-exact-source-page");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_556_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-exact-source-page".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    let payload = serde_json::json!({
+        "source_kind": ALERT_SOURCE_AUTH_TOKEN_LOG,
+        "source_id": "placeholder",
+        "row_sort_id": "placeholder",
+        "alert_type": ALERT_TYPE_UPSTREAM_RATE_LIMITED_429,
+        "occurred_at": now,
+        "token_id": "exact-source-page-token",
+        "key_id": null,
+        "request_log_id": null,
+        "method": "POST",
+        "path": "/mcp",
+        "query": null,
+        "request_kind_key": "mcp_call",
+        "request_kind_label": "MCP call",
+        "request_kind_detail": "MCP call",
+        "result_status": "quota_exhausted",
+        "failure_kind": "upstream_rate_limited_429",
+        "error_message": "HTTP 429",
+        "counts_business_quota": false,
+        "user_id": null,
+        "user_display_name": null,
+        "user_username": null,
+        "reason_code": null,
+        "reason_summary": null,
+        "reason_detail": null,
+        "job_id": null,
+        "job_type": null,
+        "job_trigger_source": null,
+        "job_status": null,
+        "job_attempt": null,
+        "job_message": null,
+        "job_queued_at": null,
+        "job_started_at": null,
+        "job_finished_at": null
+    });
+    let mut tx = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin exact-page seed");
+    for index in 0..250_i64 {
+        let source_id = format!("exact-source-page-{index:04}");
+        let row_sort_id = format!("atl:{index:020}");
+        let mut row = payload.clone();
+        row["source_id"] = serde_json::Value::String(source_id.clone());
+        row["row_sort_id"] = serde_json::Value::String(row_sort_id.clone());
+        row["occurred_at"] = serde_json::Value::from(now - index);
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                    (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
+               VALUES (?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(ALERT_SOURCE_AUTH_TOKEN_LOG)
+        .bind(source_id)
+        .bind(now - index)
+        .bind(row_sort_id)
+        .bind(row.to_string())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("seed exact projected source page");
+    }
+    tx.commit().await.expect("commit exact-page seed");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', observed_at = ?, stale_reason = NULL",
+    )
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark exact-page projection complete");
+
+    for _ in 0..4 {
+        let _ = proxy
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await;
+    }
+    let build_phase: String = sqlx::query_scalar(
+        "SELECT build_phase FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read exact-page build phase");
+    assert_eq!(build_phase, "aggregating");
+
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(groups.total, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_payload_read_handles_exact_chunk_boundaries() {
     let db_path = temp_db_path("alert-canonical-groups-payload-boundaries");
     let db_string = db_path.to_string_lossy().to_string();

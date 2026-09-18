@@ -1,10 +1,11 @@
 const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // Reduction output is committed atomically with its cursor CAS. Keep the
 // write-side batches bounded by both row count and encoded payload bytes so
-// normal rows do not pay one transaction per 25 events while large rows still
+// normal rows do not pay multiple transactions per source page while large rows still
 // yield before turning one owned transaction into an unbounded writer hold.
 const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
-const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize = 100;
+const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
+    ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
@@ -2834,13 +2835,13 @@ mod canonical_group_tests {
     }
 
     #[test]
-    fn canonical_group_write_ranges_bound_normal_rows_by_count() {
+    fn canonical_group_write_ranges_keep_a_source_page_in_one_batch() {
         let staged = (0..250)
             .map(|index| staged_row(&index.to_string()))
             .collect::<Vec<_>>();
         let ranges = canonical_group_write_ranges(&staged);
 
-        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges.len(), 1);
         assert!(ranges.iter().all(|range| {
             range.end.saturating_sub(range.start)
                 <= ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS
