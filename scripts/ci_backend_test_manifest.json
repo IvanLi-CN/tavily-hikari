@@ -700,9 +700,11 @@
       "filtered_process_workers": 2,
       "serial_prefixes": [
         "server::tests::token_log_details::token_",
-        "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
-        "server::tests::admin_alerts_canonical_warm::",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses"
+      ],
+      "isolated_prefixes": [
+        "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
+        "server::tests::admin_alerts_canonical_warm::"
       ],
       "include_prefixes": [
         "server::manual_trigger_tests::",
