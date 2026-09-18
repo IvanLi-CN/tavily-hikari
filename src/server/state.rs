@@ -1052,7 +1052,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         retry_after_secs = delay.as_secs(),
                         "deferred canonical administrator Alerts cache while retaining liveness"
                     );
-                    spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
+                    // The reclaimer shares the Groups batch gate with the active build. Leave
+                    // retired-generation cleanup to the publish/terminal paths so a retry can
+                    // resume the durable generation without competing for that gate.
                     if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                         state.proxy.set_admin_alerts_cache_warm_liveness(false);
                         cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
@@ -1079,7 +1081,8 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     state
                         .proxy
                         .set_admin_alerts_cache_warm_liveness(false);
-                    spawn_admin_alerts_canonical_groups_reclaimer(state.clone()).await;
+                    // Do not start retired-generation cleanup while a deferred warm may still
+                    // own the durable Groups build slot.
                     if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                         cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                         flight_guard.disarm();

@@ -188,9 +188,20 @@ impl TavilyProxy {
             self.advance_dashboard_alert_projection_slice_outcome().await?,
         );
         if step.refresh_dashboard_summary {
-            self.key_store
+            match self
+                .key_store
                 .refresh_dashboard_alert_projection_summary()
-                .await?;
+                .await
+            {
+                Ok(_) => {}
+                Err(error)
+                    if crate::is_transient_sqlite_write_error(&error) || error.is_deferred() =>
+                {
+                    // The projected slice is durable; a contended materialized-summary write
+                    // can be retried on the next scheduler turn without failing the scheduler.
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(step)
     }

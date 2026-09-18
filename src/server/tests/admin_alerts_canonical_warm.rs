@@ -440,6 +440,13 @@ async fn admin_alerts_warm_publishes_all_keys_after_groups_write_lock_recovery()
         state.proxy.admin_alerts_cache_warm_liveness_admission_active(),
         "a transient Groups write defer must retain the aged canonical warm liveness turn"
     );
+    assert!(
+        !super::super::dashboard_overview_cache_for_state(state.as_ref())
+            .lock()
+            .await
+            .admin_alerts_groups_reclaimer_in_flight,
+        "an active canonical Groups build must not start a competing reclaimer"
+    );
     sqlx::query("ROLLBACK")
         .execute(&mut *writer)
         .await
