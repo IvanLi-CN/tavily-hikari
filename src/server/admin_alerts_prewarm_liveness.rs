@@ -29,16 +29,11 @@ async fn admin_alerts_canonical_groups_for_warm_liveness_stage(
             Err(tavily_hikari::ProxyError::Deferred { reason, .. })
                 if reason == "groups_build_in_progress" =>
             {
-                // Groups may need many bounded slices. Release this stage's
-                // liveness ownership between slices so projection can consume
-                // the transferred turn while the warm controller keeps its
-                // coherent staged generation.
-                state
-                    .proxy
-                    .finish_admin_alerts_cache_warm_liveness_stage();
-                state
-                    .proxy
-                    .transfer_admin_alerts_cache_warm_liveness_to_projection();
+                // Coverage was established before the Groups snapshot started.
+                // Keep the liveness stage owned across its bounded slices so a
+                // projection advance cannot invalidate the staged generation
+                // before the canonical three-key publish. Projection resumes
+                // after the stage publishes or yields for a real retry reason.
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_groups_defer_for_test(state).await;
                 tokio::task::yield_now().await;

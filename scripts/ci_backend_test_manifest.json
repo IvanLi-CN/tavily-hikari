@@ -718,6 +718,7 @@
         "server::tests::api_keys_and_registration::announcement_",
         "server::tests::alerts_and_ha_dashboard_defaults::alerts_",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
+        "server::tests::admin_alerts_canonical_warm::",
         "server::tests::alerts_and_ha_dashboard_defaults::alert_projection_liveness_waits_for_an_active_canonical_warm_stage",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_privacy_",
         "server::tests::alerts_and_ha_source_and_recovery::compute_",

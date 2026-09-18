@@ -146,7 +146,7 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 }
 
 #[tokio::test]
-async fn admin_alerts_warm_liveness_returns_projection_turn_after_groups_defer() {
+async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -277,11 +277,72 @@ async fn admin_alerts_warm_liveness_returns_projection_turn_after_groups_defer()
         .advance_dashboard_alert_projection_scheduler_step_with_alerts()
         .await
         .expect("advance projection after Groups yielded its liveness stage");
+    let churn_state = state.clone();
+    let churn_pool = pool.clone();
+    let projection_churn = tokio::spawn(async move {
+        for index in 0..400_i64 {
+            sqlx::query(
+                r#"INSERT INTO auth_token_logs (
+                       token_id, method, path, result_status, error_message, failure_kind,
+                       key_effect_code, binding_effect_code, selection_effect_code,
+                       counts_business_quota, created_at
+                   ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                             'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+            )
+            .bind(format!("token-alert-liveness-groups-churn-{index:04}"))
+            .bind(churn_state.proxy.backend_time().now_ts().saturating_add(index))
+            .execute(&churn_pool)
+            .await
+            .expect("seed a churn alert");
+            churn_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await
+                .expect("advance projection during Groups churn");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    });
     groups_defer_pause.release();
     assert!(
-        projection_step.canonical_alerts_dirty,
-        "Groups build defer must transfer one liveness turn to projection"
+        !projection_step.canonical_alerts_dirty,
+        "Groups build must retain its liveness fence until the canonical publish"
     );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let published = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if published && same_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a persisted Groups build must recover and publish all canonical Alerts keys");
+    projection_churn
+        .await
+        .expect("projection churn task must complete without panicking");
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     let _ = std::fs::remove_file(db_path);
 }

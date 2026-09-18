@@ -1278,7 +1278,6 @@ async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
     dashboard_overview_cache_for_state(state)
         .lock()
