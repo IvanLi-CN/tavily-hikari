@@ -1101,6 +1101,7 @@ impl KeyStore {
 
         let mut simple_partition_count = 0_usize;
         let mut singleton_semantic_partition_count = 0_usize;
+        let mut first_semantic_output_index = None;
         let mut outputs = Vec::new();
         let mut fragments = StdHashMap::<String, String>::new();
         let first_partition = partitions[0].0.clone();
@@ -1163,6 +1164,7 @@ impl KeyStore {
                     break;
                 }
                 singleton_semantic_partition_count += 1;
+                first_semantic_output_index.get_or_insert(outputs.len());
                 let children = build_semantic_child_windows(events);
                 let mut mothers = build_semantic_mother_groups(children);
                 if mothers.len() != 1 {
@@ -1194,12 +1196,17 @@ impl KeyStore {
             });
             simple_partition_count += 1;
         }
-        if simple_partition_count == 0
-            || (singleton_semantic_partition_count > 0
-                && singleton_semantic_partition_count < 8)
+        let output_limit = if singleton_semantic_partition_count > 0
+            && singleton_semantic_partition_count < 8
         {
+            first_semantic_output_index.unwrap_or(0)
+        } else {
+            outputs.len()
+        };
+        if simple_partition_count == 0 || output_limit == 0 {
             return Ok(false);
         }
+        outputs.truncate(output_limit);
 
         let mut range_start = 0_usize;
         while range_start < outputs.len() {
