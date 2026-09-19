@@ -284,6 +284,49 @@ impl KeyStore {
         } else {
             self.start_admin_alert_canonical_groups_build().await?
         };
+        if state.build_generation > 0
+            && state.build_phase == "aggregating"
+            && state.build_cursor_source_rowid == 1
+            && self.alert_projection_is_complete().await?
+        {
+            let request_kinds = Vec::new();
+            let filters = AlertEventFilters {
+                alert_type: None,
+                since: None,
+                until: None,
+                user_id: None,
+                token_id: None,
+                key_id: None,
+                request_kinds: &request_kinds,
+            };
+            let (page_items, total) = self
+                .fetch_projected_alert_group_page_for_operation(
+                    filters,
+                    1,
+                    20,
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            let items = self
+                .populate_selected_mother_groups_for_operation(
+                    filters,
+                    page_items,
+                    AlertReadSource::Projected,
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            self.publish_admin_alert_canonical_groups_snapshot(snapshot, total)
+                .await?;
+            return Ok((
+                PaginatedAlertGroups {
+                    items,
+                    total,
+                    page: 1,
+                    per_page: 20,
+                },
+                snapshot,
+            ));
+        }
         self.advance_admin_alert_canonical_groups_build(snapshot)
             .await?;
         let state = self.load_admin_alert_canonical_groups_state().await?;
