@@ -205,7 +205,7 @@ struct AdminAlertCanonicalGroupsState {
     payload_read_json: String,
 }
 
-struct FastCompatGroupOutput {
+struct FastCanonicalGroupOutput {
     partition_key: String,
     last_seen: i64,
     total_count: i64,
@@ -286,7 +286,7 @@ impl KeyStore {
         };
         if state.build_generation > 0
             && state.build_phase == "aggregating"
-            && matches!(state.build_cursor_source_rowid, -1 | 1)
+            && state.build_cursor_source_rowid == 1
             && self.alert_projection_is_complete().await?
         {
             let request_kinds = Vec::new();
@@ -1100,6 +1100,7 @@ impl KeyStore {
         }
 
         let mut simple_partition_count = 0_usize;
+        let mut singleton_semantic_partition_count = 0_usize;
         let mut outputs = Vec::new();
         let mut fragments = StdHashMap::<String, String>::new();
         let first_partition = partitions[0].0.clone();
@@ -1153,17 +1154,37 @@ impl KeyStore {
             {
                 break;
             }
-            let Some(mut group) = build_compat_group_record(std::slice::from_ref(event)) else {
-                break;
+            let group = if events.iter().any(|event| event.semantic_window.is_some()) {
+                // A singleton semantic partition has exactly one possible child window and
+                // mother chain. Materialize that complete payload here; multi-event semantic
+                // partitions remain on the resumable reducer because their window boundaries
+                // cannot be inferred from the partition aggregate alone.
+                if event_count != 1 {
+                    break;
+                }
+                singleton_semantic_partition_count += 1;
+                let children = build_semantic_child_windows(events);
+                let mut mothers = build_semantic_mother_groups(children);
+                if mothers.len() != 1 {
+                    break;
+                }
+                mothers.pop().ok_or_else(|| {
+                    ProxyError::Other("singleton semantic canonical group is unavailable".to_string())
+                })?
+            } else {
+                let Some(mut group) = build_compat_group_record(std::slice::from_ref(event)) else {
+                    break;
+                };
+                group.count = event_count;
+                group.event_count = event_count;
+                group.first_seen = first_seen;
+                group.last_seen = last_seen;
+                group
             };
-            group.count = event_count;
-            group.event_count = event_count;
-            group.first_seen = first_seen;
-            group.last_seen = last_seen;
             let payload_json = serde_json::to_string(&group).map_err(|error| {
                 ProxyError::Other(format!("serialize fast canonical alert group: {error}"))
             })?;
-            outputs.push(FastCompatGroupOutput {
+            outputs.push(FastCanonicalGroupOutput {
                 partition_key,
                 last_seen: group.last_seen,
                 total_count: group.count,
@@ -1173,7 +1194,10 @@ impl KeyStore {
             });
             simple_partition_count += 1;
         }
-        if simple_partition_count == 0 {
+        if simple_partition_count == 0
+            || (singleton_semantic_partition_count > 0
+                && singleton_semantic_partition_count < 8)
+        {
             return Ok(false);
         }
 
