@@ -7,6 +7,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
     ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 250;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
@@ -202,6 +203,15 @@ struct AdminAlertCanonicalGroupsState {
     payload_read_position: i64,
     payload_read_chunk_position: i64,
     payload_read_json: String,
+}
+
+struct FastCompatGroupOutput {
+    partition_key: String,
+    last_seen: i64,
+    total_count: i64,
+    alert_type: String,
+    group_id: String,
+    payload_chunks: Vec<String>,
 }
 
 impl KeyStore {
@@ -1001,6 +1011,12 @@ impl KeyStore {
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
         if state.build_partition_key.is_empty() {
+            if self
+                .batch_admin_alert_canonical_compat_groups(snapshot, &state)
+                .await?
+            {
+                return Ok(());
+            }
             return self
                 .select_admin_alert_canonical_groups_partition(snapshot, state)
                 .await;
@@ -1012,6 +1028,251 @@ impl KeyStore {
         }
         self.finalize_admin_alert_canonical_groups_partition(snapshot, state)
             .await
+    }
+
+    async fn batch_admin_alert_canonical_compat_groups(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        state: &AdminAlertCanonicalGroupsState,
+    ) -> Result<bool, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let partition_result = sqlx::query_as::<_, (String, i64)>(
+            "SELECT partition_key, COUNT(*) AS event_count \
+               FROM observability.admin_alert_canonical_group_events \
+              WHERE build_generation = ? AND partition_key > ? \
+              GROUP BY partition_key \
+              ORDER BY partition_key ASC LIMIT ?",
+        )
+        .bind(snapshot.build_generation)
+        .bind(&state.build_partition_after_key)
+        .bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS)
+        .fetch_all(&mut *session)
+        .await;
+        let partitions = session.query(partition_result).await?;
+        session.finish().await?;
+        if partitions.is_empty() {
+            return Ok(false);
+        }
+
+        let mut simple_partition_count = 0_usize;
+        let mut outputs = Vec::new();
+        let mut fragments = StdHashMap::<String, Vec<String>>::new();
+        let first_partition = partitions[0].0.clone();
+        let last_partition = partitions.last().map(|(key, _)| key.clone()).unwrap_or_default();
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let fragment_result = sqlx::query_as::<_, (String, String)>(
+            "SELECT partition_key, events_json \
+               FROM observability.admin_alert_canonical_group_fragments \
+              WHERE build_generation = ? AND partition_key >= ? AND partition_key <= ? \
+              ORDER BY partition_key ASC, position ASC",
+        )
+        .bind(snapshot.build_generation)
+        .bind(&first_partition)
+        .bind(&last_partition)
+        .fetch_all(&mut *session)
+        .await;
+        for row in session.query(fragment_result).await? {
+            fragments.entry(row.0).or_default().push(row.1);
+        }
+        session.finish().await?;
+
+        for (partition_key, event_count) in partitions {
+            if event_count != 1 {
+                break;
+            }
+            let Some(fragment_rows) = fragments.get(&partition_key) else {
+                break;
+            };
+            if fragment_rows.len() != 1 {
+                break;
+            }
+            let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(&fragment_rows[0])
+            else {
+                break;
+            };
+            let Some(event) = events.first() else {
+                break;
+            };
+            if events.len() != 1
+                || event.semantic_window.is_some()
+                || canonical_alert_group_partition_key(event) != partition_key
+            {
+                break;
+            }
+            let Some(group) = build_compat_group_record(std::slice::from_ref(event)) else {
+                break;
+            };
+            let payload_json = serde_json::to_string(&group).map_err(|error| {
+                ProxyError::Other(format!("serialize fast canonical alert group: {error}"))
+            })?;
+            outputs.push(FastCompatGroupOutput {
+                partition_key,
+                last_seen: group.last_seen,
+                total_count: group.count,
+                alert_type: group.alert_type,
+                group_id: group.id,
+                payload_chunks: canonical_alert_payload_chunks(&payload_json),
+            });
+            simple_partition_count += 1;
+        }
+        if simple_partition_count == 0 {
+            return Ok(false);
+        }
+
+        let mut range_start = 0_usize;
+        while range_start < outputs.len() {
+            let mut range_end = range_start;
+            let mut range_bytes = 0_usize;
+            while range_end < outputs.len() {
+                let output = &outputs[range_end];
+                let output_bytes = output
+                    .partition_key
+                    .len()
+                    .saturating_add(output.alert_type.len())
+                    .saturating_add(output.group_id.len())
+                    .saturating_add(output.payload_chunks.iter().map(String::len).sum::<usize>());
+                let output_count = range_end.saturating_sub(range_start);
+                if range_end > range_start
+                    && (output_count >= ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS
+                        || range_bytes.saturating_add(output_bytes)
+                            > ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES)
+                {
+                    break;
+                }
+                range_bytes = range_bytes.saturating_add(output_bytes);
+                range_end += 1;
+            }
+            let range = &outputs[range_start..range_end];
+            let prior_after_key = if range_start == 0 {
+                state.build_partition_after_key.clone()
+            } else {
+                outputs[range_start - 1].partition_key.clone()
+            };
+            let next_after_key = range.last().map(|output| output.partition_key.clone()).ok_or_else(|| {
+                ProxyError::Other("fast canonical Groups batch produced no output".to_string())
+            })?;
+            let prior_position = state.build_next_position
+                + i64::try_from(range_start).map_err(|_| {
+                    ProxyError::Other("fast canonical Groups position overflow".to_string())
+                })?;
+            let next_position = prior_position
+                + i64::try_from(range.len()).map_err(|_| {
+                    ProxyError::Other("fast canonical Groups position overflow".to_string())
+                })?;
+            let build_generation = snapshot.build_generation;
+            let projection_revision = snapshot.projection_revision;
+            let source_recent_generation = snapshot.source_fence.0;
+            let source_history_generation = snapshot.source_fence.1;
+            let range = range
+                .iter()
+                .map(|output| {
+                    (
+                        output.partition_key.clone(),
+                        output.last_seen,
+                        output.total_count,
+                        output.alert_type.clone(),
+                        output.group_id.clone(),
+                        output.payload_chunks.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            self.ensure_admin_alerts_cache_warm_write_admitted()?;
+            let changed = self
+                .sqlite_runtime
+                .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
+                    Box::pin(async move {
+                        let owner = sqlx::query_scalar::<_, bool>(
+                            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+                              WHERE singleton = 1 AND build_generation = ? \
+                                AND build_projection_revision = ? \
+                                AND build_source_recent_generation = ? \
+                                AND build_source_history_generation = ? \
+                                AND build_phase = 'aggregating' AND build_partition_key = '' \
+                                AND build_partition_after_key = ? AND build_next_position = ?)",
+                        )
+                        .bind(build_generation)
+                        .bind(projection_revision)
+                        .bind(source_recent_generation)
+                        .bind(source_history_generation)
+                        .bind(&prior_after_key)
+                        .bind(prior_position)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                        if !owner {
+                            return Ok::<_, ProxyError>(false);
+                        }
+                        for (index, (_, last_seen, total_count, alert_type, group_id, chunks)) in
+                            range.into_iter().enumerate()
+                        {
+                            let position = prior_position + index as i64;
+                            for (chunk_position, payload_chunk) in chunks.into_iter().enumerate() {
+                                sqlx::query(
+                                    "INSERT OR REPLACE INTO observability.admin_alert_canonical_group_payload_chunks \
+                                       (build_generation, position, chunk_position, payload_chunk) \
+                                     VALUES (?, ?, ?, ?)",
+                                )
+                                .bind(build_generation)
+                                .bind(position)
+                                .bind(chunk_position as i64)
+                                .bind(payload_chunk)
+                                .execute(&mut **tx)
+                                .await?;
+                            }
+                            sqlx::query(
+                                "INSERT OR REPLACE INTO observability.admin_alert_canonical_groups \
+                                   (build_generation, position, last_seen, total_count, alert_type, group_id, payload_json) \
+                                 VALUES (?, ?, ?, ?, ?, ?, '')",
+                            )
+                            .bind(build_generation)
+                            .bind(position)
+                            .bind(last_seen)
+                            .bind(total_count)
+                            .bind(alert_type)
+                            .bind(group_id)
+                            .execute(&mut **tx)
+                            .await?;
+                        }
+                        let updated = sqlx::query(
+                            "UPDATE observability.admin_alert_canonical_groups_state \
+                                SET build_partition_after_key = ?, build_next_position = ? \
+                              WHERE singleton = 1 AND build_generation = ? \
+                                AND build_projection_revision = ? \
+                                AND build_source_recent_generation = ? \
+                                AND build_source_history_generation = ? \
+                                AND build_phase = 'aggregating' AND build_partition_key = '' \
+                                AND build_partition_after_key = ? AND build_next_position = ?",
+                        )
+                        .bind(&next_after_key)
+                        .bind(next_position)
+                        .bind(build_generation)
+                        .bind(projection_revision)
+                        .bind(source_recent_generation)
+                        .bind(source_history_generation)
+                        .bind(&prior_after_key)
+                        .bind(prior_position)
+                        .execute(&mut **tx)
+                        .await?
+                        .rows_affected();
+                        Ok(updated == 1)
+                    })
+                })
+                .await?;
+            if !changed {
+                return Err(ProxyError::Deferred {
+                    operation: "admin_alerts_cache_warm",
+                    reason: "groups_build_replaced".to_string(),
+                });
+            }
+            self.record_admin_alerts_warm_slice();
+            self.sqlite_runtime
+                .record_admin_alerts_canonical_group_reduction_slice();
+            range_start = range_end;
+        }
+        Ok(true)
     }
 
     async fn finalize_admin_alert_canonical_groups_partition(
