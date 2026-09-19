@@ -1,4 +1,7 @@
-const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_EVENT_ROWS: i64 = 8;
+// Immutable semantic reduction rows are already persisted in bounded fragments. Read a
+// larger batch here so large semantic partitions do not spend the entire warm window on
+// one eight-row cursor turn; output writes remain capped by the existing transaction chunk.
+const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_EVENT_ROWS: i64 = 64;
 const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX: usize = 16;
 // A canonical group is a summary. Keep inline history only while it fits in
 // one existing read fragment; the drawer already loads request records from

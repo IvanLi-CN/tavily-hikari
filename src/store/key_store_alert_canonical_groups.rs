@@ -1038,8 +1038,8 @@ impl KeyStore {
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
-        let partition_result = sqlx::query_as::<_, (String, i64)>(
-            "SELECT partition_key, COUNT(*) AS event_count \
+        let partition_result = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT partition_key, COUNT(*) AS event_count, MIN(occurred_at), MAX(occurred_at) \
                FROM observability.admin_alert_canonical_group_events \
               WHERE build_generation = ? AND partition_key > ? \
               GROUP BY partition_key \
@@ -1058,54 +1058,65 @@ impl KeyStore {
 
         let mut simple_partition_count = 0_usize;
         let mut outputs = Vec::new();
-        let mut fragments = StdHashMap::<String, Vec<String>>::new();
+        let mut fragments = StdHashMap::<String, String>::new();
         let first_partition = partitions[0].0.clone();
-        let last_partition = partitions.last().map(|(key, _)| key.clone()).unwrap_or_default();
+        let last_partition = partitions
+            .last()
+            .map(|(key, _, _, _)| key.clone())
+            .unwrap_or_default();
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
         let fragment_result = sqlx::query_as::<_, (String, String)>(
-            "SELECT partition_key, events_json \
-               FROM observability.admin_alert_canonical_group_fragments \
-              WHERE build_generation = ? AND partition_key >= ? AND partition_key <= ? \
-              ORDER BY partition_key ASC, position ASC",
+            "SELECT fragments.partition_key, fragments.events_json \
+               FROM observability.admin_alert_canonical_group_fragments AS fragments \
+               JOIN ( \
+                    SELECT partition_key, MAX(position) AS position \
+                      FROM observability.admin_alert_canonical_group_fragments \
+                     WHERE build_generation = ? AND partition_key >= ? AND partition_key <= ? \
+                     GROUP BY partition_key \
+                     ORDER BY partition_key ASC LIMIT ? \
+               ) AS latest \
+                 ON latest.partition_key = fragments.partition_key \
+                AND latest.position = fragments.position \
+              WHERE fragments.build_generation = ? \
+              ORDER BY fragments.partition_key ASC",
         )
         .bind(snapshot.build_generation)
         .bind(&first_partition)
         .bind(&last_partition)
+        .bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS)
+        .bind(snapshot.build_generation)
         .fetch_all(&mut *session)
         .await;
         for row in session.query(fragment_result).await? {
-            fragments.entry(row.0).or_default().push(row.1);
+            fragments.insert(row.0, row.1);
         }
         session.finish().await?;
 
-        for (partition_key, event_count) in partitions {
-            if event_count != 1 {
-                break;
-            }
-            let Some(fragment_rows) = fragments.get(&partition_key) else {
+        for (partition_key, event_count, first_seen, last_seen) in partitions {
+            let Some(fragment_json) = fragments.get(&partition_key) else {
                 break;
             };
-            if fragment_rows.len() != 1 {
-                break;
-            }
-            let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(&fragment_rows[0])
+            let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json)
             else {
                 break;
             };
-            let Some(event) = events.first() else {
+            let Some(event) = events.last() else {
                 break;
             };
-            if events.len() != 1
-                || event.semantic_window.is_some()
+            if events.iter().any(|event| event.semantic_window.is_some())
                 || canonical_alert_group_partition_key(event) != partition_key
             {
                 break;
             }
-            let Some(group) = build_compat_group_record(std::slice::from_ref(event)) else {
+            let Some(mut group) = build_compat_group_record(std::slice::from_ref(event)) else {
                 break;
             };
+            group.count = event_count;
+            group.event_count = event_count;
+            group.first_seen = first_seen;
+            group.last_seen = last_seen;
             let payload_json = serde_json::to_string(&group).map_err(|error| {
                 ProxyError::Other(format!("serialize fast canonical alert group: {error}"))
             })?;
