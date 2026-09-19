@@ -920,11 +920,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .await
                         .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                     snapshot_cache_generation.get_or_insert(generation);
-                    if liveness_slot {
-                        state
-                            .proxy
-                            .set_admin_alerts_cache_warm_liveness(false);
-                    }
+                    // Keep the liveness fence across every bounded Groups and Catalog slice.
+                    // Releasing it between slices lets projection advance the source fence
+                    // while the durable build is still assembling one canonical generation.
                     if liveness_slot
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,

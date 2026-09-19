@@ -120,7 +120,7 @@ async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pres
 }
 
 #[tokio::test]
-async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure() {
+async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure_and_projection_churn() {
     let db_path = temp_db_path("admin-alerts-liveness-slice-pressure");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -152,7 +152,7 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 
     let pool = connect_sqlite_test_pool(&db_str).await;
     let occurred_at = Utc::now().timestamp().saturating_sub(60);
-    for index in 0..51_i64 {
+    for index in 0..501_i64 {
         let source_id = format!("alert-liveness-{index:04}");
         let row_sort_id = format!("alert-liveness-sort-{index:04}");
         let payload = serde_json::json!({
@@ -223,8 +223,33 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
         "fixture establishes sustained foreground pressure"
     );
 
+    let churn_state = state.clone();
+    let churn_pool = pool.clone();
+    let projection_churn = tokio::spawn(async move {
+        for index in 0..400_i64 {
+            sqlx::query(
+                r#"INSERT INTO auth_token_logs (
+                       token_id, method, path, result_status, error_message, failure_kind,
+                       key_effect_code, binding_effect_code, selection_effect_code,
+                       counts_business_quota, created_at
+                   ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                             'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+            )
+            .bind(format!("token-alert-liveness-churn-{index:04}"))
+            .bind(churn_state.proxy.backend_time().now_ts().saturating_add(index))
+            .execute(&churn_pool)
+            .await
+            .expect("seed projection churn alert");
+            let _ = churn_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    });
+
     super::super::prewarm_admin_alerts(state.clone()).await;
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+    let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
             let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
             let cache = cache_handle.lock().await;
@@ -255,11 +280,13 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("an aged canonical warm must publish all three keys in one logical stage");
+    .await;
 
+    projection_churn.abort();
+    let _ = projection_churn.await;
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     let _ = std::fs::remove_file(db_path);
+    published.expect("an aged canonical warm must publish all three keys in one logical stage");
 }
 
 #[tokio::test]
