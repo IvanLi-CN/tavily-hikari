@@ -8,6 +8,8 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
     ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 250;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 512 * 1024;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 16;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
@@ -1148,28 +1150,39 @@ impl KeyStore {
             let Some(event) = events.last() else {
                 break;
             };
-            if events.iter().any(|event| event.semantic_window.is_some())
-                || canonical_alert_group_partition_key(event) != partition_key
-            {
-                break;
-            }
-            let group = if events.iter().any(|event| event.semantic_window.is_some()) {
-                // A singleton semantic partition has exactly one possible child window and
-                // mother chain. Materialize that complete payload here; multi-event semantic
-                // partitions remain on the resumable reducer because their window boundaries
-                // cannot be inferred from the partition aggregate alone.
-                if event_count != 1 {
+            let groups = if events.iter().any(|event| event.semantic_window.is_some()) {
+                let semantic_events = if event_count == 1 {
+                    events
+                } else {
+                    let Some(semantic_events) = self
+                        .read_admin_alert_canonical_semantic_partition_for_fast_path(
+                            snapshot,
+                            &partition_key,
+                            event_count,
+                        )
+                        .await?
+                    else {
+                        break;
+                    };
+                    semantic_events
+                };
+                if semantic_events.iter().any(|event| {
+                    event.semantic_window.is_none()
+                        || canonical_alert_group_partition_key(event) != partition_key
+                }) {
                     break;
                 }
-                let children = build_semantic_child_windows(events);
-                let mut mothers = build_semantic_mother_groups(children);
-                if mothers.len() != 1 {
+                let mothers = build_semantic_mother_groups(build_semantic_child_windows(
+                    semantic_events,
+                ));
+                if mothers.is_empty() {
                     break;
                 }
-                mothers.pop().ok_or_else(|| {
-                    ProxyError::Other("singleton semantic canonical group is unavailable".to_string())
-                })?
+                mothers
             } else {
+                if canonical_alert_group_partition_key(event) != partition_key {
+                    break;
+                }
                 let Some(mut group) = build_compat_group_record(std::slice::from_ref(event)) else {
                     break;
                 };
@@ -1177,20 +1190,22 @@ impl KeyStore {
                 group.event_count = event_count;
                 group.first_seen = first_seen;
                 group.last_seen = last_seen;
-                group
+                vec![group]
             };
-            let payload_json = serde_json::to_string(&group).map_err(|error| {
-                ProxyError::Other(format!("serialize fast canonical alert group: {error}"))
-            })?;
-            outputs.push(FastCanonicalGroupOutput {
-                partition_key,
-                last_seen: group.last_seen,
-                total_count: group.count,
-                alert_type: group.alert_type,
-                group_id: group.id,
-                payload_chunks: canonical_alert_payload_chunks(&payload_json),
-            });
-            simple_partition_count += 1;
+            for group in groups {
+                let payload_json = serde_json::to_string(&group).map_err(|error| {
+                    ProxyError::Other(format!("serialize fast canonical alert group: {error}"))
+                })?;
+                outputs.push(FastCanonicalGroupOutput {
+                    partition_key: partition_key.clone(),
+                    last_seen: group.last_seen,
+                    total_count: group.count,
+                    alert_type: group.alert_type,
+                    group_id: group.id,
+                    payload_chunks: canonical_alert_payload_chunks(&payload_json),
+                });
+                simple_partition_count += 1;
+            }
         }
         if simple_partition_count == 0 {
             return Ok(false);
@@ -1346,6 +1361,51 @@ impl KeyStore {
             range_start = range_end;
         }
         Ok(true)
+    }
+
+    async fn read_admin_alert_canonical_semantic_partition_for_fast_path(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        partition_key: &str,
+        expected_event_count: i64,
+    ) -> Result<Option<Vec<AlertEventRecord>>, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let rows_result = sqlx::query_as::<_, (String, String)>(
+            "SELECT position, events_json \
+               FROM observability.admin_alert_canonical_group_fragments \
+              WHERE build_generation = ? AND partition_key = ? \
+              ORDER BY position ASC LIMIT ?",
+        )
+        .bind(snapshot.build_generation)
+        .bind(partition_key)
+        .bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS + 1)
+        .fetch_all(&mut *session)
+        .await;
+        let rows = session.query(rows_result).await?;
+        session.finish().await?;
+        if rows.len() as i64 > ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS {
+            return Ok(None);
+        }
+
+        let mut total_bytes = 0_usize;
+        let mut events = Vec::new();
+        for (_, events_json) in rows {
+            total_bytes = total_bytes.saturating_add(events_json.len());
+            if total_bytes > ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES {
+                return Ok(None);
+            }
+            let Ok(fragment_events) = serde_json::from_str::<Vec<AlertEventRecord>>(&events_json)
+            else {
+                return Ok(None);
+            };
+            events.extend(fragment_events);
+        }
+        if events.len() as i64 != expected_event_count {
+            return Ok(None);
+        }
+        Ok(Some(events))
     }
 
     async fn finalize_admin_alert_canonical_groups_partition(
