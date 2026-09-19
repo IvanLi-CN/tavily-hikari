@@ -286,7 +286,7 @@ impl KeyStore {
         };
         if state.build_generation > 0
             && state.build_phase == "aggregating"
-            && state.build_cursor_source_rowid == 1
+            && matches!(state.build_cursor_source_rowid, -1 | 1)
             && self.alert_projection_is_complete().await?
         {
             let request_kinds = Vec::new();
