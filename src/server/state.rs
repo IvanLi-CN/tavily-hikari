@@ -925,9 +925,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .record_admin_alerts_prewarm_slice(tokio::time::Instant::now());
                     snapshot_cache_generation.get_or_insert(generation);
                     // Keep the liveness fence across every bounded Groups and Catalog slice.
-                    // Releasing it between slices lets projection advance the source fence
-                    // while the durable build is still assembling one canonical generation.
-                    if liveness_slot
+                    // Each retry is already one bounded stage/micro-transaction. A large
+                    // canonical Groups build must yield to Tokio between those slices without
+                    // adding a fixed sleep that can keep the default Alerts cache cold for
+                    // several minutes.
+                    if !liveness_slot
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
                             &shutdown_notify,

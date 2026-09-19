@@ -290,6 +290,157 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_liveness_does_not_sleep_between_groups_slices() {
+    let db_path = temp_db_path("admin-alerts-liveness-many-groups");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-many-groups".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-many-groups-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..80_i64 {
+        let source_id = format!("alert-many-groups-{index:04}");
+        let token_id = format!("token-many-groups-{index:04}");
+        let row_sort_id = format!("alert-many-groups-sort-{index:04}");
+        let payload = serde_json::json!({
+            "source_kind": "auth_token_log",
+            "source_id": source_id,
+            "row_sort_id": row_sort_id,
+            "alert_type": "upstream_rate_limited_429",
+            "occurred_at": occurred_at - index,
+            "token_id": token_id,
+            "key_id": format!("key-many-groups-{index:04}"),
+            "request_log_id": null,
+            "method": "POST",
+            "path": "/mcp",
+            "query": null,
+            "request_kind_key": "tavily_search",
+            "request_kind_label": "Tavily Search",
+            "request_kind_detail": "POST /mcp",
+            "result_status": "error",
+            "failure_kind": "upstream_rate_limited_429",
+            "error_message": "HTTP 429",
+            "counts_business_quota": true,
+            "user_id": null,
+            "user_display_name": null,
+            "user_username": null,
+            "reason_code": null,
+            "reason_summary": null,
+            "reason_detail": null,
+            "job_id": null,
+            "job_type": null,
+            "job_trigger_source": null,
+            "job_status": null,
+            "job_attempt": null,
+            "job_message": null,
+            "job_queued_at": null,
+            "job_started_at": null,
+            "job_finished_at": null
+        });
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                   (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
+               VALUES ('auth_token_log', ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&source_id)
+        .bind(occurred_at - index)
+        .bind(&row_sort_id)
+        .bind(payload.to_string())
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed many canonical Groups partitions");
+    }
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts.entries.clear();
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let complete = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if complete && same_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    let build_state: (i64, String, i64, i64) = sqlx::query_as(
+        "SELECT build_generation, build_phase, build_cursor_source_rowid, active_generation \
+           FROM observability.admin_alert_canonical_groups_state \
+          WHERE singleton = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read canonical Groups state after warm attempt");
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    drop(pool);
+    let _ = std::fs::remove_file(&db_path);
+
+    assert!(
+        published.is_ok(),
+        "canonical warm must publish many Groups partitions without a fixed inter-slice sleep; state={build_state:?}"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();
