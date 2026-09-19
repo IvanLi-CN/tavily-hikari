@@ -583,7 +583,19 @@ impl KeyStore {
     pub(crate) async fn refresh_alert_projection_observation(
         &self,
     ) -> Result<bool, ProxyError> {
-        let _admission = match self.try_admit_alert_projection() {
+        // A stale idle observation is the last bounded projection step needed
+        // before canonical warm can capture a complete snapshot. Reuse the
+        // liveness turn transferred by warm under foreground pressure; the
+        // normal path retains its existing admission policy.
+        let canonical_warm_liveness = self
+            .sqlite_runtime
+            .claim_admin_alerts_cache_warm_liveness_for_observation();
+        let _admission = match if canonical_warm_liveness.is_some() {
+            self.sqlite_runtime
+                .try_admit_alert_projection_for_canonical_warm_liveness()
+        } else {
+            self.try_admit_alert_projection()
+        } {
             Ok(permit) => permit,
             Err(_) => return Ok(false),
         };

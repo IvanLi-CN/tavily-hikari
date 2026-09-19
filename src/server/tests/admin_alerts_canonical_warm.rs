@@ -3,6 +3,123 @@ use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 
 #[tokio::test]
+async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pressure() {
+    let db_path = temp_db_path("admin-alerts-liveness-stale-observation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-stale-observation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-stale-observation-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET observed_at = 0, stale_reason = NULL",
+    )
+    .execute(&pool)
+    .await
+    .expect("make the idle projection observation stale");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes sustained foreground pressure"
+    );
+
+    let projection_state = state.clone();
+    let projection = tokio::spawn(async move {
+        loop {
+            let _ = projection_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await;
+            let _ = projection_state
+                .proxy
+                .refresh_dashboard_alert_projection_observation()
+                .await;
+            tokio::task::yield_now().await;
+        }
+    });
+    let foreground_state = state.clone();
+    let foreground = tokio::spawn(async move {
+        loop {
+            for _ in 0..6 {
+                foreground_state.proxy.record_foreground_activity();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+    super::super::prewarm_admin_alerts(state.clone()).await;
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let published = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+                let same_generation = keys.iter().all(|key| {
+                    cache
+                        .admin_alerts
+                        .entries
+                        .iter()
+                        .find(|entry| entry.canonical && entry.key == *key)
+                        .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+                });
+                if published && same_generation {
+                    break true;
+                }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    projection.abort();
+    let _ = projection.await;
+    foreground.abort();
+    let _ = foreground.await;
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+
+    assert!(
+        published.is_ok(),
+        "stale idle projection observations must not starve canonical warm"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure() {
     let db_path = temp_db_path("admin-alerts-liveness-slice-pressure");
     let db_str = db_path.to_string_lossy().to_string();

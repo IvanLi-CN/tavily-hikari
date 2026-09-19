@@ -200,4 +200,24 @@ impl SqliteRuntime {
                 runtime: self.clone(),
             })
     }
+
+    pub(crate) fn claim_admin_alerts_cache_warm_liveness_for_observation(
+        &self,
+    ) -> Option<SqliteAlertProjectionLivenessPermit> {
+        if !self
+            .inner
+            .admin_alerts_cache_warm_liveness
+            .load(AtomicOrdering::Acquire)
+            || self.admin_alerts_cache_warm_liveness_stage_active()
+        {
+            return None;
+        }
+        self.inner
+            .admin_alerts_cache_warm_liveness_permit
+            .compare_exchange(true, false, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+            .then(|| SqliteAlertProjectionLivenessPermit {
+                runtime: self.clone(),
+            })
+    }
 }
