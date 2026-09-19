@@ -1038,6 +1038,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                             state.as_ref(),
                             &cache,
                             &shutdown_notify,
+                            delay,
                         )
                         .await
                         {

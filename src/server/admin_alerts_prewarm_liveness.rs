@@ -25,6 +25,7 @@ async fn wait_for_admin_alerts_projection_or_shutdown(
     state: &AppState,
     cache: &Arc<Mutex<DashboardOverviewCacheState>>,
     shutdown_notify: &Arc<tokio::sync::Notify>,
+    fallback_delay: std::time::Duration,
 ) -> bool {
     let notified = shutdown_notify.notified();
     tokio::pin!(notified);
@@ -38,6 +39,7 @@ async fn wait_for_admin_alerts_projection_or_shutdown(
     }
     tokio::select! {
         _ = &mut projection_done => false,
+        _ = tokio::time::sleep(fallback_delay) => false,
         _ = &mut notified => true,
     }
 }
