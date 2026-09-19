@@ -641,3 +641,170 @@ async fn admin_alerts_warm_publishes_all_keys_after_groups_write_lock_recovery()
         "a recovered canonical warm must publish catalog, Events 1/20, and Groups 1/20"
     );
 }
+
+#[tokio::test]
+async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
+    let db_path = temp_db_path("admin-alerts-liveness-restart-stale-groups-build");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-restart-stale-groups-build".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("initial proxy created");
+    let (_, initial_state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-restart-stale-groups-build-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        initial_state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before seeding the durable build");
+        if initial_state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let (revision, recent_generation, history_generation, source_rowid_upper_bound):
+        (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                (SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1),
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state),
+                (SELECT COALESCE(MAX(rowid), 0) FROM observability.dashboard_alert_projection_events)",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read the durable Groups build fence");
+    sqlx::query(
+        r#"INSERT INTO observability.admin_alert_canonical_group_events
+               (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                partition_key, payload_json)
+           VALUES (1, 'auth_token_log', 'restart-stale-row', 1, 'restart-stale-row', 'key:stale', '{}')"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed an inactive durable Groups build row");
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET build_generation = 1,
+                  build_projection_revision = ?,
+                  build_source_recent_generation = ?,
+                  build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = ?,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'clearing'
+            WHERE singleton = 1"#,
+    )
+    .bind(revision)
+    .bind(recent_generation)
+    .bind(history_generation)
+    .bind(source_rowid_upper_bound)
+    .execute(&pool)
+    .await
+    .expect("persist the durable Groups build fence");
+
+    sqlx::query(
+        r#"INSERT INTO auth_token_logs (
+               token_id, method, path, result_status, error_message, failure_kind,
+               key_effect_code, binding_effect_code, selection_effect_code,
+               counts_business_quota, created_at
+           ) VALUES ('restart-stale-fence', 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                     'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+    )
+    .bind(initial_state.proxy.backend_time().now_ts())
+    .execute(&pool)
+    .await
+    .expect("seed the source-fence advance");
+    initial_state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("advance the source projection after the durable build was staged");
+    let (advanced_recent_generation, advanced_history_generation): (i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the advanced source fence");
+    assert_ne!(
+        (advanced_recent_generation, advanced_history_generation),
+        (recent_generation, history_generation),
+        "the restart fixture must leave the durable Groups build stale"
+    );
+
+    super::super::shutdown_admin_alerts_workers(initial_state.as_ref()).await;
+    drop(initial_state);
+
+    let recovered_proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-restart-stale-groups-build".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("recovered proxy created");
+    let (_, recovered_state) = spawn_builtin_keys_admin_server_with_state(
+        recovered_proxy,
+        "admin-alerts-liveness-restart-stale-groups-build-password",
+    )
+    .await;
+    super::super::rearm_admin_alerts_prewarm_for_test(recovered_state.as_ref()).await;
+    let stale_fence_pause = super::super::install_admin_alerts_warm_after_groups_source_fence_changed_pause_for_test(
+        recovered_state.as_ref(),
+    )
+    .await;
+    super::super::prewarm_admin_alerts(recovered_state.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        stale_fence_pause.wait_until_arrived(),
+    )
+    .await
+    .expect("recovered warm must discard the stale durable Groups build");
+    assert!(
+        recovered_state
+            .proxy
+            .admin_alerts_cache_warm_liveness_admission_active(),
+        "stale durable Groups recovery must retain the canonical warm liveness fence"
+    );
+    stale_fence_pause.release();
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(recovered_state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    super::super::shutdown_admin_alerts_workers(recovered_state.as_ref()).await;
+    drop(pool);
+    let _ = std::fs::remove_file(&db_path);
+    assert!(
+        published.is_ok(),
+        "recovered canonical warm must publish catalog, Events 1/20, and Groups 1/20"
+    );
+}

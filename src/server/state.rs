@@ -109,6 +109,8 @@ struct DashboardOverviewCacheState {
     admin_alerts_warm_before_projection_fence_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
     admin_alerts_warm_after_groups_defer_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
+    admin_alerts_warm_after_groups_source_fence_changed_pause: Option<AdminAlertsWarmPause>,
     admin_privacy_status: AdminPrivacyStatusController,
     #[cfg(test)]
     build_count: usize,
@@ -157,6 +159,8 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_warm_before_projection_fence_pause: None,
             #[cfg(test)]
             admin_alerts_warm_after_groups_defer_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_after_groups_source_fence_changed_pause: None,
             admin_privacy_status: AdminPrivacyStatusController::default(),
             #[cfg(test)]
             build_count: 0,
@@ -941,9 +945,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     if reason == "groups_build_replaced" =>
                 {
                     snapshot_cache_generation = None;
-                    state
-                        .proxy
-                        .set_admin_alerts_cache_warm_liveness(false);
+                    // A durable Groups build can be replaced while recovering a
+                    // process restart or a concurrent CAS. Keep the canonical
+                    // liveness fence while the next attempt captures a coherent
+                    // replacement instead of letting projection move the fence
+                    // on every retry.
                     if liveness_slot
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
@@ -962,9 +968,15 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     if reason == "groups_source_fence_changed" =>
                 {
                     snapshot_cache_generation = None;
-                    state
-                        .proxy
-                        .set_admin_alerts_cache_warm_liveness(false);
+                    // The staged durable build is stale, but the canonical warm
+                    // still owns the recovery fence. Releasing it here lets the
+                    // projection scheduler advance again before the replacement
+                    // build captures its source fence, causing an endless reset.
+                    #[cfg(test)]
+                    pause_admin_alerts_warm_after_groups_source_fence_changed_for_test(
+                        state.as_ref(),
+                    )
+                    .await;
                     if liveness_slot
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
@@ -1331,6 +1343,19 @@ async fn pause_admin_alerts_warm_after_groups_defer_for_test(state: &AppState) {
         .lock()
         .await
         .admin_alerts_warm_after_groups_defer_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_groups_source_fence_changed_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_groups_source_fence_changed_pause
         .take();
     let Some(pause) = pause else {
         return;
