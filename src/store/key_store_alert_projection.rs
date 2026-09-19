@@ -826,6 +826,7 @@ impl KeyStore {
                 .fetch_one(&mut **tx)
                 .await?
             };
+            let mut override_inserted = false;
             for source_row in &rows {
                 let row = source_row.clone();
                 let payload_json = serialize_alert_event_projection_payload(row.clone())?;
@@ -833,7 +834,7 @@ impl KeyStore {
                     // A canonical Groups build owns a fixed projection revision. Preserve the
                     // pre-update row once so its independently-budgeted read slices continue
                     // to see that snapshot while projection writes advance normally.
-                    sqlx::query(
+                    let override_change = sqlx::query(
                         r#"INSERT OR IGNORE INTO observability.admin_alert_canonical_group_overrides
                                (build_generation, source_kind, source_id, occurred_at, row_sort_id, payload_json)
                            SELECT ?, source_kind, source_id, occurred_at, row_sort_id, payload_json
@@ -846,6 +847,7 @@ impl KeyStore {
                     .bind(build_projection_revision)
                     .execute(&mut **tx)
                     .await?;
+                    override_inserted |= override_change.rows_affected() > 0;
                 }
                 sqlx::query(
                     r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -866,6 +868,16 @@ impl KeyStore {
                 .bind(payload_json)
                 .bind(observed_at)
                 .bind(projection_revision)
+                .execute(&mut **tx)
+                .await?;
+            }
+            if override_inserted {
+                sqlx::query(
+                    "UPDATE observability.admin_alert_canonical_groups_state \
+                     SET build_cursor_source_rowid = 1 \
+                     WHERE singleton = 1 AND build_generation = ?",
+                )
+                .bind(build_generation)
                 .execute(&mut **tx)
                 .await?;
             }

@@ -186,6 +186,7 @@ struct AdminAlertCanonicalGroupsState {
     build_projection_revision: i64,
     build_source_fence: (i64, i64),
     build_source_rowid_upper_bound: i64,
+    build_cursor_source_rowid: i64,
     build_cursor_occurred_at: i64,
     build_cursor_row_sort_id: String,
     build_phase: String,
@@ -306,7 +307,8 @@ impl KeyStore {
                        build_generation, build_projection_revision,
                        build_source_recent_generation, build_source_history_generation,
                        build_phase,
-                       build_source_rowid_upper_bound, build_cursor_occurred_at,
+                       build_source_rowid_upper_bound, build_cursor_source_rowid,
+                       build_cursor_occurred_at,
                        build_cursor_row_sort_id,
                        build_partition_key, build_partition_after_key,
                        build_partition_cursor_occurred_at, build_partition_cursor_row_sort_id,
@@ -341,6 +343,7 @@ impl KeyStore {
                 row.try_get("build_source_history_generation")?,
             ),
             build_source_rowid_upper_bound: row.try_get("build_source_rowid_upper_bound")?,
+            build_cursor_source_rowid: row.try_get("build_cursor_source_rowid")?,
             build_cursor_occurred_at: row.try_get("build_cursor_occurred_at")?,
             build_cursor_row_sort_id: row.try_get("build_cursor_row_sort_id")?,
             build_phase: row.try_get("build_phase")?,
@@ -447,7 +450,7 @@ impl KeyStore {
                                   build_source_recent_generation = ?, build_source_history_generation = ?,
                                   build_cursor_occurred_at = 9223372036854775807,
                                   build_cursor_row_sort_id = char(0x10ffff), build_source_rowid_upper_bound = ?,
-                                  build_cursor_source_rowid = 9223372036854775807, build_phase = 'clearing',
+                                  build_cursor_source_rowid = -1, build_phase = 'clearing',
                                   build_partition_key = '', build_partition_after_key = '',
                                   build_partition_cursor_occurred_at = -9223372036854775808,
                                   build_partition_cursor_row_sort_id = '',
@@ -660,7 +663,7 @@ impl KeyStore {
                                         FROM observability.dashboard_alert_projection_events
                                   ),
                                   build_phase = 'copying',
-                                  build_cursor_source_rowid = 0,
+                                  build_cursor_source_rowid = -1,
                                   build_cursor_occurred_at = 9223372036854775807,
                                   build_cursor_row_sort_id = char(0x10ffff),
                                   build_partition_key = '', build_partition_after_key = '',
@@ -765,7 +768,12 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut overrides = StdHashMap::new();
-        if !source_ids.is_empty() {
+        // New builds begin with no overrides. Projection writers mark the
+        // durable build state only when they actually preserve a pre-build
+        // row, so the normal liveness path avoids one read session per page.
+        // Zero and legacy sentinel values remain conservative and keep the
+        // compatibility lookup until the first page establishes the marker.
+        if !source_ids.is_empty() && state.build_cursor_source_rowid != -1 {
             // This is a separate bounded read session by design. The source
             // page and override lookup are validated against the same durable
             // fence before the staged rows are committed; if a projection
@@ -811,6 +819,7 @@ impl KeyStore {
                 );
             }
         }
+        let overrides_found = !overrides.is_empty();
         let row_count = rows.len();
         let staged: Vec<(String, String, i64, String, String, String, String)> = rows
             .into_iter()
@@ -944,7 +953,11 @@ impl KeyStore {
                         }
                         let changed = sqlx::query(
                             r#"UPDATE observability.admin_alert_canonical_groups_state
-                                  SET build_cursor_occurred_at = ?,
+                                  SET build_cursor_source_rowid = CASE
+                                          WHEN build_cursor_source_rowid = 1 OR ? THEN 1
+                                          ELSE -1
+                                      END,
+                                      build_cursor_occurred_at = ?,
                                       build_cursor_row_sort_id = ?,
                                       build_phase = CASE WHEN ? THEN 'aggregating' ELSE 'copying' END
                                 WHERE singleton = 1 AND build_generation = ?
@@ -953,6 +966,7 @@ impl KeyStore {
                                   AND build_cursor_row_sort_id = ?
                                   "#,
                         )
+                        .bind(overrides_found)
                         .bind(committed_cursor.0)
                         .bind(&committed_cursor.1)
                         .bind(chunk_complete)
