@@ -1021,13 +1021,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .lock()
                         .await
                         .defer_admin_alerts_prewarm(tokio::time::Instant::now());
-                    // Once aged, let the projection scheduler consume one bounded permit on
-                    // each normal tick instead of stretching coverage catch-up to 30s turns.
-                    let delay = if liveness_slot {
-                        std::time::Duration::from_secs(5)
-                    } else {
-                        backoff
-                    };
+                    // Once aged, wait for the projection scheduler to consume the transferred
+                    // bounded permit. The scheduler is notified by the handoff, and the warm
+                    // task is notified when that one slice completes, so a durable history
+                    // backlog does not depend on the normal ten-second polling cadence.
+                    let delay = backoff;
                     tracing::debug!(
                         component = "admin_read",
                         event = "alerts_canonical_warm_deferred",
@@ -1035,7 +1033,20 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         retry_after_secs = delay.as_secs(),
                         "deferred canonical administrator Alerts cache while projection catches up"
                     );
-                    if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
+                    if liveness_slot {
+                        if wait_for_admin_alerts_projection_or_shutdown(
+                            state.as_ref(),
+                            &cache,
+                            &shutdown_notify,
+                        )
+                        .await
+                        {
+                            state.proxy.set_admin_alerts_cache_warm_liveness(false);
+                            cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                            flight_guard.disarm();
+                            return;
+                        }
+                    } else if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                         state.proxy.set_admin_alerts_cache_warm_liveness(false);
                         cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                         flight_guard.disarm();

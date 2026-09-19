@@ -451,7 +451,7 @@ async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
         !projection_step.canonical_alerts_dirty,
         "Groups build must retain its liveness fence until the canonical publish"
     );
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
             let cache = cache.lock().await;
@@ -482,8 +482,30 @@ async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("a persisted Groups build must recover and publish all canonical Alerts keys");
+    .await;
+    if published.is_err() {
+        projection_churn.abort();
+        let _ = projection_churn.await;
+        let build_state: (i64, String, i64, i64, String, bool, i64, i64, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT build_generation, build_phase, build_cursor_occurred_at,
+                        build_cursor_source_rowid, build_partition_key,
+                        build_partition_source_complete,
+                        build_partition_fragment_next_position,
+                        build_partition_finalize_fragment_position,
+                        build_next_position, payload_read_generation,
+                        payload_read_position
+                   FROM observability.admin_alert_canonical_groups_state
+                  WHERE singleton = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read canonical Groups state after publish timeout");
+        panic!(
+            "canonical Alerts publish timed out: build_state={build_state:?}, projection_fence={:?}",
+            state.proxy.admin_alerts_canonical_warm_projection_fence().await
+        );
+    }
     projection_churn
         .await
         .expect("projection churn task must complete without panicking");

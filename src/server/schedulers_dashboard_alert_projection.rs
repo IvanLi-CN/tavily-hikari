@@ -84,8 +84,9 @@ fn spawn_dashboard_alert_projection_scheduler(state: Arc<AppState>) {
             prewarm_admin_alerts(state.clone()).await;
             state
                 .proxy
-                .backend_time()
-                .sleep(Duration::from_secs(next_delay_secs))
+                .wait_for_admin_alerts_cache_warm_projection_wakeup(
+                    Duration::from_secs(next_delay_secs),
+                )
                 .await;
         }
     });

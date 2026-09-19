@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use tracing::debug;
 use tracing::{info, warn};
@@ -472,6 +472,8 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness_permit: AtomicBool,
     admin_alerts_cache_warm_liveness_stage_active: AtomicBool,
     admin_alerts_cache_warm_liveness_projection_turn: AtomicBool,
+    admin_alerts_cache_warm_projection_wakeup: Arc<Notify>,
+    admin_alerts_cache_warm_projection_done: Arc<Notify>,
     alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
@@ -618,6 +620,10 @@ impl Drop for SqliteAlertProjectionLivenessPermit {
                 .inner
                 .admin_alerts_cache_warm_liveness_permit
                 .store(false, AtomicOrdering::Release);
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_projection_done
+                .notify_one();
             return;
         }
         self.runtime
@@ -628,6 +634,10 @@ impl Drop for SqliteAlertProjectionLivenessPermit {
             .inner
             .admin_alerts_cache_warm_liveness_permit
             .store(true, AtomicOrdering::Release);
+        self.runtime
+            .inner
+            .admin_alerts_cache_warm_projection_done
+            .notify_one();
     }
 }
 
@@ -677,6 +687,8 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness_permit: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_stage_active: AtomicBool::new(false),
                 admin_alerts_cache_warm_liveness_projection_turn: AtomicBool::new(false),
+                admin_alerts_cache_warm_projection_wakeup: Arc::new(Notify::new()),
+                admin_alerts_cache_warm_projection_done: Arc::new(Notify::new()),
                 alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),

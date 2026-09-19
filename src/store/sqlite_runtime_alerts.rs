@@ -139,6 +139,45 @@ impl SqliteRuntime {
         self.inner
             .admin_alerts_cache_warm_liveness_permit
             .store(true, AtomicOrdering::Release);
+        self.inner
+            .admin_alerts_cache_warm_projection_wakeup
+            .notify_one();
+    }
+
+    pub(crate) async fn wait_for_admin_alerts_cache_warm_projection_turn(&self) {
+        loop {
+            if !self
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .load(AtomicOrdering::Acquire)
+            {
+                return;
+            }
+            let notified = self.inner.admin_alerts_cache_warm_projection_done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .load(AtomicOrdering::Acquire)
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) async fn wait_for_admin_alerts_cache_warm_projection_wakeup(
+        &self,
+        delay: std::time::Duration,
+    ) {
+        let notified = self.inner.admin_alerts_cache_warm_projection_wakeup.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = tokio::time::sleep(delay) => {}
+        }
     }
 
     /// Test-only knob for asserting the spent-permit pressure path. Production

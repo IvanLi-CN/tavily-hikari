@@ -102,6 +102,25 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub async fn wait_for_admin_alerts_cache_warm_projection_turn(&self) {
+        self.key_store
+            .sqlite_runtime
+            .wait_for_admin_alerts_cache_warm_projection_turn()
+            .await;
+    }
+
+    #[doc(hidden)]
+    pub async fn wait_for_admin_alerts_cache_warm_projection_wakeup(
+        &self,
+        delay: std::time::Duration,
+    ) {
+        self.key_store
+            .sqlite_runtime
+            .wait_for_admin_alerts_cache_warm_projection_wakeup(delay)
+            .await;
+    }
+
+    #[doc(hidden)]
     #[doc(hidden)]
     pub async fn prepare_admin_alerts_canonical_warm(&self) -> Result<(), ProxyError> {
         self.key_store.prepare_admin_alerts_canonical_warm().await

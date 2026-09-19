@@ -21,6 +21,27 @@ async fn admin_alerts_shutdown_requested(
     cache.lock().await.admin_alerts_shutting_down
 }
 
+async fn wait_for_admin_alerts_projection_or_shutdown(
+    state: &AppState,
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
+    shutdown_notify: &Arc<tokio::sync::Notify>,
+) -> bool {
+    let notified = shutdown_notify.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    let projection_done = state
+        .proxy
+        .wait_for_admin_alerts_cache_warm_projection_turn();
+    tokio::pin!(projection_done);
+    if admin_alerts_shutdown_requested(cache).await {
+        return true;
+    }
+    tokio::select! {
+        _ = &mut projection_done => false,
+        _ = &mut notified => true,
+    }
+}
+
 async fn admin_alerts_canonical_groups_for_warm_liveness_stage(
     state: &AppState,
 ) -> Result<(PaginatedAlertGroups, i64, i64, i64), tavily_hikari::ProxyError> {
