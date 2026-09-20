@@ -1,6 +1,10 @@
 use super::*;
 use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
+use tavily_hikari::{
+    ALERT_SUBJECT_USER, ALERT_TYPE_USER_QUOTA_EXHAUSTED, AlertEntityRef, AlertEventRecord,
+    AlertSemanticWindow, AlertSemanticWindowKind, AlertSourceRef, AlertUserRef, TokenRequestKind,
+};
 
 #[tokio::test]
 async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pressure() {
@@ -437,6 +441,283 @@ async fn admin_alerts_warm_liveness_does_not_sleep_between_groups_slices() {
     assert!(
         published.is_ok(),
         "canonical warm must publish many Groups partitions without a fixed inter-slice sleep; state={build_state:?}"
+    );
+}
+
+#[tokio::test]
+async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
+    let db_path = temp_db_path("admin-alerts-liveness-large-semantic-partition");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-large-semantic-partition".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-large-semantic-partition-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let (revision, recent_generation, history_generation) = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT
+            (SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1),
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state),
+            (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the current canonical warm fence");
+    let build_generation = 1_i64;
+    let event_count = 8_500_i64;
+    let partition_key = "user_quota_exhausted:user:user-large-semantic:month:";
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    let month_start = occurred_at - (occurred_at.rem_euclid(2_592_000));
+    let mut fragment_events = Vec::<AlertEventRecord>::new();
+    let mut fragments = Vec::new();
+    for index in 0..event_count {
+        let source_id = format!("alert-large-semantic-{index:04}");
+        fragment_events.push(AlertEventRecord {
+            id: format!("auth_token_log:{source_id}"),
+            alert_type: ALERT_TYPE_USER_QUOTA_EXHAUSTED.to_string(),
+            title: "Large semantic quota alert".to_string(),
+            summary: "Large semantic quota alert".to_string(),
+            occurred_at: occurred_at - index,
+            subject_kind: ALERT_SUBJECT_USER.to_string(),
+            subject_id: "user-large-semantic".to_string(),
+            subject_label: "Large Semantic User".to_string(),
+            user: Some(AlertUserRef {
+                user_id: "user-large-semantic".to_string(),
+                display_name: Some("Large Semantic User".to_string()),
+                username: Some("large-semantic".to_string()),
+            }),
+            token: Some(AlertEntityRef {
+                id: "token-large-semantic".to_string(),
+                label: "Large Semantic Token".to_string(),
+            }),
+            key: None,
+            job: None,
+            request: None,
+            request_kind: Some(TokenRequestKind {
+                key: "tavily_search".to_string(),
+                label: "Tavily Search".to_string(),
+                detail: Some("POST /mcp".to_string()),
+            }),
+            failure_kind: Some("other".to_string()),
+            result_status: Some("quota_exhausted".to_string()),
+            error_message: Some(
+                "token quota exceeded on month window (limit 12000, used 12000)".to_string(),
+            ),
+            reason_code: None,
+            reason_summary: None,
+            reason_detail: None,
+            source: AlertSourceRef {
+                kind: "auth_token_log".to_string(),
+                id: source_id,
+            },
+            semantic_window: Some(AlertSemanticWindow {
+                kind: AlertSemanticWindowKind::Month,
+                window_minutes: None,
+                window_start: Some(month_start),
+                window_end: Some(month_start + 2_591_999),
+                window_key: Some(format!("month:{month_start}")),
+            }),
+        });
+        if fragment_events.len() == 25 {
+            fragments.push(
+                serde_json::to_string(&fragment_events).expect("serialize semantic fragment"),
+            );
+            fragment_events.clear();
+        }
+    }
+    if !fragment_events.is_empty() {
+        fragments.push(serde_json::to_string(&fragment_events).expect("serialize final fragment"));
+    }
+
+    let mut seed = pool.begin().await.expect("begin semantic fixture seed");
+    for index in 0..event_count {
+        let source_id = format!("alert-large-semantic-{index:04}");
+        let projection_payload = serde_json::json!({
+            "source_kind": "auth_token_log",
+            "source_id": source_id,
+            "row_sort_id": format!("semantic:{index:04}"),
+            "alert_type": ALERT_TYPE_USER_QUOTA_EXHAUSTED,
+            "occurred_at": occurred_at - index,
+            "token_id": "token-large-semantic",
+            "key_id": null,
+            "request_log_id": null,
+            "method": "POST",
+            "path": "/mcp",
+            "query": null,
+            "request_kind_key": "tavily_search",
+            "request_kind_label": "Tavily Search",
+            "request_kind_detail": "POST /mcp",
+            "result_status": "quota_exhausted",
+            "failure_kind": "other",
+            "error_message": "token quota exceeded on month window (limit 12000, used 12000)",
+            "counts_business_quota": true,
+            "user_id": "user-large-semantic",
+            "user_display_name": "Large Semantic User",
+            "user_username": "large-semantic",
+            "reason_code": null,
+            "reason_summary": null,
+            "reason_detail": null,
+            "job_id": null,
+            "job_type": null,
+            "job_trigger_source": null,
+            "job_status": null,
+            "job_attempt": null,
+            "job_message": null,
+            "job_queued_at": null,
+            "job_started_at": null,
+            "job_finished_at": null
+        })
+        .to_string();
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_events
+                   (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                    partition_key, payload_json)
+               VALUES (?, 'auth_token_log', ?, ?, ?, ?, ?)"#,
+        )
+        .bind(build_generation)
+        .bind(&source_id)
+        .bind(occurred_at - index)
+        .bind(format!("semantic:{index:04}"))
+        .bind(partition_key)
+        .bind(projection_payload)
+        .execute(&mut *seed)
+        .await
+        .expect("seed canonical semantic event");
+    }
+    for (index, events_json) in fragments.into_iter().enumerate() {
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_fragments
+                   (build_generation, partition_key, position, events_json)
+               VALUES (?, ?, ?, ?)"#,
+        )
+        .bind(build_generation)
+        .bind(partition_key)
+        .bind(index as i64 + 1)
+        .bind(events_json)
+        .execute(&mut *seed)
+        .await
+        .expect("seed canonical semantic fragment");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = 0,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'aggregating', build_partition_key = ?,
+                  build_partition_after_key = '', build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 1, build_partition_fragment_next_position = ?,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .bind(revision)
+    .bind(recent_generation)
+    .bind(history_generation)
+    .bind(partition_key)
+    .bind(event_count / 25 + 1)
+    .execute(&mut *seed)
+    .await
+    .expect("seed aggregating canonical Groups state");
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_catalog_state
+              SET build_generation = ?,
+                  cursor_occurred_at = -9223372036854775808,
+                  cursor_row_sort_id = '', source_complete = 0
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .execute(&mut *seed)
+    .await
+    .expect("seed same-generation canonical Catalog state");
+    seed.commit().await.expect("commit semantic fixture seed");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts.entries.clear();
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    let published = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let complete = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if complete && same_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    let build_state: (i64, String, i64, i64, String, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT build_generation, build_phase, build_cursor_source_rowid, active_generation, \
+                build_partition_key, build_partition_finalize_fragment_position, build_next_position, \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_reduction_events \
+                  WHERE build_generation = 1), \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_reduction_mothers \
+                  WHERE build_generation = 1) \
+           FROM observability.admin_alert_canonical_groups_state \
+          WHERE singleton = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read canonical Groups state after warm attempt");
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    drop(pool);
+    let _ = std::fs::remove_file(&db_path);
+
+    assert!(
+        published.is_ok(),
+        "canonical warm must batch a large semantic partition instead of stalling in one-fragment reduction; state={build_state:?}"
     );
 }
 

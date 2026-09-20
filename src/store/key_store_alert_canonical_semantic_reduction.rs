@@ -334,18 +334,27 @@ impl KeyStore {
         state: AdminAlertCanonicalGroupsState,
         mut progress: SemanticClassifyingProgress,
     ) -> Result<(), ProxyError> {
-        let fragment = self
-            .read_admin_alert_canonical_groups_partition_fragment(
+        let prior_fragment_position = state.build_partition_finalize_fragment_position;
+        let fragments = self
+            .read_admin_alert_canonical_groups_partition_fragments(
                 snapshot,
                 &state.build_partition_key,
-                state.build_partition_finalize_fragment_position,
+                prior_fragment_position,
             )
             .await?;
-        let prior_fragment_position = state.build_partition_finalize_fragment_position;
         let mut children = Vec::new();
         let mut mothers = Vec::new();
         let mut staged_events = Vec::new();
-        let next_fragment_position = if let Some((position, events)) = fragment {
+        let mut next_fragment_position = prior_fragment_position;
+        let mut accepted_fragments = 0_usize;
+        let mut staged_event_bytes = 0_usize;
+        let mut child_bytes = 0_usize;
+        let mut mother_bytes = 0_usize;
+        for (position, events) in fragments {
+            let progress_before_fragment = progress.clone();
+            let children_len = children.len();
+            let mothers_len = mothers.len();
+            let staged_events_len = staged_events.len();
             for event in events {
                 let event_position = progress.next_event_position;
                 progress.next_event_position += 1;
@@ -376,14 +385,57 @@ impl KeyStore {
                     .map(|child| child.ordinal)
                     .ok_or_else(|| ProxyError::Other("semantic reducer lost active child".to_string()))?;
                 let (_, event_json) = serialize_alert_event_record_for_projection(event)?;
+                staged_event_bytes = staged_event_bytes.saturating_add(event_json.len());
                 staged_events.push((
                     event_position,
                     child_ordinal,
                     event_json,
                 ));
             }
-            position + 1
-        } else {
+
+            let added_child_bytes = children[children_len..].iter().try_fold(
+                0_usize,
+                |total, child| {
+                    let bytes = serde_json::to_vec(child).map_err(|error| {
+                        ProxyError::Other(format!("serialize semantic child row: {error}"))
+                    })?;
+                    Ok::<_, ProxyError>(total.saturating_add(bytes.len()))
+                },
+            )?;
+            child_bytes = child_bytes.saturating_add(added_child_bytes);
+            let added_mother_bytes = mothers[mothers_len..].iter().try_fold(
+                0_usize,
+                |total, mother| {
+                    let bytes = serde_json::to_vec(mother).map_err(|error| {
+                        ProxyError::Other(format!("serialize semantic mother row: {error}"))
+                    })?;
+                    Ok::<_, ProxyError>(total.saturating_add(bytes.len()))
+                },
+            )?;
+            mother_bytes = mother_bytes.saturating_add(added_mother_bytes);
+
+            let write_rows = staged_events
+                .len()
+                .saturating_add(children.len())
+                .saturating_add(mothers.len().saturating_mul(2));
+            let write_bytes = staged_event_bytes
+                .saturating_add(child_bytes)
+                .saturating_add(mother_bytes.saturating_mul(2));
+            if accepted_fragments > 0
+                && (write_rows > ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS
+                    || write_bytes > ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES)
+            {
+                progress = progress_before_fragment;
+                children.truncate(children_len);
+                mothers.truncate(mothers_len);
+                staged_events.truncate(staged_events_len);
+                break;
+            }
+            accepted_fragments += 1;
+            next_fragment_position = position + 1;
+        }
+
+        if accepted_fragments == 0 {
             if let Some(child) = progress.active_child.take() {
                 Self::accept_semantic_child(&mut progress, child, &mut children, &mut mothers);
             }
@@ -417,7 +469,7 @@ impl KeyStore {
                     mothers,
                 )
                 .await;
-        };
+        }
         let progress_json = serde_json::to_string(&SemanticReductionProgress::Classifying(progress))
             .map_err(|error| ProxyError::Other(format!("serialize semantic reduction progress: {error}")))?;
         self.commit_admin_alert_canonical_semantic_classification(

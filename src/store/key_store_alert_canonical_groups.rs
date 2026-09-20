@@ -13,6 +13,11 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 1_000;
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
+// Semantic classification may consume several immutable fragments in one
+// bounded read, but it must still yield before a read or its matching write
+// grows beyond the existing canonical warm budgets.
+const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS: i64 = 8;
+const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES: usize = 512 * 1024;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
@@ -1375,7 +1380,7 @@ impl KeyStore {
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
-        let rows_result = sqlx::query_as::<_, (String, String)>(
+        let rows_result = sqlx::query_as::<_, (i64, String)>(
             "SELECT position, events_json \
                FROM observability.admin_alert_canonical_group_fragments \
               WHERE build_generation = ? AND partition_key = ? \
@@ -1756,6 +1761,74 @@ impl KeyStore {
         self.sqlite_runtime
             .record_admin_alerts_canonical_group_build_slice();
         Ok(())
+    }
+
+    async fn read_admin_alert_canonical_groups_partition_fragments(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        partition_key: &str,
+        position: i64,
+    ) -> Result<Vec<(i64, Vec<AlertEventRecord>)>, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let rows_result = sqlx::query_as::<_, (i64, String)>(
+            "SELECT position, events_json \
+               FROM observability.admin_alert_canonical_group_fragments \
+              WHERE build_generation = ? AND partition_key = ? AND position >= ? \
+              ORDER BY position ASC LIMIT ?",
+        )
+        .bind(snapshot.build_generation)
+        .bind(partition_key)
+        .bind(position)
+        .bind(ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS + 1)
+        .fetch_all(&mut *session)
+        .await;
+        let rows = session.query(rows_result).await?;
+        session.finish().await?;
+
+        let mut selected = Vec::new();
+        let mut selected_bytes = 0_usize;
+        for (position, events_json) in rows {
+            if !selected.is_empty()
+                && (selected.len() >= ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS as usize
+                    || selected_bytes.saturating_add(events_json.len())
+                        > ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES)
+            {
+                break;
+            }
+            selected_bytes = selected_bytes.saturating_add(events_json.len());
+            selected.push((position, events_json));
+        }
+
+        let mut fragments = Vec::with_capacity(selected.len());
+        for (position, events_json) in selected {
+            if let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(&events_json) {
+                fragments.push((position, events));
+                continue;
+            }
+            let marker = serde_json::from_str::<CanonicalAlertOversizedEventMarker>(&events_json)
+                .map_err(|_| ProxyError::Other("invalid canonical alert group fragment".to_string()))?;
+            if marker.chunk_count <= 0 {
+                return Err(ProxyError::Other(
+                    "canonical oversized alert event has no chunks".to_string(),
+                ));
+            }
+            let event_json = self
+                .read_admin_alert_canonical_group_payload_chunks(
+                    snapshot,
+                    -position,
+                    Some(marker.chunk_count),
+                )
+                .await?;
+            let event = serde_json::from_str::<AlertEventRecord>(&event_json).map_err(|_| {
+                ProxyError::Other("invalid canonical oversized alert event".to_string())
+            })?;
+            self.clear_admin_alert_canonical_group_payload_read(snapshot, -position)
+                .await?;
+            fragments.push((position, vec![event]));
+        }
+        Ok(fragments)
     }
 
     async fn read_admin_alert_canonical_groups_partition_fragment(
