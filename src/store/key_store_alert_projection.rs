@@ -542,8 +542,8 @@ impl KeyStore {
                 return Ok(AlertProjectionSliceOutcome::Deferred { reason });
             }
         };
-        match self.advance_admitted_alert_projection_slice().await {
-            Ok(outcome) => Ok(outcome),
+        let outcome = match self.advance_admitted_alert_projection_slice().await {
+            Ok(outcome) => outcome,
             Err(ProxyError::Deferred { .. }) => {
                 // The bounded source read owns an SQLite-native deadline.
                 // Its cursor has not committed, so report the result as a
@@ -553,9 +553,9 @@ impl KeyStore {
                     SqliteOperation::AlertProjection,
                     SqliteAdmissionDeferReason::QueryDeadline,
                 );
-                Ok(AlertProjectionSliceOutcome::Deferred {
+                return Ok(AlertProjectionSliceOutcome::Deferred {
                     reason: SqliteAdmissionDeferReason::QueryDeadline,
-                })
+                });
             }
             Err(err) if crate::is_transient_sqlite_write_error(&err) => {
                 // No cursor update has committed, so a later scheduler wake
@@ -572,12 +572,46 @@ impl KeyStore {
                     defer_reason = "sqlite_contention",
                     "deferred an alert projection slice after SQLite contention"
                 );
-                Ok(AlertProjectionSliceOutcome::Deferred {
+                return Ok(AlertProjectionSliceOutcome::Deferred {
                     reason: SqliteAdmissionDeferReason::RecentContention,
-                })
+                });
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+        // Keep a transferred liveness turn through idle freshness repair so
+        // canonical warm cannot reclaim its permit between the idle probe and
+        // the scheduler's follow-up observation write.
+        if has_canonical_warm_liveness
+            && matches!(&outcome, AlertProjectionSliceOutcome::Idle)
+            && let Err(err) = self.refresh_admitted_alert_projection_observation().await
+        {
+            if matches!(err, ProxyError::Deferred { .. }) {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::AlertProjection,
+                    SqliteAdmissionDeferReason::QueryDeadline,
+                );
+                return Ok(AlertProjectionSliceOutcome::Deferred {
+                    reason: SqliteAdmissionDeferReason::QueryDeadline,
+                });
+            }
+            if crate::is_transient_sqlite_write_error(&err) {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::AlertProjection,
+                    SqliteAdmissionDeferReason::RecentContention,
+                );
+                tracing::debug!(
+                    component = "dashboard_alert_projection",
+                    event = "deferred",
+                    defer_reason = "sqlite_contention",
+                    "deferred an idle observation refresh after SQLite contention"
+                );
+                return Ok(AlertProjectionSliceOutcome::Deferred {
+                    reason: SqliteAdmissionDeferReason::RecentContention,
+                });
+            }
+            return Err(err);
         }
+        Ok(outcome)
     }
 
     pub(crate) async fn refresh_alert_projection_observation(
@@ -599,6 +633,10 @@ impl KeyStore {
             Ok(permit) => permit,
             Err(_) => return Ok(false),
         };
+        self.refresh_admitted_alert_projection_observation().await
+    }
+
+    async fn refresh_admitted_alert_projection_observation(&self) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
         let rows_affected = self
             .sqlite_runtime

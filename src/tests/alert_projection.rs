@@ -2963,6 +2963,79 @@ async fn alert_projection_idle_probe_does_not_persist_empty_cursors() {
 }
 
 #[tokio::test]
+async fn alert_projection_liveness_turn_refreshes_stale_idle_observation_before_returning() {
+    let db_path = temp_db_path("alert-projection-liveness-idle-observation");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_575_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-projection-liveness-idle-observation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let generations_before: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state) + \
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source generations before the idle observation turn");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+         SET observed_at = ?, stale_reason = 'retention_pruned' WHERE phase = 'idle'",
+    )
+    .bind(now - 91)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("expire idle source observations");
+
+    proxy.set_admin_alerts_cache_warm_liveness(true);
+    proxy.transfer_admin_alerts_cache_warm_liveness_to_projection();
+    let step = proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("run the transferred bounded projection turn");
+    assert!(step.idle, "the empty projection source is idle");
+
+    let stale_sources: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_state \
+         WHERE phase = 'idle' AND (observed_at IS NULL OR observed_at < ? OR stale_reason IS NOT NULL)",
+    )
+    .bind(now - 45)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count stale idle observations after the liveness turn");
+    let generations_after: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state) + \
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source generations after the idle observation turn");
+
+    proxy.set_admin_alerts_cache_warm_liveness(false);
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+
+    assert_eq!(
+        stale_sources, 0,
+        "a transferred idle liveness turn must refresh coverage before warm reclaims the permit"
+    );
+    assert_eq!(
+        generations_after, generations_before,
+        "refreshing idle observation must not advance source generations"
+    );
+}
+
+#[tokio::test]
 async fn alert_projection_marks_expired_observation_as_stale() {
     let db_path = temp_db_path("alert-projection-stale-observation");
     let db_string = db_path.to_string_lossy().to_string();
