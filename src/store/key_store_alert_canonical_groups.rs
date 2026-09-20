@@ -11,6 +11,8 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // large production-shaped canonical snapshot. Write transactions remain capped
 // by the existing 250-row/512KiB ranges below.
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 1_000;
+// Consume a few independently bounded prefixes within one Groups stage.
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCHES_PER_STAGE: usize = 4;
 // Batch across partitions without exceeding the former per-partition fast-path
 // read budget.
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -1144,15 +1146,41 @@ impl KeyStore {
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
         if state.build_partition_key.is_empty() {
-            if self
-                .batch_admin_alert_canonical_compat_groups(snapshot, &state)
-                .await?
-            {
-                return Ok(());
+            let mut state = state;
+            let mut made_progress = false;
+            for batch_index in 0..ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCHES_PER_STAGE {
+                if !self
+                    .batch_admin_alert_canonical_compat_groups(snapshot, &state)
+                    .await?
+                {
+                    return if made_progress {
+                        Ok(())
+                    } else {
+                        self.select_admin_alert_canonical_groups_partition(snapshot, state)
+                            .await
+                    };
+                }
+                made_progress = true;
+                if batch_index + 1 == ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCHES_PER_STAGE {
+                    break;
+                }
+
+                tokio::task::yield_now().await;
+                state = self.load_admin_alert_canonical_groups_state().await?;
+                if state.build_generation == 0 {
+                    return Ok(());
+                }
+                if state.build_generation != snapshot.build_generation {
+                    return Err(ProxyError::Deferred {
+                        operation: "admin_alerts_cache_warm",
+                        reason: "groups_build_replaced".to_string(),
+                    });
+                }
+                if state.build_phase != "aggregating" || !state.build_partition_key.is_empty() {
+                    return Ok(());
+                }
             }
-            return self
-                .select_admin_alert_canonical_groups_partition(snapshot, state)
-                .await;
+            return Ok(());
         }
         if !state.build_partition_source_complete {
             return self

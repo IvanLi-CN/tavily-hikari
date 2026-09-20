@@ -1764,7 +1764,8 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_batches_sixty_four_semantic_partitions_per_slice() {
+async fn admin_alerts_canonical_groups_batches_two_hundred_fifty_six_semantic_partitions_per_slice()
+{
     let db_path = temp_db_path("alert-canonical-groups-semantic-fast-batch");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_750;
@@ -1802,7 +1803,7 @@ async fn admin_alerts_canonical_groups_batches_sixty_four_semantic_partitions_pe
         .begin()
         .await
         .expect("begin semantic batch fixture seed");
-    for partition_index in 0..80_i64 {
+    for partition_index in 0..320_i64 {
         let user_id = format!("semantic-fast-user-{partition_index:03}");
         let token_id = format!("semantic-fast-token-{partition_index:03}");
         let partition_key = format!("{ALERT_TYPE_USER_QUOTA_EXHAUSTED}:user:{user_id}:month:");
@@ -1912,10 +1913,13 @@ async fn admin_alerts_canonical_groups_batches_sixty_four_semantic_partitions_pe
         .admin_alert_canonical_groups_page_for_warm()
         .await
         .expect_err("one bounded Groups slice must leave the remaining partitions staged");
-    assert!(matches!(
-        first,
-        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
-    ));
+    assert!(
+        matches!(
+            &first,
+            ProxyError::Deferred { reason, .. } if reason == "groups_build_in_progress"
+        ),
+        "unexpected one-slice result: {first:?}"
+    );
     let (next_position, after_key, active_generation, build_phase): (i64, String, i64, String) =
         sqlx::query_as(
             "SELECT build_next_position, build_partition_after_key, active_generation, build_phase \
@@ -1925,8 +1929,8 @@ async fn admin_alerts_canonical_groups_batches_sixty_four_semantic_partitions_pe
         .await
         .expect("read the one-slice semantic batch checkpoint");
     assert!(
-        next_position >= 65,
-        "one read must accept at least 64 complete semantic partitions; next_position={next_position}"
+        next_position >= 257,
+        "one Groups stage must accept at least 256 complete semantic partitions; next_position={next_position}"
     );
     assert!(!after_key.is_empty());
     assert_eq!(active_generation, 1, "a bounded prefix is never published");
