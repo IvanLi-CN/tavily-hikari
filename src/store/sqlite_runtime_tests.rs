@@ -957,6 +957,23 @@ async fn alert_projection_cannot_claim_an_active_canonical_warm_stage() {
 }
 
 #[tokio::test]
+async fn rearming_canonical_warm_liveness_keeps_an_active_stage_fenced() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.begin_admin_alerts_cache_warm_liveness_stage();
+
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+
+    assert!(
+        runtime.admin_alerts_cache_warm_liveness_stage_active(),
+        "re-arming a retry must not reopen projection during the active canonical stage"
+    );
+
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
     let runtime = three_connection_runtime().await;
     runtime.set_admin_alerts_cache_warm_liveness(true);

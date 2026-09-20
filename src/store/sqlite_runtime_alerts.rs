@@ -74,21 +74,32 @@ impl SqliteRuntime {
             self.inner
                 .admin_alerts_cache_warm_liveness_projection_turn
                 .store(false, AtomicOrdering::Release);
-        } else if !self
+            self.inner
+                .admin_alerts_cache_warm_liveness_stage_active
+                .store(false, AtomicOrdering::Release);
+            return;
+        }
+        if self
             .inner
             .admin_alerts_cache_warm_liveness_projection_turn
             .load(AtomicOrdering::Acquire)
         {
-            // A retry may re-arm the canonical controller after it handed one
-            // liveness turn to projection. Preserve that handoff while making
-            // an unclaimed turn available to the next canonical stage.
+            self.inner
+                .admin_alerts_cache_warm_liveness_stage_active
+                .store(false, AtomicOrdering::Release);
+            return;
+        }
+        // Retries re-arm the same logical stage. Keep projection fenced while
+        // its captured source generation is still being built.
+        if !self
+            .inner
+            .admin_alerts_cache_warm_liveness_stage_active
+            .load(AtomicOrdering::Acquire)
+        {
             self.inner
                 .admin_alerts_cache_warm_liveness_permit
                 .store(true, AtomicOrdering::Release);
         }
-        self.inner
-            .admin_alerts_cache_warm_liveness_stage_active
-            .store(false, AtomicOrdering::Release);
     }
 
     pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
