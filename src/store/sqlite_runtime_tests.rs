@@ -1028,6 +1028,28 @@ async fn canonical_warm_stage_waits_for_an_in_flight_projection_permit() {
 }
 
 #[tokio::test]
+async fn canonical_warm_stage_does_not_reclaim_an_unclaimed_projection_turn() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+
+    assert!(
+        !runtime.begin_admin_alerts_cache_warm_liveness_stage(),
+        "warm must not reclaim the permit while a transferred projection turn is pending"
+    );
+    assert!(!runtime.admin_alerts_cache_warm_liveness_stage_active());
+
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("the outstanding turn must remain claimable by projection");
+    drop(projection_turn);
+
+    assert!(runtime.begin_admin_alerts_cache_warm_liveness_stage());
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn rearming_canonical_warm_liveness_preserves_a_transferred_projection_turn() {
     let runtime = three_connection_runtime().await;
     runtime.set_admin_alerts_cache_warm_liveness(true);

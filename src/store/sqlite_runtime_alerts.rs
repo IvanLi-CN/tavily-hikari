@@ -107,6 +107,10 @@ impl SqliteRuntime {
             .inner
             .admin_alerts_cache_warm_liveness
             .load(AtomicOrdering::Acquire)
+            || self
+                .inner
+                .admin_alerts_cache_warm_liveness_projection_turn
+                .load(AtomicOrdering::Acquire)
         {
             return false;
         }
