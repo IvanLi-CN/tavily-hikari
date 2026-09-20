@@ -3,7 +3,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // write-side batches bounded by both row count and encoded payload bytes so
 // a source page yields before turning one owned transaction into an unbounded
 // writer hold.
-const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 100;
+const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
     ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
@@ -11,8 +11,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // large production-shaped canonical snapshot. Write transactions remain capped
 // by the existing 250-row/512KiB ranges below.
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 1_000;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS: i64 = 8;
 // Semantic classification may consume several immutable fragments in one
 // bounded read, but it must still yield before a read or its matching write
 // grows beyond the existing canonical warm budgets.
@@ -1225,6 +1224,28 @@ impl KeyStore {
         }
         session.finish().await?;
 
+        let semantic_partition_event_counts = partitions
+            .iter()
+            .filter_map(|(partition_key, event_count, _, _)| {
+                if *event_count <= 1 {
+                    return None;
+                }
+                let fragment_json = fragments.get(partition_key)?;
+                let events = serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json).ok()?;
+                events
+                    .iter()
+                    .any(|event| event.semantic_window.is_some())
+                    .then(|| (partition_key.clone(), *event_count))
+            })
+            .take(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS as usize)
+            .collect::<Vec<_>>();
+        let semantic_events_by_partition = self
+            .read_admin_alert_canonical_semantic_partition_batch_for_fast_path(
+                snapshot,
+                &semantic_partition_event_counts,
+            )
+            .await?;
+
         for (partition_key, event_count, first_seen, last_seen) in partitions {
             let Some(fragment_json) = fragments.get(&partition_key) else {
                 break;
@@ -1240,17 +1261,11 @@ impl KeyStore {
                 let semantic_events = if event_count == 1 {
                     events
                 } else {
-                    let Some(semantic_events) = self
-                        .read_admin_alert_canonical_semantic_partition_for_fast_path(
-                            snapshot,
-                            &partition_key,
-                            event_count,
-                        )
-                        .await?
+                    let Some(semantic_events) = semantic_events_by_partition.get(&partition_key)
                     else {
                         break;
                     };
-                    semantic_events
+                    semantic_events.clone()
                 };
                 if semantic_events.iter().any(|event| {
                     event.semantic_window.is_none()
@@ -1449,49 +1464,92 @@ impl KeyStore {
         Ok(true)
     }
 
-    async fn read_admin_alert_canonical_semantic_partition_for_fast_path(
+    async fn read_admin_alert_canonical_semantic_partition_batch_for_fast_path(
         &self,
         snapshot: AdminAlertsCanonicalSnapshot,
-        partition_key: &str,
-        expected_event_count: i64,
-    ) -> Result<Option<Vec<AlertEventRecord>>, ProxyError> {
+        partitions: &[(String, i64)],
+    ) -> Result<StdHashMap<String, Vec<AlertEventRecord>>, ProxyError> {
+        if partitions.is_empty() {
+            return Ok(StdHashMap::new());
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
-        let rows_result = sqlx::query_as::<_, (i64, String)>(
-            "SELECT position, events_json \
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT partition_key, position, events_json \
                FROM observability.admin_alert_canonical_group_fragments \
-              WHERE build_generation = ? AND partition_key = ? \
-              ORDER BY position ASC LIMIT ?",
-        )
-        .bind(snapshot.build_generation)
-        .bind(partition_key)
-        .bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS + 1)
-        .fetch_all(&mut *session)
-        .await;
+              WHERE build_generation = ",
+        );
+        query.push_bind(snapshot.build_generation);
+        query.push(" AND partition_key IN (");
+        for (index, (partition_key, _)) in partitions.iter().enumerate() {
+            if index > 0 {
+                query.push(", ");
+            }
+            query.push_bind(partition_key);
+        }
+        query.push(") ORDER BY partition_key ASC, position ASC LIMIT ");
+        query.push_bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS);
+        let rows_result = query
+            .build_query_as::<(String, i64, String)>()
+            .fetch_all(&mut *session)
+            .await;
         let rows = session.query(rows_result).await?;
         session.finish().await?;
-        if rows.len() as i64 > ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS {
-            return Ok(None);
-        }
 
+        let expected_event_counts = partitions.iter().cloned().collect::<StdHashMap<_, _>>();
+        let mut complete = StdHashMap::new();
+        let mut current_partition: Option<String> = None;
+        let mut current_fragment_count = 0_i64;
+        let mut current_events = Vec::new();
+        let mut current_event_count = 0_i64;
         let mut total_bytes = 0_usize;
-        let mut events = Vec::new();
-        for (_, events_json) in rows {
-            total_bytes = total_bytes.saturating_add(events_json.len());
-            if total_bytes > ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES {
-                return Ok(None);
+        for (partition_key, position, events_json) in rows {
+            if current_partition.as_deref() != Some(partition_key.as_str()) {
+                if let Some(prior_partition) = current_partition.take()
+                    && current_event_count
+                        != expected_event_counts
+                            .get(&prior_partition)
+                            .copied()
+                            .unwrap_or_default()
+                {
+                    break;
+                }
+                current_partition = Some(partition_key.clone());
+                current_fragment_count = 0;
+                current_event_count = 0;
             }
-            let Ok(fragment_events) = serde_json::from_str::<Vec<AlertEventRecord>>(&events_json)
-            else {
-                return Ok(None);
+            total_bytes = total_bytes.saturating_add(events_json.len());
+            if total_bytes > ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES {
+                break;
+            }
+            if position != current_fragment_count + 1 {
+                break;
+            }
+            let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(&events_json) else {
+                break;
             };
-            events.extend(fragment_events);
+            current_event_count += events.len() as i64;
+            current_events.extend(events);
+            current_fragment_count += 1;
+            let expected_event_count = expected_event_counts
+                .get(&partition_key)
+                .copied()
+                .unwrap_or_default();
+            if current_event_count > expected_event_count {
+                break;
+            }
+            if current_event_count == expected_event_count {
+                if expected_event_count <= 0 {
+                    break;
+                }
+                complete.insert(partition_key, std::mem::take(&mut current_events));
+                current_partition = None;
+                current_fragment_count = 0;
+                current_event_count = 0;
+            }
         }
-        if events.len() as i64 != expected_event_count {
-            return Ok(None);
-        }
-        Ok(Some(events))
+        Ok(complete)
     }
 
     async fn finalize_admin_alert_canonical_groups_partition(
