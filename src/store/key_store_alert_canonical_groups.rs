@@ -3,7 +3,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS: i64 = 250;
 // write-side batches bounded by both row count and encoded payload bytes so
 // a source page yields before turning one owned transaction into an unbounded
 // writer hold.
-const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
+const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 100;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
     ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
@@ -77,47 +77,125 @@ fn encode_payload_assembly_segment(level: i64, position: i64) -> i64 {
     (level << PAYLOAD_ASSEMBLY_LEVEL_SHIFT) + position
 }
 
-fn canonical_alert_event_fragment_payloads(
-    events: Vec<AlertEventRecord>,
-) -> Result<Vec<CanonicalAlertFragmentPayload>, ProxyError> {
+fn canonical_alert_fragment_storage_bytes(
+    partition_key: &str,
+    fragment: &CanonicalAlertFragmentPayload,
+) -> usize {
+    partition_key.len()
+        + match fragment {
+            CanonicalAlertFragmentPayload::Events(events_json) => events_json.len(),
+            CanonicalAlertFragmentPayload::OversizedEventChunks(chunks) => chunks
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+                .saturating_add(32),
+        }
+}
+
+fn canonical_alert_event_fragment_payloads_bounded(
+    rows: impl IntoIterator<Item = Option<AlertEventRecord>>,
+    partition_key: &str,
+    max_bytes: usize,
+) -> Result<(usize, Vec<CanonicalAlertFragmentPayload>), ProxyError> {
     let mut fragments = Vec::new();
-    let mut fragment = String::from("[");
+    let mut current_fragment = String::from("[");
     let mut has_event = false;
-    for event in events {
+    let mut accepted_rows = 0_usize;
+    let mut committed_bytes = 0_usize;
+
+    for event in rows {
+        let Some(event) = event else {
+            accepted_rows += 1;
+            continue;
+        };
         let (_, event_json) = serialize_alert_event_record_for_projection(event)?;
         if event_json.len() + 2 > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES {
-            if has_event {
-                fragment.push(']');
-                fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
-                fragment = String::from("[");
+            let oversized = CanonicalAlertFragmentPayload::OversizedEventChunks(
+                canonical_alert_payload_chunks(&event_json),
+            );
+            let current = has_event.then(|| {
+                CanonicalAlertFragmentPayload::Events(format!("{current_fragment}]"))
+            });
+            let additional_bytes = current
+                .as_ref()
+                .map(|fragment| canonical_alert_fragment_storage_bytes(partition_key, fragment))
+                .unwrap_or_default()
+                .saturating_add(canonical_alert_fragment_storage_bytes(
+                    partition_key,
+                    &oversized,
+                ));
+            if accepted_rows > 0 && committed_bytes.saturating_add(additional_bytes) > max_bytes {
+                break;
+            }
+            if let Some(current) = current {
+                committed_bytes = committed_bytes
+                    .saturating_add(canonical_alert_fragment_storage_bytes(partition_key, &current));
+                fragments.push(current);
+                current_fragment = String::from("[");
                 has_event = false;
             }
-            fragments.push(CanonicalAlertFragmentPayload::OversizedEventChunks(
-                canonical_alert_payload_chunks(&event_json),
-            ));
+            committed_bytes = committed_bytes
+                .saturating_add(canonical_alert_fragment_storage_bytes(partition_key, &oversized));
+            fragments.push(oversized);
+            accepted_rows += 1;
             continue;
         }
+
         let separator_bytes = usize::from(has_event);
-        if has_event
-            && fragment.len() + separator_bytes + event_json.len() + 1
+        let candidate_fragment = if has_event
+            && current_fragment.len() + separator_bytes + event_json.len() + 1
                 > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES
         {
-            fragment.push(']');
-            fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
-            fragment = String::from("[");
-            has_event = false;
+            format!("[{event_json}]")
+        } else if has_event {
+            format!("{current_fragment},{event_json}]")
+        } else {
+            format!("[{event_json}]")
+        };
+        let current_fragment_will_close = has_event
+            && current_fragment.len() + separator_bytes + event_json.len() + 1
+                > ADMIN_ALERT_CANONICAL_FRAGMENT_MAX_BYTES;
+        let additional_bytes = if current_fragment_will_close {
+            canonical_alert_fragment_storage_bytes(
+                partition_key,
+                &CanonicalAlertFragmentPayload::Events(format!("{current_fragment}]")),
+            )
+            .saturating_add(canonical_alert_fragment_storage_bytes(
+                partition_key,
+                &CanonicalAlertFragmentPayload::Events(candidate_fragment.clone()),
+            ))
+        } else {
+            canonical_alert_fragment_storage_bytes(
+                partition_key,
+                &CanonicalAlertFragmentPayload::Events(candidate_fragment.clone()),
+            )
+        };
+        if accepted_rows > 0 && committed_bytes.saturating_add(additional_bytes) > max_bytes {
+            break;
         }
-        if has_event {
-            fragment.push(',');
+        if current_fragment_will_close {
+            let current = CanonicalAlertFragmentPayload::Events(format!("{current_fragment}]"));
+            committed_bytes = committed_bytes
+                .saturating_add(canonical_alert_fragment_storage_bytes(partition_key, &current));
+            fragments.push(current);
         }
-        fragment.push_str(&event_json);
+        current_fragment = if current_fragment_will_close {
+            format!("[{event_json}")
+        } else if has_event {
+            format!("{current_fragment},{event_json}")
+        } else {
+            format!("[{event_json}")
+        };
         has_event = true;
+        accepted_rows += 1;
     }
+
     if has_event {
-        fragment.push(']');
-        fragments.push(CanonicalAlertFragmentPayload::Events(fragment));
+        fragments.push(CanonicalAlertFragmentPayload::Events(format!(
+            "{current_fragment}]"
+        )));
     }
-    Ok(fragments)
+    Ok((accepted_rows, fragments))
 }
 
 fn canonical_alert_payload_chunks(payload: &str) -> Vec<String> {
@@ -1653,26 +1731,30 @@ impl KeyStore {
         let rows = session.query(rows_result).await;
         let finish = session.finish().await;
         finish?;
-        let rows = rows?;
-        let complete = rows.len() < ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS as usize;
-        let next_cursor = rows
-            .last()
+        let decoded_rows = rows?
+            .into_iter()
             .map(|row| {
-                Ok::<_, sqlx::Error>((
+                let cursor = (
                     row.try_get::<i64, _>("occurred_at")?,
                     row.try_get::<String, _>("row_sort_id")?,
-                ))
+                );
+                let event = Self::build_alert_event_from_projection(
+                    Self::decode_default_alert_event_projection_row(row)?,
+                );
+                Ok::<_, ProxyError>((cursor, event))
             })
-            .transpose()?
+            .collect::<Result<Vec<_>, _>>()?;
+        let (accepted_rows, fragments) = canonical_alert_event_fragment_payloads_bounded(
+            decoded_rows.iter().map(|(_, event)| event.clone()),
+            &partition,
+            ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES,
+        )?;
+        let complete = accepted_rows == decoded_rows.len()
+            && decoded_rows.len() < ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS as usize;
+        let next_cursor = decoded_rows
+            .get(accepted_rows.saturating_sub(1))
+            .map(|row| row.0.clone())
             .unwrap_or_else(|| state.build_partition_cursor.clone());
-        let events = rows
-            .into_iter()
-            .map(Self::decode_default_alert_event_projection_row)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(Self::build_alert_event_from_projection)
-            .collect::<Vec<_>>();
-        let fragments = canonical_alert_event_fragment_payloads(events)?;
         let fragment_position = state.build_partition_fragment_next_position;
         let fragment_count = fragments.len();
         let mut fragment_writes = Vec::with_capacity(fragment_count);
