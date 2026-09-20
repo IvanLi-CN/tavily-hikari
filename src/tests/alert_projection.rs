@@ -1764,6 +1764,181 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_batches_sixty_four_semantic_partitions_per_slice() {
+    let db_path = temp_db_path("alert-canonical-groups-semantic-fast-batch");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_750;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-semantic-fast-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "semantic-fast-batch-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM observability.dashboard_alert_projection_revision_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read canonical projection revision");
+    let source_fence = proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read source fence");
+
+    let build_generation = 2_i64;
+    let month_start = now - now.rem_euclid(2_592_000);
+    let mut seed = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin semantic batch fixture seed");
+    for partition_index in 0..80_i64 {
+        let user_id = format!("semantic-fast-user-{partition_index:03}");
+        let token_id = format!("semantic-fast-token-{partition_index:03}");
+        let partition_key = format!("{ALERT_TYPE_USER_QUOTA_EXHAUSTED}:user:{user_id}:month:");
+        let mut events = Vec::new();
+        for event_index in 0..2_i64 {
+            let source_id = format!("semantic-fast-{partition_index:03}-{event_index}");
+            let row_sort_id = format!("semantic-fast:{partition_index:03}:{event_index:03}");
+            let occurred_at = now - event_index;
+            events.push(AlertEventRecord {
+                id: format!("auth_token_log:{source_id}"),
+                alert_type: ALERT_TYPE_USER_QUOTA_EXHAUSTED.to_string(),
+                title: "Semantic quota alert".to_string(),
+                summary: "Semantic quota alert".to_string(),
+                occurred_at,
+                subject_kind: ALERT_SUBJECT_USER.to_string(),
+                subject_id: user_id.clone(),
+                subject_label: format!("Semantic User {partition_index}"),
+                user: Some(AlertUserRef {
+                    user_id: user_id.clone(),
+                    display_name: Some(format!("Semantic User {partition_index}")),
+                    username: Some(format!("semantic-{partition_index}")),
+                }),
+                token: Some(AlertEntityRef {
+                    id: token_id.clone(),
+                    label: "Semantic Batch Token".to_string(),
+                }),
+                key: None,
+                job: None,
+                request: None,
+                request_kind: Some(TokenRequestKind {
+                    key: "tavily_search".to_string(),
+                    label: "Tavily Search".to_string(),
+                    detail: Some("POST /mcp".to_string()),
+                }),
+                failure_kind: Some("other".to_string()),
+                result_status: Some("quota_exhausted".to_string()),
+                error_message: Some(
+                    "token quota exceeded on month window (limit 12000, used 12000)".to_string(),
+                ),
+                reason_code: None,
+                reason_summary: None,
+                reason_detail: None,
+                source: AlertSourceRef {
+                    kind: ALERT_SOURCE_AUTH_TOKEN_LOG.to_string(),
+                    id: source_id.clone(),
+                },
+                semantic_window: Some(AlertSemanticWindow {
+                    kind: AlertSemanticWindowKind::Month,
+                    window_minutes: None,
+                    window_start: Some(month_start),
+                    window_end: Some(month_start + 2_591_999),
+                    window_key: Some(format!("month:{month_start}")),
+                }),
+            });
+            sqlx::query(
+                r#"INSERT INTO observability.admin_alert_canonical_group_events
+                       (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                        partition_key, payload_json)
+                   VALUES (?, 'auth_token_log', ?, ?, ?, ?, '{}')"#,
+            )
+            .bind(build_generation)
+            .bind(source_id)
+            .bind(occurred_at)
+            .bind(row_sort_id)
+            .bind(&partition_key)
+            .execute(&mut *seed)
+            .await
+            .expect("seed semantic canonical event");
+        }
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_fragments
+                   (build_generation, partition_key, position, events_json)
+               VALUES (?, ?, 1, ?)"#,
+        )
+        .bind(build_generation)
+        .bind(partition_key)
+        .bind(serde_json::to_string(&events).expect("serialize semantic partition"))
+        .execute(&mut *seed)
+        .await
+        .expect("seed semantic partition fragment");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET active_generation = 1, active_row_count = 0,
+                  build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = 0,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'aggregating', build_partition_key = '',
+                  build_partition_after_key = '', build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 1, build_partition_fragment_next_position = 1,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .bind(revision)
+    .bind(source_fence.0)
+    .bind(source_fence.1)
+    .execute(&mut *seed)
+    .await
+    .expect("seed semantic Groups build state");
+    seed.commit().await.expect("commit semantic batch fixture");
+
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("one bounded Groups slice must leave the remaining partitions staged");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let (next_position, after_key, active_generation, build_phase): (i64, String, i64, String) =
+        sqlx::query_as(
+            "SELECT build_next_position, build_partition_after_key, active_generation, build_phase \
+             FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read the one-slice semantic batch checkpoint");
+    assert!(
+        next_position >= 65,
+        "one read must accept at least 64 complete semantic partitions; next_position={next_position}"
+    );
+    assert!(!after_key.is_empty());
+    assert_eq!(active_generation, 1, "a bounded prefix is never published");
+    assert_eq!(build_phase, "aggregating");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     let db_path = temp_db_path("alert-canonical-groups-fixed-membership");
     let db_string = db_path.to_string_lossy().to_string();

@@ -11,7 +11,10 @@ const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
 // large production-shaped canonical snapshot. Write transactions remain capped
 // by the existing 250-row/512KiB ranges below.
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 1_000;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS: i64 = 8;
+// Batch across partitions without exceeding the former per-partition fast-path
+// read budget.
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
 // Semantic classification may consume several immutable fragments in one
 // bounded read, but it must still yield before a read or its matching write
 // grows beyond the existing canonical warm budgets.
@@ -1237,7 +1240,7 @@ impl KeyStore {
                     .any(|event| event.semantic_window.is_some())
                     .then(|| (partition_key.clone(), *event_count))
             })
-            .take(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS as usize)
+            .take(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS as usize)
             .collect::<Vec<_>>();
         let semantic_events_by_partition = self
             .read_admin_alert_canonical_semantic_partition_batch_for_fast_path(
@@ -1489,7 +1492,7 @@ impl KeyStore {
             query.push_bind(partition_key);
         }
         query.push(") ORDER BY partition_key ASC, position ASC LIMIT ");
-        query.push_bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_FRAGMENT_ROWS);
+        query.push_bind(ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS);
         let rows_result = query
             .build_query_as::<(String, i64, String)>()
             .fetch_all(&mut *session)
@@ -1520,7 +1523,7 @@ impl KeyStore {
                 current_event_count = 0;
             }
             total_bytes = total_bytes.saturating_add(events_json.len());
-            if total_bytes > ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES {
+            if total_bytes > ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES {
                 break;
             }
             if position != current_fragment_count + 1 {
