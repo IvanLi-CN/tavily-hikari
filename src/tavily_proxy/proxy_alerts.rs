@@ -71,9 +71,9 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
-    pub fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+    pub fn begin_admin_alerts_cache_warm_liveness_stage(&self) -> bool {
         self.key_store
-            .begin_admin_alerts_cache_warm_liveness_stage();
+            .begin_admin_alerts_cache_warm_liveness_stage()
     }
 
     #[doc(hidden)]

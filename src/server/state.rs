@@ -102,6 +102,10 @@ struct DashboardOverviewCacheState {
     admin_alerts_prewarm_task: Option<tokio::task::JoinHandle<()>>,
     admin_alerts_groups_reclaimer_task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(test)]
+    admin_alerts_warm_before_liveness_stage_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
+    admin_alerts_warm_after_liveness_stage_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
     admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
     admin_alerts_warm_after_groups_pause: Option<AdminAlertsWarmPause>,
@@ -151,6 +155,10 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             admin_alerts_prewarm_task: None,
             admin_alerts_groups_reclaimer_task: None,
+            #[cfg(test)]
+            admin_alerts_warm_before_liveness_stage_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_after_liveness_stage_pause: None,
             #[cfg(test)]
             admin_alerts_warm_after_catalog_pause: None,
             #[cfg(test)]
@@ -792,16 +800,38 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 continue;
             }
+            if liveness_slot {
+                #[cfg(test)]
+                pause_admin_alerts_warm_before_liveness_stage_for_test(state.as_ref()).await;
+                if !state
+                    .proxy
+                    .begin_admin_alerts_cache_warm_liveness_stage()
+                {
+                    state.proxy.record_admin_alerts_warm_defer();
+                    if wait_for_admin_alerts_shutdown_or(
+                        &cache,
+                        &shutdown_notify,
+                        std::time::Duration::from_millis(250),
+                    )
+                    .await
+                    {
+                        state
+                            .proxy
+                            .set_admin_alerts_cache_warm_liveness(false);
+                        cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
+                        flight_guard.disarm();
+                        return;
+                    }
+                    continue;
+                }
+                #[cfg(test)]
+                pause_admin_alerts_warm_after_liveness_stage_for_test(state.as_ref()).await;
+            }
             let generation = match snapshot_cache_generation {
                 Some(generation) => generation,
                 None => current_admin_alerts_generation(state.as_ref()).await,
             };
             let result = async {
-                if liveness_slot {
-                    state
-                        .proxy
-                        .begin_admin_alerts_cache_warm_liveness_stage();
-                }
                 state.proxy.prepare_admin_alerts_canonical_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
@@ -1312,6 +1342,32 @@ pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
         .lock()
         .await
         .admin_alerts_prewarm_not_before = None;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_before_liveness_stage_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_before_liveness_stage_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_liveness_stage_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_liveness_stage_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
 }
 
 #[cfg(test)]

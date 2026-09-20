@@ -2039,9 +2039,9 @@ impl KeyStore {
             .set_admin_alerts_cache_warm_liveness(enabled);
     }
 
-    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) -> bool {
         self.sqlite_runtime
-            .begin_admin_alerts_cache_warm_liveness_stage();
+            .begin_admin_alerts_cache_warm_liveness_stage()
     }
 
     pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {

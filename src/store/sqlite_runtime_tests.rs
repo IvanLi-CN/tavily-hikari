@@ -1006,6 +1006,28 @@ async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
 }
 
 #[tokio::test]
+async fn canonical_warm_stage_waits_for_an_in_flight_projection_permit() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("projection claims the transferred liveness permit");
+
+    assert!(
+        !runtime.begin_admin_alerts_cache_warm_liveness_stage(),
+        "canonical warm must not stage while projection owns the permit"
+    );
+    assert!(!runtime.admin_alerts_cache_warm_liveness_stage_active());
+
+    drop(projection_turn);
+    assert!(runtime.begin_admin_alerts_cache_warm_liveness_stage());
+    assert!(runtime.admin_alerts_cache_warm_liveness_stage_active());
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
 async fn rearming_canonical_warm_liveness_preserves_a_transferred_projection_turn() {
     let runtime = three_connection_runtime().await;
     runtime.set_admin_alerts_cache_warm_liveness(true);

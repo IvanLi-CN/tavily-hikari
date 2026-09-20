@@ -102,13 +102,16 @@ impl SqliteRuntime {
         }
     }
 
-    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+    pub(crate) fn begin_admin_alerts_cache_warm_liveness_stage(&self) -> bool {
         if !self
             .inner
             .admin_alerts_cache_warm_liveness
             .load(AtomicOrdering::Acquire)
         {
-            return;
+            return false;
+        }
+        if self.admin_alerts_cache_warm_liveness_stage_active() {
+            return true;
         }
         if self
             .inner
@@ -119,7 +122,9 @@ impl SqliteRuntime {
             self.inner
                 .admin_alerts_cache_warm_liveness_stage_active
                 .store(true, AtomicOrdering::Release);
+            return true;
         }
+        self.admin_alerts_cache_warm_liveness_stage_active()
     }
 
     pub(crate) fn finish_admin_alerts_cache_warm_liveness_stage(&self) {

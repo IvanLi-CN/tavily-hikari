@@ -124,6 +124,171 @@ async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pres
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_waits_for_in_flight_projection_liveness_permit_before_staging() {
+    let db_path = temp_db_path("admin-alerts-liveness-stage-acquisition-race");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-stage-acquisition-race".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-stage-acquisition-race-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before warm");
+
+    let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if !cache_handle.lock().await.admin_alerts_prewarm_in_flight {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial warm must finish before the permit race is installed");
+
+    let before_stage = super::super::AdminAlertsWarmPause::new();
+    let after_stage = super::super::AdminAlertsWarmPause::new();
+    {
+        let mut cache = cache_handle.lock().await;
+        cache.admin_alerts.entries.clear();
+        cache.admin_alerts_prewarm_not_before = None;
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+        cache.admin_alerts_warm_before_liveness_stage_pause = Some(before_stage.clone());
+        cache.admin_alerts_warm_after_liveness_stage_pause = Some(after_stage.clone());
+    }
+
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        before_stage.wait_until_arrived(),
+    )
+    .await
+    .expect("warm must reach the stage-acquisition boundary");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let mut writer = pool.acquire().await.expect("acquire observation lock writer");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .expect("hold the observability writer lock");
+
+    let observer_proxy = state.proxy.clone();
+    let observer = tokio::spawn(async move {
+        observer_proxy
+            .refresh_dashboard_alert_projection_observation()
+            .await
+    });
+    let permit_claimed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if !state
+                .proxy
+                .admin_alerts_cache_warm_liveness_admission_active()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    before_stage.release();
+
+    let reached_owned_stage = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        after_stage.wait_until_arrived(),
+    )
+    .await
+    .is_ok()
+        && state
+            .proxy
+            .admin_alerts_cache_warm_liveness_stage_active();
+
+    if !permit_claimed.is_ok() || !reached_owned_stage {
+        after_stage.release();
+        let _ = sqlx::query("ROLLBACK").execute(&mut *writer).await;
+        let _ = observer.await;
+        super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+        drop((writer, pool));
+        let _ = std::fs::remove_file(&db_path);
+        panic!(
+            "canonical warm must acquire the liveness stage after the in-flight projection permit returns; stage_active={} permit_claimed={}",
+            state.proxy.admin_alerts_cache_warm_liveness_stage_active(),
+            permit_claimed.is_ok()
+        );
+    }
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *writer)
+        .await
+        .expect("release the observation lock writer");
+    let _ = observer.await;
+    after_stage.release();
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let cache = cache_handle.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let published = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if published && same_generation {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    drop((writer, pool));
+    let _ = std::fs::remove_file(&db_path);
+    assert!(
+        published.is_ok(),
+        "canonical warm must publish all three keys after the observation permit returns"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure_and_projection_churn() {
     let db_path = temp_db_path("admin-alerts-liveness-slice-pressure");
     let db_str = db_path.to_string_lossy().to_string();
