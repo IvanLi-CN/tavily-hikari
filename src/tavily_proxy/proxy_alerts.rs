@@ -96,6 +96,13 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
+        self.key_store
+            .sqlite_runtime
+            .admin_alerts_cache_warm_liveness_stage_active()
+    }
+
+    #[doc(hidden)]
     pub fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
         self.key_store
             .transfer_admin_alerts_cache_warm_liveness_to_projection();

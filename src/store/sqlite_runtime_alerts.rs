@@ -129,7 +129,9 @@ impl SqliteRuntime {
     }
 
     pub(crate) fn retain_admin_alerts_cache_warm_liveness_for_retry(&self) {
-        self.finish_admin_alerts_cache_warm_liveness_stage();
+        if self.admin_alerts_cache_warm_liveness_stage_active() {
+            return;
+        }
         self.transfer_admin_alerts_cache_warm_liveness_to_projection();
     }
 

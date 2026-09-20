@@ -780,9 +780,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     retry_after_secs = delay.as_secs(),
                     "deferred canonical administrator Alerts cache before SQLite admission"
                 );
-                state
-                    .proxy
-                    .set_admin_alerts_cache_warm_liveness(false);
+                if !state.proxy.admin_alerts_cache_warm_liveness_stage_active() {
+                    state
+                        .proxy
+                        .set_admin_alerts_cache_warm_liveness(false);
+                }
                 if wait_for_admin_alerts_shutdown_or(&cache, &shutdown_notify, delay).await {
                     cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                     flight_guard.disarm();
