@@ -741,7 +741,7 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
     .await
     .expect("read the current canonical warm fence");
     let build_generation = 1_i64;
-    let event_count = 8_500_i64;
+    let event_count = 25_500_i64;
     let partition_key = "user_quota_exhausted:user:user-large-semantic:month:";
     let occurred_at = Utc::now().timestamp().saturating_sub(60);
     let month_start = occurred_at - (occurred_at.rem_euclid(2_592_000));
@@ -807,12 +807,13 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
     }
 
     let mut seed = pool.begin().await.expect("begin semantic fixture seed");
+    let mut projection_rows = Vec::with_capacity(event_count as usize);
     for index in 0..event_count {
         let source_id = format!("alert-large-semantic-{index:04}");
         let projection_payload = serde_json::json!({
             "source_kind": "auth_token_log",
             "source_id": source_id,
-            "row_sort_id": format!("semantic:{index:04}"),
+            "row_sort_id": format!("semantic:{index:06}"),
             "alert_type": ALERT_TYPE_USER_QUOTA_EXHAUSTED,
             "occurred_at": occurred_at - index,
             "token_id": "token-large-semantic",
@@ -845,35 +846,51 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
             "job_finished_at": null
         })
         .to_string();
-        sqlx::query(
+        projection_rows.push((
+            source_id,
+            occurred_at - index,
+            format!("semantic:{index:06}"),
+            projection_payload,
+        ));
+    }
+    for batch in projection_rows.chunks(25) {
+        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"INSERT INTO observability.admin_alert_canonical_group_events
                    (build_generation, source_kind, source_id, occurred_at, row_sort_id,
-                    partition_key, payload_json)
-               VALUES (?, 'auth_token_log', ?, ?, ?, ?, ?)"#,
-        )
-        .bind(build_generation)
-        .bind(&source_id)
-        .bind(occurred_at - index)
-        .bind(format!("semantic:{index:04}"))
-        .bind(partition_key)
-        .bind(projection_payload)
-        .execute(&mut *seed)
-        .await
-        .expect("seed canonical semantic event");
+                    partition_key, payload_json) "#,
+        );
+        insert.push_values(batch, |mut row, event| {
+            row.push_bind(build_generation)
+                .push_bind("auth_token_log")
+                .push_bind(&event.0)
+                .push_bind(event.1)
+                .push_bind(&event.2)
+                .push_bind(partition_key)
+                .push_bind(&event.3);
+        });
+        insert
+            .build()
+            .execute(&mut *seed)
+            .await
+            .expect("seed canonical semantic event batch");
     }
-    for (index, events_json) in fragments.into_iter().enumerate() {
-        sqlx::query(
+    for (chunk_index, batch) in fragments.chunks(25).enumerate() {
+        let first_position = (chunk_index * 25 + 1) as i64;
+        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             r#"INSERT INTO observability.admin_alert_canonical_group_fragments
-                   (build_generation, partition_key, position, events_json)
-               VALUES (?, ?, ?, ?)"#,
-        )
-        .bind(build_generation)
-        .bind(partition_key)
-        .bind(index as i64 + 1)
-        .bind(events_json)
-        .execute(&mut *seed)
-        .await
-        .expect("seed canonical semantic fragment");
+                   (build_generation, partition_key, position, events_json) "#,
+        );
+        insert.push_values(batch.iter().enumerate(), |mut row, (offset, events_json)| {
+            row.push_bind(build_generation)
+                .push_bind(partition_key)
+                .push_bind(first_position + offset as i64)
+                .push_bind(events_json);
+        });
+        insert
+            .build()
+            .execute(&mut *seed)
+            .await
+            .expect("seed canonical semantic fragment batch");
     }
     sqlx::query(
         r#"UPDATE observability.admin_alert_canonical_groups_state
@@ -923,35 +940,19 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
     }
 
     super::super::prewarm_admin_alerts(state.clone()).await;
-    let published = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    let groups_published = tokio::time::timeout(std::time::Duration::from_secs(18), async {
         loop {
-            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
-            let cache = cache.lock().await;
-            let keys = [
-                "catalog".to_string(),
-                super::super::default_admin_alert_cache_key("events"),
-                super::super::default_admin_alert_cache_key("groups"),
-            ];
-            let complete = keys.iter().all(|key| {
-                cache
-                    .admin_alerts
-                    .entries
-                    .iter()
-                    .any(|entry| entry.canonical && entry.key == *key)
-            });
-            let same_generation = keys.iter().all(|key| {
-                cache
-                    .admin_alerts
-                    .entries
-                    .iter()
-                    .find(|entry| entry.canonical && entry.key == *key)
-                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
-            });
-            if complete && same_generation {
+            let active_generation: i64 = sqlx::query_scalar(
+                "SELECT active_generation FROM observability.admin_alert_canonical_groups_state \
+                 WHERE singleton = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read the published canonical Groups generation");
+            if active_generation > 0 {
                 break;
             }
-            drop(cache);
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     })
     .await;
@@ -969,14 +970,29 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
     .fetch_one(&pool)
     .await
     .expect("read canonical Groups state after warm attempt");
+    let (active_group_rows, payload_chunks): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), \
+                (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_payload_chunks \
+                  WHERE build_generation = ?) \
+           FROM observability.admin_alert_canonical_groups \
+          WHERE build_generation = ?",
+    )
+    .bind(build_state.3)
+    .bind(build_state.3)
+    .fetch_one(&pool)
+    .await
+    .expect("verify the active Groups generation has complete payloads");
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
     drop(pool);
     let _ = std::fs::remove_file(&db_path);
 
     assert!(
-        published.is_ok(),
-        "canonical warm must batch a large semantic partition instead of stalling in one-fragment reduction; state={build_state:?}"
+        groups_published.is_ok(),
+        "canonical Groups page must publish a large semantic partition within the bounded window; state={build_state:?}"
     );
+    assert!(build_state.3 > 0, "a complete Groups generation must be active");
+    assert_eq!(active_group_rows, 1);
+    assert!(payload_chunks > 0, "the active group payload must have chunks");
 }
 
 #[tokio::test]

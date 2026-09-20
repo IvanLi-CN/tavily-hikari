@@ -3,6 +3,10 @@
 // one eight-row cursor turn; output writes remain capped by the existing transaction chunk.
 const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_EVENT_ROWS: i64 = 64;
 const ADMIN_ALERT_CANONICAL_SEMANTIC_OUTPUT_CHUNKS_PER_TX: usize = 16;
+// The widest semantic row has 15 binds; 50 rows stay under SQLite's
+// conservative 999-variable limit while batching statements inside the same
+// existing bounded transaction.
+const ADMIN_ALERT_CANONICAL_SEMANTIC_WRITE_ROWS_PER_STATEMENT: usize = 50;
 // A canonical group is a summary. Keep inline history only while it fits in
 // one existing read fragment; the drawer already loads request records from
 // its paginated source when an administrator asks to inspect a child window.
@@ -497,97 +501,120 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let partition = state.build_partition_key.clone();
         let prior_progress_json = state.build_partition_events_json.clone();
+        let children = children
+            .into_iter()
+            .map(|child| {
+                let latest_event_json =
+                    serialize_alert_event_record_for_projection(child.latest_event.clone())?.1;
+                Ok::<_, ProxyError>((child, latest_event_json))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mothers = mothers
+            .into_iter()
+            .map(|mother| {
+                let latest_event_json =
+                    serialize_alert_event_record_for_projection(mother.latest_event.clone())?.1;
+                let group = Self::semantic_mother_group_record(&mother);
+                Ok::<_, ProxyError>((mother, latest_event_json, group))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, move |tx| {
                 Box::pin(async move {
-                    for (event_position, child_ordinal, event_json) in staged_events {
-                        sqlx::query(
+                    for batch in staged_events
+                        .chunks(ADMIN_ALERT_CANONICAL_SEMANTIC_WRITE_ROWS_PER_STATEMENT)
+                    {
+                        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                             r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_reduction_events
-                                   (build_generation, partition_key, event_position, child_ordinal, event_json)
-                               VALUES (?, ?, ?, ?, ?)"#,
-                        )
-                        .bind(snapshot.build_generation)
-                        .bind(&partition)
-                        .bind(event_position)
-                        .bind(child_ordinal)
-                        .bind(event_json)
-                        .execute(&mut **tx)
-                        .await?;
+                                   (build_generation, partition_key, event_position, child_ordinal, event_json) "#,
+                        );
+                        insert.push_values(batch, |mut row, event| {
+                            row.push_bind(snapshot.build_generation)
+                                .push_bind(&partition)
+                                .push_bind(event.0)
+                                .push_bind(event.1)
+                                .push_bind(&event.2);
+                        });
+                        insert.build().execute(&mut **tx).await?;
                     }
-                    for child in children {
-                        sqlx::query(
+                    for batch in children
+                        .chunks(ADMIN_ALERT_CANONICAL_SEMANTIC_WRITE_ROWS_PER_STATEMENT)
+                    {
+                        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                             r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_reduction_children
                                    (build_generation, partition_key, child_ordinal, mother_ordinal,
                                     first_event_position, last_event_position, first_seen, last_seen,
                                     event_count, latest_event_json, semantic_kind,
                                     semantic_window_minutes, semantic_window_start, semantic_window_end,
-                                    semantic_window_key)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-                        )
-                        .bind(snapshot.build_generation)
-                        .bind(&partition)
-                        .bind(child.ordinal)
-                        .bind(child.mother_ordinal)
-                        .bind(child.first_event_position)
-                        .bind(child.last_event_position)
-                        .bind(child.first_seen)
-                        .bind(child.last_seen)
-                        .bind(child.event_count)
-                        .bind(serialize_alert_event_record_for_projection(child.latest_event.clone())?.1)
-                        .bind(child.semantic_kind)
-                        .bind(child.semantic_window_minutes)
-                        .bind(child.semantic_window_start)
-                        .bind(child.semantic_window_end)
-                        .bind(child.semantic_window_key)
-                        .execute(&mut **tx)
-                        .await?;
+                                    semantic_window_key) "#,
+                        );
+                        insert.push_values(batch, |mut row, (child, latest_event_json)| {
+                            row.push_bind(snapshot.build_generation)
+                                .push_bind(&partition)
+                                .push_bind(child.ordinal)
+                                .push_bind(child.mother_ordinal)
+                                .push_bind(child.first_event_position)
+                                .push_bind(child.last_event_position)
+                                .push_bind(child.first_seen)
+                                .push_bind(child.last_seen)
+                                .push_bind(child.event_count)
+                                .push_bind(latest_event_json)
+                                .push_bind(&child.semantic_kind)
+                                .push_bind(child.semantic_window_minutes)
+                                .push_bind(child.semantic_window_start)
+                                .push_bind(child.semantic_window_end)
+                                .push_bind(&child.semantic_window_key);
+                        });
+                        insert.build().execute(&mut **tx).await?;
                     }
-                    for mother in mothers {
-                        sqlx::query(
+                    for batch in mothers
+                        .chunks(ADMIN_ALERT_CANONICAL_SEMANTIC_WRITE_ROWS_PER_STATEMENT)
+                    {
+                        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                             r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_group_reduction_mothers
                                    (build_generation, partition_key, mother_ordinal,
                                     first_child_ordinal, last_child_ordinal, first_seen, last_seen,
                                     event_count, child_count, latest_event_json, semantic_kind,
                                     semantic_window_minutes, semantic_window_start, semantic_window_end,
-                                    semantic_window_key)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-                        )
-                        .bind(snapshot.build_generation)
-                        .bind(&partition)
-                        .bind(mother.ordinal)
-                        .bind(mother.first_child_ordinal)
-                        .bind(mother.last_child_ordinal)
-                        .bind(mother.first_seen)
-                        .bind(mother.last_seen)
-                        .bind(mother.event_count)
-                        .bind(mother.child_count)
-                        .bind(serialize_alert_event_record_for_projection(mother.latest_event.clone())?.1)
-                        .bind(mother.semantic_kind.clone())
-                        .bind(mother.semantic_window_minutes)
-                        .bind(mother.semantic_window_start)
-                        .bind(mother.semantic_window_end)
-                        .bind(mother.semantic_window_key.clone())
-                        .execute(&mut **tx)
-                        .await?;
+                                    semantic_window_key) "#,
+                        );
+                        insert.push_values(batch, |mut row, (mother, latest_event_json, _)| {
+                            row.push_bind(snapshot.build_generation)
+                                .push_bind(&partition)
+                                .push_bind(mother.ordinal)
+                                .push_bind(mother.first_child_ordinal)
+                                .push_bind(mother.last_child_ordinal)
+                                .push_bind(mother.first_seen)
+                                .push_bind(mother.last_seen)
+                                .push_bind(mother.event_count)
+                                .push_bind(mother.child_count)
+                                .push_bind(latest_event_json)
+                                .push_bind(&mother.semantic_kind)
+                                .push_bind(mother.semantic_window_minutes)
+                                .push_bind(mother.semantic_window_start)
+                                .push_bind(mother.semantic_window_end)
+                                .push_bind(&mother.semantic_window_key);
+                        });
+                        insert.build().execute(&mut **tx).await?;
 
                         // Keep the in-flight generation observable for reclaim and restart
                         // recovery. Its payload remains unpublished until output chunks exist.
-                        let group = Self::semantic_mother_group_record(&mother);
-                        sqlx::query(
+                        let mut groups = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                             r#"INSERT OR REPLACE INTO observability.admin_alert_canonical_groups
                                    (build_generation, position, last_seen, total_count,
-                                    alert_type, group_id, payload_json)
-                               VALUES (?, ?, ?, ?, ?, ?, '')"#,
-                        )
-                        .bind(snapshot.build_generation)
-                        .bind(state.build_next_position + mother.ordinal - 1)
-                        .bind(group.last_seen)
-                        .bind(group.count)
-                        .bind(group.alert_type)
-                        .bind(group.id)
-                        .execute(&mut **tx)
-                        .await?;
+                                    alert_type, group_id, payload_json) "#,
+                        );
+                        groups.push_values(batch, |mut row, (mother, _, group)| {
+                            row.push_bind(snapshot.build_generation)
+                                .push_bind(state.build_next_position + mother.ordinal - 1)
+                                .push_bind(group.last_seen)
+                                .push_bind(group.count)
+                                .push_bind(&group.alert_type)
+                                .push_bind(&group.id)
+                                .push_bind("");
+                        });
+                        groups.build().execute(&mut **tx).await?;
                     }
                     let changed = sqlx::query(
                         r#"UPDATE observability.admin_alert_canonical_groups_state
