@@ -7,9 +7,12 @@ const ADMIN_ALERT_CANONICAL_GROUPS_CAPTURE_SLICE_ROWS: i64 = 25;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_ROWS: usize =
     ADMIN_ALERT_CANONICAL_GROUPS_READ_SLICE_ROWS as usize;
 const ADMIN_ALERT_CANONICAL_GROUPS_WRITE_SLICE_MAX_BYTES: usize = 512 * 1024;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 250;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 512 * 1024;
-const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 16;
+// Keep the read batch bounded while reducing per-batch index/JSON setup for the
+// large production-shaped canonical snapshot. Write transactions remain capped
+// by the existing 250-row/512KiB ranges below.
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCH_ROWS: i64 = 1_000;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
+const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
 // intentionally not used as a proxy for retained snapshot size.
