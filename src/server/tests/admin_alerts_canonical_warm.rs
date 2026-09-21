@@ -1,5 +1,6 @@
 use super::*;
 use super::core_support_and_parsing::*;
+use super::linuxdo_oauth_and_admin_keys::find_cookie_pair;
 use super::upstream_support_and_manual_jobs::*;
 use tavily_hikari::{
     ALERT_SUBJECT_USER, ALERT_TYPE_USER_QUOTA_EXHAUSTED, AlertEntityRef, AlertEventRecord,
@@ -1925,7 +1926,7 @@ async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
 }
 
 #[tokio::test]
-async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
+async fn admin_alerts_warm_rehydrates_active_last_good_during_replacement_catalog_build() {
     let db_path = temp_db_path("admin-alerts-liveness-rehydrate-active-last-good");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(
@@ -1962,13 +1963,15 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
         loop {
             let cache = super::super::dashboard_overview_cache_for_state(initial_state.as_ref());
             let cache = cache.lock().await;
-            if keys.iter().all(|key| {
-                cache
-                    .admin_alerts
-                    .entries
-                    .iter()
-                    .any(|entry| entry.canonical && entry.key == *key)
-            }) {
+            if !cache.admin_alerts_prewarm_in_flight
+                && keys.iter().all(|key| {
+                    cache
+                        .admin_alerts
+                        .entries
+                        .iter()
+                        .any(|entry| entry.canonical && entry.key == *key)
+                })
+            {
                 break;
             }
             drop(cache);
@@ -2011,6 +2014,81 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
         "the restart fixture must make the durable active generation stale"
     );
 
+    let (active_generation, active_recent, active_history, build_generation): (i64, i64, i64, i64) =
+        sqlx::query_as(
+        r#"SELECT active_generation, source_recent_generation,
+                  source_history_generation, build_generation
+             FROM observability.admin_alert_canonical_groups_state
+            WHERE singleton = 1"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read the published active Groups generation");
+    assert!(active_generation > 0, "fixture must have a durable active generation");
+    assert_eq!(build_generation, 0, "fixture must start without another Groups build");
+    assert_eq!((active_recent, active_history), active_fence);
+    let (catalog_payload_count, catalog_payload_complete_count): (i64, i64) = sqlx::query_as(
+        r#"SELECT COUNT(*), COALESCE(SUM(payload_status = 'complete'), 0)
+             FROM observability.admin_alert_canonical_catalog_payloads
+            WHERE build_generation = ?"#,
+    )
+    .bind(active_generation)
+    .fetch_one(&pool)
+    .await
+    .expect("read the completed active Catalog payloads");
+    assert_eq!(
+        (catalog_payload_count, catalog_payload_complete_count),
+        (5, 5),
+        "the published generation must retain all completed Catalog payloads"
+    );
+
+    let pending_generation = active_generation + 1;
+    let current_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM observability.dashboard_alert_projection_revision_state WHERE singleton = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the replacement build projection revision");
+    let source_rowid_upper_bound: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(rowid), 0) FROM observability.dashboard_alert_projection_events",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read the replacement build source boundary");
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = ?, build_cursor_source_rowid = -1,
+                  build_cursor_occurred_at = 9223372036854775807,
+                  build_cursor_row_sort_id = char(0x10ffff), build_phase = 'copying',
+                  build_partition_key = '', build_partition_after_key = '',
+                  build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 0,
+                  build_partition_fragment_next_position = 1,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(pending_generation)
+    .bind(current_revision)
+    .bind(current_fence.0)
+    .bind(current_fence.1)
+    .bind(source_rowid_upper_bound)
+    .execute(&pool)
+    .await
+    .expect("persist an in-progress replacement Groups generation");
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_catalog_state
+              SET build_generation = ?, cursor_occurred_at = -9223372036854775808,
+                  cursor_row_sort_id = '', source_complete = 0
+            WHERE singleton = 1"#,
+    )
+    .bind(pending_generation)
+    .execute(&pool)
+    .await
+    .expect("stage the replacement Catalog generation");
+
     super::super::shutdown_admin_alerts_workers(initial_state.as_ref()).await;
     drop(pool);
     drop(initial_state);
@@ -2022,7 +2100,7 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
     )
     .await
     .expect("recovered proxy created");
-    let (_, recovered_state) = spawn_builtin_keys_admin_server_with_state(
+    let (recovered_addr, recovered_state) = spawn_builtin_keys_admin_server_with_state(
         recovered_proxy,
         "admin-alerts-liveness-rehydrate-active-last-good-password",
     )
@@ -2034,40 +2112,87 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
         .admin_alerts_warm_after_rehydrate_pause = Some(rehydration_pause.clone());
     super::super::rearm_admin_alerts_prewarm_for_test(recovered_state.as_ref()).await;
     super::super::prewarm_admin_alerts(recovered_state.clone()).await;
-    tokio::time::timeout(
+    let rehydrated = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         rehydration_pause.wait_until_arrived(),
     )
     .await
-    .expect("recovered warm must rehydrate last-good before its first canonical warm slice");
+    .is_ok();
 
-    let cache = super::super::dashboard_overview_cache_for_state(recovered_state.as_ref());
-    let cache = cache.lock().await;
-    assert!(
-        keys.iter().all(|key| {
-            cache
-                .admin_alerts
-                .entries
-                .iter()
-                .any(|entry| entry.canonical && entry.key == *key)
-        }),
-        "rehydration must restore catalog, Events 1/20, and Groups 1/20 together"
-    );
-    assert!(
-        keys.iter().all(|key| {
-            cache
-                .admin_alerts
-                .entries
-                .iter()
-                .find(|entry| entry.canonical && entry.key == *key)
-                .is_some_and(|entry| entry.generation < cache.alert_projection_generation)
-        }),
-        "a durable active generation behind the current fence must be served as stale last-good"
-    );
-    drop(cache);
-    rehydration_pause.release();
+    let mut route_statuses = Vec::new();
+    if rehydrated {
+        let cache = super::super::dashboard_overview_cache_for_state(recovered_state.as_ref());
+        let cache = cache.lock().await;
+        assert!(
+            keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }),
+            "rehydration must restore catalog, Events 1/20, and Groups 1/20 together"
+        );
+        assert!(
+            keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation < cache.alert_projection_generation)
+            }),
+            "a durable active generation behind the current fence must be served as stale last-good"
+        );
+        drop(cache);
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build Alerts restart test client");
+        let login = client
+            .post(format!("http://{recovered_addr}/api/admin/login"))
+            .json(&serde_json::json!({
+                "password": "admin-alerts-liveness-rehydrate-active-last-good-password"
+            }))
+            .send()
+            .await
+            .expect("authenticate the recovered admin session");
+        if login.status() == reqwest::StatusCode::OK
+            && let Some(cookie) = find_cookie_pair(login.headers(), "hikari_admin_session")
+        {
+            for path in [
+                "/api/alerts/catalog",
+                "/api/alerts/events?page=1&per_page=20",
+                "/api/alerts/groups?page=1&per_page=20",
+            ] {
+                let response = client
+                    .get(format!("http://{recovered_addr}{path}"))
+                    .header(reqwest::header::COOKIE, &cookie)
+                    .send()
+                    .await
+                    .expect("read a default Alerts route after restart");
+                route_statuses.push((path.to_string(), response.status().as_u16()));
+            }
+        }
+        rehydration_pause.release();
+    }
 
     super::super::shutdown_admin_alerts_workers(recovered_state.as_ref()).await;
     drop(recovered_state);
     let _ = std::fs::remove_file(db_path);
+
+    assert!(
+        rehydrated,
+        "recovered warm must rehydrate the active generation while the Catalog singleton tracks a replacement build"
+    );
+    assert_eq!(
+        route_statuses,
+        vec![
+            ("/api/alerts/catalog".to_string(), 200),
+            ("/api/alerts/events?page=1&per_page=20".to_string(), 200),
+            ("/api/alerts/groups?page=1&per_page=20".to_string(), 200),
+        ],
+        "the completed active generation must stay available on all default Alerts routes"
+    );
 }

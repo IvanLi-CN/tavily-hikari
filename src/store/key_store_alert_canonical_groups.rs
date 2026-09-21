@@ -463,7 +463,7 @@ impl KeyStore {
         };
         let groups = self.read_admin_alert_canonical_groups_model(snapshot).await?;
         let catalog = self
-            .fetch_admin_alert_catalog_for_canonical_snapshot(snapshot.build_generation)
+            .admin_alert_canonical_catalog_for_rehydrate(snapshot.build_generation)
             .await?;
         let events = self
             .fetch_admin_alert_events_page_for_canonical_snapshot(

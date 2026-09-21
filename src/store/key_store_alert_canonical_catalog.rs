@@ -1,4 +1,14 @@
 impl KeyStore {
+    pub(crate) async fn admin_alert_canonical_catalog_for_rehydrate(
+        &self,
+        published_generation: i64,
+    ) -> Result<AlertCatalog, ProxyError> {
+        // The singleton build cursor may already belong to a replacement
+        // generation while the active generation's completed payloads remain valid.
+        self.read_admin_alert_canonical_catalog_snapshot(published_generation)
+            .await
+    }
+
     pub(crate) async fn fetch_admin_alert_catalog_for_canonical_snapshot(
         &self,
         build_generation: i64,
