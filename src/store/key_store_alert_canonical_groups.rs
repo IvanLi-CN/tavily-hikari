@@ -440,6 +440,51 @@ impl KeyStore {
             .map(|groups| (groups, published))
     }
 
+    pub(crate) async fn admin_alerts_canonical_last_good_for_rehydrate(
+        &self,
+    ) -> Result<
+        Option<(
+            AlertCatalog,
+            PaginatedAlertEvents,
+            PaginatedAlertGroups,
+            (i64, i64),
+        )>,
+        ProxyError,
+    > {
+        let state = self.load_admin_alert_canonical_groups_state().await?;
+        if state.active_generation <= 0 {
+            return Ok(None);
+        }
+
+        let snapshot = AdminAlertsCanonicalSnapshot {
+            build_generation: state.active_generation,
+            projection_revision: state.active_projection_revision,
+            source_fence: state.active_source_fence,
+        };
+        let groups = self.read_admin_alert_canonical_groups_model(snapshot).await?;
+        let catalog = self
+            .fetch_admin_alert_catalog_for_canonical_snapshot(snapshot.build_generation)
+            .await?;
+        let events = self
+            .fetch_admin_alert_events_page_for_canonical_snapshot(
+                snapshot.build_generation,
+                1,
+                20,
+            )
+            .await?;
+        let final_state = self.load_admin_alert_canonical_groups_state().await?;
+        if final_state.active_generation != snapshot.build_generation
+            || final_state.active_projection_revision != snapshot.projection_revision
+            || final_state.active_source_fence != snapshot.source_fence
+        {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_replaced".to_string(),
+            });
+        }
+        Ok(Some((catalog, events, groups, snapshot.source_fence)))
+    }
+
     async fn load_admin_alert_canonical_groups_state(
         &self,
     ) -> Result<AdminAlertCanonicalGroupsState, ProxyError> {

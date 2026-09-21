@@ -720,6 +720,97 @@ fn publish_admin_alerts_canonical_into_cache(
     true
 }
 
+async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
+    let cache = dashboard_overview_cache_for_state(state);
+    let keys = [
+        "catalog".to_string(),
+        default_admin_alert_cache_key("events"),
+        default_admin_alert_cache_key("groups"),
+    ];
+    let needs_rehydrate = {
+        let cache = cache.lock().await;
+        !keys.iter().all(|key| {
+            cache
+                .admin_alerts
+                .entries
+                .iter()
+                .any(|entry| entry.canonical && entry.key == *key)
+        })
+    };
+    if !needs_rehydrate {
+        return false;
+    }
+
+    let restored = match state
+        .proxy
+        .admin_alerts_canonical_last_good_for_rehydrate()
+        .await
+    {
+        Ok(Some(restored)) => restored,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::debug!(
+                component = "admin_read",
+                event = "alerts_canonical_last_good_rehydrate_deferred",
+                error = %error,
+                "durable canonical Alerts last-good is not ready to rehydrate"
+            );
+            return false;
+        }
+    };
+    let current_fence = match state.proxy.admin_alerts_canonical_warm_projection_fence().await {
+        Ok(fence) => fence,
+        Err(error) => {
+            tracing::debug!(
+                component = "admin_read",
+                event = "alerts_canonical_last_good_rehydrate_deferred",
+                error = %error,
+                "canonical Alerts projection fence is not ready to rehydrate"
+            );
+            return false;
+        }
+    };
+    let (catalog, events, groups, active_fence) = restored;
+    let mut cache = cache.lock().await;
+    if keys.iter().all(|key| {
+        cache
+            .admin_alerts
+            .entries
+            .iter()
+            .any(|entry| entry.canonical && entry.key == *key)
+    }) {
+        return false;
+    }
+    let generation = cache.alert_projection_generation;
+    if !publish_admin_alerts_canonical_into_cache(
+        &mut cache,
+        generation,
+        state.proxy.backend_time().now_ts(),
+        tokio::time::Instant::now(),
+        catalog,
+        events,
+        groups,
+    ) {
+        return false;
+    }
+    let stale = active_fence != current_fence;
+    if stale {
+        let next_generation = cache.alert_projection_generation.wrapping_add(1);
+        cache.alert_projection_generation = next_generation.max(1);
+    }
+    tracing::info!(
+        component = "admin_read",
+        event = "alerts_canonical_last_good_rehydrated",
+        active_recent_generation = active_fence.0,
+        active_history_generation = active_fence.1,
+        current_recent_generation = current_fence.0,
+        current_history_generation = current_fence.1,
+        stale,
+        "rehydrated durable canonical Alerts last-good cache"
+    );
+    true
+}
+
 fn default_admin_alert_cache_key(kind: &str) -> String {
     serde_json::to_string(&(
         kind,
@@ -759,6 +850,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         let cache = task_cache;
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
+        rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state

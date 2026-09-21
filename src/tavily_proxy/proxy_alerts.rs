@@ -455,6 +455,23 @@ impl TavilyProxy {
             })
     }
 
+    #[doc(hidden)]
+    pub async fn admin_alerts_canonical_last_good_for_rehydrate(
+        &self,
+    ) -> Result<
+        Option<(
+            AlertCatalog,
+            PaginatedAlertEvents,
+            PaginatedAlertGroups,
+            (i64, i64),
+        )>,
+        ProxyError,
+    > {
+        self.key_store
+            .admin_alerts_canonical_last_good_for_rehydrate()
+            .await
+    }
+
     pub async fn alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
         self.key_store.fetch_alert_catalog().await
     }

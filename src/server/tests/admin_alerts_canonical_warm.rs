@@ -1923,3 +1923,140 @@ async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
         "recovered canonical warm must publish catalog, Events 1/20, and Groups 1/20"
     );
 }
+
+#[tokio::test]
+async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
+    let db_path = temp_db_path("admin-alerts-liveness-rehydrate-active-last-good");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-rehydrate-active-last-good".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("initial proxy created");
+    let (_, initial_state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-rehydrate-active-last-good-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        initial_state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if initial_state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+    super::super::rearm_admin_alerts_prewarm_for_test(initial_state.as_ref()).await;
+    super::super::prewarm_admin_alerts(initial_state.clone()).await;
+    let keys = [
+        "catalog".to_string(),
+        super::super::default_admin_alert_cache_key("events"),
+        super::super::default_admin_alert_cache_key("groups"),
+    ];
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(initial_state.as_ref());
+            let cache = cache.lock().await;
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial canonical warm must publish a durable active generation");
+    let active_fence = initial_state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read the initial canonical projection fence");
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query(
+        r#"INSERT INTO auth_token_logs (
+               token_id, method, path, result_status, error_message, failure_kind,
+               key_effect_code, binding_effect_code, selection_effect_code,
+               counts_business_quota, created_at
+           ) VALUES ('rehydrate-active-last-good', 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                     'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+    )
+    .bind(initial_state.proxy.backend_time().now_ts())
+    .execute(&pool)
+    .await
+    .expect("seed the source-fence advance");
+    initial_state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("advance the source projection after the active canonical publish");
+    let current_fence = initial_state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read the advanced canonical projection fence");
+    assert_ne!(
+        active_fence, current_fence,
+        "the restart fixture must make the durable active generation stale"
+    );
+
+    super::super::shutdown_admin_alerts_workers(initial_state.as_ref()).await;
+    drop(pool);
+    drop(initial_state);
+
+    let recovered_proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-rehydrate-active-last-good".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("recovered proxy created");
+    let (_, recovered_state) = spawn_builtin_keys_admin_server_with_state(
+        recovered_proxy,
+        "admin-alerts-liveness-rehydrate-active-last-good-password",
+    )
+    .await;
+    let rehydrated =
+        super::super::rehydrate_admin_alerts_canonical_last_good(recovered_state.as_ref()).await;
+    assert!(rehydrated, "restart must rehydrate the durable active generation");
+
+    let cache = super::super::dashboard_overview_cache_for_state(recovered_state.as_ref());
+    let cache = cache.lock().await;
+    assert!(
+        keys.iter().all(|key| {
+            cache
+                .admin_alerts
+                .entries
+                .iter()
+                .any(|entry| entry.canonical && entry.key == *key)
+        }),
+        "rehydration must restore catalog, Events 1/20, and Groups 1/20 together"
+    );
+    assert!(
+        keys.iter().all(|key| {
+            cache
+                .admin_alerts
+                .entries
+                .iter()
+                .find(|entry| entry.canonical && entry.key == *key)
+                .is_some_and(|entry| entry.generation < cache.alert_projection_generation)
+        }),
+        "a durable active generation behind the current fence must be served as stale last-good"
+    );
+    drop(cache);
+
+    super::super::shutdown_admin_alerts_workers(recovered_state.as_ref()).await;
+    drop(recovered_state);
+    let _ = std::fs::remove_file(db_path);
+}
