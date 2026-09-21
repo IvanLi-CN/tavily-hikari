@@ -1332,6 +1332,17 @@ async fn admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses()
     .await
     .expect("the forced bounded warm read defers");
 
+    // This lightweight HTTP fixture does not start the production projection
+    // scheduler, so spend the single liveness turn transferred by the warmer.
+    let projection_step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("the projection scheduler spends the transferred liveness turn");
+    if projection_step.canonical_alerts_dirty {
+        super::super::mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+    }
+
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
         loop {
             let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());

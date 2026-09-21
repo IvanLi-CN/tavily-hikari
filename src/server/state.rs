@@ -1036,12 +1036,12 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     if liveness_slot
                         && (reason == "coverage_projecting"
                             || reason == "history_projection_catching_up"
-                            || reason == "read_budget") =>
+                            || reason == "read_budget"
+                            || reason == "retention_pruned") =>
                 {
                     // Keep an aged liveness slot alive while projection coverage catches up.
-                    // A bounded warm read can also defer before it reports the coverage reason;
-                    // the next retry gets a fresh stage, while the scheduler can admit bounded
-                    // projection slices during the backoff instead of losing this opportunity.
+                    // A stale retention-pruned observation also needs one admitted scheduler
+                    // turn before the canonical warm can establish fresh coverage.
                     state
                         .proxy
                         .finish_admin_alerts_cache_warm_liveness_stage();

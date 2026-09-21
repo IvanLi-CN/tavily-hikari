@@ -124,6 +124,179 @@ async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pres
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_transfers_stale_retention_pruned_coverage_to_projection() {
+    let db_path = temp_db_path("admin-alerts-liveness-retention-pruned-coverage");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-liveness-retention-pruned-coverage".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-liveness-retention-pruned-coverage-password",
+    )
+    .await;
+
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before seeding stale coverage");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let occurred_at = Utc::now().timestamp().saturating_sub(60);
+    for index in 0..26_i64 {
+        sqlx::query(
+            r#"INSERT INTO auth_token_logs (
+                   token_id, method, path, result_status, error_message, failure_kind,
+                   key_effect_code, binding_effect_code, selection_effect_code,
+                   counts_business_quota, created_at
+               ) VALUES (?, 'POST', '/mcp', 'quota_exhausted', 'HTTP 429',
+                         'upstream_rate_limited_429', 'none', 'none', 'none', 0, ?)"#,
+        )
+        .bind(format!("token-retention-pruned-{index:04}"))
+        .bind(occurred_at - index)
+        .execute(&pool)
+        .await
+        .expect("seed an alert source row beyond the completed projection cursor");
+    }
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', observed_at = 0, stale_reason = 'retention_pruned'",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed stale idle retention-pruned observations");
+
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        cache.admin_alerts.entries.clear();
+        cache.admin_alerts_prewarm_last_progress_at = Some(
+            tokio::time::Instant::now()
+                .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+                .expect("test clock must support the Alerts liveness anchor"),
+        );
+    }
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(state.proxy.foreground_activity_rps() > 5);
+
+    let projection_state = state.clone();
+    let projection = tokio::spawn(async move {
+        loop {
+            if let Ok(step) = projection_state
+                .proxy
+                .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+                .await
+                && step.canonical_alerts_dirty
+            {
+                super::super::mark_dashboard_overview_alert_projection_dirty(
+                    projection_state.as_ref(),
+                )
+                .await;
+            }
+            let _ = projection_state
+                .proxy
+                .refresh_dashboard_alert_projection_observation()
+                .await;
+            tokio::task::yield_now().await;
+        }
+    });
+    let foreground_state = state.clone();
+    let foreground = tokio::spawn(async move {
+        loop {
+            for _ in 0..6 {
+                foreground_state.proxy.record_foreground_activity();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+    super::super::prewarm_admin_alerts(state.clone()).await;
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let complete = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            });
+            let same_generation = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if complete && same_generation {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    projection.abort();
+    let _ = projection.await;
+    foreground.abort();
+    let _ = foreground.await;
+    let projection_state: Vec<(String, String, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT source_kind, phase, stale_reason, observed_at \
+           FROM observability.dashboard_alert_projection_state ORDER BY source_kind",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read projection state after retention-pruned warm");
+    let cache_state = {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let cache = cache.lock().await;
+        (
+            cache.alert_projection_generation,
+            cache.admin_alerts_prewarm_in_flight,
+            cache.admin_alerts_prewarm_defers,
+            cache
+                .admin_alerts
+                .entries
+                .iter()
+                .filter(|entry| entry.canonical)
+                .map(|entry| (entry.key.clone(), entry.generation))
+                .collect::<Vec<_>>(),
+        )
+    };
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    drop(pool);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+
+    assert!(
+        published.is_ok(),
+        "stale retention-pruned coverage must hand liveness to projection and publish all three canonical Alerts keys; projection_state={projection_state:?} cache={cache_state:?}"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_waits_for_in_flight_projection_liveness_permit_before_staging() {
     let db_path = temp_db_path("admin-alerts-liveness-stage-acquisition-race");
     let db_str = db_path.to_string_lossy().to_string();
