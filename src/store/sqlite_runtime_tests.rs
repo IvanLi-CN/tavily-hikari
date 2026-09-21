@@ -979,7 +979,7 @@ async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
     runtime.set_admin_alerts_cache_warm_liveness(true);
     runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
 
-    let projection_turn = runtime
+    let mut projection_turn = runtime
         .claim_admin_alerts_cache_warm_liveness_for_projection()
         .expect("coverage defer must transfer one liveness turn to projection");
     assert!(
@@ -989,6 +989,7 @@ async fn alert_projection_liveness_turn_returns_to_canonical_warm() {
         "one projection slice must own the transferred turn"
     );
 
+    projection_turn.complete();
     drop(projection_turn);
     assert!(
         runtime
@@ -1010,7 +1011,7 @@ async fn canonical_warm_stage_waits_for_an_in_flight_projection_permit() {
     let runtime = three_connection_runtime().await;
     runtime.set_admin_alerts_cache_warm_liveness(true);
     runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
-    let projection_turn = runtime
+    let mut projection_turn = runtime
         .claim_admin_alerts_cache_warm_liveness_for_projection()
         .expect("projection claims the transferred liveness permit");
 
@@ -1020,6 +1021,7 @@ async fn canonical_warm_stage_waits_for_an_in_flight_projection_permit() {
     );
     assert!(!runtime.admin_alerts_cache_warm_liveness_stage_active());
 
+    projection_turn.complete();
     drop(projection_turn);
     assert!(runtime.begin_admin_alerts_cache_warm_liveness_stage());
     assert!(runtime.admin_alerts_cache_warm_liveness_stage_active());
@@ -1039,11 +1041,51 @@ async fn canonical_warm_stage_does_not_reclaim_an_unclaimed_projection_turn() {
     );
     assert!(!runtime.admin_alerts_cache_warm_liveness_stage_active());
 
-    let projection_turn = runtime
+    let mut projection_turn = runtime
         .claim_admin_alerts_cache_warm_liveness_for_projection()
         .expect("the outstanding turn must remain claimable by projection");
+    projection_turn.complete();
     drop(projection_turn);
 
+    assert!(runtime.begin_admin_alerts_cache_warm_liveness_stage());
+    runtime.finish_admin_alerts_cache_warm_liveness_stage();
+    runtime.set_admin_alerts_cache_warm_liveness(false);
+}
+
+#[tokio::test]
+async fn deferred_projection_turn_remains_pending_until_a_slice_can_run() {
+    let runtime = three_connection_runtime().await;
+    runtime.set_admin_alerts_cache_warm_liveness(true);
+    let held_bulk = runtime
+        .try_admit_alert_projection_for_canonical_warm_liveness()
+        .expect("another bounded maintenance stage owns the bulk slot");
+    runtime.transfer_admin_alerts_cache_warm_liveness_to_projection();
+
+    let projection_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("warm transfers the pending liveness turn");
+    assert_eq!(
+        runtime
+            .try_admit_alert_projection_for_canonical_warm_liveness()
+            .expect_err("the occupied bulk slot must defer this projection slice"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    drop(projection_turn);
+
+    assert!(
+        !runtime.begin_admin_alerts_cache_warm_liveness_stage(),
+        "a deferred projection attempt must not return its liveness turn to warm"
+    );
+    drop(held_bulk);
+    let mut retry_turn = runtime
+        .claim_admin_alerts_cache_warm_liveness_for_projection()
+        .expect("the deferred turn remains claimable after bulk admission recovers");
+    let retry_admission = runtime
+        .try_admit_alert_projection_for_canonical_warm_liveness()
+        .expect("the released bulk slot admits the retried projection slice");
+    drop(retry_admission);
+    retry_turn.complete();
+    drop(retry_turn);
     assert!(runtime.begin_admin_alerts_cache_warm_liveness_stage());
     runtime.finish_admin_alerts_cache_warm_liveness_stage();
     runtime.set_admin_alerts_cache_warm_liveness(false);
@@ -1058,9 +1100,10 @@ async fn rearming_canonical_warm_liveness_preserves_a_transferred_projection_tur
     // The warm controller re-arms liveness at the top of its next retry. That
     // must not erase the projection turn it handed off before sleeping.
     runtime.set_admin_alerts_cache_warm_liveness(true);
-    let projection_turn = runtime
+    let mut projection_turn = runtime
         .claim_admin_alerts_cache_warm_liveness_for_projection()
         .expect("a warm retry must preserve the transferred projection turn");
+    projection_turn.complete();
     drop(projection_turn);
     runtime.set_admin_alerts_cache_warm_liveness(false);
 }
@@ -1089,9 +1132,10 @@ async fn retrying_canonical_warm_before_a_stage_transfers_a_projection_turn() {
     runtime.set_admin_alerts_cache_warm_liveness(true);
 
     runtime.retain_admin_alerts_cache_warm_liveness_for_retry();
-    let projection_turn = runtime
+    let mut projection_turn = runtime
         .claim_admin_alerts_cache_warm_liveness_for_projection()
         .expect("coverage retry before a snapshot may yield one projection turn");
+    projection_turn.complete();
     drop(projection_turn);
     runtime.set_admin_alerts_cache_warm_liveness(false);
 }

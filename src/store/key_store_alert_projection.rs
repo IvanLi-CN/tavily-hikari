@@ -498,7 +498,7 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
-        let canonical_warm_liveness = self
+        let mut canonical_warm_liveness = self
             .sqlite_runtime
             .claim_admin_alerts_cache_warm_liveness_for_projection();
         let has_canonical_warm_liveness = canonical_warm_liveness.is_some();
@@ -524,7 +524,6 @@ impl KeyStore {
                 .prewarm_maintenance_bulk_capacity()
                 .await?;
         }
-        let _canonical_warm_liveness = canonical_warm_liveness;
         let _admission = match if has_canonical_warm_liveness {
             self.sqlite_runtime
                 .try_admit_alert_projection_for_canonical_warm_liveness()
@@ -610,6 +609,11 @@ impl KeyStore {
                 });
             }
             return Err(err);
+        }
+        if !matches!(&outcome, AlertProjectionSliceOutcome::Deferred { .. })
+            && let Some(permit) = canonical_warm_liveness.as_mut()
+        {
+            permit.complete();
         }
         Ok(outcome)
     }

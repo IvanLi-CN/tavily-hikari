@@ -602,6 +602,13 @@ pub(crate) struct SqliteRuntime {
 #[derive(Debug)]
 pub(crate) struct SqliteAlertProjectionLivenessPermit {
     runtime: SqliteRuntime,
+    pending_projection_turn: bool,
+}
+
+impl SqliteAlertProjectionLivenessPermit {
+    pub(crate) fn complete(&mut self) {
+        self.pending_projection_turn = false;
+    }
 }
 
 impl Drop for SqliteAlertProjectionLivenessPermit {
@@ -624,6 +631,16 @@ impl Drop for SqliteAlertProjectionLivenessPermit {
                 .inner
                 .admin_alerts_cache_warm_projection_done
                 .notify_one();
+            return;
+        }
+        if self.pending_projection_turn {
+            // A deferred projection attempt has not spent the transferred
+            // turn. Keep it pending so warm cannot reclaim it before a
+            // bounded projection slice is actually admitted and completed.
+            self.runtime
+                .inner
+                .admin_alerts_cache_warm_liveness_permit
+                .store(true, AtomicOrdering::Release);
             return;
         }
         self.runtime

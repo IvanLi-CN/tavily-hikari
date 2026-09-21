@@ -259,6 +259,7 @@ impl SqliteRuntime {
             .is_ok()
             .then(|| SqliteAlertProjectionLivenessPermit {
                 runtime: self.clone(),
+                pending_projection_turn: true,
             })
     }
 
@@ -279,6 +280,7 @@ impl SqliteRuntime {
             .is_ok()
             .then(|| SqliteAlertProjectionLivenessPermit {
                 runtime: self.clone(),
+                pending_projection_turn: false,
             })
     }
 }
