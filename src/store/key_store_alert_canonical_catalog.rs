@@ -5,8 +5,163 @@ impl KeyStore {
     ) -> Result<AlertCatalog, ProxyError> {
         // The singleton build cursor may already belong to a replacement
         // generation while the active generation's completed payloads remain valid.
-        self.read_admin_alert_canonical_catalog_snapshot(published_generation)
+        match self
+            .read_admin_alert_canonical_catalog_snapshot(published_generation)
             .await
+        {
+            Ok(catalog) => Ok(catalog),
+            Err(ProxyError::Deferred { reason, .. })
+                if reason == "catalog_payload_build_in_progress" => self
+                    .read_admin_alert_canonical_catalog_from_group_events(published_generation)
+                    .await,
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn read_admin_alert_canonical_catalog_from_group_events(
+        &self,
+        published_generation: i64,
+    ) -> Result<AlertCatalog, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+            .await?;
+        let rows_result = sqlx::query(
+            "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+             FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = ? AND occurred_at >= ? \
+             ORDER BY occurred_at ASC, row_sort_id ASC",
+        )
+        .bind(published_generation)
+        .bind(self.alert_projection_retention_since())
+        .fetch_all(&mut *session)
+        .await;
+        let rows = session.query(rows_result).await?;
+        let finish = session.finish().await;
+        finish?;
+
+        let mut facets = HashMap::<(String, String, String, String), i64>::new();
+        for row in rows {
+            let projection = Self::decode_default_alert_event_projection_row(row)?;
+            let insert = |kind: &str,
+                          identity: String,
+                          value: String,
+                          label: String,
+                          facets: &mut HashMap<(String, String, String, String), i64>| {
+                if !value.trim().is_empty() {
+                    *facets
+                        .entry((kind.to_string(), identity, value, label))
+                        .or_default() += 1;
+                }
+            };
+            insert(
+                "type",
+                projection.alert_type.trim().to_string(),
+                projection.alert_type.trim().to_string(),
+                projection.alert_type.trim().to_string(),
+                &mut facets,
+            );
+            if let Some(request_kind) = projection.request_kind_key.as_deref() {
+                let key = request_kind.trim();
+                if !key.is_empty() && key != "unknown" {
+                    insert(
+                        "request_kind",
+                        key.to_string(),
+                        key.to_string(),
+                        projection
+                            .request_kind_label
+                            .as_deref()
+                            .unwrap_or(key)
+                            .to_string(),
+                        &mut facets,
+                    );
+                }
+            }
+            if let Some(user_id) = projection.user_id {
+                let label = projection
+                    .user_display_name
+                    .or(projection.user_username)
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or_else(|| user_id.clone());
+                insert(
+                    "user",
+                    format!("{user_id}\u{001f}{label}"),
+                    user_id,
+                    label,
+                    &mut facets,
+                );
+            }
+            if let Some(token_id) = projection.token_id {
+                insert(
+                    "token",
+                    token_id.clone(),
+                    token_id.clone(),
+                    token_id,
+                    &mut facets,
+                );
+            }
+            if let Some(key_id) = projection.key_id {
+                insert(
+                    "key",
+                    key_id.clone(),
+                    key_id.clone(),
+                    key_id,
+                    &mut facets,
+                );
+            }
+        }
+
+        let mut types = default_alert_type_counts();
+        for item in &mut types {
+            item.count = facets
+                .get(&(String::from("type"), item.alert_type.clone(), item.alert_type.clone(), item.alert_type.clone()))
+                .copied()
+                .unwrap_or_default();
+        }
+        let rows_for = |kind: &str| {
+            let mut rows = facets
+                .iter()
+                .filter(|((facet_kind, _, _, _), _)| facet_kind == kind)
+                .map(|((_, _, value, label), count)| (value.clone(), label.clone(), *count))
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| {
+                right
+                    .2
+                    .cmp(&left.2)
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            rows
+        };
+        let request_kind_options = rows_for("request_kind")
+            .into_iter()
+            .map(|(key, label, count)| TokenRequestKindOption {
+                protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                billing_group: token_request_kind_billing_group(&key).to_string(),
+                key,
+                label,
+                count,
+            })
+            .collect();
+        let facet_options = |kind: &str| {
+            rows_for(kind)
+                .into_iter()
+                .map(|(value, label, count)| AlertFacetOption { value, label, count })
+                .collect()
+        };
+        Ok(AlertCatalog {
+            retention_days: ALERT_PROJECTION_RETENTION_DAYS,
+            types: types
+                .into_iter()
+                .map(|item| LogFacetOption {
+                    value: item.alert_type,
+                    count: item.count,
+                })
+                .collect(),
+            request_kind_options,
+            users: facet_options("user"),
+            tokens: facet_options("token"),
+            keys: facet_options("key"),
+        })
     }
 
     pub(crate) async fn fetch_admin_alert_catalog_for_canonical_snapshot(

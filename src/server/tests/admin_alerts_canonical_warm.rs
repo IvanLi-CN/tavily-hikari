@@ -2041,6 +2041,13 @@ async fn admin_alerts_warm_rehydrates_active_last_good_during_replacement_catalo
         (5, 5),
         "the published generation must retain all completed Catalog payloads"
     );
+    sqlx::query(
+        "DELETE FROM observability.admin_alert_canonical_catalog_payloads WHERE build_generation = ?",
+    )
+    .bind(active_generation)
+    .execute(&pool)
+    .await
+    .expect("remove active Catalog payload markers to exercise event-derived rehydration");
 
     let pending_generation = active_generation + 1;
     let current_revision: i64 = sqlx::query_scalar(
