@@ -870,7 +870,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         let cache = task_cache;
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
-        let mut next_last_good_rehydrate_at = tokio::time::Instant::now();
+        let mut needs_initial_last_good_rehydrate = true;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state
@@ -880,11 +880,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 flight_guard.disarm();
                 return;
             }
-            let now = tokio::time::Instant::now();
-            let rehydrate_last_good = now >= next_last_good_rehydrate_at;
-            if rehydrate_last_good {
-                next_last_good_rehydrate_at = now + std::time::Duration::from_secs(5);
-            }
             let liveness_slot = {
                 let cache_state = cache.lock().await;
                 cache_state.admin_alerts_canonical_warm_liveness_due(tokio::time::Instant::now())
@@ -892,6 +887,32 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
             state
                 .proxy
                 .set_admin_alerts_cache_warm_liveness(liveness_slot);
+            let mut rehydrate_error = None;
+            if needs_initial_last_good_rehydrate {
+                match rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await {
+                    Ok(true) => {
+                        needs_initial_last_good_rehydrate = false;
+                        #[cfg(test)]
+                        pause_admin_alerts_warm_after_rehydrate_for_test(state.as_ref()).await;
+                    }
+                    Ok(false) => needs_initial_last_good_rehydrate = false,
+                    Err(error)
+                        if tavily_hikari::is_transient_sqlite_write_error(&error)
+                            || error.is_deferred() =>
+                    {
+                        rehydrate_error = Some(error);
+                    }
+                    Err(error) => {
+                        needs_initial_last_good_rehydrate = false;
+                        tracing::debug!(
+                            component = "admin_read",
+                            event = "alerts_canonical_last_good_rehydrate_failed",
+                            error = %error,
+                            "will rebuild canonical Alerts cache from current projection"
+                        );
+                    }
+                }
+            }
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())
@@ -949,31 +970,8 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 None => current_admin_alerts_generation(state.as_ref()).await,
             };
             let result = async {
-                if rehydrate_last_good {
-                    match rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await {
-                        Ok(true) => {
-                            #[cfg(test)]
-                            pause_admin_alerts_warm_after_rehydrate_for_test(
-                                state.as_ref(),
-                            )
-                            .await;
-                        }
-                        Ok(false) => {}
-                        Err(error)
-                            if tavily_hikari::is_transient_sqlite_write_error(&error)
-                                || error.is_deferred() =>
-                        {
-                            return Err(error);
-                        }
-                        Err(error) => {
-                            tracing::debug!(
-                                component = "admin_read",
-                                event = "alerts_canonical_last_good_rehydrate_failed",
-                                error = %error,
-                                "will rebuild canonical Alerts cache from current projection"
-                            );
-                        }
-                    }
+                if let Some(error) = rehydrate_error.take() {
+                    return Err(error);
                 }
                 state.proxy.prepare_admin_alerts_canonical_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
