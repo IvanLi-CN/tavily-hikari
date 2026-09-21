@@ -1943,6 +1943,219 @@ async fn admin_alerts_canonical_groups_batches_two_hundred_fifty_six_semantic_pa
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_batches_unfragmented_job_failed_partitions() {
+    const GROUP_COUNT: i64 = 5_000;
+    let db_path = temp_db_path("alert-canonical-groups-job-failed-fast-batch");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_556_050;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-job-failed-fast-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    for _ in 0..64 {
+        proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty projection before seeding Groups");
+        if proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM observability.dashboard_alert_projection_revision_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read current projection revision");
+    let source_fence = proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read current projection fence");
+
+    let build_generation = 2_i64;
+    let mut seed = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin compatibility partition seed");
+    for start in (0..GROUP_COUNT).step_by(250) {
+        let end = (start + 250).min(GROUP_COUNT);
+        let rows = (start..end)
+            .map(|job_id| {
+                let source_id = job_id.to_string();
+                let occurred_at = now - job_id;
+                let row_sort_id = format!("scheduled_job:{job_id:020}");
+                let partition_key = format!("job_failed:job:{job_id}:unknown");
+                let message = "quota sync failed after upstream timeout";
+                let payload = serde_json::json!({
+                    "source_kind": "scheduled_job",
+                    "source_id": source_id,
+                    "row_sort_id": row_sort_id,
+                    "alert_type": "job_failed",
+                    "occurred_at": occurred_at,
+                    "token_id": null,
+                    "key_id": null,
+                    "request_log_id": null,
+                    "method": null,
+                    "path": null,
+                    "query": null,
+                    "request_kind_key": null,
+                    "request_kind_label": null,
+                    "request_kind_detail": null,
+                    "result_status": "failed",
+                    "failure_kind": "job_failed",
+                    "error_message": message,
+                    "counts_business_quota": null,
+                    "user_id": null,
+                    "user_display_name": null,
+                    "user_username": null,
+                    "reason_code": "job_failed",
+                    "reason_summary": message,
+                    "reason_detail": null,
+                    "job_id": job_id,
+                    "job_type": "quota_sync",
+                    "job_trigger_source": "scheduler",
+                    "job_status": "failed",
+                    "job_attempt": 1,
+                    "job_message": message,
+                    "job_queued_at": occurred_at - 20,
+                    "job_started_at": occurred_at - 10,
+                    "job_finished_at": occurred_at
+                })
+                .to_string();
+                (source_id, occurred_at, row_sort_id, partition_key, payload)
+            })
+            .collect::<Vec<_>>();
+        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            r#"INSERT INTO observability.admin_alert_canonical_group_events
+                   (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                    partition_key, payload_json) "#,
+        );
+        insert.push_values(&rows, |mut row, event| {
+            row.push_bind(build_generation)
+                .push_bind("scheduled_job")
+                .push_bind(&event.0)
+                .push_bind(event.1)
+                .push_bind(&event.2)
+                .push_bind(&event.3)
+                .push_bind(&event.4);
+        });
+        insert
+            .build()
+            .execute(&mut *seed)
+            .await
+            .expect("seed unfragmented job_failed groups");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET active_generation = 1, active_row_count = 0,
+                  build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = 0,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'aggregating', build_partition_key = '',
+                  build_partition_after_key = '',
+                  build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 1,
+                  build_partition_fragment_next_position = 1,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .bind(revision)
+    .bind(source_fence.0)
+    .bind(source_fence.1)
+    .execute(&mut *seed)
+    .await
+    .expect("seed durable compatibility build state");
+    seed.commit().await.expect("commit compatibility fixture");
+
+    let query_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"EXPLAIN QUERY PLAN
+           WITH requested(partition_key) AS (VALUES (?), (?))
+           SELECT requested.partition_key AS batch_partition_key,
+                  event.source_kind, event.source_id, event.occurred_at,
+                  event.row_sort_id, event.payload_json
+             FROM requested
+             JOIN observability.admin_alert_canonical_group_events AS event
+               ON event.build_generation = ?
+              AND event.rowid = (
+                    SELECT latest.rowid
+                      FROM observability.admin_alert_canonical_group_events AS latest
+                     WHERE latest.build_generation = ?
+                       AND latest.partition_key = requested.partition_key
+                     ORDER BY latest.occurred_at DESC, latest.row_sort_id DESC
+                     LIMIT 1
+              )
+            ORDER BY requested.partition_key"#,
+    )
+    .bind("job_failed:job:0:unknown")
+    .bind("job_failed:job:1:unknown")
+    .bind(build_generation)
+    .bind(build_generation)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("plan the bounded latest-event batch lookup");
+    assert!(
+        query_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_admin_alert_canonical_group_events_partition")
+        }),
+        "latest compatibility events must use the generation/partition/time index: {query_plan:?}"
+    );
+
+    let result = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the bounded Groups slice must leave the remaining partitions staged");
+    assert!(
+        matches!(result, ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"),
+        "unexpected compatibility batch result: {result:?}"
+    );
+    let (next_position, after_key, active_generation, phase, group_rows): (
+        i64,
+        String,
+        i64,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT build_next_position, build_partition_after_key, active_generation, build_phase, \
+                    (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+                      WHERE build_generation = ?) \
+               FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .bind(build_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the batched compatibility checkpoint");
+    assert!(
+        next_position >= 1_001 && group_rows >= 1_000,
+        "one bounded stage should accept 1,000 compatible partitions; next={next_position}, rows={group_rows}"
+    );
+    assert!(!after_key.is_empty());
+    assert_eq!(
+        active_generation, 1,
+        "a bounded prefix must stay unpublished"
+    );
+    assert_eq!(phase, "aggregating");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     let db_path = temp_db_path("alert-canonical-groups-fixed-membership");
     let db_string = db_path.to_string_lossy().to_string();

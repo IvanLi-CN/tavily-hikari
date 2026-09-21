@@ -321,7 +321,9 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 
     let pool = connect_sqlite_test_pool(&db_str).await;
     let occurred_at = Utc::now().timestamp().saturating_sub(60);
-    for index in 0..501_i64 {
+    const EVENT_COUNT: i64 = 501;
+    let mut seed = pool.begin().await.expect("begin event seed");
+    for index in 0..EVENT_COUNT {
         let source_id = format!("alert-liveness-{index:04}");
         let row_sort_id = format!("alert-liveness-sort-{index:04}");
         let payload = serde_json::json!({
@@ -369,15 +371,17 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
         .bind(&row_sort_id)
         .bind(payload.to_string())
         .bind(occurred_at - index)
-        .execute(&pool)
+        .execute(&mut *seed)
         .await
         .expect("seed multi-slice projected alert event");
     }
+    seed.commit().await.expect("commit projection event seed");
 
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
     {
         let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
         let mut cache = cache.lock().await;
+        cache.admin_alerts.entries.clear();
         cache.admin_alerts_prewarm_last_progress_at = Some(
             tokio::time::Instant::now()
                 .checked_sub(super::super::ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
@@ -451,11 +455,56 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
     })
     .await;
 
+    let cache_state = {
+        let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let cache = cache_handle.lock().await;
+        let entries = cache
+            .admin_alerts
+            .entries
+            .iter()
+            .filter(|entry| entry.canonical)
+            .map(|entry| (entry.key.clone(), entry.generation))
+            .collect::<Vec<_>>();
+        (
+            cache.alert_projection_generation,
+            cache.admin_alerts_prewarm_in_flight,
+            cache.admin_alerts_prewarm_defers,
+            entries,
+        )
+    };
     projection_churn.abort();
     let _ = projection_churn.await;
     super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let build_state: (i64, String, i64, i64, i64, i64, String, bool, i64, i64) =
+        sqlx::query_as(
+            "SELECT build_generation, build_phase, build_cursor_source_rowid, active_generation, \
+                    build_source_rowid_upper_bound, build_next_position, build_partition_key, \
+                    build_partition_source_complete, build_partition_fragment_next_position, \
+                    build_partition_finalize_fragment_position \
+               FROM observability.admin_alert_canonical_groups_state \
+              WHERE singleton = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read canonical Groups state after liveness attempt");
+    let staged_rows: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_fragments WHERE build_generation = ?), \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups WHERE build_generation = ?), \
+            (SELECT COUNT(*) FROM observability.admin_alert_canonical_group_payload_chunks WHERE build_generation = ?)",
+    )
+    .bind(build_state.0)
+    .bind(build_state.0)
+    .bind(build_state.0)
+    .fetch_one(&pool)
+    .await
+    .expect("read staged canonical Groups output after liveness attempt");
     let _ = std::fs::remove_file(db_path);
-    published.expect("an aged canonical warm must publish all three keys in one logical stage");
+    assert!(
+        published.is_ok(),
+        "an aged canonical warm must publish all three keys in one logical stage; \
+         state={build_state:?} staged_rows={staged_rows:?} cache={cache_state:?}"
+    );
 }
 
 #[tokio::test]

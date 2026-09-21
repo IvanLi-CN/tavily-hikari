@@ -1255,6 +1255,67 @@ impl KeyStore {
         }
         session.finish().await?;
 
+        // Unfragmented singleton compatibility rows need only their aggregate and event.
+        // Resolve them from this immutable generation instead of capturing one fragment
+        // per high-cardinality partition; multi-event groups still require fragments.
+        let missing_partitions = partitions
+            .iter()
+            .filter(|(partition_key, event_count, _, _)| {
+                *event_count == 1 && !fragments.contains_key(partition_key)
+            })
+            .collect::<Vec<_>>();
+        let mut latest_events = StdHashMap::<String, AlertEventRecord>::new();
+        if !missing_partitions.is_empty() {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(
+                    SqliteOperation::AdminAlertsCacheWarm,
+                )
+                .await?;
+            let mut latest_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "WITH requested(partition_key) AS (VALUES ",
+            );
+            for (index, (partition_key, _, _, _)) in missing_partitions.iter().enumerate() {
+                if index > 0 {
+                    latest_query.push(", ");
+                }
+                latest_query.push("(").push_bind(partition_key).push(")");
+            }
+            latest_query.push(
+                ") SELECT requested.partition_key AS batch_partition_key, \
+                         event.source_kind, event.source_id, event.occurred_at, \
+                         event.row_sort_id, event.payload_json \
+                    FROM requested \
+                    JOIN observability.admin_alert_canonical_group_events AS event \
+                      ON event.build_generation = ",
+            );
+            latest_query.push_bind(snapshot.build_generation);
+            latest_query.push(
+                " AND event.rowid = ( \
+                        SELECT latest.rowid \
+                          FROM observability.admin_alert_canonical_group_events AS latest \
+                         WHERE latest.build_generation = ",
+            );
+            latest_query.push_bind(snapshot.build_generation);
+            latest_query.push(
+                " AND latest.partition_key = requested.partition_key \
+                         ORDER BY latest.occurred_at DESC, latest.row_sort_id DESC LIMIT 1 \
+                    ) \
+                    ORDER BY requested.partition_key",
+            );
+            let latest_result = latest_query.build().fetch_all(&mut *session).await;
+            let latest_rows = session.query(latest_result).await?;
+            session.finish().await?;
+            for row in latest_rows {
+                let partition_key = row.try_get::<String, _>("batch_partition_key")?;
+                let event = Self::decode_default_alert_event_projection_row(row)
+                    .ok()
+                    .and_then(Self::build_alert_event_from_projection);
+                if let Some(event) = event {
+                    latest_events.insert(partition_key, event);
+                }
+            }
+        }
+
         let semantic_partition_event_counts = partitions
             .iter()
             .filter_map(|(partition_key, event_count, _, _)| {
@@ -1262,8 +1323,8 @@ impl KeyStore {
                     return None;
                 }
                 let fragment_json = fragments.get(partition_key)?;
-                let events = serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json).ok()?;
-                events
+                serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json)
+                    .ok()?
                     .iter()
                     .any(|event| event.semantic_window.is_some())
                     .then(|| (partition_key.clone(), *event_count))
@@ -1278,19 +1339,29 @@ impl KeyStore {
             .await?;
 
         for (partition_key, event_count, first_seen, last_seen) in partitions {
-            let Some(fragment_json) = fragments.get(&partition_key) else {
+            let partition_events = if let Some(fragment_json) = fragments.get(&partition_key) {
+                let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json)
+                else {
+                    break;
+                };
+                events
+            } else if event_count == 1 {
+                let Some(event) = latest_events.get(&partition_key) else {
+                    break;
+                };
+                vec![event.clone()]
+            } else {
                 break;
             };
-            let Ok(events) = serde_json::from_str::<Vec<AlertEventRecord>>(fragment_json)
-            else {
+            let Some(event) = partition_events.last() else {
                 break;
             };
-            let Some(event) = events.last() else {
-                break;
-            };
-            let groups = if events.iter().any(|event| event.semantic_window.is_some()) {
+            let groups = if partition_events
+                .iter()
+                .any(|event| event.semantic_window.is_some())
+            {
                 let semantic_events = if event_count == 1 {
-                    events
+                    partition_events
                 } else {
                     let Some(semantic_events) = semantic_events_by_partition.get(&partition_key)
                     else {
