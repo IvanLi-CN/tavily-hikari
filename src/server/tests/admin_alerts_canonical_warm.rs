@@ -400,7 +400,7 @@ async fn admin_alerts_warm_waits_for_in_flight_projection_liveness_permit_before
             .proxy
             .admin_alerts_cache_warm_liveness_stage_active();
 
-    if !permit_claimed.is_ok() || !reached_owned_stage {
+    if permit_claimed.is_err() || !reached_owned_stage {
         after_stage.release();
         let _ = sqlx::query("ROLLBACK").execute(&mut *writer).await;
         let _ = observer.await;

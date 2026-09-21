@@ -88,6 +88,7 @@ use tokio::sync::Notify;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 use tokio_util::io::{ReaderStream, StreamReader};
 include!("state.rs");
+include!("admin_alerts_cache.rs");
 #[cfg(test)]
 include!("admin_alerts_prewarm_test_support.rs");
 include!("admin_alerts_prewarm_liveness.rs");
