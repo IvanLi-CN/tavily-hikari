@@ -1793,19 +1793,78 @@ async fn admin_alerts_warm_defers_before_final_fence_when_pressure_arrives_betwe
     }
     assert!(projection_ready, "empty projection must complete before warming admin cache");
 
-    seed_complete_default_admin_alerts_cache_for_test(state.as_ref()).await;
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    let keys = [
+        "catalog".to_string(),
+        super::super::default_admin_alert_cache_key("events"),
+        super::super::default_admin_alert_cache_key("groups"),
+    ];
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let complete = keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .find(|entry| entry.canonical && entry.key == *key)
+                    .is_some_and(|entry| entry.generation == cache.alert_projection_generation)
+            });
+            if complete {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial canonical warm must publish a durable active generation");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let cache_handle = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache_handle.lock().await;
+            let workers_idle = !cache.admin_alerts_prewarm_in_flight
+                && !cache.admin_alerts_groups_reclaimer_in_flight;
+            if workers_idle {
+                break;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("initial canonical warm owner must finish before final-fence pressure");
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
     let pause = super::super::install_admin_alerts_warm_before_projection_fence_pause_for_test(
         state.as_ref(),
     )
     .await;
     super::super::prewarm_admin_alerts(state.clone()).await;
-    tokio::time::timeout(
+    let pause_arrived = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         pause.wait_until_arrived(),
     )
-    .await
-    .expect("the retry reaches the groups-to-fence pause");
+        .await
+        .is_ok();
+    let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+    let cache = cache.lock().await;
+    let warm_state = (
+        cache.admin_alerts_prewarm_in_flight,
+        cache.admin_alerts_prewarm_defers,
+        cache.admin_alerts_groups_reclaimer_in_flight,
+        cache.admin_alerts_groups_build_in_flight,
+        cache.admin_alerts.entries.iter().filter(|entry| entry.canonical).count(),
+        cache.admin_alerts_prewarm_not_before,
+    );
+    drop(cache);
+    assert!(
+        pause_arrived,
+        "the fresh durable Groups retry reaches the final-fence pause; cache={warm_state:?}, admission={:?}, liveness={}",
+        state.proxy.admin_alerts_cache_warm_defer_reason(),
+        state.proxy.admin_alerts_cache_warm_liveness_admission_active()
+    );
 
     state.proxy.force_next_admin_alert_read_deadline_for_test();
     for _ in 0..6 {
