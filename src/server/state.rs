@@ -106,6 +106,8 @@ struct DashboardOverviewCacheState {
     #[cfg(test)]
     admin_alerts_warm_after_liveness_stage_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
+    admin_alerts_warm_after_rehydrate_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
     admin_alerts_warm_after_catalog_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
     admin_alerts_warm_after_groups_pause: Option<AdminAlertsWarmPause>,
@@ -159,6 +161,8 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_warm_before_liveness_stage_pause: None,
             #[cfg(test)]
             admin_alerts_warm_after_liveness_stage_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_after_rehydrate_pause: None,
             #[cfg(test)]
             admin_alerts_warm_after_catalog_pause: None,
             #[cfg(test)]
@@ -752,7 +756,9 @@ fn publish_admin_alerts_canonical_into_cache(
     true
 }
 
-async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
+async fn rehydrate_admin_alerts_canonical_last_good(
+    state: &AppState,
+) -> Result<bool, tavily_hikari::ProxyError> {
     let cache = dashboard_overview_cache_for_state(state);
     let keys = [
         "catalog".to_string(),
@@ -770,38 +776,20 @@ async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
         })
     };
     if !needs_rehydrate {
-        return false;
+        return Ok(false);
     }
 
-    let restored = match state
+    let Some(restored) = state
         .proxy
         .admin_alerts_canonical_last_good_for_rehydrate()
-        .await
-    {
-        Ok(Some(restored)) => restored,
-        Ok(None) => return false,
-        Err(error) => {
-            tracing::debug!(
-                component = "admin_read",
-                event = "alerts_canonical_last_good_rehydrate_deferred",
-                error = %error,
-                "durable canonical Alerts last-good is not ready to rehydrate"
-            );
-            return false;
-        }
+        .await?
+    else {
+        return Ok(false);
     };
-    let current_fence = match state.proxy.admin_alerts_canonical_warm_projection_fence().await {
-        Ok(fence) => fence,
-        Err(error) => {
-            tracing::debug!(
-                component = "admin_read",
-                event = "alerts_canonical_last_good_rehydrate_deferred",
-                error = %error,
-                "canonical Alerts projection fence is not ready to rehydrate"
-            );
-            return false;
-        }
-    };
+    let current_fence = state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await?;
     let (catalog, events, groups, active_fence) = restored;
     let mut cache = cache.lock().await;
     if keys.iter().all(|key| {
@@ -811,7 +799,7 @@ async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
             .iter()
             .any(|entry| entry.canonical && entry.key == *key)
     }) {
-        return false;
+        return Ok(false);
     }
     let generation = cache.alert_projection_generation;
     if !publish_admin_alerts_canonical_into_cache(
@@ -823,7 +811,7 @@ async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
         events,
         groups,
     ) {
-        return false;
+        return Ok(false);
     }
     let stale = active_fence != current_fence;
     if stale {
@@ -840,7 +828,7 @@ async fn rehydrate_admin_alerts_canonical_last_good(state: &AppState) -> bool {
         stale,
         "rehydrated durable canonical Alerts last-good cache"
     );
-    true
+    Ok(true)
 }
 
 fn default_admin_alert_cache_key(kind: &str) -> String {
@@ -893,10 +881,9 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 return;
             }
             let now = tokio::time::Instant::now();
-            if now >= next_last_good_rehydrate_at {
-                rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await;
-                next_last_good_rehydrate_at =
-                    now + std::time::Duration::from_secs(5);
+            let rehydrate_last_good = now >= next_last_good_rehydrate_at;
+            if rehydrate_last_good {
+                next_last_good_rehydrate_at = now + std::time::Duration::from_secs(5);
             }
             let liveness_slot = {
                 let cache_state = cache.lock().await;
@@ -962,6 +949,32 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 None => current_admin_alerts_generation(state.as_ref()).await,
             };
             let result = async {
+                if rehydrate_last_good {
+                    match rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await {
+                        Ok(true) => {
+                            #[cfg(test)]
+                            pause_admin_alerts_warm_after_rehydrate_for_test(
+                                state.as_ref(),
+                            )
+                            .await;
+                        }
+                        Ok(false) => {}
+                        Err(error)
+                            if tavily_hikari::is_transient_sqlite_write_error(&error)
+                                || error.is_deferred() =>
+                        {
+                            return Err(error);
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                component = "admin_read",
+                                event = "alerts_canonical_last_good_rehydrate_failed",
+                                error = %error,
+                                "will rebuild canonical Alerts cache from current projection"
+                            );
+                        }
+                    }
+                }
                 state.proxy.prepare_admin_alerts_canonical_warm().await?;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
@@ -1493,6 +1506,19 @@ async fn pause_admin_alerts_warm_after_liveness_stage_for_test(state: &AppState)
         .lock()
         .await
         .admin_alerts_warm_after_liveness_stage_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_rehydrate_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_rehydrate_pause
         .take();
     let Some(pause) = pause else {
         return;

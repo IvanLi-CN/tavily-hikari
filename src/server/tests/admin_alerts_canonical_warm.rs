@@ -2031,7 +2031,7 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
     super::super::dashboard_overview_cache_for_state(recovered_state.as_ref())
         .lock()
         .await
-        .admin_alerts_warm_before_liveness_stage_pause = Some(rehydration_pause.clone());
+        .admin_alerts_warm_after_rehydrate_pause = Some(rehydration_pause.clone());
     super::super::rearm_admin_alerts_prewarm_for_test(recovered_state.as_ref()).await;
     super::super::prewarm_admin_alerts(recovered_state.clone()).await;
     tokio::time::timeout(
@@ -2039,7 +2039,7 @@ async fn admin_alerts_warm_rehydrates_active_last_good_after_restart() {
         rehydration_pause.wait_until_arrived(),
     )
     .await
-    .expect("recovered warm must rehydrate last-good before its first liveness stage");
+    .expect("recovered warm must rehydrate last-good before its first canonical warm slice");
 
     let cache = super::super::dashboard_overview_cache_for_state(recovered_state.as_ref());
     let cache = cache.lock().await;
