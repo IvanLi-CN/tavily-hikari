@@ -340,11 +340,43 @@ impl DashboardOverviewCacheState {
         })
     }
 
-    fn record_admin_alerts_prewarm_slice(&mut self, _now: tokio::time::Instant) {
+    fn record_admin_alerts_prewarm_slice(&mut self, now: tokio::time::Instant) {
         // Partial work is observable through the workload window, but it cannot
         // satisfy liveness until the complete three-key generation publishes.
         // Keep the aged anchor so a large build can continue one bounded stage
-        // every 5s under sustained foreground load.
+        // every 5s under sustained foreground load. Keep the complete prior
+        // generation available while each bounded stage continues to progress.
+        let keys = [
+            "catalog".to_string(),
+            default_admin_alert_cache_key("events"),
+            default_admin_alert_cache_key("groups"),
+        ];
+        let generation = self
+            .admin_alerts
+            .entries
+            .iter()
+            .find(|entry| entry.canonical && entry.key == keys[0])
+            .map(|entry| entry.generation);
+        if let Some(generation) = generation
+            && keys.iter().all(|key| {
+                self.admin_alerts.entries.iter().any(|entry| {
+                    entry.canonical
+                        && entry.key == *key
+                        && entry.generation == generation
+                        && now.saturating_duration_since(entry.stored_at)
+                            <= ADMIN_ALERTS_CACHE_TTL
+                })
+            })
+        {
+            for entry in &mut self.admin_alerts.entries {
+                if entry.canonical
+                    && entry.generation == generation
+                    && keys.contains(&entry.key)
+                {
+                    entry.stored_at = now;
+                }
+            }
+        }
         self.admin_alerts_prewarm_defers = 0;
     }
 
@@ -850,7 +882,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         let cache = task_cache;
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
-        rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await;
+        let mut next_last_good_rehydrate_at = tokio::time::Instant::now();
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state
@@ -859,6 +891,12 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 cache.lock().await.finish_admin_alerts_prewarm_owner(owner);
                 flight_guard.disarm();
                 return;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= next_last_good_rehydrate_at {
+                rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await;
+                next_last_good_rehydrate_at =
+                    now + std::time::Duration::from_secs(5);
             }
             let liveness_slot = {
                 let cache_state = cache.lock().await;

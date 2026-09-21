@@ -1,6 +1,6 @@
 use super::{
-    ADMIN_ALERTS_PREWARM_MIN_INTERVAL, AdminAlertsReadCacheValue, AlertCatalog,
-    DashboardOverviewCacheState, PaginatedAlertEvents, PaginatedAlertGroups,
+    ADMIN_ALERTS_CACHE_TTL, ADMIN_ALERTS_PREWARM_MIN_INTERVAL, AdminAlertsReadCacheValue,
+    AlertCatalog, DashboardOverviewCacheState, PaginatedAlertEvents, PaginatedAlertGroups,
     publish_admin_alerts_canonical_into_cache,
 };
 
@@ -132,6 +132,45 @@ fn complete_default_admin_alerts_cache_keeps_the_initial_slot_bounded() {
         empty_groups(),
     ));
     assert!(!cache.admin_alerts_canonical_warm_liveness_due(now));
+}
+
+#[test]
+fn prewarm_progress_extends_only_a_complete_unexpired_canonical_last_good() {
+    let now = tokio::time::Instant::now();
+    let live_at = now
+        .checked_sub(ADMIN_ALERTS_CACHE_TTL - std::time::Duration::from_secs(1))
+        .expect("test clock must support an almost-expired last-good");
+    let mut cache = DashboardOverviewCacheState::default();
+
+    assert!(publish_admin_alerts_canonical_into_cache(
+        &mut cache,
+        0,
+        0,
+        live_at,
+        empty_catalog(),
+        empty_events(),
+        empty_groups(),
+    ));
+    cache.alert_projection_generation = 1;
+    cache.record_admin_alerts_prewarm_slice(now);
+    assert!(cache
+        .admin_alerts
+        .entries
+        .iter()
+        .all(|entry| entry.stored_at == now && entry.generation == 0));
+
+    let expired_at = now
+        .checked_sub(ADMIN_ALERTS_CACHE_TTL + std::time::Duration::from_secs(1))
+        .expect("test clock must support an expired last-good");
+    for entry in &mut cache.admin_alerts.entries {
+        entry.stored_at = expired_at;
+    }
+    cache.record_admin_alerts_prewarm_slice(now);
+    assert!(cache
+        .admin_alerts
+        .entries
+        .iter()
+        .all(|entry| entry.stored_at == expired_at));
 }
 
 #[test]
