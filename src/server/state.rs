@@ -606,8 +606,18 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     }
                 }
             }
+            // Claim the canonical source-fence reservation before admission can defer a
+            // cold or aged warm attempt. A restart may resume a durable Groups build while
+            // recent contention is still settling; keeping the reservation across that
+            // bounded backoff prevents projection from moving the fence between retries.
+            if liveness_slot && canonical_publish_reservation.is_none() {
+                canonical_publish_reservation =
+                    Some(state.proxy.reserve_admin_alerts_canonical_publish());
+            }
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
-                canonical_publish_reservation.take();
+                if !liveness_slot {
+                    canonical_publish_reservation.take();
+                }
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())
                     .lock()
