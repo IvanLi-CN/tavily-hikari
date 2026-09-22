@@ -2238,6 +2238,15 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         row_count: i64,
     ) -> Result<(), ProxyError> {
+        let Some(_canonical_publish_gate) = self
+            .sqlite_runtime
+            .try_acquire_admin_alerts_canonical_publish_gate()
+        else {
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "projection_publish_busy".to_string(),
+            });
+        };
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let published = self
             .sqlite_runtime
@@ -2265,6 +2274,8 @@ impl KeyStore {
                                   payload_read_json = ''
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ?
+                              AND build_source_recent_generation = ?
+                              AND build_source_history_generation = ?
                               "#,
                     )
                     .bind(snapshot.build_generation)
@@ -2274,6 +2285,8 @@ impl KeyStore {
                     .bind(snapshot.source_fence.1)
                     .bind(snapshot.build_generation)
                     .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
                     .execute(&mut **tx)
                     .await?;
                     Ok::<_, ProxyError>(changed.rows_affected() == 1)
