@@ -732,14 +732,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
                 #[cfg(test)]
                 pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
-                if state.proxy.admin_alerts_canonical_warm_projection_fence().await?
-                    != (recent_generation, history_generation)
-                {
-                    return Err(tavily_hikari::ProxyError::Deferred {
-                        operation: "admin_alerts_warm",
-                        reason: "groups_source_fence_changed".to_string(),
-                    });
-                }
                 let Some(_canonical_publish_gate) = state
                     .proxy
                     .try_acquire_admin_alerts_canonical_publish_gate()
@@ -749,6 +741,14 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         reason: "projection_publish_busy".to_string(),
                     });
                 };
+                if state.proxy.admin_alerts_canonical_warm_projection_fence().await?
+                    != (recent_generation, history_generation)
+                {
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "groups_source_fence_changed".to_string(),
+                    });
+                }
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_projection_fence_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {

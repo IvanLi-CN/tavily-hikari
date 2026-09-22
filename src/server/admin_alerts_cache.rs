@@ -210,6 +210,15 @@ async fn rehydrate_admin_alerts_canonical_last_good(
     else {
         return Ok(false);
     };
+    let Some(_canonical_publish_gate) = state
+        .proxy
+        .try_acquire_admin_alerts_canonical_publish_gate()
+    else {
+        return Err(tavily_hikari::ProxyError::Deferred {
+            operation: "admin_alerts_warm",
+            reason: "projection_publish_busy".to_string(),
+        });
+    };
     let current_fence = state
         .proxy
         .admin_alerts_canonical_warm_projection_fence()
