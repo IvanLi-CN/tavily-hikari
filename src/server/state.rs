@@ -193,6 +193,8 @@ const ADMIN_ALERTS_CACHE_TTL: std::time::Duration = std::time::Duration::from_se
 const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const ADMIN_ALERTS_PREWARM_LIVENESS_AFTER: std::time::Duration =
     std::time::Duration::from_secs(120);
+const ADMIN_ALERTS_LIVENESS_RETRY_MAX_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5);
 
 impl DashboardOverviewCacheState {
     fn next_admin_alerts_flight_owner(&mut self) -> u64 {
@@ -539,6 +541,17 @@ fn default_admin_alert_cache_key(kind: &str) -> String {
     .expect("default admin Alerts cache key fields are serializable")
 }
 
+fn admin_alerts_warm_retry_delay(
+    liveness_slot: bool,
+    delay: std::time::Duration,
+) -> std::time::Duration {
+    if liveness_slot {
+        delay.min(ADMIN_ALERTS_LIVENESS_RETRY_MAX_INTERVAL)
+    } else {
+        delay
+    }
+}
+
 pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
     let (owner, shutdown_notify) = {
@@ -623,6 +636,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .lock()
                     .await
                     .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                let delay = admin_alerts_warm_retry_delay(liveness_slot, delay);
                 tracing::debug!(
                     component = "admin_read",
                     event = "alerts_canonical_warm_deferred",
@@ -931,7 +945,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     // task is notified when that one slice completes, so a durable history
                     // backlog does not depend on the normal ten-second polling cadence.
                     canonical_publish_reservation.take();
-                    let delay = backoff;
+                    let delay = admin_alerts_warm_retry_delay(liveness_slot, backoff);
                     tracing::debug!(
                         component = "admin_read",
                         event = "alerts_canonical_warm_deferred",
@@ -973,6 +987,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         .lock()
                         .await
                         .defer_admin_alerts_prewarm(tokio::time::Instant::now());
+                    let delay = admin_alerts_warm_retry_delay(liveness_slot, delay);
                     tracing::debug!(
                         component = "admin_read",
                         event = "alerts_canonical_warm_deferred",

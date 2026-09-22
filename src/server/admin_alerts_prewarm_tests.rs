@@ -70,6 +70,22 @@ fn admin_alerts_prewarm_backoff_is_bounded_and_recovers() {
 }
 
 #[test]
+fn canonical_liveness_caps_retry_backoff_without_changing_normal_warm() {
+    assert_eq!(
+        super::admin_alerts_warm_retry_delay(true, std::time::Duration::from_secs(30)),
+        std::time::Duration::from_secs(5)
+    );
+    assert_eq!(
+        super::admin_alerts_warm_retry_delay(true, std::time::Duration::from_secs(1)),
+        std::time::Duration::from_secs(1)
+    );
+    assert_eq!(
+        super::admin_alerts_warm_retry_delay(false, std::time::Duration::from_secs(30)),
+        std::time::Duration::from_secs(30)
+    );
+}
+
+#[test]
 fn initial_admin_alerts_prewarm_defer_keeps_the_worker_retryable() {
     let mut cache = DashboardOverviewCacheState::default();
     let now = tokio::time::Instant::now();
