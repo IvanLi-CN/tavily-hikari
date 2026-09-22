@@ -1767,6 +1767,8 @@ impl KeyStore {
                                   build_partition_finalize_fragment_position = ?
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_source_recent_generation = ?
+                              AND build_source_history_generation = ?
                               AND build_partition_key = ?
                               AND build_partition_finalize_fragment_position = ?
                               "#,
@@ -1775,6 +1777,8 @@ impl KeyStore {
                     .bind(fragment_position + 1)
                     .bind(snapshot.build_generation)
                     .bind(snapshot.projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
                     .bind(&partition)
                     .bind(state.build_partition_finalize_fragment_position)
                     .execute(&mut **tx)
@@ -1821,6 +1825,8 @@ impl KeyStore {
         let expected_finalize_position = state.build_partition_finalize_fragment_position;
         let build_generation = snapshot.build_generation;
         let projection_revision = snapshot.projection_revision;
+        let source_recent_generation = snapshot.source_fence.0;
+        let source_history_generation = snapshot.source_fence.1;
         let last_seen = group.last_seen;
         let count = group.count;
         let alert_type = group.alert_type.clone();
@@ -1870,6 +1876,8 @@ impl KeyStore {
                                   build_next_position = ?
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_source_recent_generation = ?
+                              AND build_source_history_generation = ?
                               AND build_partition_key = ?
                               AND build_partition_finalize_fragment_position = ?
                               "#,
@@ -1878,6 +1886,8 @@ impl KeyStore {
                     .bind(position + 1)
                     .bind(build_generation)
                     .bind(projection_revision)
+                    .bind(source_recent_generation)
+                    .bind(source_history_generation)
                     .bind(&partition)
                     .bind(expected_finalize_position)
                     .execute(&mut **tx)
@@ -2016,6 +2026,8 @@ impl KeyStore {
                                   build_partition_fragment_next_position = ?
                             WHERE singleton = 1 AND build_generation = ?
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
+                              AND build_source_recent_generation = ?
+                              AND build_source_history_generation = ?
                               AND build_partition_key = ?
                               AND build_partition_cursor_occurred_at = ?
                               AND build_partition_cursor_row_sort_id = ?
@@ -2027,6 +2039,8 @@ impl KeyStore {
                     .bind(next_fragment_position)
                     .bind(build_generation)
                     .bind(projection_revision)
+                    .bind(snapshot.source_fence.0)
+                    .bind(snapshot.source_fence.1)
                     .bind(&partition)
                     .bind(expected_cursor.0)
                     .bind(expected_cursor.1)
