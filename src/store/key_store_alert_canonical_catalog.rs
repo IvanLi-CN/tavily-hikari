@@ -22,92 +22,119 @@ impl KeyStore {
         &self,
         published_generation: i64,
     ) -> Result<AlertCatalog, ProxyError> {
-        let mut session = self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
-            .await?;
-        let rows_result = sqlx::query(
-            "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
-             FROM observability.admin_alert_canonical_group_events \
-             WHERE build_generation = ? AND occurred_at >= ? \
-             ORDER BY occurred_at ASC, row_sort_id ASC",
-        )
-        .bind(published_generation)
-        .bind(self.alert_projection_retention_since())
-        .fetch_all(&mut *session)
-        .await;
-        let rows = session.query(rows_result).await?;
-        let finish = session.finish().await;
-        finish?;
-
+        const CATALOG_REHYDRATE_READ_SLICE_ROWS: i64 = 128;
+        let mut cursor_occurred_at = i64::MIN;
+        let mut cursor_row_sort_id = String::new();
         let mut facets = HashMap::<(String, String, String, String), i64>::new();
-        for row in rows {
-            let projection = Self::decode_default_alert_event_projection_row(row)?;
-            let insert = |kind: &str,
-                          identity: String,
-                          value: String,
-                          label: String,
-                          facets: &mut HashMap<(String, String, String, String), i64>| {
-                if !value.trim().is_empty() {
-                    *facets
-                        .entry((kind.to_string(), identity, value, label))
-                        .or_default() += 1;
+        loop {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
+                .await?;
+            let rows_result = sqlx::query(
+                "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+                 FROM observability.admin_alert_canonical_group_events \
+                 WHERE build_generation = ? AND occurred_at >= ? \
+                   AND (occurred_at > ? OR (occurred_at = ? AND row_sort_id > ?)) \
+                 ORDER BY occurred_at ASC, row_sort_id ASC LIMIT ?",
+            )
+            .bind(published_generation)
+            .bind(self.alert_projection_retention_since())
+            .bind(cursor_occurred_at)
+            .bind(cursor_occurred_at)
+            .bind(&cursor_row_sort_id)
+            .bind(CATALOG_REHYDRATE_READ_SLICE_ROWS)
+            .fetch_all(&mut *session)
+            .await;
+            let rows = session.query(rows_result).await;
+            session.finish().await?;
+            let rows = rows?;
+            let complete = rows.len() < CATALOG_REHYDRATE_READ_SLICE_ROWS as usize;
+            let next_cursor = rows
+                .last()
+                .map(|row| {
+                    Ok::<_, sqlx::Error>(
+                        (row.try_get::<i64, _>("occurred_at")?,
+                         row.try_get::<String, _>("row_sort_id")?),
+                    )
+                })
+                .transpose()?;
+            for row in rows {
+                let projection = Self::decode_default_alert_event_projection_row(row)?;
+                let insert = |kind: &str,
+                              identity: String,
+                              value: String,
+                              label: String,
+                              facets: &mut HashMap<(String, String, String, String), i64>| {
+                    if !value.trim().is_empty() {
+                        *facets
+                            .entry((kind.to_string(), identity, value, label))
+                            .or_default() += 1;
+                    }
+                };
+                insert(
+                    "type",
+                    projection.alert_type.trim().to_string(),
+                    projection.alert_type.trim().to_string(),
+                    projection.alert_type.trim().to_string(),
+                    &mut facets,
+                );
+                if let Some(request_kind) = projection.request_kind_key.as_deref() {
+                    let key = request_kind.trim();
+                    if !key.is_empty() && key != "unknown" {
+                        insert(
+                            "request_kind",
+                            key.to_string(),
+                            key.to_string(),
+                            projection
+                                .request_kind_label
+                                .as_deref()
+                                .unwrap_or(key)
+                                .to_string(),
+                            &mut facets,
+                        );
+                    }
                 }
-            };
-            insert(
-                "type",
-                projection.alert_type.trim().to_string(),
-                projection.alert_type.trim().to_string(),
-                projection.alert_type.trim().to_string(),
-                &mut facets,
-            );
-            if let Some(request_kind) = projection.request_kind_key.as_deref() {
-                let key = request_kind.trim();
-                if !key.is_empty() && key != "unknown" {
+                if let Some(user_id) = projection.user_id {
+                    let label = projection
+                        .user_display_name
+                        .or(projection.user_username)
+                        .filter(|label| !label.trim().is_empty())
+                        .unwrap_or_else(|| user_id.clone());
                     insert(
-                        "request_kind",
-                        key.to_string(),
-                        key.to_string(),
-                        projection
-                            .request_kind_label
-                            .as_deref()
-                            .unwrap_or(key)
-                            .to_string(),
+                        "user",
+                        format!("{user_id}\u{001f}{label}"),
+                        user_id,
+                        label,
+                        &mut facets,
+                    );
+                }
+                if let Some(token_id) = projection.token_id {
+                    insert(
+                        "token",
+                        token_id.clone(),
+                        token_id.clone(),
+                        token_id,
+                        &mut facets,
+                    );
+                }
+                if let Some(key_id) = projection.key_id {
+                    insert(
+                        "key",
+                        key_id.clone(),
+                        key_id.clone(),
+                        key_id,
                         &mut facets,
                     );
                 }
             }
-            if let Some(user_id) = projection.user_id {
-                let label = projection
-                    .user_display_name
-                    .or(projection.user_username)
-                    .filter(|label| !label.trim().is_empty())
-                    .unwrap_or_else(|| user_id.clone());
-                insert(
-                    "user",
-                    format!("{user_id}\u{001f}{label}"),
-                    user_id,
-                    label,
-                    &mut facets,
-                );
+            if complete {
+                break;
             }
-            if let Some(token_id) = projection.token_id {
-                insert(
-                    "token",
-                    token_id.clone(),
-                    token_id.clone(),
-                    token_id,
-                    &mut facets,
-                );
-            }
-            if let Some(key_id) = projection.key_id {
-                insert(
-                    "key",
-                    key_id.clone(),
-                    key_id.clone(),
-                    key_id,
-                    &mut facets,
-                );
-            }
+            let Some((next_occurred_at, next_row_sort_id)) = next_cursor else {
+                break;
+            };
+            cursor_occurred_at = next_occurred_at;
+            cursor_row_sort_id = next_row_sort_id;
         }
 
         let mut types = default_alert_type_counts();
