@@ -563,6 +563,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
         let mut needs_initial_last_good_rehydrate = true;
+        let mut canonical_publish_reservation = None;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state
@@ -606,6 +607,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 }
             }
             if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
+                canonical_publish_reservation.take();
                 state.proxy.record_admin_alerts_warm_defer();
                 let delay = dashboard_overview_cache_for_state(state.as_ref())
                     .lock()
@@ -637,6 +639,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     .proxy
                     .begin_admin_alerts_cache_warm_liveness_stage()
                 {
+                    canonical_publish_reservation.take();
                     state.proxy.record_admin_alerts_warm_defer();
                     if wait_for_admin_alerts_shutdown_or(
                         &cache,
@@ -670,12 +673,12 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
                 // Freeze the projection source fence for the complete coherent
-                // Groups/Catalog/Events assembly. The durable build remains
-                // sliced and yields between transactions; this reservation
-                // only prevents a new projection commit from invalidating the
-                // staged generation before its atomic publication.
-                let _canonical_publish_reservation =
-                    state.proxy.reserve_admin_alerts_canonical_publish();
+                // Groups/Catalog/Events assembly, including bounded retries
+                // that resume a durable build on the next loop turn.
+                if canonical_publish_reservation.is_none() {
+                    canonical_publish_reservation =
+                        Some(state.proxy.reserve_admin_alerts_canonical_publish());
+                }
                 let groups_result = if liveness_slot {
                     admin_alerts_canonical_groups_for_warm_liveness_stage(
                         state.as_ref(),
@@ -917,6 +920,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     // bounded permit. The scheduler is notified by the handoff, and the warm
                     // task is notified when that one slice completes, so a durable history
                     // backlog does not depend on the normal ten-second polling cadence.
+                    canonical_publish_reservation.take();
                     let delay = backoff;
                     tracing::debug!(
                         component = "admin_read",
@@ -980,6 +984,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     if tavily_hikari::is_transient_sqlite_write_error(&error)
                         || error.is_deferred() =>
                 {
+                    canonical_publish_reservation.take();
                     state.proxy.record_admin_alerts_warm_defer();
                     let delay = dashboard_overview_cache_for_state(state.as_ref())
                         .lock()
