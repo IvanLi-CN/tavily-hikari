@@ -904,53 +904,6 @@ impl SqliteRuntime {
         )
     }
 
-    pub(crate) async fn acquire_admin_alerts_canonical_publish_gate(
-        &self,
-    ) -> Option<AdminAlertsCanonicalPublishGate> {
-        let waiters = Arc::clone(&self.inner.admin_alerts_canonical_publish_waiters);
-        waiters.fetch_add(1, AtomicOrdering::AcqRel);
-        let permit = self
-            .inner
-            .admin_alerts_canonical_publish_gate
-            .clone()
-            .acquire_owned()
-            .await;
-        match permit {
-            Ok(permit) => Some(AdminAlertsCanonicalPublishGate {
-                _permit: permit,
-                waiters,
-            }),
-            Err(_) => {
-                waiters.fetch_sub(1, AtomicOrdering::AcqRel);
-                None
-            }
-        }
-    }
-
-    pub(crate) fn reserve_admin_alerts_canonical_publish(
-        &self,
-    ) -> AdminAlertsCanonicalPublishReservation {
-        let waiters = Arc::clone(&self.inner.admin_alerts_canonical_publish_waiters);
-        waiters.fetch_add(1, AtomicOrdering::AcqRel);
-        AdminAlertsCanonicalPublishReservation { waiters }
-    }
-
-    pub(crate) fn try_acquire_alert_projection_gate(&self) -> Option<OwnedSemaphorePermit> {
-        if self
-            .inner
-            .admin_alerts_canonical_publish_waiters
-            .load(AtomicOrdering::Acquire)
-            > 0
-        {
-            return None;
-        }
-        self.inner
-            .admin_alerts_canonical_publish_gate
-            .clone()
-            .try_acquire_owned()
-            .ok()
-    }
-
     /// Research drain has an aged-turn exception for the foreground-RPS
     /// heuristic, but it still owns the single bulk slot for its bounded
     /// source read. The permit is intentionally scoped by the caller to the

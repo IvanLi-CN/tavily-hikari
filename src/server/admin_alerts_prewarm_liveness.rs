@@ -5,6 +5,17 @@ fn admin_alerts_warm_deferred(reason: &'static str) -> tavily_hikari::ProxyError
     }
 }
 
+fn admin_alerts_warm_retry_delay(
+    liveness_slot: bool,
+    delay: std::time::Duration,
+) -> std::time::Duration {
+    if liveness_slot {
+        delay.min(ADMIN_ALERTS_LIVENESS_RETRY_MAX_INTERVAL)
+    } else {
+        delay
+    }
+}
+
 fn admin_alerts_warm_error_reason(error: &tavily_hikari::ProxyError) -> &'static str {
     let tavily_hikari::ProxyError::Deferred { reason, .. } = error else {
         return "sqlite_pressure";
@@ -128,4 +139,31 @@ async fn admin_alert_catalog_for_canonical_snapshot_liveness_stage(
             result => return result,
         }
     }
+}
+
+async fn admin_alerts_canonical_groups_for_warm(
+    state: &AppState,
+) -> Result<(PaginatedAlertGroups, i64, i64, i64), tavily_hikari::ProxyError> {
+    let cache = dashboard_overview_cache_for_state(state);
+    let owner = {
+        let mut cache_state = cache.lock().await;
+        let Some(owner) = cache_state.start_admin_alerts_groups_build() else {
+            return Err(admin_alerts_warm_deferred("groups_reclaim_busy"));
+        };
+        owner
+    };
+    let mut flight_guard = AdminAlertsFlightGuard::new(
+        cache.clone(),
+        AdminAlertsFlightKind::GroupsBuild,
+        owner,
+        None,
+    );
+    let result = state.proxy.admin_alert_canonical_groups_page_for_warm().await;
+    // Clear the owner before disarming so cancellation still releases the flag safely.
+    cache
+        .lock()
+        .await
+        .finish_admin_alerts_groups_build(owner);
+    flight_guard.disarm();
+    result
 }

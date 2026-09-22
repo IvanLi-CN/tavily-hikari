@@ -541,17 +541,6 @@ fn default_admin_alert_cache_key(kind: &str) -> String {
     .expect("default admin Alerts cache key fields are serializable")
 }
 
-fn admin_alerts_warm_retry_delay(
-    liveness_slot: bool,
-    delay: std::time::Duration,
-) -> std::time::Duration {
-    if liveness_slot {
-        delay.min(ADMIN_ALERTS_LIVENESS_RETRY_MAX_INTERVAL)
-    } else {
-        delay
-    }
-}
-
 pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
     let (owner, shutdown_notify) = {
@@ -1055,43 +1044,6 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         }
     });
     cache.lock().await.admin_alerts_prewarm_task = Some(task);
-}
-
-async fn admin_alerts_canonical_groups_for_warm(
-    state: &AppState,
-) -> Result<
-    (
-        PaginatedAlertGroups,
-        i64,
-        i64,
-        i64,
-    ),
-    tavily_hikari::ProxyError,
-> {
-    let cache = dashboard_overview_cache_for_state(state);
-    let owner = {
-        let mut cache_state = cache.lock().await;
-        let Some(owner) = cache_state.start_admin_alerts_groups_build() else {
-            return Err(admin_alerts_warm_deferred("groups_reclaim_busy"));
-        };
-        owner
-    };
-    let mut flight_guard = AdminAlertsFlightGuard::new(
-        cache.clone(),
-        AdminAlertsFlightKind::GroupsBuild,
-        owner,
-        None,
-    );
-    let result = state.proxy.admin_alert_canonical_groups_page_for_warm().await;
-    // The guard is deliberately disarmed only after the owner token is
-    // cleared. If cancellation occurs before that await completes, its
-    // owner-checked Drop cleanup releases the in-flight flag safely.
-    cache
-        .lock()
-        .await
-        .finish_admin_alerts_groups_build(owner);
-    flight_guard.disarm();
-    result
 }
 
 async fn spawn_admin_alerts_canonical_groups_reclaimer(state: Arc<AppState>) {
