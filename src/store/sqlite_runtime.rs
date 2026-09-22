@@ -126,6 +126,19 @@ pub struct AdminAlertsCanonicalPublishGate {
     waiters: Arc<AtomicU32>,
 }
 
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AdminAlertsCanonicalPublishReservation {
+    waiters: Arc<AtomicU32>,
+}
+
+impl Drop for AdminAlertsCanonicalPublishReservation {
+    fn drop(&mut self) {
+        let previous = self.waiters.fetch_sub(1, AtomicOrdering::AcqRel);
+        debug_assert!(previous > 0);
+    }
+}
+
 impl Drop for AdminAlertsCanonicalPublishGate {
     fn drop(&mut self) {
         let previous = self.waiters.fetch_sub(1, AtomicOrdering::AcqRel);
@@ -912,6 +925,14 @@ impl SqliteRuntime {
                 None
             }
         }
+    }
+
+    pub(crate) fn reserve_admin_alerts_canonical_publish(
+        &self,
+    ) -> AdminAlertsCanonicalPublishReservation {
+        let waiters = Arc::clone(&self.inner.admin_alerts_canonical_publish_waiters);
+        waiters.fetch_add(1, AtomicOrdering::AcqRel);
+        AdminAlertsCanonicalPublishReservation { waiters }
     }
 
     pub(crate) fn try_acquire_alert_projection_gate(&self) -> Option<OwnedSemaphorePermit> {

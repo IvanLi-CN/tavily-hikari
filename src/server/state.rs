@@ -669,6 +669,13 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
+                // Freeze the projection source fence for the complete coherent
+                // Groups/Catalog/Events assembly. The durable build remains
+                // sliced and yields between transactions; this reservation
+                // only prevents a new projection commit from invalidating the
+                // staged generation before its atomic publication.
+                let _canonical_publish_reservation =
+                    state.proxy.reserve_admin_alerts_canonical_publish();
                 let groups_result = if liveness_slot {
                     admin_alerts_canonical_groups_for_warm_liveness_stage(
                         state.as_ref(),

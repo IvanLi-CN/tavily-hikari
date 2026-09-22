@@ -1023,6 +1023,12 @@ impl KeyStore {
             .await
     }
 
+    pub(crate) fn reserve_admin_alerts_canonical_publish(
+        &self,
+    ) -> AdminAlertsCanonicalPublishReservation {
+        self.sqlite_runtime.reserve_admin_alerts_canonical_publish()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fetch_admin_alert_events_page(
         &self,

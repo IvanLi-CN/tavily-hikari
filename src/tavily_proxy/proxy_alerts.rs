@@ -152,6 +152,13 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn reserve_admin_alerts_canonical_publish(
+        &self,
+    ) -> crate::store::AdminAlertsCanonicalPublishReservation {
+        self.key_store.reserve_admin_alerts_canonical_publish()
+    }
+
+    #[doc(hidden)]
     pub async fn reclaim_admin_alert_canonical_groups_generations(
         &self,
     ) -> Result<bool, ProxyError> {

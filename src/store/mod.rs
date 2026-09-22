@@ -20,9 +20,9 @@ mod immediate_transaction;
 mod key_store_alert_event_projection;
 mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
-pub use sqlite_runtime::AdminAlertsCanonicalPublishGate;
 #[cfg(test)]
 pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
+pub use sqlite_runtime::{AdminAlertsCanonicalPublishGate, AdminAlertsCanonicalPublishReservation};
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
     SqliteMaintenanceBulkPermit, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,

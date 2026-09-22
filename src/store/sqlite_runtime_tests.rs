@@ -470,6 +470,11 @@ async fn canonical_publish_waiter_prevents_projection_gate_steal() {
     let projection_gate = runtime
         .try_acquire_alert_projection_gate()
         .expect("projection owns the gate before canonical publish waits");
+    let reservation = runtime.reserve_admin_alerts_canonical_publish();
+    assert!(
+        runtime.try_acquire_alert_projection_gate().is_none(),
+        "projection must yield while canonical assembly owns a reservation"
+    );
     let waiter_runtime = runtime.clone();
     let waiter = tokio::spawn(async move {
         waiter_runtime
@@ -483,6 +488,7 @@ async fn canonical_publish_waiter_prevents_projection_gate_steal() {
         runtime.try_acquire_alert_projection_gate().is_none(),
         "projection must yield once canonical publication is waiting"
     );
+    drop(reservation);
     drop(projection_gate);
 
     let canonical_gate = tokio::time::timeout(Duration::from_millis(250), waiter)
