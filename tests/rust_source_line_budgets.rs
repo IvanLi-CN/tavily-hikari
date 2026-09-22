@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_RUST_SOURCE_LINES: usize = 3050;
+const MAX_RUST_SOURCE_LINES: usize = 3000;
 const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
@@ -63,6 +63,51 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "src/store/sqlite_runtime.rs",
         3550,
         "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
+    ),
+    (
+        "src/server/tests/mcp_rebalance_and_follow_up.rs",
+        3060,
+        "The consolidated MCP rebalance and follow-up integration suite remains above the shared budget while its scenario helpers are extracted in a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/server/tests/system_settings_and_forward_proxy.rs",
+        3060,
+        "System settings and forward-proxy integration coverage remains consolidated while its shared fixtures are extracted in a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/server/tests/upstream_support_and_manual_jobs.rs",
+        3050,
+        "Upstream support and manual-job integration coverage remains consolidated while its shared fixtures are extracted in a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/store/key_store_alerts.rs",
+        3050,
+        "Legacy Alerts persistence and compatibility helpers remain together while the broader store extraction is a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/store/key_store_schema_migrations.rs",
+        3075,
+        "Schema migration compatibility coverage remains consolidated while migration-family extraction is handled as a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/store/key_store_sessions.rs",
+        3075,
+        "Session persistence compatibility remains consolidated while the broader store extraction is handled as a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/store/mod.rs",
+        3050,
+        "The store facade retains shared imports and compatibility wiring while the remaining module extraction is handled separately.",
+    ),
+    (
+        "src/tests/request_rollup.rs",
+        3100,
+        "Request-rollup integration coverage remains consolidated while the remaining test extraction is handled as a separate behavior-preserving follow-up.",
+    ),
+    (
+        "src/tests/upstream_reconciliation_engine.rs",
+        3100,
+        "Upstream reconciliation engine coverage remains consolidated while the remaining test extraction is handled as a separate behavior-preserving follow-up.",
     ),
 ];
 

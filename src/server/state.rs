@@ -190,68 +190,6 @@ const ADMIN_ALERTS_PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Durati
 const ADMIN_ALERTS_PREWARM_LIVENESS_AFTER: std::time::Duration =
     std::time::Duration::from_secs(120);
 
-fn admin_alerts_warm_deferred(reason: &'static str) -> tavily_hikari::ProxyError {
-    tavily_hikari::ProxyError::Deferred {
-        operation: "admin_alerts_warm",
-        reason: reason.to_string(),
-    }
-}
-
-fn admin_alerts_warm_error_reason(error: &tavily_hikari::ProxyError) -> &'static str {
-    let tavily_hikari::ProxyError::Deferred { reason, .. } = error else {
-        return "sqlite_pressure";
-    };
-    match reason.as_str() {
-        "foreground_pressure" => "foreground_pressure",
-        "pool_pressure" => "pool_pressure",
-        "recent_contention" => "recent_contention",
-        "projection_fence_changed" => "projection_fence_changed",
-        "projection_generation_changed" => "projection_generation_changed",
-        "read_budget" => "read_budget",
-        _ => "deferred",
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct AdminAlertsWarmPause {
-    arrived: Arc<std::sync::atomic::AtomicBool>,
-    arrived_notify: Arc<Notify>,
-    released: Arc<std::sync::atomic::AtomicBool>,
-    release: Arc<Notify>,
-}
-
-#[cfg(test)]
-impl AdminAlertsWarmPause {
-    fn new() -> Self {
-        Self {
-            arrived: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            arrived_notify: Arc::new(Notify::new()),
-            released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            release: Arc::new(Notify::new()),
-        }
-    }
-
-    pub(crate) async fn wait_until_arrived(&self) {
-        loop {
-            if self.arrived.load(std::sync::atomic::Ordering::Acquire) {
-                return;
-            }
-            let notified = self.arrived_notify.notified();
-            if self.arrived.load(std::sync::atomic::Ordering::Acquire) {
-                return;
-            }
-            notified.await;
-        }
-    }
-
-    pub(crate) fn release(&self) {
-        self.released
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.release.notify_waiters();
-    }
-}
-
 impl DashboardOverviewCacheState {
     fn next_admin_alerts_flight_owner(&mut self) -> u64 {
         let owner = self.admin_alerts_next_flight_owner.max(1);

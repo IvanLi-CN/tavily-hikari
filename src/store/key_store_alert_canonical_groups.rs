@@ -17,10 +17,9 @@ const ADMIN_ALERT_CANONICAL_GROUPS_FAST_COMPAT_BATCHES_PER_STAGE: usize = 4;
 // read budget.
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1024;
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
-// Semantic classification may consume several immutable fragments in one
-// bounded read, but it must still yield before a read or its matching write
-// grows beyond the existing canonical warm budgets.
-const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS: i64 = 8;
+// Semantic classification uses a bounded page near the existing write budget;
+// the native read deadline and 512KiB transaction cap remain independent of it.
+const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS: i64 = 16;
 const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES: usize = 512 * 1024;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is
