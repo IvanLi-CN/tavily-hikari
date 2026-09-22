@@ -465,6 +465,34 @@ async fn sqlite_runtime_foreground_preempts_bulk_work() {
 }
 
 #[tokio::test]
+async fn canonical_publish_waiter_prevents_projection_gate_steal() {
+    let runtime = three_connection_runtime().await;
+    let projection_gate = runtime
+        .try_acquire_alert_projection_gate()
+        .expect("projection owns the gate before canonical publish waits");
+    let waiter_runtime = runtime.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_runtime
+            .acquire_admin_alerts_canonical_publish_gate()
+            .await
+            .expect("canonical publish gate remains open")
+    });
+
+    tokio::task::yield_now().await;
+    assert!(
+        runtime.try_acquire_alert_projection_gate().is_none(),
+        "projection must yield once canonical publication is waiting"
+    );
+    drop(projection_gate);
+
+    let canonical_gate = tokio::time::timeout(Duration::from_millis(250), waiter)
+        .await
+        .expect("canonical publication must not starve behind projection")
+        .expect("canonical gate waiter task must complete");
+    drop(canonical_gate);
+}
+
+#[tokio::test]
 async fn admin_privacy_read_session_is_bounded_and_independent_of_bulk_admission() {
     let runtime = three_connection_runtime().await;
     let bulk = runtime

@@ -668,7 +668,7 @@ impl KeyStore {
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
         let Some(_canonical_publish_gate) = self
             .sqlite_runtime
-            .try_acquire_admin_alerts_canonical_publish_gate()
+            .try_acquire_alert_projection_gate()
         else {
             self.sqlite_runtime.record_deferred(
                 SqliteOperation::AlertProjection,

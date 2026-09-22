@@ -212,7 +212,8 @@ async fn rehydrate_admin_alerts_canonical_last_good(
     };
     let Some(_canonical_publish_gate) = state
         .proxy
-        .try_acquire_admin_alerts_canonical_publish_gate()
+        .acquire_admin_alerts_canonical_publish_gate()
+        .await
     else {
         return Err(tavily_hikari::ProxyError::Deferred {
             operation: "admin_alerts_warm",

@@ -2254,7 +2254,8 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let Some(_canonical_publish_gate) = self
             .sqlite_runtime
-            .try_acquire_admin_alerts_canonical_publish_gate()
+            .acquire_admin_alerts_canonical_publish_gate()
+            .await
         else {
             return Err(ProxyError::Deferred {
                 operation: "admin_alerts_cache_warm",

@@ -119,6 +119,20 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
     _permit: OwnedSemaphorePermit,
 }
 
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AdminAlertsCanonicalPublishGate {
+    _permit: OwnedSemaphorePermit,
+    waiters: Arc<AtomicU32>,
+}
+
+impl Drop for AdminAlertsCanonicalPublishGate {
+    fn drop(&mut self) {
+        let previous = self.waiters.fetch_sub(1, AtomicOrdering::AcqRel);
+        debug_assert!(previous > 0);
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SqliteMaintenanceRunLease {
     _permit: OwnedSemaphorePermit,
@@ -475,6 +489,7 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_projection_wakeup: Arc<Notify>,
     admin_alerts_cache_warm_projection_done: Arc<Notify>,
     admin_alerts_canonical_publish_gate: Arc<Semaphore>,
+    admin_alerts_canonical_publish_waiters: Arc<AtomicU32>,
     alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
@@ -708,6 +723,7 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_projection_wakeup: Arc::new(Notify::new()),
                 admin_alerts_cache_warm_projection_done: Arc::new(Notify::new()),
                 admin_alerts_canonical_publish_gate: Arc::new(Semaphore::new(1)),
+                admin_alerts_canonical_publish_waiters: Arc::new(AtomicU32::new(0)),
                 alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
@@ -875,9 +891,38 @@ impl SqliteRuntime {
         )
     }
 
-    pub(crate) fn try_acquire_admin_alerts_canonical_publish_gate(
+    pub(crate) async fn acquire_admin_alerts_canonical_publish_gate(
         &self,
-    ) -> Option<OwnedSemaphorePermit> {
+    ) -> Option<AdminAlertsCanonicalPublishGate> {
+        let waiters = Arc::clone(&self.inner.admin_alerts_canonical_publish_waiters);
+        waiters.fetch_add(1, AtomicOrdering::AcqRel);
+        let permit = self
+            .inner
+            .admin_alerts_canonical_publish_gate
+            .clone()
+            .acquire_owned()
+            .await;
+        match permit {
+            Ok(permit) => Some(AdminAlertsCanonicalPublishGate {
+                _permit: permit,
+                waiters,
+            }),
+            Err(_) => {
+                waiters.fetch_sub(1, AtomicOrdering::AcqRel);
+                None
+            }
+        }
+    }
+
+    pub(crate) fn try_acquire_alert_projection_gate(&self) -> Option<OwnedSemaphorePermit> {
+        if self
+            .inner
+            .admin_alerts_canonical_publish_waiters
+            .load(AtomicOrdering::Acquire)
+            > 0
+        {
+            return None;
+        }
         self.inner
             .admin_alerts_canonical_publish_gate
             .clone()

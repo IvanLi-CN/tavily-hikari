@@ -734,7 +734,8 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 pause_admin_alerts_warm_before_projection_fence_for_test(state.as_ref()).await;
                 let Some(_canonical_publish_gate) = state
                     .proxy
-                    .try_acquire_admin_alerts_canonical_publish_gate()
+                    .acquire_admin_alerts_canonical_publish_gate()
+                    .await
                 else {
                     return Err(tavily_hikari::ProxyError::Deferred {
                         operation: "admin_alerts_warm",

@@ -143,11 +143,12 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
-    pub fn try_acquire_admin_alerts_canonical_publish_gate(
+    pub async fn acquire_admin_alerts_canonical_publish_gate(
         &self,
-    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    ) -> Option<crate::store::AdminAlertsCanonicalPublishGate> {
         self.key_store
-            .try_acquire_admin_alerts_canonical_publish_gate()
+            .acquire_admin_alerts_canonical_publish_gate()
+            .await
     }
 
     #[doc(hidden)]
