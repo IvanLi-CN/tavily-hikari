@@ -143,6 +143,14 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
+    pub fn try_acquire_admin_alerts_canonical_publish_gate(
+        &self,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.key_store
+            .try_acquire_admin_alerts_canonical_publish_gate()
+    }
+
+    #[doc(hidden)]
     pub async fn reclaim_admin_alert_canonical_groups_generations(
         &self,
     ) -> Result<bool, ProxyError> {

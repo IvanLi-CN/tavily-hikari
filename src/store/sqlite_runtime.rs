@@ -474,6 +474,7 @@ struct SqliteRuntimeInner {
     admin_alerts_cache_warm_liveness_projection_turn: AtomicBool,
     admin_alerts_cache_warm_projection_wakeup: Arc<Notify>,
     admin_alerts_cache_warm_projection_done: Arc<Notify>,
+    admin_alerts_canonical_publish_gate: Arc<Semaphore>,
     alert_projection_history_turn: AtomicBool,
     acquire_waiters: AtomicU32,
     peak_acquire_waiters: AtomicU32,
@@ -706,6 +707,7 @@ impl SqliteRuntime {
                 admin_alerts_cache_warm_liveness_projection_turn: AtomicBool::new(false),
                 admin_alerts_cache_warm_projection_wakeup: Arc::new(Notify::new()),
                 admin_alerts_cache_warm_projection_done: Arc::new(Notify::new()),
+                admin_alerts_canonical_publish_gate: Arc::new(Semaphore::new(1)),
                 alert_projection_history_turn: AtomicBool::new(true),
                 acquire_waiters: AtomicU32::new(0),
                 peak_acquire_waiters: AtomicU32::new(0),
@@ -871,6 +873,16 @@ impl SqliteRuntime {
             SqliteOperation::AlertProjection,
             true,
         )
+    }
+
+    pub(crate) fn try_acquire_admin_alerts_canonical_publish_gate(
+        &self,
+    ) -> Option<OwnedSemaphorePermit> {
+        self.inner
+            .admin_alerts_canonical_publish_gate
+            .clone()
+            .try_acquire_owned()
+            .ok()
     }
 
     /// Research drain has an aged-turn exception for the foreground-RPS
@@ -1240,6 +1252,28 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteOperationConnection, ProxyError> {
+        self.acquire_operation_connection_with_budget(operation, None)
+            .await
+    }
+
+    pub(crate) async fn acquire_bounded_alert_projection_read_connection(
+        &self,
+    ) -> Result<SqliteOperationConnection, ProxyError> {
+        self.acquire_operation_connection_with_budget(
+            SqliteOperation::AlertProjection,
+            Some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            )),
+        )
+        .await
+    }
+
+    async fn acquire_operation_connection_with_budget(
+        &self,
+        operation: SqliteOperation,
+        explicit_budget: Option<(Duration, i32)>,
+    ) -> Result<SqliteOperationConnection, ProxyError> {
         let (conn, pool_wait) = self.acquire_pool_connection(operation).await?;
         let (mut conn, restore_busy_timeout) =
             match configure_operation_connection(conn, operation).await {
@@ -1250,17 +1284,24 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
-        let cooperative_run_deadline = if matches!(
-            operation,
-            SqliteOperation::AdminAlertsRead
-                | SqliteOperation::AdminAlertsCacheWarm
-                | SqliteOperation::DashboardQuotaRead
-        ) {
-            let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
+        let operation_budget = explicit_budget.or_else(|| {
+            matches!(
+                operation,
+                SqliteOperation::AdminAlertsRead
+                    | SqliteOperation::AdminAlertsCacheWarm
+                    | SqliteOperation::DashboardQuotaRead
+            )
+            .then_some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            ))
+        });
+        let cooperative_run_deadline = if let Some((budget, progress_handler_ops)) =
+            operation_budget
+        {
+            let deadline = Instant::now() + budget;
             let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
-            handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
-                Instant::now() < deadline
-            });
+            handle.set_progress_handler(progress_handler_ops, move || Instant::now() < deadline);
             Some(deadline)
         } else {
             None

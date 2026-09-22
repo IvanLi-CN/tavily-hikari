@@ -114,6 +114,8 @@ struct DashboardOverviewCacheState {
     #[cfg(test)]
     admin_alerts_warm_before_projection_fence_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
+    admin_alerts_warm_after_projection_fence_pause: Option<AdminAlertsWarmPause>,
+    #[cfg(test)]
     admin_alerts_warm_after_groups_defer_pause: Option<AdminAlertsWarmPause>,
     #[cfg(test)]
     admin_alerts_warm_after_groups_source_fence_changed_pause: Option<AdminAlertsWarmPause>,
@@ -169,6 +171,8 @@ impl Default for DashboardOverviewCacheState {
             admin_alerts_warm_after_groups_pause: None,
             #[cfg(test)]
             admin_alerts_warm_before_projection_fence_pause: None,
+            #[cfg(test)]
+            admin_alerts_warm_after_projection_fence_pause: None,
             #[cfg(test)]
             admin_alerts_warm_after_groups_defer_pause: None,
             #[cfg(test)]
@@ -736,6 +740,17 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                         reason: "groups_source_fence_changed".to_string(),
                     });
                 }
+                let Some(_canonical_publish_gate) = state
+                    .proxy
+                    .try_acquire_admin_alerts_canonical_publish_gate()
+                else {
+                    return Err(tavily_hikari::ProxyError::Deferred {
+                        operation: "admin_alerts_warm",
+                        reason: "projection_publish_busy".to_string(),
+                    });
+                };
+                #[cfg(test)]
+                pause_admin_alerts_warm_after_projection_fence_for_test(state.as_ref()).await;
                 if let Some(reason) = state.proxy.admin_alerts_cache_warm_defer_reason() {
                     return Err(admin_alerts_warm_deferred(reason));
                 }

@@ -200,7 +200,7 @@ impl KeyStore {
     ) -> Result<Option<(i64, String)>, ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_bounded_alert_projection_read_connection()
             .await?;
         let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
@@ -666,6 +666,18 @@ impl KeyStore {
     async fn advance_admitted_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        let Some(_canonical_publish_gate) = self
+            .sqlite_runtime
+            .try_acquire_admin_alerts_canonical_publish_gate()
+        else {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::AlertProjection,
+                SqliteAdmissionDeferReason::BulkBusy,
+            );
+            return Ok(AlertProjectionSliceOutcome::Deferred {
+                reason: SqliteAdmissionDeferReason::BulkBusy,
+            });
+        };
         if self.prune_expired_alert_projection_slice().await? {
             return Ok(AlertProjectionSliceOutcome::Advanced {
                 rows: 0,

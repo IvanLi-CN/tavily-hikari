@@ -1468,6 +1468,100 @@ async fn admin_alerts_warm_recovers_after_cache_generation_advance_during_publis
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_serializes_projection_advance_with_publish() {
+    let db_path = temp_db_path("admin-alerts-publish-projection-gate");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-publish-projection-gate".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-publish-projection-gate-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before canonical warm");
+
+    let pause = super::super::install_admin_alerts_warm_after_projection_fence_pause_for_test(
+        state.as_ref(),
+    )
+    .await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), pause.wait_until_arrived())
+        .await
+        .expect("the warm reaches the final projection fence");
+
+    let fence_before = state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read the projection fence before the competing slice");
+    let projection_step = state
+        .proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("a projection slice blocked by the publish gate must defer cleanly");
+    let fence_during = state
+        .proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read the projection fence while publish owns the gate");
+    assert_eq!(fence_during, fence_before);
+    assert!(
+        !projection_step.idle,
+        "projection must defer while canonical publication owns the gate"
+    );
+    pause.release();
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            if keys.iter().all(|key| {
+                cache
+                    .admin_alerts
+                    .entries
+                    .iter()
+                    .any(|entry| entry.canonical && entry.key == *key)
+            }) {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+    assert!(
+        published.is_ok(),
+        "canonical warm must publish after the competing projection turn is deferred"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();

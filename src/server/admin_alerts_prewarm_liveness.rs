@@ -43,6 +43,19 @@ async fn admin_alerts_shutdown_requested(
     cache.lock().await.admin_alerts_shutting_down
 }
 
+#[cfg(test)]
+async fn pause_admin_alerts_warm_after_projection_fence_for_test(state: &AppState) {
+    let pause = dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_warm_after_projection_fence_pause
+        .take();
+    let Some(pause) = pause else {
+        return;
+    };
+    pause_admin_alerts_warm_for_test(pause).await;
+}
+
 async fn wait_for_admin_alerts_projection_or_shutdown(
     state: &AppState,
     cache: &Arc<Mutex<DashboardOverviewCacheState>>,

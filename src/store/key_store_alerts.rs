@@ -1015,6 +1015,13 @@ impl KeyStore {
         result
     }
 
+    pub(crate) fn try_acquire_admin_alerts_canonical_publish_gate(
+        &self,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.sqlite_runtime
+            .try_acquire_admin_alerts_canonical_publish_gate()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fetch_admin_alert_events_page(
         &self,
