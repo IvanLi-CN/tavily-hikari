@@ -666,7 +666,11 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     return Err(admin_alerts_warm_deferred(reason));
                 }
                 let groups_result = if liveness_slot {
-                    admin_alerts_canonical_groups_for_warm_liveness_stage(state.as_ref()).await
+                    admin_alerts_canonical_groups_for_warm_liveness_stage(
+                        state.as_ref(),
+                        &cache,
+                    )
+                    .await
                 } else {
                     admin_alerts_canonical_groups_for_warm(state.as_ref()).await
                 };
@@ -691,6 +695,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     admin_alert_catalog_for_canonical_snapshot_liveness_stage(
                         state.as_ref(),
                         build_generation,
+                        &cache,
                     )
                     .await
                 } else {
@@ -743,6 +748,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                 )
                 .await
                 {
+                    snapshot_cache_generation = None;
                     state.proxy.record_admin_alerts_warm_generation_discard();
                     return Err(tavily_hikari::ProxyError::Deferred {
                         operation: "admin_alerts_warm",

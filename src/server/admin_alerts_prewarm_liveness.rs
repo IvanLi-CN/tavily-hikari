@@ -68,6 +68,7 @@ async fn wait_for_admin_alerts_projection_or_shutdown(
 
 async fn admin_alerts_canonical_groups_for_warm_liveness_stage(
     state: &AppState,
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
 ) -> Result<(PaginatedAlertGroups, i64, i64, i64), tavily_hikari::ProxyError> {
     loop {
         match admin_alerts_canonical_groups_for_warm(state).await {
@@ -81,6 +82,9 @@ async fn admin_alerts_canonical_groups_for_warm_liveness_stage(
                 // after the stage publishes or yields for a real retry reason.
                 #[cfg(test)]
                 pause_admin_alerts_warm_after_groups_defer_for_test(state).await;
+                if admin_alerts_shutdown_requested(cache).await {
+                    return Err(admin_alerts_warm_deferred("shutdown"));
+                }
                 tokio::task::yield_now().await;
             }
             result => return result,
@@ -91,6 +95,7 @@ async fn admin_alerts_canonical_groups_for_warm_liveness_stage(
 async fn admin_alert_catalog_for_canonical_snapshot_liveness_stage(
     state: &AppState,
     build_generation: i64,
+    cache: &Arc<Mutex<DashboardOverviewCacheState>>,
 ) -> Result<tavily_hikari::AlertCatalog, tavily_hikari::ProxyError> {
     loop {
         match state
@@ -102,6 +107,9 @@ async fn admin_alert_catalog_for_canonical_snapshot_liveness_stage(
                 if reason == "catalog_build_in_progress"
                     || reason == "catalog_payload_build_in_progress" =>
             {
+                if admin_alerts_shutdown_requested(cache).await {
+                    return Err(admin_alerts_warm_deferred("shutdown"));
+                }
                 tokio::task::yield_now().await;
             }
             result => return result,

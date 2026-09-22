@@ -624,7 +624,15 @@ impl KeyStore {
                               AND build_projection_revision = ? AND build_phase = 'aggregating'
                               AND build_partition_key = ?
                               AND build_partition_finalize_fragment_position = ?
-                              AND build_partition_events_json = ?"#,
+                              AND build_partition_events_json = ?
+                              AND build_source_recent_generation = (
+                                  SELECT COALESCE(SUM(generation), 0)
+                                    FROM observability.dashboard_alert_projection_state
+                              )
+                              AND build_source_history_generation = (
+                                  SELECT COALESCE(SUM(generation), 0)
+                                    FROM observability.dashboard_alert_projection_history_state
+                              )"#,
                     )
                     .bind(progress_json)
                     .bind(next_fragment_position)
@@ -1214,7 +1222,15 @@ impl KeyStore {
                                 WHERE singleton = 1 AND build_generation = ?
                                   AND build_projection_revision = ? AND build_phase = 'aggregating'
                                   AND build_partition_key = ?
-                                  AND build_partition_events_json = ?"#,
+                                  AND build_partition_events_json = ?
+                                  AND build_source_recent_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_state
+                                  )
+                                  AND build_source_history_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_history_state
+                                  )"#,
                         )
                         .bind(next_progress_json)
                         .bind(snapshot.build_generation)
@@ -1237,7 +1253,15 @@ impl KeyStore {
                                 WHERE singleton = 1 AND build_generation = ?
                                   AND build_projection_revision = ? AND build_phase = 'aggregating'
                                   AND build_partition_key = ?
-                                  AND build_partition_events_json = ?"#,
+                                  AND build_partition_events_json = ?
+                                  AND build_source_recent_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_state
+                                  )
+                                  AND build_source_history_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_history_state
+                                  )"#,
                         )
                         .bind(&partition)
                         .bind(progress.output_position)
@@ -1254,7 +1278,15 @@ impl KeyStore {
                                 WHERE singleton = 1 AND build_generation = ?
                                   AND build_projection_revision = ? AND build_phase = 'aggregating'
                                   AND build_partition_key = ?
-                                  AND build_partition_events_json = ?"#,
+                                  AND build_partition_events_json = ?
+                                  AND build_source_recent_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_state
+                                  )
+                                  AND build_source_history_generation = (
+                                      SELECT COALESCE(SUM(generation), 0)
+                                        FROM observability.dashboard_alert_projection_history_state
+                                  )"#,
                         )
                         .bind(next_progress_json)
                         .bind(snapshot.build_generation)

@@ -19,7 +19,7 @@ const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_BYTES: usize = 2 * 1024 * 1
 const ADMIN_ALERT_CANONICAL_GROUPS_FAST_SEMANTIC_MAX_FRAGMENTS: i64 = 64;
 // Semantic classification uses a bounded page near the existing write budget;
 // the native read deadline and 512KiB transaction cap remain independent of it.
-const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS: i64 = 16;
+const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_ROWS: i64 = 18;
 const ADMIN_ALERT_CANONICAL_SEMANTIC_CLASSIFY_READ_BYTES: usize = 512 * 1024;
 // Keep source reads on the conservative 250ms path while committing their
 // bounded rows in short transactions. Historical rowid allocation is

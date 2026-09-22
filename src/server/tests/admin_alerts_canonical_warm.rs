@@ -1384,6 +1384,90 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
 }
 
 #[tokio::test]
+async fn admin_alerts_warm_recovers_after_cache_generation_advance_during_publish() {
+    let db_path = temp_db_path("admin-alerts-cache-generation-retry");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-cache-generation-retry".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let (_, state) = spawn_builtin_keys_admin_server_with_state(
+        proxy,
+        "admin-alerts-cache-generation-retry-password",
+    )
+    .await;
+
+    let mut projection_ready = false;
+    for _ in 0..64 {
+        state
+            .proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty alert projection before warming the admin cache");
+        if state.proxy.admin_alert_catalog().await.is_ok() {
+            projection_ready = true;
+            break;
+        }
+    }
+    assert!(projection_ready, "empty projection must complete before canonical warm");
+
+    let pause = super::super::install_admin_alerts_warm_after_catalog_pause_for_test(state.as_ref())
+        .await;
+    super::super::prewarm_admin_alerts(state.clone()).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), pause.wait_until_arrived())
+        .await
+        .expect("the warm reaches the catalog-to-events boundary");
+
+    let stale_generation = {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        let mut cache = cache.lock().await;
+        let stale_generation = cache.alert_projection_generation;
+        cache.alert_projection_generation = stale_generation.saturating_add(1);
+        stale_generation
+    };
+    pause.release();
+
+    let published = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        loop {
+            let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+            let cache = cache.lock().await;
+            let keys = [
+                "catalog".to_string(),
+                super::super::default_admin_alert_cache_key("events"),
+                super::super::default_admin_alert_cache_key("groups"),
+            ];
+            let generation = cache.alert_projection_generation;
+            if !cache.admin_alerts_prewarm_in_flight
+                && generation != stale_generation
+                && keys.iter().all(|key| {
+                    cache
+                        .admin_alerts
+                        .entries
+                        .iter()
+                        .find(|entry| entry.canonical && entry.key == *key)
+                        .is_some_and(|entry| entry.generation == generation)
+                })
+            {
+                break true;
+            }
+            drop(cache);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    super::super::shutdown_admin_alerts_workers(state.as_ref()).await;
+    let _ = std::fs::remove_file(db_path);
+    assert!(
+        published.is_ok(),
+        "canonical warm must retry with the new cache generation after a publish race"
+    );
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();
