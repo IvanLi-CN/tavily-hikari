@@ -7,13 +7,19 @@ use tavily_hikari::{
     AlertSemanticWindow, AlertSemanticWindowKind, AlertSourceRef, AlertUserRef, TokenRequestKind,
 };
 
+async fn admin_alerts_test_upstream(api_key: &str) -> String {
+    let address = spawn_mock_upstream(api_key.to_owned()).await;
+    format!("http://{address}/mcp")
+}
+
 #[tokio::test]
 async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pressure() {
     let db_path = temp_db_path("admin-alerts-liveness-stale-observation");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-stale-observation").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-stale-observation".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -128,9 +134,11 @@ async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pres
 async fn admin_alerts_warm_transfers_stale_retention_pruned_coverage_to_projection() {
     let db_path = temp_db_path("admin-alerts-liveness-retention-pruned-coverage");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-retention-pruned-coverage").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-retention-pruned-coverage".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -301,9 +309,11 @@ async fn admin_alerts_warm_transfers_stale_retention_pruned_coverage_to_projecti
 async fn admin_alerts_warm_waits_for_in_flight_projection_liveness_permit_before_staging() {
     let db_path = temp_db_path("admin-alerts-liveness-stage-acquisition-race");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-stage-acquisition-race").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-stage-acquisition-race".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -466,9 +476,11 @@ async fn admin_alerts_warm_waits_for_in_flight_projection_liveness_permit_before
 async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure_and_projection_churn() {
     let db_path = temp_db_path("admin-alerts-liveness-slice-pressure");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-slice-pressure").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-slice-pressure".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -685,9 +697,10 @@ async fn admin_alerts_warm_liveness_publishes_all_keys_under_foreground_pressure
 async fn admin_alerts_warm_liveness_does_not_sleep_between_groups_slices() {
     let db_path = temp_db_path("admin-alerts-liveness-many-groups");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-many-groups").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-many-groups".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -836,9 +849,11 @@ async fn admin_alerts_warm_liveness_does_not_sleep_between_groups_slices() {
 async fn admin_alerts_warm_batches_small_semantic_partitions_in_one_generation() {
     let db_path = temp_db_path("admin-alerts-liveness-semantic-partition-batch");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-semantic-partition-batch").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-semantic-partition-batch".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1094,9 +1109,11 @@ async fn admin_alerts_warm_batches_small_semantic_partitions_in_one_generation()
 async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
     let db_path = temp_db_path("admin-alerts-liveness-large-semantic-partition");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-large-semantic-partition").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-large-semantic-partition".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1387,9 +1404,10 @@ async fn admin_alerts_warm_batches_large_semantic_partition_reduction() {
 async fn admin_alerts_warm_recovers_after_cache_generation_advance_during_publish() {
     let db_path = temp_db_path("admin-alerts-cache-generation-retry");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-cache-generation-retry").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-cache-generation-retry".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1471,9 +1489,10 @@ async fn admin_alerts_warm_recovers_after_cache_generation_advance_during_publis
 async fn admin_alerts_warm_serializes_projection_advance_with_publish() {
     let db_path = temp_db_path("admin-alerts-publish-projection-gate");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-publish-projection-gate").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-publish-projection-gate".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1565,9 +1584,10 @@ async fn admin_alerts_warm_serializes_projection_advance_with_publish() {
 async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
     let db_path = temp_db_path("admin-alerts-liveness-clearing-build");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-clearing-build").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-clearing-build".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1789,9 +1809,11 @@ async fn admin_alerts_warm_liveness_fences_projection_until_groups_publish() {
 async fn admin_alerts_warm_publishes_all_keys_after_groups_write_lock_recovery() {
     let db_path = temp_db_path("admin-alerts-liveness-write-lock-recovery");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-write-lock-recovery").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-write-lock-recovery".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1940,9 +1962,11 @@ async fn admin_alerts_warm_publishes_all_keys_after_groups_write_lock_recovery()
 async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
     let db_path = temp_db_path("admin-alerts-liveness-restart-stale-groups-build");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-restart-stale-groups-build").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-restart-stale-groups-build".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2040,7 +2064,7 @@ async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
 
     let recovered_proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-restart-stale-groups-build".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2107,9 +2131,11 @@ async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
 async fn admin_alerts_warm_rehydrates_active_last_good_during_replacement_catalog_build() {
     let db_path = temp_db_path("admin-alerts-liveness-rehydrate-active-last-good");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream =
+        admin_alerts_test_upstream("tvly-admin-alerts-liveness-rehydrate-active-last-good").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-rehydrate-active-last-good".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2280,7 +2306,7 @@ async fn admin_alerts_warm_rehydrates_active_last_good_during_replacement_catalo
 
     let recovered_proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-rehydrate-active-last-good".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
