@@ -847,6 +847,7 @@ async fn prewarm_admin_alerts_with_mode(
                     // adding a fixed sleep that can keep the default Alerts cache cold for
                     // several minutes.
                     if !liveness_slot
+                        && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
                             &shutdown_notify,

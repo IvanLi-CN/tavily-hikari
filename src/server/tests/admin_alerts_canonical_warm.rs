@@ -13,6 +13,134 @@ async fn admin_alerts_test_upstream(api_key: &str) -> String {
 }
 
 #[tokio::test]
+async fn admin_alerts_same_generation_last_good_stays_fresh_under_foreground_pressure() {
+    let db_path = temp_db_path("admin-alerts-same-generation-pressure");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-admin-alerts-same-generation-pressure".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let password = "admin-alerts-same-generation-pressure-password";
+    let (admin_addr, state) = spawn_builtin_keys_admin_server_with_state(proxy, password).await;
+
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        cache.lock().await.alert_projection_generation = 1;
+    }
+    super::super::record_admin_alerts_last_good(
+        state.as_ref(),
+        "catalog".to_string(),
+        super::super::AdminAlertsReadCacheValue::Catalog(super::super::AlertCatalog {
+            retention_days: 30,
+            types: Vec::new(),
+            request_kind_options: Vec::new(),
+            users: Vec::new(),
+            tokens: Vec::new(),
+            keys: Vec::new(),
+        }),
+    )
+    .await;
+    super::super::record_admin_alerts_last_good(
+        state.as_ref(),
+        super::super::default_admin_alert_cache_key("events"),
+        super::super::AdminAlertsReadCacheValue::Events(super::super::PaginatedAlertEvents {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        }),
+    )
+    .await;
+    super::super::record_admin_alerts_last_good(
+        state.as_ref(),
+        super::super::default_admin_alert_cache_key("groups"),
+        super::super::AdminAlertsReadCacheValue::Groups(super::super::PaginatedAlertGroups {
+            items: Vec::new(),
+            total: 0,
+            page: 1,
+            per_page: 20,
+        }),
+    )
+    .await;
+
+    for _ in 0..6 {
+        state.proxy.record_foreground_activity();
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > 5,
+        "fixture establishes foreground pressure"
+    );
+
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+    let login = client
+        .post(format!("http://{admin_addr}/api/admin/login"))
+        .json(&serde_json::json!({ "password": password }))
+        .send()
+        .await
+        .expect("admin login");
+    let cookie = find_cookie_pair(login.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+        .expect("admin session cookie");
+
+    for route in ["catalog", "events", "groups"] {
+        let response = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("same-generation Alerts response");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.expect("Alerts JSON");
+        assert_eq!(body.get("coverage"), None);
+        assert_eq!(body.get("staleReason"), None);
+    }
+
+    super::super::mark_dashboard_overview_alert_projection_dirty(state.as_ref()).await;
+    let stale = client
+        .get(format!("http://{admin_addr}/api/alerts/catalog"))
+        .header(reqwest::header::COOKIE, &cookie)
+        .send()
+        .await
+        .expect("changed-generation Alerts response");
+    assert_eq!(stale.status(), reqwest::StatusCode::OK);
+    let stale_body: serde_json::Value = stale.json().await.expect("stale Alerts JSON");
+    assert_eq!(stale_body.get("coverage").and_then(|v| v.as_str()), Some("stale"));
+    assert_eq!(
+        stale_body.get("staleReason").and_then(|v| v.as_str()),
+        Some("foreground_pressure")
+    );
+
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        cache.lock().await.admin_alerts_prewarm_in_flight = true;
+    }
+    for route in ["catalog", "events", "groups"] {
+        let rebuilding = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("last-good Alerts response during replacement warm");
+        assert_eq!(rebuilding.status(), reqwest::StatusCode::OK);
+        let rebuilding_body: serde_json::Value =
+            rebuilding.json().await.expect("rebuilding Alerts JSON");
+        assert_eq!(rebuilding_body.get("coverage"), None);
+        assert_eq!(rebuilding_body.get("staleReason"), None);
+    }
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        cache.lock().await.admin_alerts_prewarm_in_flight = false;
+    }
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pressure() {
     let db_path = temp_db_path("admin-alerts-liveness-stale-observation");
     let db_str = db_path.to_string_lossy().to_string();
