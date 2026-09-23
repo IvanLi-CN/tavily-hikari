@@ -40,6 +40,20 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('candidate_sha_marker" == "$CANDIDATE_SHA"', COMPARISON)
         self.assertIn('"candidate_sha": candidate_sha', COMPARISON)
 
+    def test_comparison_requires_real_alert_attempts_for_both_variants(self) -> None:
+        self.assertIn(
+            'for variant, summary in (("baseline", baseline), ("candidate", candidate))',
+            COMPARISON,
+        )
+        self.assertIn('alerts.get("restartObserved")', COMPARISON)
+        self.assertIn('attempts.get(route, 0) < 2', COMPARISON)
+
+    def test_comparison_source_wrapper_archives_exact_candidate_commit(self) -> None:
+        wrapper = (ROOT / "scripts/run-performance-recovery-testbox-comparison.sh").read_text()
+        self.assertIn('git -C "$ROOT_DIR" archive "$CANDIDATE_SHA"', wrapper)
+        self.assertIn('CANDIDATE_SOURCE_DIR="$TMP_DIR/candidate-source"', wrapper)
+        self.assertIn('rm -f "$ARTIFACTS_DIR/comparison.json"', COMPARISON)
+
     def test_gc_debt_gate_matches_runtime_allowed_resources(self) -> None:
         expected = {
             "HA_GC_CONTROL_RESOURCES": rust_resources("HA_CONTROL_EVENT_TABLES"),

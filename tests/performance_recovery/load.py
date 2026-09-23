@@ -46,6 +46,7 @@ class Recorder:
         self.alert_post_restart_successes: Counter[str] = Counter()
         self.alert_post_restart_failures: Counter[str] = Counter()
         self.alert_first_success_secs: dict[str, float] = {}
+        self.alert_non_fresh_200: Counter[str] = Counter()
         self.alert_post_warm_5xx: Counter[str] = Counter()
         self.alert_post_warm_failures: Counter[str] = Counter()
         self.started_at = time.monotonic()
@@ -90,7 +91,13 @@ class Recorder:
         with self._lock:
             self.started_at = time.monotonic()
 
-    def status(self, lane: str, status: int, elapsed_ms: float) -> None:
+    def status(
+        self,
+        lane: str,
+        status: int,
+        elapsed_ms: float,
+        alert_fresh: bool | None = None,
+    ) -> None:
         self.observe_restart()
         with self._lock:
             self.statuses[f"{lane}:{status}"] += 1
@@ -100,11 +107,13 @@ class Recorder:
                 route = lane.removeprefix("alerts_")
                 elapsed_secs = time.monotonic() - self.started_at
                 post_restart = self.restart_observed_at is not None
-                if status == 200:
+                if status == 200 and alert_fresh is True:
                     self.alert_first_success_secs.setdefault(route, elapsed_secs)
                     if post_restart:
                         self.alert_post_restart_successes[route] += 1
                 else:
+                    if status == 200:
+                        self.alert_non_fresh_200[route] += 1
                     self._record_alert_failure_locked(route, post_restart)
                     if status >= 500 and route in self.alert_first_success_secs:
                         self.alert_post_warm_5xx[route] += 1
@@ -148,6 +157,7 @@ class Recorder:
                     "postRestartSuccesses": dict(sorted(self.alert_post_restart_successes.items())),
                     "postRestartFailures": dict(sorted(self.alert_post_restart_failures.items())),
                     "firstSuccessSecs": dict(sorted(self.alert_first_success_secs.items())),
+                    "nonFresh200": dict(sorted(self.alert_non_fresh_200.items())),
                     "postWarm5xx": dict(sorted(self.alert_post_warm_5xx.items())),
                     "postWarmFailures": dict(sorted(self.alert_post_warm_failures.items())),
                     "restartStarted": self.restart_started_at is not None,
@@ -157,6 +167,20 @@ class Recorder:
                 "errors": dict(sorted(self.errors.items())),
                 "events": dict(sorted(self.events.items())),
             }
+
+
+def alerts_payload_is_fresh(status: int, payload: bytes) -> bool:
+    if status != 200:
+        return False
+    try:
+        body = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    # Fresh Alerts responses omit coverage; stale last-good responses explicitly
+    # carry coverage=stale. Accept an explicit future fresh marker as well.
+    return body.get("coverage") in (None, "fresh")
 
 
 def request(
@@ -175,8 +199,18 @@ def request(
     try:
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
-        response.read()
-        recorder.status(lane, response.status, (time.monotonic() - started) * 1000)
+        payload = response.read()
+        alert_fresh = (
+            alerts_payload_is_fresh(response.status, payload)
+            if lane.startswith("alerts_")
+            else None
+        )
+        recorder.status(
+            lane,
+            response.status,
+            (time.monotonic() - started) * 1000,
+            alert_fresh=alert_fresh,
+        )
     except (OSError, http.client.HTTPException, TimeoutError) as error:
         recorder.error(lane, error)
     finally:

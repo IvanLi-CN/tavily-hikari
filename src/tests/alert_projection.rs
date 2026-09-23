@@ -1345,6 +1345,17 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     .await
     .expect("read active generation");
 
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_group_overrides \
+         (build_generation, source_kind, source_id, occurred_at, row_sort_id, payload_json) \
+         VALUES (?, 'synthetic_active_override', 'active-row', ?, 'active-row', '{}')",
+    )
+    .bind(active_generation)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed an active-generation override");
+
     // Model rows written before a source-fence rejection are indistinguishable from these
     // retired rows. A live active generation must remain readable while the separate
     // background reclaimer drains those rows in bounded batches.
@@ -1396,6 +1407,18 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     assert!(!has_more);
     let reclaimed = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(reclaimed, active);
+    let active_overrides: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_overrides \
+         WHERE build_generation = ? AND source_kind = 'synthetic_active_override'",
+    )
+    .bind(active_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count active-generation overrides");
+    assert_eq!(
+        active_overrides, 1,
+        "reclaimer must preserve active overrides"
+    );
     let retired_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
          WHERE build_generation = ? AND position > ?",

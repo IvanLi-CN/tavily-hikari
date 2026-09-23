@@ -468,6 +468,7 @@ SQL
 
 trap 'cleanup_compose; cleanup_app_image' EXIT
 mkdir -p "$ARTIFACTS_DIR" "$WORK_DIR"
+rm -f "$ARTIFACTS_DIR/comparison.json"
 
 write_compose() {
   local repo="$1"
@@ -825,6 +826,17 @@ artifacts = pathlib.Path(sys.argv[1])
 candidate_sha = sys.argv[2]
 baseline = json.loads((artifacts / "baseline" / "summary.json").read_text())
 candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
+
+for variant, summary in (("baseline", baseline), ("candidate", candidate)):
+    alerts = summary["load"].get("alerts", {})
+    attempts = alerts.get("attempts", {})
+    if not alerts.get("restartObserved"):
+        raise SystemExit(f"{variant} Alerts load did not observe the controlled restart marker")
+    for route in ("catalog", "events", "groups"):
+        if attempts.get(route, 0) < 2:
+            raise SystemExit(
+                f"{variant} canonical Alerts {route} did not receive enough attempts"
+            )
 
 # Linux process RSS and sub-15ms HTTP timings are sampled across a controlled
 # restart. Keep raw values in the receipt, but do not turn allocator or

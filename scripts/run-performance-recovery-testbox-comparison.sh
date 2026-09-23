@@ -73,15 +73,25 @@ REMOTE_RUN="$(printf '%s\n' "$snapshot_output" | awk -F= '/^REMOTE_RUN=/{print $
   exit 2
 }
 ssh -o BatchMode=yes "$TESTBOX_HOST" \
+  "rm -rf '$REMOTE_RUN/repo' && mkdir -p '$REMOTE_RUN/repo' && chmod 700 '$REMOTE_RUN/repo'"
+
+echo "Preparing candidate source at ${CANDIDATE_SHA}..."
+CANDIDATE_SOURCE_DIR="$TMP_DIR/candidate-source"
+mkdir -p "$CANDIDATE_SOURCE_DIR"
+git -C "$ROOT_DIR" archive "$CANDIDATE_SHA" | tar -x -C "$CANDIDATE_SOURCE_DIR"
+rsync -az --delete --exclude '.git/' "$CANDIDATE_SOURCE_DIR/" "$TESTBOX_HOST:$REMOTE_RUN/repo/"
+ssh -o BatchMode=yes "$TESTBOX_HOST" \
   "printf '%s\\n' '$CANDIDATE_SHA' > '$REMOTE_RUN/repo/.codex-candidate-sha'"
 
 echo "Preparing baseline source at ${BASELINE_REF}..."
 BASELINE_ARCHIVE="$TMP_DIR/baseline-source.tar"
 git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_REF"
-tar -xf "$BASELINE_ARCHIVE" -C "$TMP_DIR"
+BASELINE_SOURCE_DIR="$TMP_DIR/baseline-source"
+mkdir -p "$BASELINE_SOURCE_DIR"
+tar -xf "$BASELINE_ARCHIVE" -C "$BASELINE_SOURCE_DIR"
 rm -f "$BASELINE_ARCHIVE"
 ssh -o BatchMode=yes "$TESTBOX_HOST" "mkdir -p '$REMOTE_RUN/baseline-repo' && chmod 700 '$REMOTE_RUN/baseline-repo'"
-rsync -az --delete --exclude '.git/' "$TMP_DIR/" "$TESTBOX_HOST:$REMOTE_RUN/baseline-repo/"
+rsync -az --delete --exclude '.git/' "$BASELINE_SOURCE_DIR/" "$TESTBOX_HOST:$REMOTE_RUN/baseline-repo/"
 
 COMPOSE_PROJECT="$(python3 - "$RUN_ID" <<'PY'
 import re

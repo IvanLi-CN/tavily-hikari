@@ -2354,11 +2354,12 @@ impl KeyStore {
                              WHERE rowid IN (
                                  SELECT rowid
                                    FROM observability.admin_alert_canonical_group_overrides
-                                  WHERE build_generation <> ?
+                                  WHERE build_generation <> ? AND build_generation <> ?
                                   ORDER BY build_generation ASC, source_kind ASC, source_id ASC
                                   LIMIT 25
                              )"#,
                     )
+                    .bind(active_generation)
                     .bind(build_generation)
                     .execute(&mut **tx)
                     .await?
@@ -2536,8 +2537,9 @@ impl KeyStore {
                         .await?
                         || sqlx::query_scalar::<_, bool>(
                             "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_group_overrides \
-                             WHERE build_generation <> ?)",
+                             WHERE build_generation <> ? AND build_generation <> ?)",
                         )
+                        .bind(active_generation)
                         .bind(build_generation)
                         .fetch_one(&mut **tx)
                         .await?

@@ -58,7 +58,7 @@ class AlertsCoverageTests(unittest.TestCase):
             marker.touch()
             for route in LOAD.ALERT_ROUTES:
                 recorder.attempt(f"alerts_{route}")
-                recorder.status(f"alerts_{route}", 200, 0.0)
+                recorder.status(f"alerts_{route}", 200, 0.0, alert_fresh=True)
 
         self.assertEqual(
             recorder.alert_post_restart_successes,
@@ -90,6 +90,19 @@ class AlertsCoverageTests(unittest.TestCase):
 
         self.assertEqual(recorder.alert_post_warm_failures["catalog"], 1)
         self.assertEqual(recorder.alert_post_restart_failures["catalog"], 1)
+
+    def test_recorder_rejects_stale_200_as_alert_success(self) -> None:
+        recorder = LOAD.Recorder()
+        recorder.status("alerts_catalog", 200, 0.0, alert_fresh=False)
+
+        self.assertEqual(recorder.alert_first_success_secs, {})
+        self.assertEqual(recorder.alert_non_fresh_200["catalog"], 1)
+
+    def test_alert_payload_accepts_fresh_shape_and_rejects_stale_shape(self) -> None:
+        self.assertTrue(LOAD.alerts_payload_is_fresh(200, b'{"items":[]}'))
+        self.assertTrue(LOAD.alerts_payload_is_fresh(200, b'{"coverage":"fresh"}'))
+        self.assertFalse(LOAD.alerts_payload_is_fresh(200, b'{"coverage":"stale"}'))
+        self.assertFalse(LOAD.alerts_payload_is_fresh(200, b"not-json"))
 
 
 if __name__ == "__main__":
