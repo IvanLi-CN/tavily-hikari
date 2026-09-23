@@ -1269,7 +1269,7 @@ async fn admin_alerts_cache_warm_liveness_uses_bounded_waiter_at_pool_capacity()
 }
 
 #[tokio::test]
-async fn admin_alerts_cache_warm_liveness_ignores_existing_pool_waiter() {
+async fn admin_alerts_cache_warm_liveness_preserves_existing_pool_waiter_fence() {
     let runtime = single_connection_runtime().await;
     let held_connection = runtime
         .inner
@@ -1295,8 +1295,8 @@ async fn admin_alerts_cache_warm_liveness_ignores_existing_pool_waiter() {
     runtime.set_admin_alerts_cache_warm_liveness(true);
     assert_eq!(
         runtime.admin_alerts_cache_warm_defer_reason(),
-        None,
-        "an aged liveness slot must reach the bounded acquire despite an existing waiter"
+        Some(SqliteAdmissionDeferReason::PoolPressure),
+        "an aged liveness slot must preserve the existing foreground waiter fence"
     );
 
     waiter.abort();

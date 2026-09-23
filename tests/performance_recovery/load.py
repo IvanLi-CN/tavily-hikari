@@ -25,23 +25,73 @@ BOOTSTRAP_DEADLINE_SECS = 180.0
 
 
 class Recorder:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        restart_marker: Path | None = None,
+        restart_begin_marker: Path | None = None,
+    ) -> None:
         self._lock = threading.Lock()
+        self.restart_marker = restart_marker
+        self.restart_begin_marker = restart_begin_marker
+        self.restart_started_at: float | None = None
+        self.restart_observed_at: float | None = None
         self.dashboard_ms: list[float] = []
         self.dashboard_attempts = 0
         self.business_attempts = 0
         self.statuses: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.events: Counter[str] = Counter()
+        self.alert_attempts: Counter[str] = Counter()
+        self.alert_post_restart_attempts: Counter[str] = Counter()
+        self.alert_post_restart_successes: Counter[str] = Counter()
+        self.alert_post_restart_failures: Counter[str] = Counter()
         self.alert_first_success_secs: dict[str, float] = {}
         self.alert_post_warm_5xx: Counter[str] = Counter()
+        self.alert_post_warm_failures: Counter[str] = Counter()
         self.started_at = time.monotonic()
+
+    def observe_restart(self) -> None:
+        if self.restart_marker is None and self.restart_begin_marker is None:
+            return
+        with self._lock:
+            if (
+                self.restart_started_at is None
+                and self.restart_begin_marker is not None
+                and self.restart_begin_marker.exists()
+            ):
+                self.restart_started_at = time.monotonic()
+            if self.restart_observed_at is None:
+                if self.restart_marker is not None and self.restart_marker.exists():
+                    self.restart_observed_at = time.monotonic()
+
+    def restart_in_progress(self) -> bool:
+        return self.restart_started_at is not None and self.restart_observed_at is None
+
+    def attempt(self, lane: str) -> None:
+        self.observe_restart()
+        with self._lock:
+            if lane == "dashboard":
+                self.dashboard_attempts += 1
+            elif lane == "business":
+                self.business_attempts += 1
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                self.alert_attempts[route] += 1
+                if self.restart_observed_at is not None:
+                    self.alert_post_restart_attempts[route] += 1
+
+    def _record_alert_failure_locked(self, route: str, post_restart: bool) -> None:
+        if route in self.alert_first_success_secs and not self.restart_in_progress():
+            self.alert_post_warm_failures[route] += 1
+        if post_restart:
+            self.alert_post_restart_failures[route] += 1
 
     def mark_started(self) -> None:
         with self._lock:
             self.started_at = time.monotonic()
 
     def status(self, lane: str, status: int, elapsed_ms: float) -> None:
+        self.observe_restart()
         with self._lock:
             self.statuses[f"{lane}:{status}"] += 1
             if lane == "dashboard":
@@ -49,14 +99,26 @@ class Recorder:
             if lane.startswith("alerts_"):
                 route = lane.removeprefix("alerts_")
                 elapsed_secs = time.monotonic() - self.started_at
+                post_restart = self.restart_observed_at is not None
                 if status == 200:
                     self.alert_first_success_secs.setdefault(route, elapsed_secs)
-                elif status >= 500 and route in self.alert_first_success_secs:
-                    self.alert_post_warm_5xx[route] += 1
+                    if post_restart:
+                        self.alert_post_restart_successes[route] += 1
+                else:
+                    self._record_alert_failure_locked(route, post_restart)
+                    if status >= 500 and route in self.alert_first_success_secs:
+                        self.alert_post_warm_5xx[route] += 1
 
     def error(self, lane: str, error: BaseException) -> None:
+        self.observe_restart()
         with self._lock:
             self.errors[f"{lane}:{type(error).__name__}"] += 1
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                self._record_alert_failure_locked(
+                    route,
+                    self.restart_observed_at is not None,
+                )
 
     def event(self, lane: str) -> None:
         with self._lock:
@@ -81,8 +143,15 @@ class Recorder:
                 "alerts": {
                     "routes": list(ALERT_ROUTES),
                     "intervalSecs": ALERT_INTERVAL_SECS,
+                    "attempts": dict(sorted(self.alert_attempts.items())),
+                    "postRestartAttempts": dict(sorted(self.alert_post_restart_attempts.items())),
+                    "postRestartSuccesses": dict(sorted(self.alert_post_restart_successes.items())),
+                    "postRestartFailures": dict(sorted(self.alert_post_restart_failures.items())),
                     "firstSuccessSecs": dict(sorted(self.alert_first_success_secs.items())),
                     "postWarm5xx": dict(sorted(self.alert_post_warm_5xx.items())),
+                    "postWarmFailures": dict(sorted(self.alert_post_warm_failures.items())),
+                    "restartStarted": self.restart_started_at is not None,
+                    "restartObserved": self.restart_observed_at is not None,
                 },
                 "statuses": dict(sorted(self.statuses.items())),
                 "errors": dict(sorted(self.errors.items())),
@@ -101,12 +170,7 @@ def request(
     headers: dict[str, str] | None = None,
 ) -> None:
     started = time.monotonic()
-    if lane == "dashboard":
-        with recorder._lock:
-            recorder.dashboard_attempts += 1
-    elif lane == "business":
-        with recorder._lock:
-            recorder.business_attempts += 1
+    recorder.attempt(lane)
     connection = http.client.HTTPConnection(host, port, timeout=10)
     try:
         connection.request(method, path, body=body, headers=headers or {})
@@ -327,6 +391,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration-secs", type=int, required=True)
     parser.add_argument("--recovery-tail-secs", type=int)
+    parser.add_argument("--restart-marker", type=Path)
+    parser.add_argument("--restart-begin-marker", type=Path)
     parser.add_argument("--host", default="app")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--output", type=Path, required=True)
@@ -340,7 +406,7 @@ def main() -> None:
         parser.error(str(error))
     traffic_duration_secs = args.duration_secs - recovery_tail_secs
 
-    recorder = Recorder()
+    recorder = Recorder(args.restart_marker, args.restart_begin_marker)
     stop = threading.Event()
     create_test_api_key(args.host, args.port)
     access_token = create_test_access_token(args.host, args.port)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 
 
@@ -44,6 +45,51 @@ class RecoveryTailTests(unittest.TestCase):
     def test_recovery_tail_must_fit_inside_the_total_duration(self) -> None:
         with self.assertRaises(ValueError):
             LOAD.recovery_tail_secs_for_duration(60, 60)
+
+
+class AlertsCoverageTests(unittest.TestCase):
+    def test_recorder_requires_success_after_restart_for_each_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "restart.marker"
+            begin = pathlib.Path(directory) / "restart.begin"
+            recorder = LOAD.Recorder(marker, begin)
+            recorder.alert_first_success_secs = {route: 1.0 for route in LOAD.ALERT_ROUTES}
+            begin.touch()
+            marker.touch()
+            for route in LOAD.ALERT_ROUTES:
+                recorder.attempt(f"alerts_{route}")
+                recorder.status(f"alerts_{route}", 200, 0.0)
+
+        self.assertEqual(
+            recorder.alert_post_restart_successes,
+            {route: 1 for route in LOAD.ALERT_ROUTES},
+        )
+        self.assertEqual(recorder.alert_post_restart_failures, {})
+
+    def test_recorder_does_not_count_expected_restart_gap_as_post_warm_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "restart.marker"
+            begin = pathlib.Path(directory) / "restart.begin"
+            recorder = LOAD.Recorder(marker, begin)
+            recorder.alert_first_success_secs["catalog"] = 1.0
+            begin.touch()
+            recorder.error("alerts_catalog", OSError("connection reset"))
+
+        self.assertEqual(recorder.alert_post_warm_failures, {})
+        self.assertEqual(recorder.alert_post_restart_failures, {})
+
+    def test_recorder_counts_post_restart_non_200_as_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / "restart.marker"
+            begin = pathlib.Path(directory) / "restart.begin"
+            recorder = LOAD.Recorder(marker, begin)
+            recorder.alert_first_success_secs["catalog"] = 1.0
+            begin.touch()
+            marker.touch()
+            recorder.status("alerts_catalog", 404, 0.0)
+
+        self.assertEqual(recorder.alert_post_warm_failures["catalog"], 1)
+        self.assertEqual(recorder.alert_post_restart_failures["catalog"], 1)
 
 
 if __name__ == "__main__":

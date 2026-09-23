@@ -598,12 +598,16 @@ run_variant() {
   rss_pid=$!
   (
     sleep $((DURATION_SECS / 2))
+    touch "$artifact_dir/restart.begin"
     compose restart app
+    touch "$artifact_dir/restart.marker"
   ) &
   restart_pid=$!
   (
     if ! compose run --rm load python /work/load.py \
       --duration-secs "$DURATION_SECS" \
+      --restart-marker /artifacts/restart.marker \
+      --restart-begin-marker /artifacts/restart.begin \
       --output "/artifacts/load.json"; then
       compose logs --no-color >&2 || true
       exit 1
@@ -935,9 +939,31 @@ for channel, before in candidate_gc["before"].items():
 candidate_alerts = candidate["load"].get("alerts", {})
 candidate_alert_first_success = candidate_alerts.get("firstSuccessSecs", {})
 candidate_alert_post_warm_5xx = candidate_alerts.get("postWarm5xx", {})
+candidate_alert_post_warm_failures = candidate_alerts.get("postWarmFailures", {})
+candidate_alert_post_restart_attempts = candidate_alerts.get("postRestartAttempts", {})
+candidate_alert_post_restart_successes = candidate_alerts.get("postRestartSuccesses", {})
+candidate_alert_post_restart_failures = candidate_alerts.get("postRestartFailures", {})
+if not candidate_alerts.get("restartObserved"):
+    raise SystemExit("candidate Alerts load did not observe the controlled restart marker")
 for route in ("catalog", "events", "groups"):
     if route not in candidate_alert_first_success:
         raise SystemExit(f"candidate canonical Alerts {route} never became available")
+    if candidate_alerts.get("attempts", {}).get(route, 0) < 2:
+        raise SystemExit(f"candidate canonical Alerts {route} did not receive enough attempts")
+    if candidate_alert_post_restart_attempts.get(route, 0) < 1:
+        raise SystemExit(f"candidate canonical Alerts {route} was not attempted after restart")
+    if candidate_alert_post_restart_successes.get(route, 0) < 1:
+        raise SystemExit(f"candidate canonical Alerts {route} did not succeed after restart")
+    if candidate_alert_post_restart_failures.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} failed after restart: "
+            f"count={candidate_alert_post_restart_failures[route]}"
+        )
+    if candidate_alert_post_warm_failures.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} returned a non-200 or transport error "
+            f"after first warm success: count={candidate_alert_post_warm_failures[route]}"
+        )
     if candidate_alert_post_warm_5xx.get(route, 0):
         raise SystemExit(
             f"candidate canonical Alerts {route} returned 5xx after first warm success: "
