@@ -43,7 +43,7 @@ async fn get_alert_catalog(
     {
         let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
         let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation && pressure_reason.is_none() {
+        if entry_generation == generation {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
@@ -154,7 +154,7 @@ async fn get_alert_events(
     {
         let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
         let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation && pressure_reason.is_none() {
+        if entry_generation == generation {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
@@ -259,7 +259,7 @@ async fn get_alert_groups(
     {
         let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
         let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation && pressure_reason.is_none() {
+        if entry_generation == generation {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
