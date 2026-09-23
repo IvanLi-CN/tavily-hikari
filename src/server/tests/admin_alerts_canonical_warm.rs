@@ -51,6 +51,7 @@ async fn admin_alerts_warm_refreshes_stale_idle_projection_under_foreground_pres
     .expect("make the idle projection observation stale");
 
     super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    super::super::age_admin_alerts_prewarm_for_test(state.as_ref()).await;
     for _ in 0..6 {
         state.proxy.record_foreground_activity();
     }
@@ -1432,6 +1433,8 @@ async fn admin_alerts_warm_recovers_after_cache_generation_advance_during_publis
     }
     assert!(projection_ready, "empty projection must complete before canonical warm");
 
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    super::super::age_admin_alerts_prewarm_for_test(state.as_ref()).await;
     let pause = super::super::install_admin_alerts_warm_after_catalog_pause_for_test(state.as_ref())
         .await;
     super::super::prewarm_admin_alerts(state.clone()).await;
@@ -1517,6 +1520,8 @@ async fn admin_alerts_warm_serializes_projection_advance_with_publish() {
     }
     assert!(projection_ready, "empty projection must complete before canonical warm");
 
+    super::super::rearm_admin_alerts_prewarm_for_test(state.as_ref()).await;
+    super::super::age_admin_alerts_prewarm_for_test(state.as_ref()).await;
     let pause = super::super::install_admin_alerts_warm_after_projection_fence_pause_for_test(
         state.as_ref(),
     )
@@ -2075,6 +2080,7 @@ async fn admin_alerts_warm_restart_retains_liveness_for_a_stale_groups_build() {
     )
     .await;
     super::super::rearm_admin_alerts_prewarm_for_test(recovered_state.as_ref()).await;
+    super::super::age_admin_alerts_prewarm_for_test(recovered_state.as_ref()).await;
     let stale_fence_pause = super::super::install_admin_alerts_warm_after_groups_source_fence_changed_pause_for_test(
         recovered_state.as_ref(),
     )
@@ -2157,6 +2163,7 @@ async fn admin_alerts_warm_rehydrates_active_last_good_during_replacement_catalo
         }
     }
     super::super::rearm_admin_alerts_prewarm_for_test(initial_state.as_ref()).await;
+    super::super::age_admin_alerts_prewarm_for_test(initial_state.as_ref()).await;
     super::super::prewarm_admin_alerts(initial_state.clone()).await;
     let keys = [
         "catalog".to_string(),

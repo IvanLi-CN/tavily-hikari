@@ -268,24 +268,7 @@ impl DashboardOverviewCacheState {
     }
 
     fn admin_alerts_canonical_warm_liveness_due(&self, now: tokio::time::Instant) -> bool {
-        !self.has_fresh_complete_default_admin_alerts_cache() || self.admin_alerts_prewarm_liveness_due(now)
-    }
-
-    fn has_fresh_complete_default_admin_alerts_cache(&self) -> bool {
-        [
-            "catalog".to_string(),
-            default_admin_alert_cache_key("events"),
-            default_admin_alert_cache_key("groups"),
-        ]
-        .into_iter()
-        .all(|key| {
-            self.admin_alerts.entries.iter().any(|entry| {
-                entry.key == key
-                    && entry.canonical
-                    && entry.generation == self.alert_projection_generation
-                    && entry.stored_at.elapsed() <= ADMIN_ALERTS_CACHE_TTL
-            })
-        })
+        self.admin_alerts_prewarm_liveness_due(now)
     }
 
     fn record_admin_alerts_prewarm_slice(&mut self, now: tokio::time::Instant) {
@@ -1210,6 +1193,18 @@ pub(crate) async fn rearm_admin_alerts_prewarm_for_test(state: &AppState) {
         .lock()
         .await
         .admin_alerts_prewarm_not_before = None;
+}
+
+#[cfg(test)]
+pub(crate) async fn age_admin_alerts_prewarm_for_test(state: &AppState) {
+    let now = tokio::time::Instant::now();
+    dashboard_overview_cache_for_state(state)
+        .lock()
+        .await
+        .admin_alerts_prewarm_last_progress_at = Some(
+        now.checked_sub(ADMIN_ALERTS_PREWARM_LIVENESS_AFTER)
+            .expect("test clock must support the Alerts liveness anchor"),
+    );
 }
 
 #[cfg(test)]

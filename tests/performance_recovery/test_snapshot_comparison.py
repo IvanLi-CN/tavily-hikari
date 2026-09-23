@@ -34,6 +34,12 @@ def comparison_resources(variable: str) -> set[str]:
 
 
 class SnapshotComparisonTests(unittest.TestCase):
+    def test_comparison_binds_candidate_source_to_expected_sha(self) -> None:
+        self.assertIn('CANDIDATE_SHA="${CANDIDATE_SHA:?CANDIDATE_SHA is required}"', COMPARISON)
+        self.assertIn('CANDIDATE_SHA_MARKER="$CANDIDATE_REPO/.codex-candidate-sha"', COMPARISON)
+        self.assertIn('candidate_sha_marker" == "$CANDIDATE_SHA"', COMPARISON)
+        self.assertIn('"candidate_sha": candidate_sha', COMPARISON)
+
     def test_gc_debt_gate_matches_runtime_allowed_resources(self) -> None:
         expected = {
             "HA_GC_CONTROL_RESOURCES": rust_resources("HA_CONTROL_EVENT_TABLES"),
