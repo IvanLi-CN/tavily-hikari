@@ -1568,6 +1568,28 @@ async fn admin_alerts_same_generation_last_good_stays_fresh_under_foreground_pre
         Some("foreground_pressure")
     );
 
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        cache.lock().await.admin_alerts_prewarm_in_flight = true;
+    }
+    for route in ["catalog", "events", "groups"] {
+        let rebuilding = client
+            .get(format!("http://{admin_addr}/api/alerts/{route}"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("last-good Alerts response during replacement warm");
+        assert_eq!(rebuilding.status(), reqwest::StatusCode::OK);
+        let rebuilding_body: serde_json::Value =
+            rebuilding.json().await.expect("rebuilding Alerts JSON");
+        assert_eq!(rebuilding_body.get("coverage"), None);
+        assert_eq!(rebuilding_body.get("staleReason"), None);
+    }
+    {
+        let cache = super::super::dashboard_overview_cache_for_state(state.as_ref());
+        cache.lock().await.admin_alerts_prewarm_in_flight = false;
+    }
+
     let _ = std::fs::remove_file(db_path);
 }
 

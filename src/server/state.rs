@@ -1795,6 +1795,30 @@ fn dashboard_overview_cache_for_state(state: &AppState) -> Arc<Mutex<DashboardOv
     state.dashboard_overview_cache.clone()
 }
 
+// A complete last-good generation remains usable while its atomic replacement is staged.
+pub(crate) async fn admin_alerts_canonical_warm_replacement_in_flight(
+    state: &AppState,
+) -> bool {
+    let cache = dashboard_overview_cache_for_state(state);
+    let cache = cache.lock().await;
+    if !cache.admin_alerts_prewarm_in_flight {
+        return false;
+    }
+    [
+        "catalog".to_string(),
+        default_admin_alert_cache_key("events"),
+        default_admin_alert_cache_key("groups"),
+    ]
+    .into_iter()
+    .all(|key| {
+        cache.admin_alerts.entries.iter().any(|entry| {
+            entry.canonical
+                && entry.key == key
+                && entry.stored_at.elapsed() <= ADMIN_ALERTS_CACHE_TTL
+        })
+    })
+}
+
 fn remote_attempt_admission_for_state(state: &AppState) -> Arc<RemoteAttemptAdmissionController> {
     state.remote_attempt_admission.clone()
 }

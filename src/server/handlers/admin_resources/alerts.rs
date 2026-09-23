@@ -41,9 +41,9 @@ async fn get_alert_catalog(
     if let Some((AdminAlertsReadCacheValue::Catalog(catalog), observed_at, entry_generation, generation)) =
         admin_alerts_canonical_last_good(state.as_ref(), key).await
     {
-        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
-        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation {
+        let replacement_in_flight = entry_generation != generation
+            && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await;
+        if entry_generation == generation || replacement_in_flight {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
@@ -53,6 +53,8 @@ async fn get_alert_catalog(
             );
             return Ok(Json(AlertCatalogView::from(catalog)).into_response());
         }
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
         tracing::debug!(
             component = "admin_read",
             event = "alerts_last_good_served",
@@ -152,9 +154,9 @@ async fn get_alert_events(
     if let Some((AdminAlertsReadCacheValue::Events(events), observed_at, entry_generation, generation)) =
         admin_alerts_canonical_last_good(state.as_ref(), &cache_key).await
     {
-        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
-        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation {
+        let replacement_in_flight = entry_generation != generation
+            && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await;
+        if entry_generation == generation || replacement_in_flight {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
@@ -164,6 +166,8 @@ async fn get_alert_events(
             );
             return Ok(Json(PaginatedAlertEventsView::from(events)).into_response());
         }
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
         tracing::debug!(
             component = "admin_read",
             event = "alerts_last_good_served",
@@ -257,9 +261,9 @@ async fn get_alert_groups(
     if let Some((AdminAlertsReadCacheValue::Groups(groups), observed_at, entry_generation, generation)) =
         admin_alerts_canonical_last_good(state.as_ref(), &cache_key).await
     {
-        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
-        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
-        if entry_generation == generation {
+        let replacement_in_flight = entry_generation != generation
+            && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await;
+        if entry_generation == generation || replacement_in_flight {
             tracing::debug!(
                 component = "admin_read",
                 event = "alerts_last_good_served",
@@ -269,6 +273,8 @@ async fn get_alert_groups(
             );
             return Ok(Json(PaginatedAlertGroupsView::from(groups)).into_response());
         }
+        let pressure_reason = state.proxy.admin_alerts_cache_warm_pressure_reason();
+        let stale_reason = pressure_reason.unwrap_or("projection_refresh");
         tracing::debug!(
             component = "admin_read",
             event = "alerts_last_good_served",
