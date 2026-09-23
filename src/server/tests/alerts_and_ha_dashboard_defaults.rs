@@ -50,6 +50,13 @@ async fn warm_default_admin_alerts_until_idle_for_test(state: &Arc<AppState>) {
     .expect("initial canonical warm and reclaimer owners must finish");
 }
 
+async fn admin_alerts_test_upstream(api_key: &str) -> String {
+    format!(
+        "http://{}",
+        spawn_mock_upstream(api_key.to_owned()).await
+    )
+}
+
 #[tokio::test]
 async fn alerts_endpoints_default_to_all_history_while_dashboard_recent_alerts_stays_24h() {
     let db_path = temp_db_path("alerts-dashboard-default-window");
@@ -1585,9 +1592,10 @@ async fn admin_alerts_warm_discards_a_snapshot_after_source_advance() {
 async fn admin_alerts_warm_accepts_fresh_projection_after_retention_prune() {
     let db_path = temp_db_path("admin-alerts-retention-prune-warm");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-retention-prune-warm").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-retention-prune-warm".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1650,9 +1658,10 @@ async fn admin_alerts_warm_accepts_fresh_projection_after_retention_prune() {
 async fn admin_alerts_warm_discards_a_snapshot_after_recent_source_advance() {
     let db_path = temp_db_path("admin-alerts-recent-fence-controller");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-recent-fence-controller").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-recent-fence-controller".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -1939,9 +1948,10 @@ async fn admin_alerts_warm_rechecks_pressure_before_catalog_after_groups() {
 async fn admin_alerts_warm_liveness_reclaims_stage_after_scheduler_coverage_turn() {
     let db_path = temp_db_path("admin-alerts-liveness-scheduler-coverage");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-scheduler-coverage").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-scheduler-coverage".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2078,9 +2088,10 @@ async fn admin_alerts_warm_liveness_reclaims_stage_after_scheduler_coverage_turn
 async fn alert_projection_liveness_waits_for_an_active_canonical_warm_stage() {
     let db_path = temp_db_path("admin-alerts-liveness-active-stage");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-active-stage").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-active-stage".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2152,9 +2163,10 @@ async fn alert_projection_liveness_waits_for_an_active_canonical_warm_stage() {
 async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressure() {
     let db_path = temp_db_path("admin-alerts-liveness-projection-coverage");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-projection-coverage").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-projection-coverage".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
@@ -2278,9 +2290,10 @@ async fn admin_alerts_warm_recovers_projection_coverage_under_foreground_pressur
 async fn admin_alerts_warm_releases_liveness_for_projection_after_coverage_defer() {
     let db_path = temp_db_path("admin-alerts-liveness-coverage-defer");
     let db_str = db_path.to_string_lossy().to_string();
+    let upstream = admin_alerts_test_upstream("tvly-admin-alerts-liveness-coverage-defer").await;
     let proxy = TavilyProxy::with_endpoint(
         vec!["tvly-admin-alerts-liveness-coverage-defer".to_string()],
-        DEFAULT_UPSTREAM,
+        &upstream,
         &db_str,
     )
     .await
