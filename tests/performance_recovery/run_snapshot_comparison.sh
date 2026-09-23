@@ -600,6 +600,9 @@ run_variant() {
     sleep $((DURATION_SECS / 2))
     touch "$artifact_dir/restart.begin"
     compose restart app
+    # Mark the restart complete only after the listener accepts a dashboard read;
+    # container start alone can still leave a short connection-refused window.
+    wait_for_dashboard_readiness "$artifact_dir"
     touch "$artifact_dir/restart.marker"
   ) &
   restart_pid=$!
