@@ -542,6 +542,17 @@ fn default_admin_alert_cache_key(kind: &str) -> String {
 }
 
 pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
+    prewarm_admin_alerts_with_mode(state, false).await;
+}
+
+pub(crate) async fn prewarm_admin_alerts_before_listener(state: Arc<AppState>) {
+    prewarm_admin_alerts_with_mode(state, true).await;
+}
+
+async fn prewarm_admin_alerts_with_mode(
+    state: Arc<AppState>,
+    rehydrate_before_listener: bool,
+) {
     let cache = dashboard_overview_cache_for_state(state.as_ref());
     let (owner, shutdown_notify) = {
         let mut cache = cache.lock().await;
@@ -559,12 +570,37 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
         owner,
         Some(state.proxy.clone()),
     );
+
+    // Restore an existing durable last-good before the listener starts
+    // serving requests. The full bounded rebuild remains cooperative and
+    // asynchronous below; only this already-published snapshot is restored at
+    // the startup boundary so a rolling restart does not expose a brief cold
+    // canonical Alerts window.
+    let needs_initial_last_good_rehydrate = if rehydrate_before_listener {
+        match rehydrate_admin_alerts_canonical_last_good(state.as_ref()).await {
+            Ok(_) => false,
+            Err(error)
+                if tavily_hikari::is_transient_sqlite_write_error(&error)
+                    || error.is_deferred() => true,
+            Err(error) => {
+                tracing::debug!(
+                    component = "admin_read",
+                    event = "alerts_canonical_last_good_rehydrate_failed",
+                    error = %error,
+                    "will rebuild canonical Alerts cache from current projection"
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
     let task_cache = cache.clone();
     let task = tokio::spawn(async move {
         let cache = task_cache;
         let mut flight_guard = flight_guard;
         let mut snapshot_cache_generation = None;
-        let mut needs_initial_last_good_rehydrate = true;
+        let mut needs_initial_last_good_rehydrate = needs_initial_last_good_rehydrate;
         let mut canonical_publish_reservation = None;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
@@ -597,15 +633,7 @@ pub(crate) async fn prewarm_admin_alerts(state: Arc<AppState>) {
                     {
                         rehydrate_error = Some(error);
                     }
-                    Err(error) => {
-                        needs_initial_last_good_rehydrate = false;
-                        tracing::debug!(
-                            component = "admin_read",
-                            event = "alerts_canonical_last_good_rehydrate_failed",
-                            error = %error,
-                            "will rebuild canonical Alerts cache from current projection"
-                        );
-                    }
+                    Err(_error) => needs_initial_last_good_rehydrate = false,
                 }
             }
             // Claim the canonical source-fence reservation before admission can defer a
