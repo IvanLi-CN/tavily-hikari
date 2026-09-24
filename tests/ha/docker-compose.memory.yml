@@ -1,6 +1,0 @@
-services:
-  node-a:
-    mem_limit: 256m
-
-  node-b:
-    mem_limit: 256m

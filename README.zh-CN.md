@@ -241,6 +241,10 @@ export NODE_PUBLIC_SCHEME=https
 export NODE_PUBLIC_HOST=tavily-node-a.example.com
 ```
 
+当前仓库支持的部署档位暂时是单节点。保持 `HA_MODE=single` 和 `NODE_ID=single`，不要设置
+`HA_SYNC_SOURCE_URL`、`HA_INTERNAL_TOKEN` 或 `HA_PEER_NODES_JSON`。此时节点会以 `full_master`
+运行并允许完整写入，不会探测或同步备用节点。
+
 部署后，在服务器上创建一次性注册 URL：
 
 ```bash
@@ -249,10 +253,9 @@ tavily-hikari admin passkey reset-url --base-url https://tavily-node-a.example.c
 
 打开输出的 URL 一次，注册第一个管理员 Passkey。
 
-在 HA 中，Passkey 是节点本地数据。每个节点都要配置不同的 `NODE_ID` 和
-`NODE_PUBLIC_*` 域名；先升级当前 `full_master`，再滚动升级 standby/recovery 节点。必须在目标
-节点本地执行 reset 命令，使用该节点的 HTTPS 域名并分别登记。`ADMIN_PASSKEY_RP_ID` 与
-`ADMIN_PASSKEY_RP_ORIGIN` 仍可显式覆盖自动推导；`--base-url` 的 origin 必须与实际 RP origin
+Passkey 是节点本地数据。未来重新启用多节点部署时，每个节点都要配置不同的 `NODE_ID` 和
+`NODE_PUBLIC_*` 域名，并分别完成登记；多节点故障切换不属于当前单节点部署档位。`ADMIN_PASSKEY_RP_ID`
+与 `ADMIN_PASSKEY_RP_ORIGIN` 仍可显式覆盖自动推导；`--base-url` 的 origin 必须与实际 RP origin
 完全一致，否则命令会拒绝生成链接。
 
 ### 旧版 ForwardAuth 配置

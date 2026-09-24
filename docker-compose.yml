@@ -8,6 +8,8 @@ services:
       PROXY_PORT: 8787
       PROXY_DB_PATH: /srv/app/data/tavily_proxy.db
       WEB_STATIC_DIR: /srv/app/web
+      HA_MODE: single
+      NODE_ID: single
     ports:
       - "8787:8787"
     volumes:

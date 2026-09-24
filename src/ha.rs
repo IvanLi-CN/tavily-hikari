@@ -851,8 +851,7 @@ impl HaRuntime {
     pub async fn cached_peer_views(&self) -> Vec<HaPeerNodeView> {
         let now = self.backend_time.now_ts();
         let observations = self.peer_observations.peers.read().await;
-        self.config
-            .peer_nodes
+        self.peer_nodes()
             .iter()
             .filter(|peer| peer.node_id != self.config.node_id)
             .map(|peer| {
@@ -1165,9 +1164,8 @@ impl HaRuntime {
     pub async fn status(&self) -> HaStatusView {
         let state = self.state.read().await;
         let peer_count = self
-            .config
-            .peer_nodes
-            .iter()
+            .peer_nodes()
+            .into_iter()
             .filter(|peer| peer.node_id != self.config.node_id)
             .count();
         let has_legacy_pull_sync_source = self
@@ -1301,6 +1299,9 @@ impl HaRuntime {
     }
 
     pub fn sync_source_url(&self) -> Option<String> {
+        if self.config.mode == HaMode::Single {
+            return None;
+        }
         self.config
             .sync_source_url
             .as_deref()
@@ -1332,7 +1333,11 @@ impl HaRuntime {
     }
 
     pub fn peer_nodes(&self) -> Vec<HaPeerNodeConfig> {
-        self.config.peer_nodes.clone()
+        if self.config.mode == HaMode::Single {
+            Vec::new()
+        } else {
+            self.config.peer_nodes.clone()
+        }
     }
 
     pub fn node_id(&self) -> &str {
@@ -2047,6 +2052,29 @@ mod tests {
         assert_eq!(status.role, HaNodeRole::FullMaster);
         assert!(status.allows_basic_business);
         assert!(status.allows_full_writes);
+    }
+
+    #[tokio::test]
+    async fn single_mode_ignores_peer_and_pull_sync_configuration() {
+        let runtime = HaRuntime::new(HaConfig {
+            mode: HaMode::Single,
+            sync_source_url: Some("http://standby.invalid".to_string()),
+            peer_nodes: vec![HaPeerNodeConfig {
+                node_id: "standby".to_string(),
+                admin_base_url: "http://standby.invalid".to_string(),
+                public_origin: "standby.invalid:443".to_string(),
+                role_hint: HaPeerRoleHint::Observer,
+            }],
+            ..HaConfig::default()
+        });
+        let status = runtime.status().await;
+
+        assert_eq!(status.mode, HaMode::Single);
+        assert_eq!(status.role, HaNodeRole::FullMaster);
+        assert_eq!(status.peer_count, 0);
+        assert_eq!(status.sync_disabled_reason, None);
+        assert!(runtime.peer_nodes().is_empty());
+        assert_eq!(runtime.sync_source_url(), None);
     }
 
     #[tokio::test]

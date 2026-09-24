@@ -1,40 +1,10 @@
 services:
-  edgeone-mock:
-    build:
-      context: ../..
-      dockerfile: tests/ha/Dockerfile.mock
-    command:
-      - /usr/local/bin/mock_edgeone
-      - --bind
-      - 0.0.0.0:9000
-      - --initial-direct-origin
-      - node-a:8787
-      - --initial-origin-group-id
-      - og-core
-      - --initial-source-kind
-      - ${HA_EDGEONE_INITIAL_SOURCE_KIND:-direct}
-
-  edgeone-ingress:
-    build:
-      context: ../..
-      dockerfile: tests/ha/Dockerfile.mock
-    command:
-      - /usr/local/bin/mock_edgeone_ingress
-      - --bind
-      - 0.0.0.0:8080
-      - --edgeone-mock-url
-      - http://edgeone-mock:9000
-    depends_on:
-      - edgeone-mock
-      - node-a
-      - node-b
-
   upstream-mock:
     build:
       context: ../..
       dockerfile: tests/ha/Dockerfile.mock
     environment:
-      MOCK_TAVILY_PRESEEDED_KEYS: tvly-node-a-seed,tvly-node-b-seed
+      MOCK_TAVILY_PRESEEDED_KEYS: tvly-single-node-seed
     command:
       - /usr/local/bin/mock_tavily
       - --bind
@@ -46,74 +16,16 @@ services:
       dockerfile: tests/ha/Dockerfile.app
     user: "${HA_RUNTIME_UID:-0}:${HA_RUNTIME_GID:-0}"
     environment:
-      TAVILY_API_KEYS: tvly-node-a-seed
+      TAVILY_API_KEYS: tvly-single-node-seed
       TAVILY_UPSTREAM: http://upstream-mock:9001
       TAVILY_USAGE_BASE: http://upstream-mock:9001
       PROXY_DB_PATH: /srv/app/data/node-a.db
       PROXY_PORT: 8787
       DEV_OPEN_ADMIN: "true"
       ADMIN_AUTH_FORWARD_ENABLED: "false"
-      HA_MODE: active_standby
-      NODE_ID: node-a
-      NODE_PUBLIC_SCHEME: https
-      NODE_PUBLIC_HOST: node-a
-      NODE_PUBLIC_PORT: 8787
-      EDGEONE_ZONE_ID: zone-test
-      EDGEONE_DOMAIN: hikari.example.test
-      EDGEONE_EXPECTED_ORIGIN_SCHEME: https
-      EDGEONE_EXPECTED_ORIGIN_HOST: node-a
-      EDGEONE_EXPECTED_ORIGIN_PORT: 8787
-      EDGEONE_SECRET_ID: secret-id
-      EDGEONE_SECRET_KEY: secret-key
-      EDGEONE_API_ENDPOINT: http://edgeone-mock:9000
-      HA_INTERNAL_TOKEN: ha-internal-token
-      HA_SYNC_INTERVAL_SECS: 2
-      HA_SOURCE_KIND: ${HA_SOURCE_KIND:-direct}
-      HA_CORE_DUAL_ACTIVE: ${HA_CORE_DUAL_ACTIVE:-0}
-      HA_SOURCE_ORIGIN_GROUP_ID: ${HA_SOURCE_ORIGIN_GROUP_ID:-}
-      HA_PEER_NODES_JSON: >-
-        [{"nodeId":"node-b","adminBaseUrl":"http://node-b:8787","publicOrigin":"node-b:8787","roleHint":"standby_candidate"}]
+      HA_MODE: single
+      NODE_ID: single
     volumes:
       - ${HA_RUNTIME_DIR:?set HA_RUNTIME_DIR}/node-a:/srv/app/data
     depends_on:
-      - edgeone-mock
-      - upstream-mock
-
-  node-b:
-    build:
-      context: ../..
-      dockerfile: tests/ha/Dockerfile.app
-    user: "${HA_RUNTIME_UID:-0}:${HA_RUNTIME_GID:-0}"
-    environment:
-      TAVILY_API_KEYS: tvly-node-b-seed
-      TAVILY_UPSTREAM: http://upstream-mock:9001
-      TAVILY_USAGE_BASE: http://upstream-mock:9001
-      PROXY_DB_PATH: /srv/app/data/node-b.db
-      PROXY_PORT: 8787
-      DEV_OPEN_ADMIN: "true"
-      ADMIN_AUTH_FORWARD_ENABLED: "false"
-      HA_MODE: active_standby
-      NODE_ID: node-b
-      NODE_PUBLIC_SCHEME: https
-      NODE_PUBLIC_HOST: node-b
-      NODE_PUBLIC_PORT: 8787
-      EDGEONE_ZONE_ID: zone-test
-      EDGEONE_DOMAIN: hikari.example.test
-      EDGEONE_EXPECTED_ORIGIN_SCHEME: https
-      EDGEONE_EXPECTED_ORIGIN_HOST: node-a
-      EDGEONE_EXPECTED_ORIGIN_PORT: 8787
-      EDGEONE_SECRET_ID: secret-id
-      EDGEONE_SECRET_KEY: secret-key
-      EDGEONE_API_ENDPOINT: http://edgeone-mock:9000
-      HA_INTERNAL_TOKEN: ha-internal-token
-      HA_SYNC_INTERVAL_SECS: 2
-      HA_SOURCE_KIND: ${HA_SOURCE_KIND:-direct}
-      HA_CORE_DUAL_ACTIVE: ${HA_CORE_DUAL_ACTIVE:-0}
-      HA_SOURCE_ORIGIN_GROUP_ID: ${HA_SOURCE_ORIGIN_GROUP_ID:-}
-      HA_PEER_NODES_JSON: >-
-        [{"nodeId":"node-a","adminBaseUrl":"http://node-a:8787","publicOrigin":"node-a:8787","roleHint":"observer"}]
-    volumes:
-      - ${HA_RUNTIME_DIR:?set HA_RUNTIME_DIR}/node-b:/srv/app/data
-    depends_on:
-      - edgeone-mock
       - upstream-mock

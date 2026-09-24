@@ -14,7 +14,7 @@ struct Cli {
     db_path: String,
 
     /// HA mode to reconcile against.
-    #[arg(long, env = "HA_MODE", default_value = "active_standby")]
+    #[arg(long, env = "HA_MODE", default_value = "single")]
     ha_mode: String,
 
     /// Emit JSON output. Plain output is retained for interactive use.

@@ -4,6 +4,14 @@
 
 Tavily Hikari 的高可用方案采用核心业务双活 + 控制面单写，而不是单纯放开 standby 入口或做一主多从负载均衡。`full_master` 仍是唯一控制面写节点，`standby` 在 `HA_CORE_DUAL_ACTIVE=1` 且 `HA_SOURCE_KIND=origin_group` 时也可以提供 `/mcp`、`/api/tavily/*`、`/api/tavily/usage`；`recovery` 继续 fenced。`ha_full_master_node_id_v1` 是控制面当前领导者的权威标识，`billing` 与 `runtime` 通过 peer 双向同步，`research_requests` 归入 `runtime` truth set，`mcp_sessions` 与 `research_requests` 读路径在本地 miss 时允许 peer lookup 回填。同时，管理员现在必须能在当前 active 节点直接查看真实 peer 状态、执行 `planned cutover`，并查看 7 天 HA 控制面时间线。
 
+## Current Deployment Posture
+
+The repository-supported deployment profile is temporarily single node. Runtime configuration and
+the Compose smoke harness set `HA_MODE=single` and `NODE_ID=single`, with no sync source, internal
+HA token, or peer inventory. A single node reports `full_master`, keeps full writes enabled, and
+does not probe or synchronize with a backup node. The `active_standby` state machine and protocol
+tests remain as dormant compatibility coverage for a future separately authorized reactivation.
+
 ## Goals
 
 - 单域名永久双活通过 EdgeOne `origin_group` 落地，`direct` 继续保留现有单活主备语义。
@@ -113,7 +121,7 @@ Tavily Hikari 的高可用方案采用核心业务双活 + 控制面单写，而
 
 ## Runtime Configuration
 
-- `HA_MODE=single|active_standby`
+- `HA_MODE=single|active_standby` (the current deployment profile uses `single`)
 - `NODE_ID`
 - `HA_SOURCE_KIND=direct|origin_group`
 - `HA_SOURCE_ORIGIN_GROUP_ID`
@@ -129,10 +137,11 @@ Tavily Hikari 的高可用方案采用核心业务双活 + 控制面单写，而
 - 节点私有源站保存值优先于 Env/CLI 默认值，但只作用于当前实例，不参与 HA 同步。`EDGEONE_EXPECTED_ORIGIN_*` 仍只表示直连预期源站。
 - `EDGEONE_SECRET_ID`
 - `EDGEONE_SECRET_KEY`
-- `HA_SYNC_SOURCE_URL`（standby 拉取 active 的内部 URL）
-- `HA_INTERNAL_TOKEN`
+- `HA_SYNC_SOURCE_URL`（仅在重新启用 `active_standby` 时由 standby 拉取 active 的内部 URL）
+- `HA_INTERNAL_TOKEN`（仅在重新启用 `active_standby` 时使用）
 - `HA_SYNC_INTERVAL_SECS`
-- `HA_PEER_NODES_JSON`：peer inventory 唯一真相源，元素固定为 `nodeId`、`adminBaseUrl`、`publicOrigin`、`roleHint`，且当前版本只允许一个 `standby_candidate`。
+- `HA_PEER_NODES_JSON`：仅在重新启用 `active_standby` 时作为 peer inventory 唯一真相源，元素固定为
+  `nodeId`、`adminBaseUrl`、`publicOrigin`、`roleHint`，且当前版本只允许一个 `standby_candidate`。
 
 ## UI Contract
 
@@ -202,8 +211,6 @@ count.
 
 ## Visual Evidence
 
-PR: include
-
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
 - story_id_or_title: `Admin/Pages/System Settings Ha`
@@ -217,8 +224,6 @@ PR: include
   settings summary adds core mode, the current control-plane leader, and the configured peer count.
 
 ![HA settings topology diagnostics](./assets/ha-topology-diagnostics-desktop.png)
-
-PR: include
 
 - source_type: `storybook_canvas`
 - target_program: `mock-only`

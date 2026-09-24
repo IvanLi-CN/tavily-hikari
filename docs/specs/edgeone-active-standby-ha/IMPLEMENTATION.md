@@ -206,44 +206,31 @@
 - `cd web && bun run build`
 - `cd web && bun test src/admin/HaSourceSettingsDialog.interaction.test.tsx src/components/HaStatusBanner.stories.test.tsx`
 - `python3 -m py_compile tests/ha/scripts/*.py`
-- `bash -n tests/ha/scripts/run_testbox_ha_memory_contract.sh`
 - `bash -n tests/ha/scripts/run_testbox_ha_suite.sh`
 - `bash -n scripts/run-ha-testbox-suite.sh`
-- Shared `codex-testbox` Docker Compose harness with Rust mock EdgeOne, Rust mock ingress, dual app nodes, and Rust mock Tavily upstream:
-  `legacy_pre -> legacy_failover -> legacy_recovery -> dual_active_serving -> dual_active_cutover -> memory`.
+- Shared `codex-testbox` Docker Compose smoke harness with one app node and a Rust mock Tavily
+  upstream. It verifies the current `HA_MODE=single` contract through
+  `tests/ha/scripts/run_single_node_acceptance.py`.
 
 ## Integration Harness
 
 - Added `tests/ha/Dockerfile.mock` plus Rust mock binaries:
   `mock_tavily`, `mock_edgeone`, and `mock_edgeone_ingress`.
-- Reworked `tests/ha/docker-compose.yml` into a shared base that uses bind-mounted runtime dirs
-  instead of named volumes.
-- Added `tests/ha/docker-compose.legacy.yml` for `HA_SOURCE_KIND=direct`,
-  `HA_CORE_DUAL_ACTIVE=0`.
-- Added `tests/ha/docker-compose.dual-active.yml` for `HA_SOURCE_KIND=origin_group`,
-  `HA_SOURCE_ORIGIN_GROUP_ID=og-core`, `HA_CORE_DUAL_ACTIVE=1`.
-- Replaced the old staged acceptance flow with
-  `legacy_pre`, `legacy_failover`, `legacy_recovery`, `dual_active_serving`, and
-  `dual_active_cutover`.
-- The harness no longer uses a dedicated `ha-test-runner` container. SQLite fixture seeding,
-  acceptance checks, and memory-contract assertions all run host-side against bind-mounted runtime
-  dirs.
-- Added `tests/ha/scripts/run_testbox_ha_suite.sh` for remote single-run orchestration and
-  `scripts/run-ha-testbox-suite.sh` as the local shared-testbox wrapper.
-- Added `tests/ha/README.md` documenting local usage, suite matrix, runtime-dir layout, and
-  harness-only headers.
+- `tests/ha/docker-compose.yml` uses bind-mounted runtime dirs and contains one `node-a` service
+  with `HA_MODE=single`, `NODE_ID=single`, and no peer or pull-sync configuration.
+- `tests/ha/scripts/run_single_node_acceptance.py` checks both admin and public HA status payloads.
+- `tests/ha/scripts/run_testbox_ha_suite.sh` provides the remote single-run orchestration and
+  `scripts/run-ha-testbox-suite.sh` remains the local shared-testbox wrapper.
+- `tests/ha/README.md` documents the single-node smoke contract and runtime-dir layout.
 - Hardened the test-only Dockerfiles so `tests/ha/Dockerfile.app` and `tests/ha/Dockerfile.mock`
   reuse their Rust builder stage as the runtime image. This keeps the shared testbox from doing a
   second external `debian:bookworm-slim` metadata resolution on every overlay rebuild and removes a
   flaky Docker Hub EOF class from the acceptance path.
 - The harness uses only mock upstreams and runs on `codex-testbox`; it does not call the
   production Tavily or EdgeOne endpoints.
-- Added `tests/ha/docker-compose.memory.yml`, `tests/ha/scripts/seed_large_ha_fixture.py`,
-  `tests/ha/scripts/run_ha_memory_contract.py`, and
-  `tests/ha/scripts/run_testbox_ha_memory_contract.sh` for the 256MiB cgroup contract. The accepted
-  proof seeds a production-shaped HA fixture, forces both app services under `mem_limit: 256m`,
-  waits for standby catch-up, then repeatedly hits the active `billing` baseline export while
-  sampling `memory.current`.
+- The former dual-node Compose and memory-contract harness files were removed with the temporary
+  single-node deployment posture. Rust unit tests continue to cover the retained active-standby
+  state machine and protocol behavior.
 - Shared-testbox proof result:
   - final passing run: `20260701_155428_052e29f6_ha_suite`
   - remote run dir:

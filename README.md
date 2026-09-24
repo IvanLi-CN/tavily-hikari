@@ -248,6 +248,10 @@ export NODE_PUBLIC_SCHEME=https
 export NODE_PUBLIC_HOST=tavily-node-a.example.com
 ```
 
+The current repository deployment profile is single node. Keep `HA_MODE=single` and `NODE_ID=single`,
+and leave `HA_SYNC_SOURCE_URL`, `HA_INTERNAL_TOKEN`, and `HA_PEER_NODES_JSON` unset. The node reports
+`full_master` with full writes enabled and does not probe or synchronize with a backup node.
+
 After deployment, create a one-time enrollment URL on the server:
 
 ```bash
@@ -256,9 +260,9 @@ tavily-hikari admin passkey reset-url --base-url https://tavily-node-a.example.c
 
 Open the printed URL once to register the first admin passkey.
 
-In HA, Passkeys are node-local. Configure a distinct `NODE_ID` and `NODE_PUBLIC_*` origin on every
-node, upgrade the current `full_master` first, then roll the release to standby/recovery nodes.
-Run the reset command on each target node with that node's HTTPS origin and enroll separately.
+Passkeys are node-local. For a future multi-node deployment, configure a distinct `NODE_ID` and
+`NODE_PUBLIC_*` origin on every node and enroll each node separately. Multi-node failover is not part
+of the current single-node deployment profile.
 `ADMIN_PASSKEY_RP_ID` and `ADMIN_PASSKEY_RP_ORIGIN` remain supported as explicit overrides; the
 command rejects a `--base-url` whose origin does not exactly match the effective RP origin.
 

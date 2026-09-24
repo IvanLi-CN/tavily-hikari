@@ -44,7 +44,7 @@ struct Cli {
     repair_triggers: bool,
 
     /// HA mode used when repairing triggers.
-    #[arg(long, env = "HA_MODE", default_value = "active_standby")]
+    #[arg(long, env = "HA_MODE", default_value = "single")]
     ha_mode: String,
 
     /// Continue running bounded passes until no retained control outbox rows remain.

@@ -145,6 +145,19 @@ export NODE_PUBLIC_SCHEME=https
 export NODE_PUBLIC_HOST=tavily-node-a.example.com
 ```
 
+### 当前单节点部署档位
+
+当前仓库支持的部署档位暂时是单节点：
+
+```bash
+export HA_MODE=single
+export NODE_ID=single
+unset HA_SYNC_SOURCE_URL HA_INTERNAL_TOKEN HA_PEER_NODES_JSON
+```
+
+此时节点以 `full_master` 运行并允许完整写入，Hikari 不会探测或同步备用节点。active-standby
+实现仍保留在代码中，供未来经过单独授权后重新启用，但不属于当前部署档位。
+
 `ADMIN_PASSKEY_RP_ID` 和 `ADMIN_PASSKEY_RP_ORIGIN` 可以显式覆盖自动推导；未覆盖时，Hikari 优先
 使用 `NODE_PUBLIC_*`，只有缺少节点公网 host 才回退到 `EDGEONE_DOMAIN`。在目标节点本地用相同
 origin 生成 bootstrap URL：
@@ -154,8 +167,8 @@ tavily-hikari admin passkey reset-url --base-url https://tavily-node-a.example.c
 ```
 
 命令会拒绝 origin 与实际 RP origin 不一致的 URL。其他节点或其他 RP scope 的凭据只会临时禁用，不会
-删除；恢复完全相同的节点/RP 配置后会自动恢复。升级时先升级当前 `full_master`，再滚动升级 standby 与
-recovery 节点，并在每个节点各自完成一次本地登记。历史全局 Passkey 记录需要在每个节点重新登记。
+删除；恢复完全相同的节点/RP 配置后会自动恢复。未来重新启用多节点部署时，再在每个节点各自完成一次
+本地登记。历史全局 Passkey 记录需要在每个节点重新登记。
 
 ### `DEV_OPEN_ADMIN`
 

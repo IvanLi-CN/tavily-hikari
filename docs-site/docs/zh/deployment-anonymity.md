@@ -50,6 +50,11 @@ curl -i http://127.0.0.1:8787/health
 - 自托管：启用内置管理员登录
 - 正式网关：换成 `examples/forwardauth-caddy`
 
+当前仓库支持的部署档位暂时是单节点。根目录 Compose 已设置 `HA_MODE=single` 和
+`NODE_ID=single`；保持 `HA_SYNC_SOURCE_URL`、`HA_INTERNAL_TOKEN` 与 `HA_PEER_NODES_JSON` 未设置。
+这样节点会保持 `full_master` 并允许完整写入，也不会探测或同步备用节点。active-standby 实现仍保留在
+代码中，供未来经过单独授权后重新启用，但仓库部署和 smoke-test 档位不会配置第二个节点。
+
 ## ForwardAuth 网关示例
 
 生产环境通常建议把 Tavily Hikari 部署在可信网关后面，由网关负责 TLS 终止与管理员身份头注入。

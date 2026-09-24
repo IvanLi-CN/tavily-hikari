@@ -153,6 +153,20 @@ export NODE_PUBLIC_SCHEME=https
 export NODE_PUBLIC_HOST=tavily-node-a.example.com
 ```
 
+### Current single-node deployment profile
+
+The repository-supported deployment profile is temporarily single node:
+
+```bash
+export HA_MODE=single
+export NODE_ID=single
+unset HA_SYNC_SOURCE_URL HA_INTERNAL_TOKEN HA_PEER_NODES_JSON
+```
+
+In this mode the node runs as `full_master` with full writes enabled. Hikari does not probe or
+synchronize with a backup node. The active-standby implementation remains in the codebase for a
+future separately authorized reactivation, but it is not part of the current deployment profile.
+
 `ADMIN_PASSKEY_RP_ID` and `ADMIN_PASSKEY_RP_ORIGIN` override the derived values. Without overrides,
 Hikari derives RP settings from `NODE_PUBLIC_*` and falls back to `EDGEONE_DOMAIN` only when the node
 public host is missing. On the target node, generate the bootstrap URL with the same origin:
@@ -163,9 +177,8 @@ tavily-hikari admin passkey reset-url --base-url https://tavily-node-a.example.c
 
 The command rejects a base URL whose origin differs from the effective RP origin. A credential from a
 different node or RP scope is temporarily disabled, not deleted; restoring the exact prior node/RP
-configuration makes it usable again. Upgrade the current `full_master` first, then roll the release
-to standby and recovery nodes, and run this local enrollment flow once per node. Legacy global
-Passkey records require re-enrollment on each node.
+configuration makes it usable again. If multi-node deployment is reactivated, run this local
+enrollment flow once per node. Legacy global Passkey records require re-enrollment on each node.
 
 ### `DEV_OPEN_ADMIN`
 

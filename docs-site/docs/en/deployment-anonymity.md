@@ -50,6 +50,13 @@ It does not provide an admin gateway on its own, so add one of these before real
 - self-hosted mode: enable built-in admin login
 - formal gateway mode: switch to `examples/forwardauth-caddy`
 
+The current repository deployment profile is temporarily single node. The stock Compose file sets
+`HA_MODE=single` and `NODE_ID=single`; leave `HA_SYNC_SOURCE_URL`, `HA_INTERNAL_TOKEN`, and
+`HA_PEER_NODES_JSON` unset. This keeps the node as `full_master` with full writes and disables
+backup-node probing and synchronization. The active-standby implementation remains available for
+future separately authorized reactivation, but the repository deployment and smoke-test profile do
+not configure a second node.
+
 ## ForwardAuth gateway example
 
 For production-style gateway wiring, the repository already includes:
