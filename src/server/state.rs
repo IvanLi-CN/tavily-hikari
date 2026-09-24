@@ -195,6 +195,8 @@ const ADMIN_ALERTS_PREWARM_LIVENESS_AFTER: std::time::Duration =
     std::time::Duration::from_secs(120);
 const ADMIN_ALERTS_LIVENESS_RETRY_MAX_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
+const ADMIN_ALERTS_SOURCE_FENCE_RETRY_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 impl DashboardOverviewCacheState {
     fn next_admin_alerts_flight_owner(&mut self) -> u64 {
@@ -585,7 +587,7 @@ async fn prewarm_admin_alerts_with_mode(
         let mut snapshot_cache_generation = None;
         let mut needs_initial_last_good_rehydrate = needs_initial_last_good_rehydrate;
         let mut canonical_publish_reservation = None;
-        let mut source_fence_retry_in_flight = false;
+        let mut source_fence_retry_started_at: Option<tokio::time::Instant> = None;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state
@@ -837,6 +839,18 @@ async fn prewarm_admin_alerts_with_mode(
                     // Groups and Catalog each commit one bounded slice before
                     // asking the controller for the next independently-admitted
                     // slice. This is forward progress, not a failed warm attempt.
+                    let source_fence_retry_grace_active = match source_fence_retry_started_at {
+                        Some(started_at)
+                            if started_at.elapsed() < ADMIN_ALERTS_SOURCE_FENCE_RETRY_GRACE =>
+                        {
+                            true
+                        }
+                        Some(_) => {
+                            source_fence_retry_started_at = None;
+                            false
+                        }
+                        None => false,
+                    };
                     cache
                         .lock()
                         .await
@@ -848,7 +862,7 @@ async fn prewarm_admin_alerts_with_mode(
                     // adding a fixed sleep that can keep the default Alerts cache cold for
                     // several minutes.
                     if !liveness_slot
-                        && !source_fence_retry_in_flight
+                        && !source_fence_retry_grace_active
                         && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
@@ -890,7 +904,7 @@ async fn prewarm_admin_alerts_with_mode(
                     if reason == "groups_source_fence_changed" =>
                 {
                     snapshot_cache_generation = None;
-                    source_fence_retry_in_flight = true;
+                    source_fence_retry_started_at = Some(tokio::time::Instant::now());
                     // The staged durable build is stale, but the canonical warm
                     // still owns the recovery fence. Releasing it here lets the
                     // projection scheduler advance again before the replacement
