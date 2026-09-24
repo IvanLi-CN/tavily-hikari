@@ -585,6 +585,7 @@ async fn prewarm_admin_alerts_with_mode(
         let mut snapshot_cache_generation = None;
         let mut needs_initial_last_good_rehydrate = needs_initial_last_good_rehydrate;
         let mut canonical_publish_reservation = None;
+        let mut source_fence_retry_in_flight = false;
         loop {
             if admin_alerts_shutdown_requested(&cache).await {
                 state
@@ -847,6 +848,7 @@ async fn prewarm_admin_alerts_with_mode(
                     // adding a fixed sleep that can keep the default Alerts cache cold for
                     // several minutes.
                     if !liveness_slot
+                        && !source_fence_retry_in_flight
                         && admin_alerts_canonical_warm_replacement_in_flight(state.as_ref()).await
                         && wait_for_admin_alerts_shutdown_or(
                             &cache,
@@ -888,6 +890,7 @@ async fn prewarm_admin_alerts_with_mode(
                     if reason == "groups_source_fence_changed" =>
                 {
                     snapshot_cache_generation = None;
+                    source_fence_retry_in_flight = true;
                     // The staged durable build is stale, but the canonical warm
                     // still owns the recovery fence. Releasing it here lets the
                     // projection scheduler advance again before the replacement
