@@ -318,3 +318,27 @@ _Avoid_: worker is running, last slice was verified
 - At most one peer may be marked `standby_candidate`.
 - `planned cutover` targets must be recently observed, synced, not stale, not recovering, and currently in `standby`.
 - Emergency/manual failover remains available through local `promote` and `finalize`.
+
+## Multi-Provider Upstream Terms
+
+- `ProviderSpec`: the static, code-owned description of one search provider: its REST base and
+  hosted MCP upstream, key-injection style, client auth slots, per-operation credit table,
+  quota-sync capability, and recovery policy. The registry is additive, and the Tavily spec records
+  today's constants as metadata only rather than rewiring the existing request path.
+- `provider-scoped key pool`: key acquire, affinity, transient backoff, quarantine, and health
+  transitions that never lease a key across providers. A request only ever uses a key belonging to
+  the provider it addresses.
+- `exhaustion signal`: a provider classifier's confirmation that an upstream response means the
+  addressed key has no usable quota (Tavily `432`; SerpApi `429` `"run out of searches"`; Exa `402`
+  `NO_MORE_CREDITS`, `API_KEY_BUDGET_EXCEEDED`, or `TEAM_BUDGET_EXCEEDED`; Brave `402`
+  `QUOTA_LIMITED`). It drives the exhausted state and the provider's recovery policy; low-quota
+  depletion remains Tavily-only.
+- `passive quota harvest`: reading a provider's remaining quota from headers already present on a
+  normal upstream response, with no extra request. Brave's month-window `X-RateLimit-Remaining` is
+  harvested this way, and the value is persisted only on a material change.
+- `local MCP facade`: a Hikari-hosted MCP surface that serves initialize, notifications, ping, and
+  tools/list locally and translates tools/call into the provider's REST API, instead of passing
+  through to a hosted MCP server. Exa and Brave use local facades; SerpApi uses passthrough.
+- `per-provider credit table`: the per-operation local credit prices charged from the one shared
+  token wallet (serpapi search `1`; exa search `1`, contents `1`, answer `2`; brave web `1`, news
+  `1`, llm_context `2`).
