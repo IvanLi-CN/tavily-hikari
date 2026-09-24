@@ -839,18 +839,10 @@ async fn prewarm_admin_alerts_with_mode(
                     // Groups and Catalog each commit one bounded slice before
                     // asking the controller for the next independently-admitted
                     // slice. This is forward progress, not a failed warm attempt.
-                    let source_fence_retry_grace_active = match source_fence_retry_started_at {
-                        Some(started_at)
-                            if started_at.elapsed() < ADMIN_ALERTS_SOURCE_FENCE_RETRY_GRACE =>
-                        {
-                            true
-                        }
-                        Some(_) => {
-                            source_fence_retry_started_at = None;
-                            false
-                        }
-                        None => false,
-                    };
+                    let source_fence_retry_grace_active = source_fence_retry_started_at
+                        .is_some_and(|started_at| {
+                            started_at.elapsed() < ADMIN_ALERTS_SOURCE_FENCE_RETRY_GRACE
+                        });
                     cache
                         .lock()
                         .await
