@@ -505,6 +505,7 @@
       "run_args": ["--lib"],
       "include_prefixes": [
         "tests::alert_projection::",
+        "store::canonical_group_tests::",
         "store::key_store_alert_event_projection::tests::alert_projection_redacts_"
       ]
     },
@@ -701,6 +702,10 @@
         "server::tests::token_log_details::token_",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses"
       ],
+      "isolated_prefixes": [
+        "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
+        "server::tests::admin_alerts_canonical_warm::"
+      ],
       "include_prefixes": [
         "server::manual_trigger_tests::",
         "server::privacy_status_prewarm_logging_tests::",
@@ -717,6 +722,8 @@
         "server::tests::api_keys_and_registration::announcement_",
         "server::tests::alerts_and_ha_dashboard_defaults::alerts_",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_",
+        "server::tests::admin_alerts_canonical_warm::",
+        "server::tests::alerts_and_ha_dashboard_defaults::alert_projection_liveness_waits_for_an_active_canonical_warm_stage",
         "server::tests::alerts_and_ha_dashboard_defaults::admin_privacy_",
         "server::tests::alerts_and_ha_source_and_recovery::compute_",
         "server::tests::dashboard_overview_snapshot::compute_",

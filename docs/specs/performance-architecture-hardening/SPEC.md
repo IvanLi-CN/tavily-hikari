@@ -128,6 +128,10 @@
   以恢复该低 sentinel 的边界所有权。空闲 source probe 不得写 cursor/generation；覆盖观察只能由
   独立低频 heartbeat 更新。Dashboard summary 只允许从 sidecar 执行时间窗固定、结果有界的 SQL 聚合，禁止
   把整窗 `payload_json` 拉回进程后再分组。
+- 当 recent tail 与 history lane 同时存在债务时，projection scheduler 必须按单 slice 交替服务
+  `history -> recent -> history -> recent`，直到其中一条 lane 追平；history 不得因持续 recent 流量
+  永久饥饿。该轮转只保存在实例内存中，不写入 projection schema，也不改变各 lane 的 cursor、fence
+  或 SQLite 预算。
 - 已应用的 projection migration 不得原地修改 checksum。若发现历史 cursor/fence 边界缺口，后续加法
   migration 只能重置可重建的 history lane，由后台小片幂等重放；recent tail、原始事件与账务真相保持不变。
 - 普通管理员 HA GET 只读取 peer observation cache；危险 HA 操作继续 live probe。
@@ -238,14 +242,17 @@ SQLite configuration, billing semantics, or public response shapes.
   a matching entry it returns `503 Retry-After: 1` instead of beginning a raw alert CTE.
 - Admin Alerts acquires its bounded read session directly from `SqliteRuntime`: acquire is capped
   at `100ms`, every SQLite statement has a native `250ms` deadline, and coverage plus projected
-  catalog/events/groups reads never borrow a bulk permit or raw pool connection. Canonical
+  catalog/events/groups reads never borrow a raw pool connection. The separate `AlertProjection`
+  scheduler owns the normal single maintenance bulk permit. Canonical
   catalog, events page `1/20`, and groups page `1/20` are prewarmed by one AppState-owned
   low-priority controller. It requires one available bounded read slot, foreground activity at most
   `5 rps`, and no recent contention; it does not reserve or grow extra pool capacity, stages the
   three reads, and publishes them only when the projection generation is unchanged. HTTP never
   starts warm work: canonical misses and expired entries return `503 Retry-After: 1`, while a prior
   generation remains available as stale until the next complete publish. Warm defers use
-  `5s/5s/30s` backoff and never acquire the bulk permit.
+  `5s/5s/30s` backoff and never acquire the bulk permit. During an aged canonical-warm liveness
+  slot, one bounded projection slice may bypass only foreground-rate and lazy-pool-idle heuristics;
+  waiters, recent contention, the bulk permit, and both native budgets remain enforced.
 - AlertProjection 与旧结果在时间窗、过滤、分页、分组和状态跃迁上等价。
 - 30 分钟生产形状基准中进程组 RSS P95 不超过 256MiB。
 - architecture checker 证明目标热路径不存在 raw pool、coalescer、全局 pointer-map gate 或旧 cache。

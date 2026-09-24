@@ -116,6 +116,118 @@ async fn warm_canonical_alert_groups_until_published(proxy: &TavilyProxy) -> Pag
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_advances_after_exact_source_page() {
+    let db_path = temp_db_path("alert-canonical-groups-exact-source-page");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_556_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-exact-source-page".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    let payload = serde_json::json!({
+        "source_kind": ALERT_SOURCE_AUTH_TOKEN_LOG,
+        "source_id": "placeholder",
+        "row_sort_id": "placeholder",
+        "alert_type": ALERT_TYPE_UPSTREAM_RATE_LIMITED_429,
+        "occurred_at": now,
+        "token_id": "exact-source-page-token",
+        "key_id": null,
+        "request_log_id": null,
+        "method": "POST",
+        "path": "/mcp",
+        "query": null,
+        "request_kind_key": "mcp_call",
+        "request_kind_label": "MCP call",
+        "request_kind_detail": "MCP call",
+        "result_status": "quota_exhausted",
+        "failure_kind": "upstream_rate_limited_429",
+        "error_message": "HTTP 429",
+        "counts_business_quota": false,
+        "user_id": null,
+        "user_display_name": null,
+        "user_username": null,
+        "reason_code": null,
+        "reason_summary": null,
+        "reason_detail": null,
+        "job_id": null,
+        "job_type": null,
+        "job_trigger_source": null,
+        "job_status": null,
+        "job_attempt": null,
+        "job_message": null,
+        "job_queued_at": null,
+        "job_started_at": null,
+        "job_finished_at": null
+    });
+    let mut tx = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin exact-page seed");
+    for index in 0..250_i64 {
+        let source_id = format!("exact-source-page-{index:04}");
+        let row_sort_id = format!("atl:{index:020}");
+        let mut row = payload.clone();
+        row["source_id"] = serde_json::Value::String(source_id.clone());
+        row["row_sort_id"] = serde_json::Value::String(row_sort_id.clone());
+        row["occurred_at"] = serde_json::Value::from(now - index);
+        sqlx::query(
+            r#"INSERT INTO observability.dashboard_alert_projection_events
+                    (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
+               VALUES (?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(ALERT_SOURCE_AUTH_TOKEN_LOG)
+        .bind(source_id)
+        .bind(now - index)
+        .bind(row_sort_id)
+        .bind(row.to_string())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("seed exact projected source page");
+    }
+    tx.commit().await.expect("commit exact-page seed");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', observed_at = ?, stale_reason = NULL",
+    )
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark exact-page projection complete");
+
+    for _ in 0..4 {
+        let _ = proxy
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await;
+    }
+    let build_phase: String = sqlx::query_scalar(
+        "SELECT build_phase FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read exact-page build phase");
+    assert_eq!(build_phase, "aggregating");
+
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(groups.total, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_payload_read_handles_exact_chunk_boundaries() {
     let db_path = temp_db_path("alert-canonical-groups-payload-boundaries");
     let db_string = db_path.to_string_lossy().to_string();
@@ -950,7 +1062,7 @@ async fn admin_alerts_canonical_groups_preserve_event_id_tie_breaking() {
 }
 
 #[tokio::test]
-async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_moves() {
+async fn admin_alerts_canonical_groups_keeps_fixed_snapshot_when_source_fence_moves() {
     let db_path = temp_db_path("alert-canonical-groups-inflight-source-fence");
     let db_string = db_path.to_string_lossy().to_string();
     let now = 1_752_555_100;
@@ -998,13 +1110,13 @@ async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_mo
     .execute(&proxy.key_store.pool)
     .await
     .expect("move the source fence while the build is staged");
-    let replaced = proxy
+    let progressed = proxy
         .key_store
         .admin_alert_canonical_groups_page_for_warm()
         .await
-        .expect_err("a staged build must not publish after its fence moves");
+        .expect_err("a staged build is discarded after its fence moves");
     assert!(matches!(
-        replaced,
+        progressed,
         ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
     ));
     let state: (i64, i64) = sqlx::query_as(
@@ -1013,12 +1125,88 @@ async fn admin_alerts_canonical_groups_discards_a_build_when_the_source_fence_mo
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read discarded state");
+    .expect("read in-flight state");
     assert_eq!(state.0, active_generation, "last-good remains readable");
-    assert_eq!(state.1, 0, "the mixed staged generation is discarded");
+    assert_eq!(state.1, 0, "the fenced build is discarded before retry");
 
     let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(rebuilt.total, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admin_alerts_canonical_groups_discards_build_when_recent_fence_moves() {
+    let db_path = temp_db_path("alert-canonical-groups-recent-fence");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_150;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-recent-fence".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "canonical-groups-recent-fence", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let _active = warm_canonical_alert_groups_until_published(&proxy).await;
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the history fence for a replacement build");
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the replacement starts with a bounded slice");
+    assert!(matches!(
+        first,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+
+    // Recent-tail movement invalidates the staged generation just like history
+    // movement, so the next slice must preserve last-good and restart fenced.
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state SET generation = generation + 1",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("advance the recent fence while the build is staged");
+    let replaced = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("a recent fence advance must discard the staged build");
+    assert!(
+        matches!(
+            replaced,
+            ProxyError::Deferred { ref reason, .. } if reason == "groups_source_fence_changed"
+        ),
+        "recent-tail movement must discard the fixed snapshot"
+    );
+    let (active_generation, build_generation): (i64, i64) = sqlx::query_as(
+        "SELECT active_generation, build_generation
+           FROM observability.admin_alert_canonical_groups_state
+          WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read last-good and staged generations");
+    assert!(active_generation > 0, "last-good remains available");
+    assert_eq!(build_generation, 0, "the recent-fenced build is discarded");
+    let groups = warm_canonical_alert_groups_until_published(&proxy).await;
+    assert_eq!(groups.total, 1);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
@@ -1157,6 +1345,17 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     .await
     .expect("read active generation");
 
+    sqlx::query(
+        "INSERT INTO observability.admin_alert_canonical_group_overrides \
+         (build_generation, source_kind, source_id, occurred_at, row_sort_id, payload_json) \
+         VALUES (?, 'synthetic_active_override', 'active-row', ?, 'active-row', '{}')",
+    )
+    .bind(active_generation)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed an active-generation override");
+
     // Model rows written before a source-fence rejection are indistinguishable from these
     // retired rows. A live active generation must remain readable while the separate
     // background reclaimer drains those rows in bounded batches.
@@ -1208,6 +1407,18 @@ async fn admin_alerts_canonical_groups_model_serves_active_while_reclaiming_reti
     assert!(!has_more);
     let reclaimed = warm_canonical_alert_groups_until_published(&proxy).await;
     assert_eq!(reclaimed, active);
+    let active_overrides: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_overrides \
+         WHERE build_generation = ? AND source_kind = 'synthetic_active_override'",
+    )
+    .bind(active_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count active-generation overrides");
+    assert_eq!(
+        active_overrides, 1,
+        "reclaimer must preserve active overrides"
+    );
     let retired_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
          WHERE build_generation = ? AND position > ?",
@@ -1576,6 +1787,398 @@ async fn admin_alerts_canonical_groups_aggregate_partition_uses_bounded_reads_wi
 }
 
 #[tokio::test]
+async fn admin_alerts_canonical_groups_batches_two_hundred_fifty_six_semantic_partitions_per_slice()
+{
+    let db_path = temp_db_path("alert-canonical-groups-semantic-fast-batch");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_555_750;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-semantic-fast-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    insert_projected_rate_limit_alert(&proxy, "semantic-fast-batch-token", now).await;
+    advance_alert_projection_until(&proxy, 1).await;
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM observability.dashboard_alert_projection_revision_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read canonical projection revision");
+    let source_fence = proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read source fence");
+
+    let build_generation = 2_i64;
+    let month_start = now - now.rem_euclid(2_592_000);
+    let mut seed = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin semantic batch fixture seed");
+    for partition_index in 0..320_i64 {
+        let user_id = format!("semantic-fast-user-{partition_index:03}");
+        let token_id = format!("semantic-fast-token-{partition_index:03}");
+        let partition_key = format!("{ALERT_TYPE_USER_QUOTA_EXHAUSTED}:user:{user_id}:month:");
+        let mut events = Vec::new();
+        for event_index in 0..2_i64 {
+            let source_id = format!("semantic-fast-{partition_index:03}-{event_index}");
+            let row_sort_id = format!("semantic-fast:{partition_index:03}:{event_index:03}");
+            let occurred_at = now - event_index;
+            events.push(AlertEventRecord {
+                id: format!("auth_token_log:{source_id}"),
+                alert_type: ALERT_TYPE_USER_QUOTA_EXHAUSTED.to_string(),
+                title: "Semantic quota alert".to_string(),
+                summary: "Semantic quota alert".to_string(),
+                occurred_at,
+                subject_kind: ALERT_SUBJECT_USER.to_string(),
+                subject_id: user_id.clone(),
+                subject_label: format!("Semantic User {partition_index}"),
+                user: Some(AlertUserRef {
+                    user_id: user_id.clone(),
+                    display_name: Some(format!("Semantic User {partition_index}")),
+                    username: Some(format!("semantic-{partition_index}")),
+                }),
+                token: Some(AlertEntityRef {
+                    id: token_id.clone(),
+                    label: "Semantic Batch Token".to_string(),
+                }),
+                key: None,
+                job: None,
+                request: None,
+                request_kind: Some(TokenRequestKind {
+                    key: "tavily_search".to_string(),
+                    label: "Tavily Search".to_string(),
+                    detail: Some("POST /mcp".to_string()),
+                }),
+                failure_kind: Some("other".to_string()),
+                result_status: Some("quota_exhausted".to_string()),
+                error_message: Some(
+                    "token quota exceeded on month window (limit 12000, used 12000)".to_string(),
+                ),
+                reason_code: None,
+                reason_summary: None,
+                reason_detail: None,
+                source: AlertSourceRef {
+                    kind: ALERT_SOURCE_AUTH_TOKEN_LOG.to_string(),
+                    id: source_id.clone(),
+                },
+                semantic_window: Some(AlertSemanticWindow {
+                    kind: AlertSemanticWindowKind::Month,
+                    window_minutes: None,
+                    window_start: Some(month_start),
+                    window_end: Some(month_start + 2_591_999),
+                    window_key: Some(format!("month:{month_start}")),
+                }),
+            });
+            sqlx::query(
+                r#"INSERT INTO observability.admin_alert_canonical_group_events
+                       (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                        partition_key, payload_json)
+                   VALUES (?, 'auth_token_log', ?, ?, ?, ?, '{}')"#,
+            )
+            .bind(build_generation)
+            .bind(source_id)
+            .bind(occurred_at)
+            .bind(row_sort_id)
+            .bind(&partition_key)
+            .execute(&mut *seed)
+            .await
+            .expect("seed semantic canonical event");
+        }
+        sqlx::query(
+            r#"INSERT INTO observability.admin_alert_canonical_group_fragments
+                   (build_generation, partition_key, position, events_json)
+               VALUES (?, ?, 1, ?)"#,
+        )
+        .bind(build_generation)
+        .bind(partition_key)
+        .bind(serde_json::to_string(&events).expect("serialize semantic partition"))
+        .execute(&mut *seed)
+        .await
+        .expect("seed semantic partition fragment");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET active_generation = 1, active_row_count = 0,
+                  build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = 0,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'aggregating', build_partition_key = '',
+                  build_partition_after_key = '', build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 1, build_partition_fragment_next_position = 1,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .bind(revision)
+    .bind(source_fence.0)
+    .bind(source_fence.1)
+    .execute(&mut *seed)
+    .await
+    .expect("seed semantic Groups build state");
+    seed.commit().await.expect("commit semantic batch fixture");
+
+    let first = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("one bounded Groups slice must leave the remaining partitions staged");
+    assert!(
+        matches!(
+            &first,
+            ProxyError::Deferred { reason, .. } if reason == "groups_build_in_progress"
+        ),
+        "unexpected one-slice result: {first:?}"
+    );
+    let (next_position, after_key, active_generation, build_phase): (i64, String, i64, String) =
+        sqlx::query_as(
+            "SELECT build_next_position, build_partition_after_key, active_generation, build_phase \
+             FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+        )
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read the one-slice semantic batch checkpoint");
+    assert!(
+        next_position >= 257,
+        "one Groups stage must accept at least 256 complete semantic partitions; next_position={next_position}"
+    );
+    assert!(!after_key.is_empty());
+    assert_eq!(active_generation, 1, "a bounded prefix is never published");
+    assert_eq!(build_phase, "aggregating");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn admin_alerts_canonical_groups_batches_unfragmented_job_failed_partitions() {
+    const GROUP_COUNT: i64 = 5_000;
+    let db_path = temp_db_path("alert-canonical-groups-job-failed-fast-batch");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_556_050;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-canonical-groups-job-failed-fast-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    for _ in 0..64 {
+        proxy
+            .advance_dashboard_alert_projection_scheduler_step()
+            .await
+            .expect("complete the empty projection before seeding Groups");
+        if proxy.admin_alert_catalog().await.is_ok() {
+            break;
+        }
+    }
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM observability.dashboard_alert_projection_revision_state \
+         WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read current projection revision");
+    let source_fence = proxy
+        .admin_alerts_canonical_warm_projection_fence()
+        .await
+        .expect("read current projection fence");
+
+    let build_generation = 2_i64;
+    let mut seed = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin compatibility partition seed");
+    for start in (0..GROUP_COUNT).step_by(250) {
+        let end = (start + 250).min(GROUP_COUNT);
+        let rows = (start..end)
+            .map(|job_id| {
+                let source_id = job_id.to_string();
+                let occurred_at = now - job_id;
+                let row_sort_id = format!("scheduled_job:{job_id:020}");
+                let partition_key = format!("job_failed:job:{job_id}:unknown");
+                let message = "quota sync failed after upstream timeout";
+                let payload = serde_json::json!({
+                    "source_kind": "scheduled_job",
+                    "source_id": source_id,
+                    "row_sort_id": row_sort_id,
+                    "alert_type": "job_failed",
+                    "occurred_at": occurred_at,
+                    "token_id": null,
+                    "key_id": null,
+                    "request_log_id": null,
+                    "method": null,
+                    "path": null,
+                    "query": null,
+                    "request_kind_key": null,
+                    "request_kind_label": null,
+                    "request_kind_detail": null,
+                    "result_status": "failed",
+                    "failure_kind": "job_failed",
+                    "error_message": message,
+                    "counts_business_quota": null,
+                    "user_id": null,
+                    "user_display_name": null,
+                    "user_username": null,
+                    "reason_code": "job_failed",
+                    "reason_summary": message,
+                    "reason_detail": null,
+                    "job_id": job_id,
+                    "job_type": "quota_sync",
+                    "job_trigger_source": "scheduler",
+                    "job_status": "failed",
+                    "job_attempt": 1,
+                    "job_message": message,
+                    "job_queued_at": occurred_at - 20,
+                    "job_started_at": occurred_at - 10,
+                    "job_finished_at": occurred_at
+                })
+                .to_string();
+                (source_id, occurred_at, row_sort_id, partition_key, payload)
+            })
+            .collect::<Vec<_>>();
+        let mut insert = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            r#"INSERT INTO observability.admin_alert_canonical_group_events
+                   (build_generation, source_kind, source_id, occurred_at, row_sort_id,
+                    partition_key, payload_json) "#,
+        );
+        insert.push_values(&rows, |mut row, event| {
+            row.push_bind(build_generation)
+                .push_bind("scheduled_job")
+                .push_bind(&event.0)
+                .push_bind(event.1)
+                .push_bind(&event.2)
+                .push_bind(&event.3)
+                .push_bind(&event.4);
+        });
+        insert
+            .build()
+            .execute(&mut *seed)
+            .await
+            .expect("seed unfragmented job_failed groups");
+    }
+    sqlx::query(
+        r#"UPDATE observability.admin_alert_canonical_groups_state
+              SET active_generation = 1, active_row_count = 0,
+                  build_generation = ?, build_projection_revision = ?,
+                  build_source_recent_generation = ?, build_source_history_generation = ?,
+                  build_source_rowid_upper_bound = 0,
+                  build_cursor_source_rowid = 9223372036854775807,
+                  build_phase = 'aggregating', build_partition_key = '',
+                  build_partition_after_key = '',
+                  build_partition_cursor_occurred_at = -9223372036854775808,
+                  build_partition_cursor_row_sort_id = '', build_partition_events_json = '[]',
+                  build_partition_source_complete = 1,
+                  build_partition_fragment_next_position = 1,
+                  build_partition_finalize_fragment_position = 1, build_next_position = 1
+            WHERE singleton = 1"#,
+    )
+    .bind(build_generation)
+    .bind(revision)
+    .bind(source_fence.0)
+    .bind(source_fence.1)
+    .execute(&mut *seed)
+    .await
+    .expect("seed durable compatibility build state");
+    seed.commit().await.expect("commit compatibility fixture");
+
+    let query_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"EXPLAIN QUERY PLAN
+           WITH requested(partition_key) AS (VALUES (?), (?))
+           SELECT requested.partition_key AS batch_partition_key,
+                  event.source_kind, event.source_id, event.occurred_at,
+                  event.row_sort_id, event.payload_json
+             FROM requested
+             JOIN observability.admin_alert_canonical_group_events AS event
+               ON event.build_generation = ?
+              AND event.rowid = (
+                    SELECT latest.rowid
+                      FROM observability.admin_alert_canonical_group_events AS latest
+                     WHERE latest.build_generation = ?
+                       AND latest.partition_key = requested.partition_key
+                     ORDER BY latest.occurred_at DESC, latest.row_sort_id DESC
+                     LIMIT 1
+              )
+            ORDER BY requested.partition_key"#,
+    )
+    .bind("job_failed:job:0:unknown")
+    .bind("job_failed:job:1:unknown")
+    .bind(build_generation)
+    .bind(build_generation)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("plan the bounded latest-event batch lookup");
+    assert!(
+        query_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_admin_alert_canonical_group_events_partition")
+        }),
+        "latest compatibility events must use the generation/partition/time index: {query_plan:?}"
+    );
+
+    let result = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the bounded Groups slice must leave the remaining partitions staged");
+    assert!(
+        matches!(result, ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"),
+        "unexpected compatibility batch result: {result:?}"
+    );
+    let (next_position, after_key, active_generation, phase, group_rows): (
+        i64,
+        String,
+        i64,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT build_next_position, build_partition_after_key, active_generation, build_phase, \
+                    (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups \
+                      WHERE build_generation = ?) \
+               FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
+    )
+    .bind(build_generation)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read the batched compatibility checkpoint");
+    assert!(
+        next_position >= 1_001 && group_rows >= 1_000,
+        "one bounded stage should accept 1,000 compatible partitions; next={next_position}, rows={group_rows}"
+    );
+    assert!(!after_key.is_empty());
+    assert_eq!(
+        active_generation, 1,
+        "a bounded prefix must stay unpublished"
+    );
+    assert_eq!(phase, "aggregating");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     let db_path = temp_db_path("alert-canonical-groups-fixed-membership");
     let db_string = db_path.to_string_lossy().to_string();
@@ -1600,6 +2203,21 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read a valid projected event payload");
+    const HISTORICAL_ROWID_SENTINEL: i64 = 10_000_000;
+    sqlx::query(
+        r#"INSERT INTO observability.dashboard_alert_projection_events
+                  (rowid, source_kind, source_id, occurred_at, row_sort_id, payload_json,
+                   projected_at, projection_revision)
+           VALUES (?, 'synthetic-history', 'synthetic-history-sentinel', ?,
+                   'synthetic-history:sentinel', ?, ?, 1)"#,
+    )
+    .bind(HISTORICAL_ROWID_SENTINEL)
+    .bind(now - 90 * 24 * 60 * 60)
+    .bind(&payload_json)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a high historical rowid outside the retained snapshot");
     for index in 0..300_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -1626,6 +2244,24 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
         first,
         ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
     ));
+    let second = proxy
+        .key_store
+        .admin_alert_canonical_groups_page_for_warm()
+        .await
+        .expect_err("the first source page must leave a multi-page build in progress");
+    assert!(matches!(
+        second,
+        ProxyError::Deferred { ref reason, .. } if reason == "groups_build_in_progress"
+    ));
+    let staged_source_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count the first bounded source page");
+    assert_eq!(
+        staged_source_rows, 250,
+        "historical rowid allocation must not widen the bounded source page"
+    );
     let source_rowid_upper_bound: i64 = sqlx::query_scalar(
         "SELECT build_source_rowid_upper_bound \
          FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1",
@@ -1633,6 +2269,10 @@ async fn admin_alerts_canonical_groups_copy_uses_fixed_source_membership() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read captured source membership bound");
+    assert!(
+        source_rowid_upper_bound > HISTORICAL_ROWID_SENTINEL,
+        "snapshot bound must include the high historical rowid sentinel"
+    );
     for index in 0..1_000_i64 {
         sqlx::query(
             r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -1736,7 +2376,7 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
     .await
     .expect("read active generation");
 
-    let staging_generation = if active_generation == 1 { 2 } else { 1 };
+    let staging_generation = active_generation.saturating_add(1);
     // This is intentionally larger than one minute of the 25-row/5s background cleanup
     // cadence. A snapshot build must publish without waiting for retired rows: its unique
     // build generation prevents an old cleanup slice from overwriting staged output.
@@ -1769,26 +2409,21 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
     for source_change in 0..3 {
         let rebuilt = warm_canonical_alert_groups_until_published(&proxy).await;
         assert_eq!(rebuilt, active);
-        let (active_slot, active_row_count, retained_rows): (i64, i64, i64) = sqlx::query_as(
+        let (active_slot, active_row_count): (i64, i64) = sqlx::query_as(
             "SELECT \
                  (SELECT active_generation \
                     FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
                  (SELECT active_row_count \
-                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1), \
-                 (SELECT COUNT(*) FROM observability.admin_alert_canonical_groups)",
+                    FROM observability.admin_alert_canonical_groups_state WHERE singleton = 1)",
         )
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("inspect the fenced canonical model");
         assert!(
-            matches!(active_slot, 1 | 2),
-            "each replacement must reuse one of the two bounded model slots"
+            active_slot > staging_generation,
+            "each replacement must allocate a generation newer than retired staged rows (active={active_slot}, retired={staging_generation})"
         );
         assert_eq!(active_row_count, rebuilt.total);
-        assert!(
-            retained_rows <= rebuilt.total.saturating_mul(2),
-            "reused slots must not retain a full backlog of retired snapshots"
-        );
         if source_change < 2 {
             sqlx::query(
                 "UPDATE observability.dashboard_alert_projection_history_state \
@@ -1813,14 +2448,15 @@ async fn admin_alerts_canonical_groups_model_uses_fenced_generations_without_wai
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
 
+include!("alert_projection_history.rs");
 #[tokio::test]
-async fn alert_projection_keeps_dashboard_tail_complete_while_history_catches_up() {
-    let db_path = temp_db_path("alert-projection-independent-history");
+async fn alert_projection_gives_history_a_bounded_turn_while_recent_has_debt() {
+    let db_path = temp_db_path("alert-projection-history-fairness");
     let db_string = db_path.to_string_lossy().to_string();
-    let now = 1_752_560_000;
+    let now = 1_752_575_150;
     let (backend_time, _) = BackendTime::manual_from_ts(now);
     let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-independent-history".to_string()],
+        vec!["tvly-alert-projection-history-fairness".to_string()],
         DEFAULT_UPSTREAM,
         &db_string,
         TavilyProxyOptions::from_database_path(&db_string),
@@ -1829,549 +2465,88 @@ async fn alert_projection_keeps_dashboard_tail_complete_while_history_catches_up
     .await
     .expect("create proxy");
 
-    let history_at = now - 60 * 24 * 60 * 60;
-    for index in 0..26 {
+    for index in 0..2 {
         insert_projected_rate_limit_alert(
             &proxy,
-            &format!("projection-history-{index}"),
-            history_at,
-        )
-        .await;
-    }
-    insert_projected_rate_limit_alert(&proxy, "projection-recent", now).await;
-
-    for _ in 0..12 {
-        proxy
-            .key_store
-            .advance_alert_projection_slice()
-            .await
-            .expect("advance independent projection lane");
-        let status = proxy
-            .dashboard_alert_projection_status()
-            .await
-            .expect("read projection status");
-        if status.recent_coverage == "ok" && status.coverage == "projecting" {
-            // Dashboard materialization is a separately admitted bulk step.
-            // A one-shot refresh may legitimately defer while the source tail
-            // is already complete, so prove the worker retry converges instead
-            // of treating that safe defer as a missing alert.
-            let recent = refresh_projected_recent_alerts_until_fresh(&proxy).await;
-            assert_eq!(recent.total_events, 1);
-            assert!(!recent.stale);
-            break;
-        }
-    }
-
-    let status = proxy
-        .dashboard_alert_projection_status()
-        .await
-        .expect("read final independent projection status");
-    assert_eq!(status.recent_coverage, "ok");
-    assert_eq!(status.coverage, "projecting");
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_does_not_offer_partial_tail_as_dashboard_data() {
-    let db_path = temp_db_path("alert-projection-dashboard-partial");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = 1_752_565_000;
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-dashboard-partial".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    insert_projected_rate_limit_alert(&proxy, "projection-unprojected", now).await;
-    let raw_projection = proxy
-        .recent_alerts_summary(24)
-        .await
-        .expect("inspect incomplete projection");
-    assert!(raw_projection.stale);
-    assert_eq!(raw_projection.coverage, "projecting");
-    let (cold_dashboard_summary, _) = proxy
-        .dashboard_recent_alerts_summary_for_cold_start_with_token(24)
-        .await
-        .expect("conservative cold Dashboard summary");
-    assert!(cold_dashboard_summary.stale);
-    assert_eq!(cold_dashboard_summary.total_events, 0);
-    assert_eq!(cold_dashboard_summary.grouped_count, 0);
-    assert!(
-        proxy.dashboard_recent_alerts_summary(24).await.is_err(),
-        "Dashboard must retain last-good data instead of accepting partial alerts"
-    );
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_recent_summary_does_not_silently_truncate_events() {
-    let db_path = temp_db_path("alert-projection-summary-exact-count");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = 1_752_570_000;
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-summary-exact-count".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    let payload = serde_json::json!({
-        "source_kind": ALERT_SOURCE_AUTH_TOKEN_LOG,
-        "source_id": "placeholder",
-        "row_sort_id": "placeholder",
-        "alert_type": ALERT_TYPE_UPSTREAM_RATE_LIMITED_429,
-        "occurred_at": now,
-        "token_id": "projection-summary-token",
-        "key_id": null,
-        "request_log_id": null,
-        "method": null,
-        "path": null,
-        "query": null,
-        "request_kind_key": null,
-        "request_kind_label": null,
-        "request_kind_detail": null,
-        "result_status": null,
-        "failure_kind": null,
-        "error_message": null,
-        "counts_business_quota": null,
-        "user_id": null,
-        "user_display_name": null,
-        "user_username": null,
-        "reason_code": null,
-        "reason_summary": null,
-        "reason_detail": null,
-        "job_id": null,
-        "job_type": null,
-        "job_trigger_source": null,
-        "job_status": null,
-        "job_attempt": null,
-        "job_message": null,
-        "job_queued_at": null,
-        "job_started_at": null,
-        "job_finished_at": null,
-    });
-    let mut tx = proxy
-        .key_store
-        .pool
-        .begin()
-        .await
-        .expect("begin sidecar seed");
-    for index in 0..10_001_i64 {
-        let source_id = format!("summary-{index}");
-        let row_sort_id = format!("atl:{index:020}");
-        let mut row = payload.clone();
-        row["source_id"] = serde_json::Value::String(source_id.clone());
-        row["row_sort_id"] = serde_json::Value::String(row_sort_id.clone());
-        sqlx::query(
-            r#"INSERT INTO observability.dashboard_alert_projection_events
-                    (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at)
-               VALUES (?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(ALERT_SOURCE_AUTH_TOKEN_LOG)
-        .bind(source_id)
-        .bind(now)
-        .bind(row_sort_id)
-        .bind(row.to_string())
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .expect("seed exact projected alert count");
-    }
-    tx.commit().await.expect("commit sidecar seed");
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_state \
-         SET phase = 'idle', observed_at = ?, stale_reason = NULL",
-    )
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("mark Dashboard tail complete");
-    proxy
-        .key_store
-        .refresh_dashboard_alert_projection_summary()
-        .await
-        .expect("materialize exact derived summary");
-
-    let summary = proxy
-        .dashboard_recent_alerts_summary(24)
-        .await
-        .expect("read exact derived summary");
-    assert_eq!(summary.total_events, 10_001);
-    assert_eq!(
-        summary
-            .counts_by_type
-            .iter()
-            .find(|count| count.alert_type == ALERT_TYPE_UPSTREAM_RATE_LIMITED_429)
-            .map(|count| count.count),
-        Some(10_001)
-    );
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_admin_history_migration_preserves_sidecar_and_restarts_cursors() {
-    let db_path = temp_db_path("alert-projection-admin-history-migration");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = 1_752_575_000;
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-admin-history-migration".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    let recent_window_start = now.saturating_sub(30 * 24 * 60 * 60);
-    insert_projected_rate_limit_alert(&proxy, "projection-history-token", now).await;
-    insert_projected_rate_limit_alert(
-        &proxy,
-        "projection-history-boundary-token",
-        recent_window_start.saturating_sub(1),
-    )
-    .await;
-    advance_alert_projection_until(&proxy, 1).await;
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_state \
-         SET cursor_occurred_at = ?, cursor_row_sort_id = 'legacy-window', \
-             phase = 'idle', observed_at = ?",
-    )
-    .bind(recent_window_start)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate a completed recent-window projection");
-    sqlx::query("DELETE FROM schema_migrations WHERE version IN (14, 15)")
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("simulate a pre-admin-history ledger");
-    sqlx::query("DROP TABLE observability.dashboard_alert_projection_history_state")
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("simulate a pre-admin-history sidecar");
-
-    proxy
-        .key_store
-        .prepare_versioned_schema()
-        .await
-        .expect("apply the cursor-only administrator history migration");
-
-    let (preserved_tail_sources, reset_history_sources, retained_events): (i64, i64, i64) = sqlx::query_as(
-        "SELECT \
-           (SELECT COUNT(*) FROM observability.dashboard_alert_projection_state \
-             WHERE cursor_occurred_at = ? AND cursor_row_sort_id = 'legacy-window' AND phase = 'idle'), \
-           (SELECT COUNT(*) FROM observability.dashboard_alert_projection_history_state \
-             WHERE cursor_occurred_at = 0 AND cursor_row_sort_id = '' AND phase = 'catching_up'), \
-           (SELECT COUNT(*) FROM observability.dashboard_alert_projection_events)",
-    )
-    .bind(recent_window_start)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("verify cursor-only administrator history migration");
-    assert_eq!(
-        preserved_tail_sources, 3,
-        "Dashboard tail must keep its complete cursor"
-    );
-    assert_eq!(
-        reset_history_sources, 3,
-        "admin history starts from an independent cursor"
-    );
-    assert_eq!(retained_events, 1, "migration must not rewrite the sidecar");
-
-    advance_alert_projection_until_full_coverage(&proxy).await;
-    let historical_boundary_events: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_events \
-         WHERE source_kind = 'auth_token_log'",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read projected history boundary events");
-    assert_eq!(
-        historical_boundary_events, 2,
-        "history must include an alert from the second immediately below the tail boundary"
-    );
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_history_fence_repair_replays_old_v14_gap() {
-    let db_path = temp_db_path("alert-projection-history-fence-repair");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now: i64 = 1_752_575_025;
-    let tail_boundary = now.saturating_sub(30 * 24 * 60 * 60);
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-history-fence-repair".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    insert_projected_rate_limit_alert(
-        &proxy,
-        "projection-history-fence-repair-token",
-        tail_boundary.saturating_sub(1),
-    )
-    .await;
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_state \
-         SET cursor_occurred_at = ?, cursor_row_sort_id = 'legacy-tail', \
-             phase = 'idle', observed_at = ?",
-    )
-    .bind(tail_boundary)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate an existing completed tail");
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_history_state \
-         SET cursor_occurred_at = 0, cursor_row_sort_id = '', \
-             fence_occurred_at = ?, fence_row_sort_id = '', phase = 'catching_up'",
-    )
-    .bind(tail_boundary.saturating_sub(1))
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate the old v14 one-second-short history fence");
-    let v14_checksum: String =
-        sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 14")
-            .fetch_one(&proxy.key_store.pool)
-            .await
-            .expect("read recorded v14 checksum");
-    assert_eq!(v14_checksum, "sha256:ff6f5901c3a603feac18afbbb04a1cdf");
-    sqlx::query("DELETE FROM schema_migrations WHERE version = 15")
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("simulate upgrade from the old v14 ledger");
-
-    proxy
-        .key_store
-        .prepare_versioned_schema()
-        .await
-        .expect("repair persisted v14 history fence");
-    let repaired_sources: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_history_state \
-         WHERE cursor_occurred_at = 0 AND cursor_row_sort_id = '' \
-           AND fence_occurred_at = ? AND fence_row_sort_id = '' \
-           AND phase = 'catching_up'",
-    )
-    .bind(tail_boundary)
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read repaired history state");
-    assert_eq!(
-        repaired_sources, 3,
-        "repair must reset derived history only"
-    );
-    let v15_recorded: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 15 \
-         AND checksum = 'sha256:8ef5bf8e2b29acd27096657ad0d3d97e')",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("verify recorded fence repair migration");
-    assert_eq!(v15_recorded, 1);
-
-    advance_alert_projection_until_full_coverage(&proxy).await;
-    let boundary_events: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_events \
-         WHERE source_kind = 'auth_token_log'",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read repaired boundary event");
-    assert_eq!(
-        boundary_events, 1,
-        "repair must replay the omitted boundary second"
-    );
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_exact_tail_boundary_belongs_to_recent_lane() {
-    let db_path = temp_db_path("alert-projection-exact-tail-boundary");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now: i64 = 1_752_575_075;
-    let tail_boundary = now.saturating_sub(30 * 24 * 60 * 60);
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-exact-tail-boundary".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    insert_projected_rate_limit_alert(
-        &proxy,
-        "projection-exact-tail-boundary-token",
-        tail_boundary,
-    )
-    .await;
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_state \
-         SET cursor_occurred_at = ?, cursor_row_sort_id = '', phase = 'idle', observed_at = ?",
-    )
-    .bind(tail_boundary)
-    .bind(now)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate an old recent tail boundary");
-    sqlx::query(
-        "UPDATE observability.dashboard_alert_projection_history_state \
-         SET cursor_occurred_at = 0, cursor_row_sort_id = '', \
-             fence_occurred_at = ?, fence_row_sort_id = '', phase = 'catching_up'",
-    )
-    .bind(tail_boundary)
-    .execute(&proxy.key_store.pool)
-    .await
-    .expect("simulate the old exact-second history fence");
-    sqlx::query("DELETE FROM schema_migrations WHERE version = 17")
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("simulate upgrade before exact-boundary repair");
-
-    proxy
-        .key_store
-        .prepare_versioned_schema()
-        .await
-        .expect("repair exact-second boundary ownership");
-    let repaired_fences: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_history_state \
-         WHERE cursor_occurred_at = 0 AND cursor_row_sort_id = '' \
-           AND fence_occurred_at = ? AND fence_row_sort_id = '' \
-           AND phase = 'catching_up'",
-    )
-    .bind(tail_boundary.saturating_sub(1))
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read repaired history fence");
-    assert_eq!(repaired_fences, 3);
-
-    for _ in 0..6 {
-        let outcome = proxy
-            .key_store
-            .advance_alert_projection_slice()
-            .await
-            .expect("advance exact-boundary projection slice");
-        if matches!(outcome, AlertProjectionSliceOutcome::Deferred { .. }) {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    }
-    let boundary_events: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_events \
-         WHERE source_kind = 'auth_token_log'",
-    )
-    .fetch_one(&proxy.key_store.pool)
-    .await
-    .expect("read exact-boundary recent-tail event");
-    assert_eq!(boundary_events, 1);
-
-    drop(proxy);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-}
-
-#[tokio::test]
-async fn alert_projection_preempts_backlog_for_a_new_idle_source() {
-    let db_path = temp_db_path("alert-projection-tail-source-fairness");
-    let db_string = db_path.to_string_lossy().to_string();
-    let now = 1_752_575_050;
-    let (backend_time, _) = BackendTime::manual_from_ts(now);
-    let proxy = TavilyProxy::with_options_and_time(
-        vec!["tvly-alert-projection-tail-source-fairness".to_string()],
-        DEFAULT_UPSTREAM,
-        &db_string,
-        TavilyProxyOptions::from_database_path(&db_string),
-        backend_time,
-    )
-    .await
-    .expect("create proxy");
-
-    advance_alert_projection_until_full_coverage(&proxy).await;
-    for index in 0..26 {
-        insert_projected_rate_limit_alert(
-            &proxy,
-            &format!("projection-fairness-token-{index}"),
+            &format!("projection-history-fairness-{index}"),
             now,
         )
         .await;
     }
-    let first = advance_alert_projection_slice_until_admitted(&proxy).await;
-    assert!(matches!(
-        first,
-        AlertProjectionSliceOutcome::Advanced { rows: 25, .. }
-    ));
+    let max_id: i64 = sqlx::query_scalar("SELECT MAX(id) FROM auth_token_logs")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read source fence id");
     sqlx::query(
-        r#"INSERT INTO scheduled_jobs
-                (job_type, trigger_source, status, attempt, message, queued_at, started_at, finished_at)
-           VALUES ('projection_fairness', 'scheduler', 'failed', 1, 'fresh failure', ?, ?, ?)"#,
+        "UPDATE observability.dashboard_alert_projection_state
+            SET cursor_occurred_at = 0, cursor_row_sort_id = '',
+                fence_occurred_at = NULL, fence_row_sort_id = NULL,
+                generation = 0, phase = 'catching_up'",
     )
-    .bind(now + 1)
-    .bind(now + 1)
-    .bind(now + 1)
     .execute(&proxy.key_store.pool)
     .await
-    .expect("insert a fresh failed job alert");
+    .expect("seed recent projection debt");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state
+            SET phase = 'idle'
+          WHERE source_kind <> 'auth_token_log'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep unrelated recent sources idle");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state
+            SET cursor_occurred_at = 0, cursor_row_sort_id = '',
+                fence_occurred_at = ?, fence_row_sort_id = ?,
+                generation = 0, phase = 'catching_up'
+          WHERE source_kind = 'auth_token_log'",
+    )
+    .bind(now)
+    .bind(format!("atl:{max_id:020}"))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed historical projection debt");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_history_state
+            SET phase = 'idle'
+          WHERE source_kind <> 'auth_token_log'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("keep unrelated history sources idle");
 
-    let second = advance_alert_projection_slice_until_admitted(&proxy).await;
-    assert!(matches!(
-        second,
-        AlertProjectionSliceOutcome::Advanced { rows: 1, .. }
-    ));
-    let (scheduled_rows, auth_phase): (i64, String) = sqlx::query_as(
-        "SELECT \
-           (SELECT COUNT(*) FROM observability.dashboard_alert_projection_events \
-             WHERE source_kind = 'scheduled_job'), \
-           (SELECT phase FROM observability.dashboard_alert_projection_state \
-             WHERE source_kind = 'auth_token_log')",
+    proxy
+        .key_store
+        .advance_alert_projection_slice()
+        .await
+        .expect("advance the bounded history turn");
+    let history_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM observability.dashboard_alert_projection_history_state
+          WHERE source_kind = 'auth_token_log'",
     )
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("verify idle-source preemption");
+    .expect("read history generation");
     assert_eq!(
-        scheduled_rows, 1,
-        "fresh scheduled-job alert must be projected"
+        history_generation, 1,
+        "history must receive the first fair turn"
     );
+
+    proxy
+        .key_store
+        .advance_alert_projection_slice()
+        .await
+        .expect("advance the alternating recent turn");
+    let recent_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM observability.dashboard_alert_projection_state
+          WHERE source_kind = 'auth_token_log'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recent generation");
     assert_eq!(
-        auth_phase, "catching_up",
-        "the original backlog remains resumable"
+        recent_generation, 1,
+        "recent work remains serviced after history"
     );
 
     drop(proxy);
@@ -2455,6 +2630,79 @@ async fn alert_projection_idle_probe_does_not_persist_empty_cursors() {
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn alert_projection_liveness_turn_refreshes_stale_idle_observation_before_returning() {
+    let db_path = temp_db_path("alert-projection-liveness-idle-observation");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_575_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-projection-liveness-idle-observation".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    advance_alert_projection_until_full_coverage(&proxy).await;
+    let generations_before: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state) + \
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source generations before the idle observation turn");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+         SET observed_at = ?, stale_reason = 'retention_pruned' WHERE phase = 'idle'",
+    )
+    .bind(now - 91)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("expire idle source observations");
+
+    proxy.set_admin_alerts_cache_warm_liveness(true);
+    proxy.transfer_admin_alerts_cache_warm_liveness_to_projection();
+    let step = proxy
+        .advance_dashboard_alert_projection_scheduler_step_with_alerts()
+        .await
+        .expect("run the transferred bounded projection turn");
+    assert!(step.idle, "the empty projection source is idle");
+
+    let stale_sources: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.dashboard_alert_projection_state \
+         WHERE phase = 'idle' AND (observed_at IS NULL OR observed_at < ? OR stale_reason IS NOT NULL)",
+    )
+    .bind(now - 45)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count stale idle observations after the liveness turn");
+    let generations_after: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state) + \
+                (SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_history_state)",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source generations after the idle observation turn");
+
+    proxy.set_admin_alerts_cache_warm_liveness(false);
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+
+    assert_eq!(
+        stale_sources, 0,
+        "a transferred idle liveness turn must refresh coverage before warm reclaims the permit"
+    );
+    assert_eq!(
+        generations_after, generations_before,
+        "refreshing idle observation must not advance source generations"
+    );
 }
 
 #[tokio::test]

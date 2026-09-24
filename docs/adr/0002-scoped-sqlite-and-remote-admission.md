@@ -131,6 +131,14 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   seconds. Partial slices remain separately observable and do not reset this liveness anchor. One slot covers
   one logical canonical stage and its fenced micro-transactions; the next key acquires a new slot.
   Real waiters, contention, writer pressure, and native budgets still defer it.
+- If recent-tail and historical projection both have debt, the projection scheduler alternates one
+  history slice with one recent slice until either lane catches up. This fairness turn is process-local
+  scheduler state only; it is not persisted and does not relax admission, native deadlines, or source
+  fences.
+- When an aged canonical Alerts warm liveness slot is active, `AlertProjection` may admit one bounded
+  slice despite foreground-rate and lazy-pool-idle pressure so the warm coverage fence can recover.
+  The slot does not bypass existing pool waiters, recent contention, the single maintenance bulk
+  permit, the `100ms` acquire budget, or the native read deadline.
 - The canonical Events page is the bounded exception to the general filtered read builder: it reads
   `COUNT(*)` and the first twenty rows directly from the projection time index, then decodes the
   stored event payload in Rust. Catalog facets checkpoint fifty immutable Groups-event rows per
@@ -150,8 +158,9 @@ cgroup. They cannot attribute write amplification to one SQLite statement.
   accepted partition slice persists bounded event fragments, and final reduction writes independently
   bounded payload chunks plus small group metadata before atomically accepting that partition. If a
   finalization is interrupted, its immutable source fragments are reused and only the unaccepted
-  partition is recomputed. The two model slots are cleared in short slices before
-  reuse, and only a complete final payload is staged. A Groups summary never makes nested event history
+  partition is recomputed. Each build receives a monotonic generation that is not reused while retired
+  staged rows remain; the background reclaimer removes obsolete generations in short slices. Only a
+  complete final payload is staged. A Groups summary never makes nested event history
   unbounded: oversized optional `child_events` are omitted from the canonical item while counts and the
   latest event remain exact, and the existing child drawer loads request details through a paginated read.
   Incomplete staging is never visible, and short

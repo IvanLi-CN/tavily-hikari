@@ -41,6 +41,9 @@
   每个 warm slice 在开始时重新检查前台速率与 SQLite contention；任何已 aged 的
   reconciliation 调度例外也不适用于该 warm controller。它不得因别的维护工作获得 RPS
   例外而预热、扩张或占用前台保留连接。
+  当该 aged liveness slot 正在恢复不完整 projection coverage 时，AlertProjection scheduler 可让一个
+  bounded projection slice 同样绕过前台速率与 lazy-pool idle 启发式；已有 acquire waiter、recent
+  contention、single bulk permit、`100ms` acquire 和 `250ms` native deadline 仍然生效。
   默认 Events `1/20` 的 canonical slice 从 `dashboard_alert_projection_events` 的时间索引读取计数和
   页面，并在 Rust 解码已物化的 `payload_json`。Catalog facet 从同代 immutable Groups event snapshot
   每次接受 `50` 行到本机 facet model，并以每次 `250` 行的持久化 output cursor 写入独立 output rows；重试不能重扫
@@ -53,13 +56,17 @@
   路径运行完整历史 JSON CTE。builder 在完整 coverage 时原子捕获 projection revision、source fence
   与固定 source-row membership boundary，以 retention-bounded `(occurred_at, row_sort_id)` time-keyset
   加 rowid upper bound 暂存该 snapshot 的事件、复用既有
-  Rust grouping 语义，并在全部 slice 成功后切换 active generation。每个分区 slice 在继续前持久化一个有界
+  Rust grouping 语义。源读取继续使用 250 行页、分区读取使用 25 行页，以保持读 deadline 和取消
+  测试的压力边界；每页行数据以最多 100 行且累计编码文本不超过 512 KiB 的自适应短事务批量提交，
+  普通 payload 摊销事务开销，较大 payload 仍保持写锁持有时间有界而不依赖历史 rowid 判断快照规模。
+  builder 在全部 slice 成功后切换 active generation。每个分区 slice 在继续前持久化一个有界
   event fragment；投影在 build 期间推进时，会在同一短事务保存受影响行的 pre-snapshot 值；每条分区 source
   statement 都独立受预算限制，且不得将增长中的 partition JSON 反复持久化。final reduction 从 immutable fragments
   重建未接受的单个 partition，并将每个 group 写为有界 payload chunks 和 metadata；只有同一短事务接受该 partition
   cursor 后才进入下一分区。build 期间 source
   fence 改变时必须丢弃 staged generation 并重试，绝不将其作为 stale last-good 发布。staged rows、旧 event/override/group generation 仅以不阻塞发布的小批次后台
-  回收，且永远排除 active 与 in-flight build generation。model slot 在复用前同样只按小批次清空，绝不参与 HTTP。
+  回收，且永远排除 active 与 in-flight build generation。build generation 使用单调递增身份，旧 generation
+  不会在残留 staged rows 仍存在时复用；绝不参与 HTTP。
   该模型不进入 HA outbox，筛选的非 canonical Groups 仍保留原有语义。
   Catalog staged output 的 facet identity 同时包含 value 与 label；v39 的本机派生表因此保留同一
   用户值的多个历史 label。v40 的 semantic Groups reducer 将事件分类、child/mother 聚合和 payload

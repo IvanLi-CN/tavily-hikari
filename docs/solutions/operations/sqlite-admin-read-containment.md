@@ -79,9 +79,12 @@ reads:
   micro-transactions, and bypasses only foreground-rate and lazy-pool-idle heuristics. The next key
   acquires a new slot. Real acquire waiters, recent contention, writer pressure,
   and native read budgets still defer it. It stages the three values and
-  publishes them atomically from one immutable projection snapshot. A newer projection revision
-  makes that complete cache entry stale rather than mixed; only an incomplete or failed snapshot is
-  discarded. Retry true defers at `5s/5s/30s`.
+  publishes them atomically from one immutable projection snapshot. A newer projection revision or
+  source-fence change discards the staged generation rather than publishing mixed data; only a complete
+  unchanged generation reaches the cache. Retry true defers at `5s/5s/30s`.
+  While that aged slot is recovering incomplete projection coverage, one bounded `AlertProjection`
+  slice may use the same foreground-rate and lazy-pool-idle exception. Its pool waiter, recent
+  contention, single bulk permit, `100ms` acquire, and native read deadline checks remain active.
   Aged reconciliation scheduling exceptions never transfer to this controller: an Alerts warm
   slice cannot use them to grow the pool or take a foreground-reserved connection.
   Canonical HTTP handlers are cache-first and return cold `503 Retry-After: 1` instead of rebuilding
@@ -104,15 +107,18 @@ reads:
   slice seeks the retention-bounded `(occurred_at, row_sort_id)` time-keyset and applies that rowid
   upper bound, so projection
   writers retain the pre-update event once for that build, so later writes cannot extend its immutable
-  source set. Every source statement is independently bounded; persist bounded event fragments and stage
+  source set. Source pages remain bounded at 250 rows and partition reads at 25 rows for deadline
+  and cancellation checks. Source rows are committed in adaptive batches of at most 100 rows and
+  512 KiB of encoded text, so ordinary payloads amortize transaction setup while larger payloads
+  still keep writer lock holds short. Every source statement is independently bounded; persist
+  bounded event fragments and stage
   final groups as bounded payload chunks plus metadata instead of an ever-growing JSON accumulator.
   Exact partition results remain recoverable by recomputing only an unaccepted partition from its staged
   source fragments. Preserve the group summary, counts, and latest event, but omit only optional nested
   `child_events` once their inline detail exceeds one read fragment; the existing child drawer retrieves
   request details through its paginated source. A source-fence change discards the staged generation instead of publishing it
-  as stale. Reuse only the inactive one of two model slots after
-  clearing it in small write slices. Reclaim obsolete event, override, and group generations in small write
-  batches while excluding the active and in-flight build generations. Do not use the model for filtered
+  as stale. Allocate a monotonic build generation and reclaim obsolete event, override, and group
+  generations in small write batches while excluding the active and in-flight build generations. Do not use the model for filtered
   queries or replicate it through HA.
   The staged Catalog output table must key a facet by both value and label. The v39 local sidecar
   prevents a later label for the same user value from replacing an earlier label. Semantic Groups
@@ -122,6 +128,10 @@ reads:
 - Treat every durable alert projection advance, including history-only slices, as a canonical cache
   generation change. The scheduler must fence the three staged values against that generation so a
   partial or cancelled warm never replaces the prior exact-key last-good set.
+- When the recent and historical projection lanes are both catching up, alternate one bounded history
+  slice with one recent slice. This keeps the administrator completeness prerequisite live under
+  sustained recent writes without changing the existing pool admission, statement deadline, or
+  retention fence. The turn is intentionally process-local and is not a durable schema field.
 - Apply the same last-good boundary to the single-key privacy-status read. Keep the immutable
   successful snapshot for 60 seconds; warm pressure returns it as stale with the observation time,
   while cold pressure fails fast with `503 Retry-After: 1`. The HTTP path is bounded to 250ms and,

@@ -200,7 +200,7 @@ impl KeyStore {
     ) -> Result<Option<(i64, String)>, ProxyError> {
         let mut conn = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
+            .acquire_bounded_alert_projection_read_connection()
             .await?;
         let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
@@ -498,14 +498,38 @@ impl KeyStore {
     pub(crate) async fn advance_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        let mut canonical_warm_liveness = self
+            .sqlite_runtime
+            .claim_admin_alerts_cache_warm_liveness_for_projection();
+        let has_canonical_warm_liveness = canonical_warm_liveness.is_some();
+        if !has_canonical_warm_liveness
+            && self
+                .sqlite_runtime
+                .admin_alerts_cache_warm_liveness_stage_active()
+        {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::AlertProjection,
+                SqliteAdmissionDeferReason::BulkBusy,
+            );
+            return Ok(AlertProjectionSliceOutcome::Deferred {
+                reason: SqliteAdmissionDeferReason::BulkBusy,
+            });
+        }
         // A lazy pool can have a foreground connection checked out before the
         // projection worker starts. Let the runtime-owned capacity warm grow
         // unopened slots within its bounded budget before admission decides
         // whether the slice can run.
-        self.sqlite_runtime
-            .prewarm_maintenance_bulk_capacity()
-            .await?;
-        let _admission = match self.try_admit_alert_projection() {
+        if !has_canonical_warm_liveness {
+            self.sqlite_runtime
+                .prewarm_maintenance_bulk_capacity()
+                .await?;
+        }
+        let _admission = match if has_canonical_warm_liveness {
+            self.sqlite_runtime
+                .try_admit_alert_projection_for_canonical_warm_liveness()
+        } else {
+            self.try_admit_alert_projection()
+        } {
             Ok(permit) => permit,
             Err(reason) => {
                 tracing::debug!(
@@ -517,8 +541,8 @@ impl KeyStore {
                 return Ok(AlertProjectionSliceOutcome::Deferred { reason });
             }
         };
-        match self.advance_admitted_alert_projection_slice().await {
-            Ok(outcome) => Ok(outcome),
+        let outcome = match self.advance_admitted_alert_projection_slice().await {
+            Ok(outcome) => outcome,
             Err(ProxyError::Deferred { .. }) => {
                 // The bounded source read owns an SQLite-native deadline.
                 // Its cursor has not committed, so report the result as a
@@ -528,9 +552,9 @@ impl KeyStore {
                     SqliteOperation::AlertProjection,
                     SqliteAdmissionDeferReason::QueryDeadline,
                 );
-                Ok(AlertProjectionSliceOutcome::Deferred {
+                return Ok(AlertProjectionSliceOutcome::Deferred {
                     reason: SqliteAdmissionDeferReason::QueryDeadline,
-                })
+                });
             }
             Err(err) if crate::is_transient_sqlite_write_error(&err) => {
                 // No cursor update has committed, so a later scheduler wake
@@ -547,21 +571,76 @@ impl KeyStore {
                     defer_reason = "sqlite_contention",
                     "deferred an alert projection slice after SQLite contention"
                 );
-                Ok(AlertProjectionSliceOutcome::Deferred {
+                return Ok(AlertProjectionSliceOutcome::Deferred {
                     reason: SqliteAdmissionDeferReason::RecentContention,
-                })
+                });
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+        // Keep a transferred liveness turn through idle freshness repair so
+        // canonical warm cannot reclaim its permit between the idle probe and
+        // the scheduler's follow-up observation write.
+        if has_canonical_warm_liveness
+            && matches!(&outcome, AlertProjectionSliceOutcome::Idle)
+            && let Err(err) = self.refresh_admitted_alert_projection_observation().await
+        {
+            if matches!(err, ProxyError::Deferred { .. }) {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::AlertProjection,
+                    SqliteAdmissionDeferReason::QueryDeadline,
+                );
+                return Ok(AlertProjectionSliceOutcome::Deferred {
+                    reason: SqliteAdmissionDeferReason::QueryDeadline,
+                });
+            }
+            if crate::is_transient_sqlite_write_error(&err) {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::AlertProjection,
+                    SqliteAdmissionDeferReason::RecentContention,
+                );
+                tracing::debug!(
+                    component = "dashboard_alert_projection",
+                    event = "deferred",
+                    defer_reason = "sqlite_contention",
+                    "deferred an idle observation refresh after SQLite contention"
+                );
+                return Ok(AlertProjectionSliceOutcome::Deferred {
+                    reason: SqliteAdmissionDeferReason::RecentContention,
+                });
+            }
+            return Err(err);
         }
+        if !matches!(&outcome, AlertProjectionSliceOutcome::Deferred { .. })
+            && let Some(permit) = canonical_warm_liveness.as_mut()
+        {
+            permit.complete();
+        }
+        Ok(outcome)
     }
 
     pub(crate) async fn refresh_alert_projection_observation(
         &self,
     ) -> Result<bool, ProxyError> {
-        let _admission = match self.try_admit_alert_projection() {
+        // A stale idle observation is the last bounded projection step needed
+        // before canonical warm can capture a complete snapshot. Reuse the
+        // liveness turn transferred by warm under foreground pressure; the
+        // normal path retains its existing admission policy.
+        let canonical_warm_liveness = self
+            .sqlite_runtime
+            .claim_admin_alerts_cache_warm_liveness_for_observation();
+        let _admission = match if canonical_warm_liveness.is_some() {
+            self.sqlite_runtime
+                .try_admit_alert_projection_for_canonical_warm_liveness()
+        } else {
+            self.try_admit_alert_projection()
+        } {
             Ok(permit) => permit,
             Err(_) => return Ok(false),
         };
+        self.refresh_admitted_alert_projection_observation().await
+    }
+
+    async fn refresh_admitted_alert_projection_observation(&self) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
         let rows_affected = self
             .sqlite_runtime
@@ -587,6 +666,18 @@ impl KeyStore {
     async fn advance_admitted_alert_projection_slice(
         &self,
     ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        let Some(_canonical_publish_gate) = self
+            .sqlite_runtime
+            .try_acquire_alert_projection_gate()
+        else {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::AlertProjection,
+                SqliteAdmissionDeferReason::BulkBusy,
+            );
+            return Ok(AlertProjectionSliceOutcome::Deferred {
+                reason: SqliteAdmissionDeferReason::BulkBusy,
+            });
+        };
         if self.prune_expired_alert_projection_slice().await? {
             return Ok(AlertProjectionSliceOutcome::Advanced {
                 rows: 0,
@@ -653,11 +744,18 @@ impl KeyStore {
             }
         }
         // The durable history lane owns catch-up whenever the selected recent
-        // source is already current. A bounded recent fence probe before each
-        // history slice keeps the Dashboard tail responsive without using tail
-        // generation bumps as an implicit round-robin clock.
+        // source is already current. When both lanes have debt, alternate a
+        // bounded history turn with recent work so sustained tail traffic
+        // cannot starve administrator completeness. The turn is consumed only
+        // when a history state is actually available; idle probes do not
+        // advance scheduler policy.
+        let history_turn = recent_has_debt
+            && history.is_some()
+            && self.sqlite_runtime.take_alert_projection_history_turn();
         let (state, fence) = match history {
-            Some(history) if !recent_has_debt && recent.phase == "idle" => (history, None),
+            Some(history) if (!recent_has_debt && recent.phase == "idle") || history_turn => {
+                (history, None)
+            }
             _ => (recent, recent_fence),
         };
         let fence = match (
@@ -782,6 +880,7 @@ impl KeyStore {
                 .fetch_one(&mut **tx)
                 .await?
             };
+            let mut override_inserted = false;
             for source_row in &rows {
                 let row = source_row.clone();
                 let payload_json = serialize_alert_event_projection_payload(row.clone())?;
@@ -789,7 +888,7 @@ impl KeyStore {
                     // A canonical Groups build owns a fixed projection revision. Preserve the
                     // pre-update row once so its independently-budgeted read slices continue
                     // to see that snapshot while projection writes advance normally.
-                    sqlx::query(
+                    let override_change = sqlx::query(
                         r#"INSERT OR IGNORE INTO observability.admin_alert_canonical_group_overrides
                                (build_generation, source_kind, source_id, occurred_at, row_sort_id, payload_json)
                            SELECT ?, source_kind, source_id, occurred_at, row_sort_id, payload_json
@@ -802,6 +901,7 @@ impl KeyStore {
                     .bind(build_projection_revision)
                     .execute(&mut **tx)
                     .await?;
+                    override_inserted |= override_change.rows_affected() > 0;
                 }
                 sqlx::query(
                     r#"INSERT INTO observability.dashboard_alert_projection_events
@@ -822,6 +922,16 @@ impl KeyStore {
                 .bind(payload_json)
                 .bind(observed_at)
                 .bind(projection_revision)
+                .execute(&mut **tx)
+                .await?;
+            }
+            if override_inserted {
+                sqlx::query(
+                    "UPDATE observability.admin_alert_canonical_groups_state \
+                     SET build_cursor_source_rowid = 1 \
+                     WHERE singleton = 1 AND build_generation = ?",
+                )
+                .bind(build_generation)
                 .execute(&mut **tx)
                 .await?;
             }

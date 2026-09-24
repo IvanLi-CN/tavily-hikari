@@ -14,6 +14,8 @@ from pathlib import Path
 
 DASHBOARD_CLIENTS = 20
 DASHBOARD_INTERVAL_SECS = 60.0
+ALERT_ROUTES = ("catalog", "events", "groups")
+ALERT_INTERVAL_SECS = 5.0
 BUSINESS_CLIENTS = 5
 BUSINESS_INTERVAL_SECS = 1.0
 # A production-shaped snapshot may have bounded startup maintenance reclaiming
@@ -23,24 +25,109 @@ BOOTSTRAP_DEADLINE_SECS = 180.0
 
 
 class Recorder:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        restart_marker: Path | None = None,
+        restart_begin_marker: Path | None = None,
+    ) -> None:
         self._lock = threading.Lock()
+        self.restart_marker = restart_marker
+        self.restart_begin_marker = restart_begin_marker
+        self.restart_started_at: float | None = None
+        self.restart_observed_at: float | None = None
         self.dashboard_ms: list[float] = []
         self.dashboard_attempts = 0
         self.business_attempts = 0
         self.statuses: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.events: Counter[str] = Counter()
+        self.alert_attempts: Counter[str] = Counter()
+        self.alert_post_restart_attempts: Counter[str] = Counter()
+        self.alert_post_restart_successes: Counter[str] = Counter()
+        self.alert_post_restart_failures: Counter[str] = Counter()
+        self.alert_first_success_secs: dict[str, float] = {}
+        self.alert_non_fresh_200: Counter[str] = Counter()
+        self.alert_post_warm_5xx: Counter[str] = Counter()
+        self.alert_post_warm_failures: Counter[str] = Counter()
+        self.started_at = time.monotonic()
 
-    def status(self, lane: str, status: int, elapsed_ms: float) -> None:
+    def observe_restart(self) -> None:
+        if self.restart_marker is None and self.restart_begin_marker is None:
+            return
+        with self._lock:
+            if (
+                self.restart_started_at is None
+                and self.restart_begin_marker is not None
+                and self.restart_begin_marker.exists()
+            ):
+                self.restart_started_at = time.monotonic()
+            if self.restart_observed_at is None:
+                if self.restart_marker is not None and self.restart_marker.exists():
+                    self.restart_observed_at = time.monotonic()
+
+    def restart_in_progress(self) -> bool:
+        return self.restart_started_at is not None and self.restart_observed_at is None
+
+    def attempt(self, lane: str) -> None:
+        self.observe_restart()
+        with self._lock:
+            if lane == "dashboard":
+                self.dashboard_attempts += 1
+            elif lane == "business":
+                self.business_attempts += 1
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                self.alert_attempts[route] += 1
+                if self.restart_observed_at is not None:
+                    self.alert_post_restart_attempts[route] += 1
+
+    def _record_alert_failure_locked(self, route: str, post_restart: bool) -> None:
+        if route in self.alert_first_success_secs and not self.restart_in_progress():
+            self.alert_post_warm_failures[route] += 1
+        if post_restart:
+            self.alert_post_restart_failures[route] += 1
+
+    def mark_started(self) -> None:
+        with self._lock:
+            self.started_at = time.monotonic()
+
+    def status(
+        self,
+        lane: str,
+        status: int,
+        elapsed_ms: float,
+        alert_fresh: bool | None = None,
+    ) -> None:
+        self.observe_restart()
         with self._lock:
             self.statuses[f"{lane}:{status}"] += 1
             if lane == "dashboard":
                 self.dashboard_ms.append(elapsed_ms)
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                elapsed_secs = time.monotonic() - self.started_at
+                post_restart = self.restart_observed_at is not None
+                if status == 200 and alert_fresh is True:
+                    self.alert_first_success_secs.setdefault(route, elapsed_secs)
+                    if post_restart:
+                        self.alert_post_restart_successes[route] += 1
+                else:
+                    if status == 200:
+                        self.alert_non_fresh_200[route] += 1
+                    self._record_alert_failure_locked(route, post_restart)
+                    if status >= 500 and route in self.alert_first_success_secs:
+                        self.alert_post_warm_5xx[route] += 1
 
     def error(self, lane: str, error: BaseException) -> None:
+        self.observe_restart()
         with self._lock:
             self.errors[f"{lane}:{type(error).__name__}"] += 1
+            if lane.startswith("alerts_"):
+                route = lane.removeprefix("alerts_")
+                self._record_alert_failure_locked(
+                    route,
+                    self.restart_observed_at is not None,
+                )
 
     def event(self, lane: str) -> None:
         with self._lock:
@@ -62,10 +149,38 @@ class Recorder:
                 "dashboardRequests": len(ordered),
                 "dashboardP95Ms": p95,
                 "dashboardMaxMs": max(ordered) if ordered else None,
+                "alerts": {
+                    "routes": list(ALERT_ROUTES),
+                    "intervalSecs": ALERT_INTERVAL_SECS,
+                    "attempts": dict(sorted(self.alert_attempts.items())),
+                    "postRestartAttempts": dict(sorted(self.alert_post_restart_attempts.items())),
+                    "postRestartSuccesses": dict(sorted(self.alert_post_restart_successes.items())),
+                    "postRestartFailures": dict(sorted(self.alert_post_restart_failures.items())),
+                    "firstSuccessSecs": dict(sorted(self.alert_first_success_secs.items())),
+                    "nonFresh200": dict(sorted(self.alert_non_fresh_200.items())),
+                    "postWarm5xx": dict(sorted(self.alert_post_warm_5xx.items())),
+                    "postWarmFailures": dict(sorted(self.alert_post_warm_failures.items())),
+                    "restartStarted": self.restart_started_at is not None,
+                    "restartObserved": self.restart_observed_at is not None,
+                },
                 "statuses": dict(sorted(self.statuses.items())),
                 "errors": dict(sorted(self.errors.items())),
                 "events": dict(sorted(self.events.items())),
             }
+
+
+def alerts_payload_is_fresh(status: int, payload: bytes) -> bool:
+    if status != 200:
+        return False
+    try:
+        body = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    # Fresh Alerts responses omit coverage; stale last-good responses explicitly
+    # carry coverage=stale. Accept an explicit future fresh marker as well.
+    return body.get("coverage") in (None, "fresh")
 
 
 def request(
@@ -79,18 +194,23 @@ def request(
     headers: dict[str, str] | None = None,
 ) -> None:
     started = time.monotonic()
-    if lane == "dashboard":
-        with recorder._lock:
-            recorder.dashboard_attempts += 1
-    elif lane == "business":
-        with recorder._lock:
-            recorder.business_attempts += 1
+    recorder.attempt(lane)
     connection = http.client.HTTPConnection(host, port, timeout=10)
     try:
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
-        response.read()
-        recorder.status(lane, response.status, (time.monotonic() - started) * 1000)
+        payload = response.read()
+        alert_fresh = (
+            alerts_payload_is_fresh(response.status, payload)
+            if lane.startswith("alerts_")
+            else None
+        )
+        recorder.status(
+            lane,
+            response.status,
+            (time.monotonic() - started) * 1000,
+            alert_fresh=alert_fresh,
+        )
     except (OSError, http.client.HTTPException, TimeoutError) as error:
         recorder.error(lane, error)
     finally:
@@ -228,6 +348,25 @@ def business_lane(
     )
 
 
+def alerts_lane(
+    stop: threading.Event,
+    recorder: Recorder,
+    host: str,
+    port: int,
+    route: str,
+    route_index: int,
+) -> None:
+    path = f"/api/alerts/{route}"
+    if route != "catalog":
+        path += "?page=1&per_page=20"
+    periodic(
+        stop,
+        ALERT_INTERVAL_SECS,
+        lambda: request(recorder, f"alerts_{route}", "GET", host, port, path),
+        route_index * ALERT_INTERVAL_SECS / len(ALERT_ROUTES),
+    )
+
+
 def sse_lane(stop: threading.Event, recorder: Recorder, host: str, port: int) -> None:
     while not stop.is_set():
         connection = http.client.HTTPConnection(host, port, timeout=10)
@@ -286,6 +425,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration-secs", type=int, required=True)
     parser.add_argument("--recovery-tail-secs", type=int)
+    parser.add_argument("--restart-marker", type=Path)
+    parser.add_argument("--restart-begin-marker", type=Path)
     parser.add_argument("--host", default="app")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--output", type=Path, required=True)
@@ -299,10 +440,11 @@ def main() -> None:
         parser.error(str(error))
     traffic_duration_secs = args.duration_secs - recovery_tail_secs
 
-    recorder = Recorder()
+    recorder = Recorder(args.restart_marker, args.restart_begin_marker)
     stop = threading.Event()
     create_test_api_key(args.host, args.port)
     access_token = create_test_access_token(args.host, args.port)
+    recorder.mark_started()
     threads = [
         threading.Thread(
             target=dashboard_lane,
@@ -310,6 +452,14 @@ def main() -> None:
             daemon=True,
         )
         for client_index in range(DASHBOARD_CLIENTS)
+    ]
+    threads += [
+        threading.Thread(
+            target=alerts_lane,
+            args=(stop, recorder, args.host, args.port, route, route_index),
+            daemon=True,
+        )
+        for route_index, route in enumerate(ALERT_ROUTES)
     ]
     threads += [
         threading.Thread(target=sse_lane, args=(stop, recorder, args.host, args.port), daemon=True)

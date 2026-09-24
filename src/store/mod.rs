@@ -22,6 +22,7 @@ mod sqlite_runtime;
 pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
 #[cfg(test)]
 pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
+pub use sqlite_runtime::{AdminAlertsCanonicalPublishGate, AdminAlertsCanonicalPublishReservation};
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
     SqliteMaintenanceBulkPermit, SqliteOperation, SqliteReadSnapshot, SqliteRuntime,
@@ -2817,6 +2818,7 @@ include!("key_store_alert_models.rs");
 include!("key_store_alerts.rs");
 include!("key_store_alert_canonical_catalog.rs");
 include!("key_store_alert_canonical_groups.rs");
+include!("key_store_alert_canonical_groups_payload.rs");
 include!("key_store_alert_canonical_semantic_reduction.rs");
 include!("key_store_alert_group_records.rs");
 include!("key_store_alert_events_cte.rs");

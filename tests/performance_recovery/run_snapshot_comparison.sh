@@ -10,8 +10,12 @@ SQLite snapshot. The caller must provide repositories and a snapshot under one o
 
 Required environment:
   REMOTE_RUN        Isolated /srv/codex run directory
-  CANDIDATE_REPO    Candidate source tree within REMOTE_RUN
+  CANDIDATE_REPO    Candidate source tree within REMOTE_RUN, with .codex-candidate-sha
+                    containing the expected full Git SHA
+  CANDIDATE_SHA     Expected full 40-character candidate Git SHA
   BASELINE_REPO     Baseline source tree within REMOTE_RUN
+  BASELINE_SHA      Expected full 40-character baseline Git SHA; BASELINE_REPO must contain
+                    .codex-baseline-sha with the same value
   SNAPSHOT_DIR      Directory containing manifest.env and compressed core/observability snapshots
   COMPOSE_PROJECT   Unique Docker Compose project name
 
@@ -27,7 +31,9 @@ fi
 
 REMOTE_RUN="${REMOTE_RUN:?REMOTE_RUN is required}"
 CANDIDATE_REPO="${CANDIDATE_REPO:?CANDIDATE_REPO is required}"
+CANDIDATE_SHA="${CANDIDATE_SHA:?CANDIDATE_SHA is required}"
 BASELINE_REPO="${BASELINE_REPO:?BASELINE_REPO is required}"
+BASELINE_SHA="${BASELINE_SHA:?BASELINE_SHA is required}"
 SNAPSHOT_DIR="${SNAPSHOT_DIR:?SNAPSHOT_DIR is required}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:?COMPOSE_PROJECT is required}"
 DURATION_SECS="${DURATION_SECS:-600}"
@@ -102,6 +108,34 @@ esac
 for path in "$CANDIDATE_REPO" "$BASELINE_REPO" "$CORE_COMPRESSED_DB" "$SIDECAR_COMPRESSED_DB"; do
   [[ -e "$path" ]] || { echo "missing required path: $path" >&2; exit 2; }
 done
+[[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "CANDIDATE_SHA must be a full 40-character lowercase Git SHA" >&2
+  exit 2
+}
+[[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "BASELINE_SHA must be a full 40-character lowercase Git SHA" >&2
+  exit 2
+}
+CANDIDATE_SHA_MARKER="$CANDIDATE_REPO/.codex-candidate-sha"
+[[ -f "$CANDIDATE_SHA_MARKER" ]] || {
+  echo "missing candidate SHA marker: $CANDIDATE_SHA_MARKER" >&2
+  exit 2
+}
+candidate_sha_marker="$(<"$CANDIDATE_SHA_MARKER")"
+[[ "$candidate_sha_marker" == "$CANDIDATE_SHA" ]] || {
+  echo "candidate SHA marker mismatch: expected=$CANDIDATE_SHA actual=$candidate_sha_marker" >&2
+  exit 2
+}
+BASELINE_SHA_MARKER="$BASELINE_REPO/.codex-baseline-sha"
+[[ -f "$BASELINE_SHA_MARKER" ]] || {
+  echo "missing baseline SHA marker: $BASELINE_SHA_MARKER" >&2
+  exit 2
+}
+baseline_sha_marker="$(<"$BASELINE_SHA_MARKER")"
+[[ "$baseline_sha_marker" == "$BASELINE_SHA" ]] || {
+  echo "baseline SHA marker mismatch: expected=$BASELINE_SHA actual=$baseline_sha_marker" >&2
+  exit 2
+}
 
 compose() {
   docker compose -p "$COMPOSE_PROJECT" -f "$WORK_DIR/compose.yml" "$@"
@@ -451,6 +485,7 @@ SQL
 
 trap 'cleanup_compose; cleanup_app_image' EXIT
 mkdir -p "$ARTIFACTS_DIR" "$WORK_DIR"
+rm -f "$ARTIFACTS_DIR/comparison.json"
 
 write_compose() {
   local repo="$1"
@@ -598,12 +633,19 @@ run_variant() {
   rss_pid=$!
   (
     sleep $((DURATION_SECS / 2))
+    touch "$artifact_dir/restart.begin"
     compose restart app
+    # Mark the restart complete only after the listener accepts a dashboard read;
+    # container start alone can still leave a short connection-refused window.
+    wait_for_dashboard_readiness "$artifact_dir"
+    touch "$artifact_dir/restart.marker"
   ) &
   restart_pid=$!
   (
     if ! compose run --rm load python /work/load.py \
       --duration-secs "$DURATION_SECS" \
+      --restart-marker /artifacts/restart.marker \
+      --restart-begin-marker /artifacts/restart.begin \
       --output "/artifacts/load.json"; then
       compose logs --no-color >&2 || true
       exit 1
@@ -792,14 +834,27 @@ for variant in baseline candidate; do
         "$ARTIFACTS_DIR/$variant/compose.log" | tail -160 || true
 done
 
-python3 - "$ARTIFACTS_DIR" <<'PY'
+python3 - "$ARTIFACTS_DIR" "$CANDIDATE_SHA" "$BASELINE_SHA" <<'PY'
 import json
 import pathlib
 import sys
 
 artifacts = pathlib.Path(sys.argv[1])
+candidate_sha = sys.argv[2]
+baseline_sha = sys.argv[3]
 baseline = json.loads((artifacts / "baseline" / "summary.json").read_text())
 candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
+
+for variant, summary in (("baseline", baseline), ("candidate", candidate)):
+    alerts = summary["load"].get("alerts", {})
+    attempts = alerts.get("attempts", {})
+    if not alerts.get("restartObserved"):
+        raise SystemExit(f"{variant} Alerts load did not observe the controlled restart marker")
+    for route in ("catalog", "events", "groups"):
+        if attempts.get(route, 0) < 2:
+            raise SystemExit(
+                f"{variant} canonical Alerts {route} did not receive enough attempts"
+            )
 
 # Linux process RSS and sub-15ms HTTP timings are sampled across a controlled
 # restart. Keep raw values in the receipt, but do not turn allocator or
@@ -932,6 +987,40 @@ for channel, before in candidate_gc["before"].items():
     if before["hasRetentionDebt"] and candidate_gc["deletedRowsDelta"].get(channel, 0) <= 0:
         raise SystemExit(f"candidate HA GC did not advance the debt-bearing {channel} channel")
 
+candidate_alerts = candidate["load"].get("alerts", {})
+candidate_alert_first_success = candidate_alerts.get("firstSuccessSecs", {})
+candidate_alert_post_warm_5xx = candidate_alerts.get("postWarm5xx", {})
+candidate_alert_post_warm_failures = candidate_alerts.get("postWarmFailures", {})
+candidate_alert_post_restart_attempts = candidate_alerts.get("postRestartAttempts", {})
+candidate_alert_post_restart_successes = candidate_alerts.get("postRestartSuccesses", {})
+candidate_alert_post_restart_failures = candidate_alerts.get("postRestartFailures", {})
+if not candidate_alerts.get("restartObserved"):
+    raise SystemExit("candidate Alerts load did not observe the controlled restart marker")
+for route in ("catalog", "events", "groups"):
+    if route not in candidate_alert_first_success:
+        raise SystemExit(f"candidate canonical Alerts {route} never became available")
+    if candidate_alerts.get("attempts", {}).get(route, 0) < 2:
+        raise SystemExit(f"candidate canonical Alerts {route} did not receive enough attempts")
+    if candidate_alert_post_restart_attempts.get(route, 0) < 1:
+        raise SystemExit(f"candidate canonical Alerts {route} was not attempted after restart")
+    if candidate_alert_post_restart_successes.get(route, 0) < 1:
+        raise SystemExit(f"candidate canonical Alerts {route} did not succeed after restart")
+    if candidate_alert_post_restart_failures.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} failed after restart: "
+            f"count={candidate_alert_post_restart_failures[route]}"
+        )
+    if candidate_alert_post_warm_failures.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} returned a non-200 or transport error "
+            f"after first warm success: count={candidate_alert_post_warm_failures[route]}"
+        )
+    if candidate_alert_post_warm_5xx.get(route, 0):
+        raise SystemExit(
+            f"candidate canonical Alerts {route} returned 5xx after first warm success: "
+            f"count={candidate_alert_post_warm_5xx[route]}"
+        )
+
 baseline_red = baseline_dashboard_red or baseline_business_red
 if baseline_red:
     reasons = []
@@ -1014,6 +1103,8 @@ for billing_field in ("billingAdjustmentCount", "billingAdjustmentSum"):
         )
 
 result = {
+    "baseline_sha": baseline_sha,
+    "candidate_sha": candidate_sha,
     "baseline": baseline,
     "candidate": candidate,
     "baseline_dashboard_red": baseline_dashboard_red,

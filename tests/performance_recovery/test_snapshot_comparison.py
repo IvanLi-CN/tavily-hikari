@@ -34,6 +34,35 @@ def comparison_resources(variable: str) -> set[str]:
 
 
 class SnapshotComparisonTests(unittest.TestCase):
+    def test_comparison_binds_candidate_source_to_expected_sha(self) -> None:
+        self.assertIn('CANDIDATE_SHA="${CANDIDATE_SHA:?CANDIDATE_SHA is required}"', COMPARISON)
+        self.assertIn('CANDIDATE_SHA_MARKER="$CANDIDATE_REPO/.codex-candidate-sha"', COMPARISON)
+        self.assertIn('candidate_sha_marker" == "$CANDIDATE_SHA"', COMPARISON)
+        self.assertIn('"candidate_sha": candidate_sha', COMPARISON)
+
+    def test_comparison_requires_real_alert_attempts_for_both_variants(self) -> None:
+        self.assertIn(
+            'for variant, summary in (("baseline", baseline), ("candidate", candidate))',
+            COMPARISON,
+        )
+        self.assertIn('alerts.get("restartObserved")', COMPARISON)
+        self.assertIn('attempts.get(route, 0) < 2', COMPARISON)
+
+    def test_comparison_source_wrapper_archives_exact_candidate_commit(self) -> None:
+        wrapper = (ROOT / "scripts/run-performance-recovery-testbox-comparison.sh").read_text()
+        self.assertIn('git -C "$ROOT_DIR" archive "$CANDIDATE_SHA"', wrapper)
+        self.assertIn('CANDIDATE_SOURCE_DIR="$TMP_DIR/candidate-source"', wrapper)
+        self.assertIn('BASELINE_REF="${BASELINE_REF:?BASELINE_REF is required', wrapper)
+        self.assertIn('BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}")"', wrapper)
+        self.assertIn('BASELINE_SHA=', wrapper)
+        self.assertIn('rm -f "$ARTIFACTS_DIR/comparison.json"', COMPARISON)
+
+    def test_comparison_binds_baseline_source_to_expected_sha(self) -> None:
+        self.assertIn('BASELINE_SHA="${BASELINE_SHA:?BASELINE_SHA is required}"', COMPARISON)
+        self.assertIn('BASELINE_SHA_MARKER="$BASELINE_REPO/.codex-baseline-sha"', COMPARISON)
+        self.assertIn('baseline_sha_marker" == "$BASELINE_SHA"', COMPARISON)
+        self.assertIn('"baseline_sha": baseline_sha', COMPARISON)
+
     def test_gc_debt_gate_matches_runtime_allowed_resources(self) -> None:
         expected = {
             "HA_GC_CONTROL_RESOURCES": rust_resources("HA_CONTROL_EVENT_TABLES"),
@@ -79,6 +108,15 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('"fixtureResearchTerminal"', COMPARISON)
         self.assertIn('"researchTerminalDelta"', COMPARISON)
         self.assertIn('"researchPendingDelta"', COMPARISON)
+        self.assertIn('candidate canonical Alerts {route} never became available', COMPARISON)
+        self.assertIn('candidate canonical Alerts {route} returned 5xx after first warm success', COMPARISON)
+        self.assertIn('ALERT_ROUTES = ("catalog", "events", "groups")', (ROOT / "tests/performance_recovery/load.py").read_text())
+        self.assertIn('"postWarm5xx"', (ROOT / "tests/performance_recovery/load.py").read_text())
+        self.assertIn('"postWarmFailures"', (ROOT / "tests/performance_recovery/load.py").read_text())
+        self.assertIn('"postRestartSuccesses"', (ROOT / "tests/performance_recovery/load.py").read_text())
+        self.assertIn('--restart-marker /artifacts/restart.marker', COMPARISON)
+        self.assertIn('--restart-begin-marker /artifacts/restart.begin', COMPARISON)
+        self.assertIn('candidate canonical Alerts {route} did not succeed after restart', COMPARISON)
         self.assertIn('"transient sqlite error" in line and "attempt=" in line', COMPARISON)
         self.assertIn('projection transaction p95 is not proven below 100ms', COMPARISON)
         self.assertIn('candidate billing truth differs', COMPARISON)

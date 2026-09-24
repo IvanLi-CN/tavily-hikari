@@ -71,15 +71,60 @@ impl TavilyProxy {
     }
 
     #[doc(hidden)]
-    pub fn begin_admin_alerts_cache_warm_liveness_stage(&self) {
+    pub fn begin_admin_alerts_cache_warm_liveness_stage(&self) -> bool {
         self.key_store
-            .begin_admin_alerts_cache_warm_liveness_stage();
+            .begin_admin_alerts_cache_warm_liveness_stage()
     }
 
     #[doc(hidden)]
     pub fn finish_admin_alerts_cache_warm_liveness_stage(&self) {
         self.key_store
             .finish_admin_alerts_cache_warm_liveness_stage();
+    }
+
+    #[doc(hidden)]
+    pub fn retain_admin_alerts_cache_warm_liveness_for_retry(&self) {
+        self.key_store
+            .retain_admin_alerts_cache_warm_liveness_for_retry();
+    }
+
+    #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_liveness_admission_active(&self) -> bool {
+        self.key_store
+            .sqlite_runtime
+            .admin_alerts_cache_warm_liveness_admission_active()
+    }
+
+    #[doc(hidden)]
+    pub fn admin_alerts_cache_warm_liveness_stage_active(&self) -> bool {
+        self.key_store
+            .sqlite_runtime
+            .admin_alerts_cache_warm_liveness_stage_active()
+    }
+
+    #[doc(hidden)]
+    pub fn transfer_admin_alerts_cache_warm_liveness_to_projection(&self) {
+        self.key_store
+            .transfer_admin_alerts_cache_warm_liveness_to_projection();
+    }
+
+    #[doc(hidden)]
+    pub async fn wait_for_admin_alerts_cache_warm_projection_turn(&self) {
+        self.key_store
+            .sqlite_runtime
+            .wait_for_admin_alerts_cache_warm_projection_turn()
+            .await;
+    }
+
+    #[doc(hidden)]
+    pub async fn wait_for_admin_alerts_cache_warm_projection_wakeup(
+        &self,
+        delay: std::time::Duration,
+    ) {
+        self.key_store
+            .sqlite_runtime
+            .wait_for_admin_alerts_cache_warm_projection_wakeup(delay)
+            .await;
     }
 
     #[doc(hidden)]
@@ -95,6 +140,22 @@ impl TavilyProxy {
         self.key_store
             .admin_alerts_canonical_warm_projection_fence()
             .await
+    }
+
+    #[doc(hidden)]
+    pub async fn acquire_admin_alerts_canonical_publish_gate(
+        &self,
+    ) -> Option<crate::store::AdminAlertsCanonicalPublishGate> {
+        self.key_store
+            .acquire_admin_alerts_canonical_publish_gate()
+            .await
+    }
+
+    #[doc(hidden)]
+    pub fn reserve_admin_alerts_canonical_publish(
+        &self,
+    ) -> crate::store::AdminAlertsCanonicalPublishReservation {
+        self.key_store.reserve_admin_alerts_canonical_publish()
     }
 
     #[doc(hidden)]
@@ -169,9 +230,20 @@ impl TavilyProxy {
             self.advance_dashboard_alert_projection_slice_outcome().await?,
         );
         if step.refresh_dashboard_summary {
-            self.key_store
+            match self
+                .key_store
                 .refresh_dashboard_alert_projection_summary()
-                .await?;
+                .await
+            {
+                Ok(_) => {}
+                Err(error)
+                    if crate::is_transient_sqlite_write_error(&error) || error.is_deferred() =>
+                {
+                    // The projected slice is durable; a contended materialized-summary write
+                    // can be retried on the next scheduler turn without failing the scheduler.
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(step)
     }
@@ -397,6 +469,23 @@ impl TavilyProxy {
                     snapshot.source_fence.1,
                 )
             })
+    }
+
+    #[doc(hidden)]
+    pub async fn admin_alerts_canonical_last_good_for_rehydrate(
+        &self,
+    ) -> Result<
+        Option<(
+            AlertCatalog,
+            PaginatedAlertEvents,
+            PaginatedAlertGroups,
+            (i64, i64),
+        )>,
+        ProxyError,
+    > {
+        self.key_store
+            .admin_alerts_canonical_last_good_for_rehydrate()
+            .await
     }
 
     pub async fn alert_catalog(&self) -> Result<AlertCatalog, ProxyError> {
