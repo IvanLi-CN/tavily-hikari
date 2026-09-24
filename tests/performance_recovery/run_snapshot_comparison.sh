@@ -14,6 +14,8 @@ Required environment:
                     containing the expected full Git SHA
   CANDIDATE_SHA     Expected full 40-character candidate Git SHA
   BASELINE_REPO     Baseline source tree within REMOTE_RUN
+  BASELINE_SHA      Expected full 40-character baseline Git SHA; BASELINE_REPO must contain
+                    .codex-baseline-sha with the same value
   SNAPSHOT_DIR      Directory containing manifest.env and compressed core/observability snapshots
   COMPOSE_PROJECT   Unique Docker Compose project name
 
@@ -31,6 +33,7 @@ REMOTE_RUN="${REMOTE_RUN:?REMOTE_RUN is required}"
 CANDIDATE_REPO="${CANDIDATE_REPO:?CANDIDATE_REPO is required}"
 CANDIDATE_SHA="${CANDIDATE_SHA:?CANDIDATE_SHA is required}"
 BASELINE_REPO="${BASELINE_REPO:?BASELINE_REPO is required}"
+BASELINE_SHA="${BASELINE_SHA:?BASELINE_SHA is required}"
 SNAPSHOT_DIR="${SNAPSHOT_DIR:?SNAPSHOT_DIR is required}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:?COMPOSE_PROJECT is required}"
 DURATION_SECS="${DURATION_SECS:-600}"
@@ -109,6 +112,10 @@ done
   echo "CANDIDATE_SHA must be a full 40-character lowercase Git SHA" >&2
   exit 2
 }
+[[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "BASELINE_SHA must be a full 40-character lowercase Git SHA" >&2
+  exit 2
+}
 CANDIDATE_SHA_MARKER="$CANDIDATE_REPO/.codex-candidate-sha"
 [[ -f "$CANDIDATE_SHA_MARKER" ]] || {
   echo "missing candidate SHA marker: $CANDIDATE_SHA_MARKER" >&2
@@ -117,6 +124,16 @@ CANDIDATE_SHA_MARKER="$CANDIDATE_REPO/.codex-candidate-sha"
 candidate_sha_marker="$(<"$CANDIDATE_SHA_MARKER")"
 [[ "$candidate_sha_marker" == "$CANDIDATE_SHA" ]] || {
   echo "candidate SHA marker mismatch: expected=$CANDIDATE_SHA actual=$candidate_sha_marker" >&2
+  exit 2
+}
+BASELINE_SHA_MARKER="$BASELINE_REPO/.codex-baseline-sha"
+[[ -f "$BASELINE_SHA_MARKER" ]] || {
+  echo "missing baseline SHA marker: $BASELINE_SHA_MARKER" >&2
+  exit 2
+}
+baseline_sha_marker="$(<"$BASELINE_SHA_MARKER")"
+[[ "$baseline_sha_marker" == "$BASELINE_SHA" ]] || {
+  echo "baseline SHA marker mismatch: expected=$BASELINE_SHA actual=$baseline_sha_marker" >&2
   exit 2
 }
 
@@ -817,13 +834,14 @@ for variant in baseline candidate; do
         "$ARTIFACTS_DIR/$variant/compose.log" | tail -160 || true
 done
 
-python3 - "$ARTIFACTS_DIR" "$CANDIDATE_SHA" <<'PY'
+python3 - "$ARTIFACTS_DIR" "$CANDIDATE_SHA" "$BASELINE_SHA" <<'PY'
 import json
 import pathlib
 import sys
 
 artifacts = pathlib.Path(sys.argv[1])
 candidate_sha = sys.argv[2]
+baseline_sha = sys.argv[3]
 baseline = json.loads((artifacts / "baseline" / "summary.json").read_text())
 candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
 
@@ -1085,6 +1103,7 @@ for billing_field in ("billingAdjustmentCount", "billingAdjustmentSum"):
         )
 
 result = {
+    "baseline_sha": baseline_sha,
     "candidate_sha": candidate_sha,
     "baseline": baseline,
     "candidate": candidate,

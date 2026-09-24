@@ -10,8 +10,10 @@ Export a read-only core/observability snapshot from 101, then compare a baseline
 candidate in isolated internal-network testbox containers. The script removes only its own source
 staging directory and REMOTE_RUN after collecting the non-sensitive comparison summary.
 
+Required environment:
+  BASELINE_REF    Baseline Git revision; its resolved full SHA is recorded in the artifact
+
 Optional environment:
-  BASELINE_REF    Baseline Git revision, defaults to the initiative baseline
   DURATION_SECS   Per-variant duration, defaults to 600
   RUN_ID          Explicit unique testbox run id
 EOF
@@ -23,7 +25,8 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE_REF="${BASELINE_REF:-1d6d93cbf4de6e673d75811fadd21f45b9a40482}"
+BASELINE_REF="${BASELINE_REF:?BASELINE_REF is required and must identify the intended comparison baseline}"
+BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}")"
 CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 DURATION_SECS="${DURATION_SECS:-600}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
@@ -34,8 +37,8 @@ RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_$(git -C "$ROOT_DIR" rev-parse --sho
   echo "DURATION_SECS must be at least 60" >&2
   exit 2
 }
-git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}" >/dev/null
 [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate HEAD is not a full Git SHA" >&2; exit 2; }
+[[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "baseline is not a full Git SHA" >&2; exit 2; }
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tavily-hikari-recovery.XXXXXX")"
 TESTBOX_OUTPUT="$TMP_DIR/testbox-comparison.log"
@@ -83,15 +86,17 @@ rsync -az --delete --exclude '.git/' "$CANDIDATE_SOURCE_DIR/" "$TESTBOX_HOST:$RE
 ssh -o BatchMode=yes "$TESTBOX_HOST" \
   "printf '%s\\n' '$CANDIDATE_SHA' > '$REMOTE_RUN/repo/.codex-candidate-sha'"
 
-echo "Preparing baseline source at ${BASELINE_REF}..."
+echo "Preparing baseline source at ${BASELINE_SHA} (requested ${BASELINE_REF})..."
 BASELINE_ARCHIVE="$TMP_DIR/baseline-source.tar"
-git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_REF"
+git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_SHA"
 BASELINE_SOURCE_DIR="$TMP_DIR/baseline-source"
 mkdir -p "$BASELINE_SOURCE_DIR"
 tar -xf "$BASELINE_ARCHIVE" -C "$BASELINE_SOURCE_DIR"
 rm -f "$BASELINE_ARCHIVE"
 ssh -o BatchMode=yes "$TESTBOX_HOST" "mkdir -p '$REMOTE_RUN/baseline-repo' && chmod 700 '$REMOTE_RUN/baseline-repo'"
 rsync -az --delete --exclude '.git/' "$BASELINE_SOURCE_DIR/" "$TESTBOX_HOST:$REMOTE_RUN/baseline-repo/"
+ssh -o BatchMode=yes "$TESTBOX_HOST" \
+  "printf '%s\\n' '$BASELINE_SHA' > '$REMOTE_RUN/baseline-repo/.codex-baseline-sha'"
 
 COMPOSE_PROJECT="$(python3 - "$RUN_ID" <<'PY'
 import re
@@ -106,6 +111,7 @@ if ssh -o BatchMode=yes "$TESTBOX_HOST" "set -euo pipefail
 REMOTE_RUN='$REMOTE_RUN' \\
 CANDIDATE_REPO='$REMOTE_RUN/repo' \\
 CANDIDATE_SHA='$CANDIDATE_SHA' \\
+BASELINE_SHA='$BASELINE_SHA' \\
 BASELINE_REPO='$REMOTE_RUN/baseline-repo' \\
 SNAPSHOT_DIR='$REMOTE_RUN/live-db' \\
 COMPOSE_PROJECT='$COMPOSE_PROJECT' \\
