@@ -217,6 +217,10 @@ impl Drop for SqliteMaintenanceAdmissionLease {
 }
 
 impl SqliteMaintenanceCoordinator {
+    fn retain_request_for_defer(reason: SqliteAdmissionDeferReason) -> bool {
+        matches!(reason, SqliteAdmissionDeferReason::ForegroundPressure)
+    }
+
     fn cancel_request(&self, class: SqliteMaintenanceClass) {
         let mut state = self
             .state
@@ -1108,14 +1112,22 @@ impl SqliteRuntime {
             self.maintenance_bulk_defer_reason_for_with_policy(operation, false, false, false)
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
-            self.inner.maintenance_coordinator.cancel_request(class);
+            if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.register_request(class);
+            } else {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
         self.inner.maintenance_coordinator.register_request(class);
         if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
             if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
-                self.inner.maintenance_coordinator.cancel_request(class);
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
             }
             self.record_deferred(operation, reason);
             return Err(reason);
@@ -1150,7 +1162,11 @@ impl SqliteRuntime {
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
-            self.inner.maintenance_coordinator.cancel_request(class);
+            if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.register_request(class);
+            } else {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
@@ -1163,7 +1179,11 @@ impl SqliteRuntime {
         );
         if let Some(reason) = reason {
             if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
-                self.inner.maintenance_coordinator.cancel_request(class);
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
             }
             self.record_deferred(operation, reason);
             return Err(reason);

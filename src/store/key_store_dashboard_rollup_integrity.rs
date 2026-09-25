@@ -119,17 +119,18 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
             .await?;
-        let now = self.backend_time.now_ts();
-        let state = sqlx::query(
+        let result = async {
+            let now = self.backend_time.now_ts();
+            let state = sqlx::query(
             r#"
             SELECT last_verified_at, stalled_since, next_attempt_at, hot_cursor, hot_fence, history_cursor
             FROM dashboard_rollup_integrity_state
             WHERE id = 1
             "#,
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
-        let unverified_bucket_count: i64 = sqlx::query_scalar(
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
+            let unverified_bucket_count: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) FROM (
                 SELECT range_start FROM dashboard_rollup_integrity_gaps
@@ -139,10 +140,10 @@ impl KeyStore {
                 SELECT bucket_start FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending'
             )
             "#,
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-        let recovery_backlog_bucket_count: i64 = sqlx::query_scalar(
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            let recovery_backlog_bucket_count: i64 = sqlx::query_scalar(
             r#"
             SELECT CASE
                 WHEN status = 'complete' OR range_end IS NULL OR cursor IS NULL THEN 0
@@ -151,79 +152,85 @@ impl KeyStore {
             FROM dashboard_rollup_rebalance_recovery
             WHERE id = 1
             "#,
-        )
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS)
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS)
-        .fetch_optional(&mut *conn)
-        .await?
-        .unwrap_or_default();
-        let DashboardRollupIntegrityStateRow {
+            )
+            .bind(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS)
+            .bind(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS)
+            .fetch_optional(&mut *conn)
+            .await?
+            .unwrap_or_default();
+            let DashboardRollupIntegrityStateRow {
             last_verified_at,
             stalled_since,
             next_attempt_at,
             hot_cursor,
             hot_fence,
             history_cursor,
-        } = state
-            .map(|row| {
-                Ok::<_, sqlx::Error>(DashboardRollupIntegrityStateRow {
-                    last_verified_at: row.try_get("last_verified_at")?,
-                    stalled_since: row.try_get("stalled_since")?,
-                    next_attempt_at: row.try_get("next_attempt_at")?,
-                    hot_cursor: row.try_get("hot_cursor")?,
-                    hot_fence: row.try_get("hot_fence")?,
-                    history_cursor: row.try_get("history_cursor")?,
+            } = state
+                .map(|row| {
+                    Ok::<_, sqlx::Error>(DashboardRollupIntegrityStateRow {
+                        last_verified_at: row.try_get("last_verified_at")?,
+                        stalled_since: row.try_get("stalled_since")?,
+                        next_attempt_at: row.try_get("next_attempt_at")?,
+                        hot_cursor: row.try_get("hot_cursor")?,
+                        hot_fence: row.try_get("hot_fence")?,
+                        history_cursor: row.try_get("history_cursor")?,
+                    })
                 })
+                .transpose()?
+                .unwrap_or_default();
+            let oldest_visible_log: Option<i64> = sqlx::query_scalar(
+                "SELECT MIN(created_at) FROM request_logs WHERE visibility = ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .fetch_one(&mut *conn)
+            .await?;
+            let hot_backlog_bucket_count = hot_cursor
+                .zip(hot_fence)
+                .map(|(cursor, fence)| {
+                    let pending_seconds = fence.saturating_sub(cursor).max(0);
+                    pending_seconds
+                        .saturating_add(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS - 1)
+                        / DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS
+                })
+                .unwrap_or_default();
+            let history_backlog_bucket_count = history_cursor
+                .zip(oldest_visible_log)
+                .map(|(cursor, oldest)| {
+                    let pending_seconds = cursor.saturating_sub(oldest).max(0);
+                    pending_seconds
+                        .saturating_add(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS - 1)
+                        / DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS
+                })
+                .unwrap_or_default();
+            let history_incomplete = history_backlog_bucket_count > 0;
+            let audit_incomplete = hot_backlog_bucket_count > 0 || history_incomplete;
+            let state = if stalled_since
+                .map(|started| now.saturating_sub(started) >= DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS)
+                .unwrap_or(false)
+            {
+                "degraded"
+            } else if unverified_bucket_count > 0 || audit_incomplete || last_verified_at.is_none() {
+                "repairing"
+            } else {
+                "healthy"
+            };
+            Ok::<_, ProxyError>(DashboardRollupIntegrityStatus {
+                state: state.to_string(),
+                last_verified_at,
+                next_attempt_at,
+                unverified_bucket_count: unverified_bucket_count
+                    + hot_backlog_bucket_count
+                    + history_backlog_bucket_count
+                    + recovery_backlog_bucket_count,
             })
-            .transpose()?
-            .unwrap_or_default();
-        let oldest_visible_log: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM request_logs WHERE visibility = ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_one(&mut *conn)
-        .await?;
-        let hot_backlog_bucket_count = hot_cursor
-            .zip(hot_fence)
-            .map(|(cursor, fence)| {
-                let pending_seconds = fence.saturating_sub(cursor).max(0);
-                pending_seconds
-                    .saturating_add(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS - 1)
-                    / DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS
-            })
-            .unwrap_or_default();
-        let history_backlog_bucket_count = history_cursor
-            .zip(oldest_visible_log)
-            .map(|(cursor, oldest)| {
-                let pending_seconds = cursor.saturating_sub(oldest).max(0);
-                pending_seconds
-                    .saturating_add(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS - 1)
-                    / DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS
-            })
-            .unwrap_or_default();
-        let history_incomplete = history_backlog_bucket_count > 0;
-        let audit_incomplete = hot_backlog_bucket_count > 0 || history_incomplete;
-        let state = if stalled_since
-            .map(|started| now.saturating_sub(started) >= DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS)
-            .unwrap_or(false)
-        {
-            "degraded"
-        } else if unverified_bucket_count > 0 || audit_incomplete || last_verified_at.is_none() {
-            "repairing"
-        } else {
-            "healthy"
-        };
-        let result = DashboardRollupIntegrityStatus {
-            state: state.to_string(),
-            last_verified_at,
-            next_attempt_at,
-            unverified_bucket_count: unverified_bucket_count
-                + hot_backlog_bucket_count
-                + history_backlog_bucket_count
-                + recovery_backlog_bucket_count,
-        };
-        conn.close().await?;
-        Ok(result)
+        }
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err),
+        }
     }
 
     pub(crate) async fn run_dashboard_rollup_integrity_slice(
@@ -1720,37 +1727,35 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
             .await?;
-        let oldest: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(threshold)
-        .fetch_one(&mut *conn)
-        .await?;
-        let Some(oldest) = oldest else {
-            conn.close().await?;
-            return Ok(Some(threshold));
-        };
-        let day_start = local_day_bucket_start_utc_ts(oldest);
-        let day_end = next_local_day_start_utc_ts(day_start);
-        if day_end > threshold {
-            conn.close().await?;
-            return Ok(None);
-        }
-        let sealed: Option<String> = sqlx::query_scalar(
-            "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .fetch_optional(&mut *conn)
-        .await?;
-        let Some(counts_json) = sealed else {
-            conn.close().await?;
-            return Ok(None);
-        };
-        let expected: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
-            .map_err(|err| ProxyError::Other(format!("invalid dashboard day seal: {err}")))?;
-        let minute_rows = sqlx::query(
-            r#"
+        let result = async {
+            let oldest: Option<i64> = sqlx::query_scalar(
+                "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(threshold)
+            .fetch_one(&mut *conn)
+            .await?;
+            let Some(oldest) = oldest else {
+                return Ok(Some(threshold));
+            };
+            let day_start = local_day_bucket_start_utc_ts(oldest);
+            let day_end = next_local_day_start_utc_ts(day_start);
+            if day_end > threshold {
+                return Ok(None);
+            }
+            let sealed: Option<String> = sqlx::query_scalar(
+                "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some(counts_json) = sealed else {
+                return Ok(None);
+            };
+            let expected: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
+                .map_err(|err| ProxyError::Other(format!("invalid dashboard day seal: {err}")))?;
+            let minute_rows = sqlx::query(
+                r#"
             SELECT bucket_start, total_requests, success_count, error_count, quota_exhausted_count,
                    valuable_success_count, valuable_failure_count, valuable_failure_429_count,
                    other_success_count, other_failure_count, unknown_count, mcp_non_billable,
@@ -1758,23 +1763,23 @@ impl KeyStore {
             FROM dashboard_request_rollup_buckets
             WHERE bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
             "#,
-        )
-        .bind(SECS_PER_MINUTE)
-        .bind(day_start)
-        .bind(day_end)
-        .fetch_all(&mut *conn)
-        .await?;
-        let minute_actual = minute_rows
-            .into_iter()
-            .map(|row| Self::dashboard_rollup_counts_from_row(&row))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .fold(DashboardRequestRollupCounts::default(), |mut total, value| {
-                total.add(value);
-                total
-            });
-        let daily_row = sqlx::query(
-            r#"
+            )
+            .bind(SECS_PER_MINUTE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_all(&mut *conn)
+            .await?;
+            let minute_actual = minute_rows
+                .into_iter()
+                .map(|row| Self::dashboard_rollup_counts_from_row(&row))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .fold(DashboardRequestRollupCounts::default(), |mut total, value| {
+                    total.add(value);
+                    total
+                });
+            let daily_row = sqlx::query(
+                r#"
             SELECT total_requests, success_count, error_count, quota_exhausted_count,
                    valuable_success_count, valuable_failure_count, valuable_failure_429_count,
                    other_success_count, other_failure_count, unknown_count, mcp_non_billable,
@@ -1782,19 +1787,24 @@ impl KeyStore {
             FROM dashboard_request_rollup_buckets
             WHERE bucket_start = ? AND bucket_secs = ?
             "#,
-        )
-        .bind(day_start)
-        .bind(SECS_PER_DAY)
-        .fetch_optional(&mut *conn)
-        .await?;
-        let daily_actual = daily_row
-            .map(|row| Self::dashboard_rollup_counts_from_row(&row))
-            .transpose()?
-            .unwrap_or_default();
-        conn.close().await?;
-        if minute_actual != expected || daily_actual != expected {
-            return Ok(None);
+            )
+            .bind(day_start)
+            .bind(SECS_PER_DAY)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let daily_actual = daily_row
+                .map(|row| Self::dashboard_rollup_counts_from_row(&row))
+                .transpose()?
+                .unwrap_or_default();
+            Ok::<_, ProxyError>((minute_actual == expected && daily_actual == expected)
+                .then_some(day_end))
         }
-        Ok(Some(day_end))
+        .await;
+        let close = conn.close().await;
+        match (result, close) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err),
+        }
     }
 }
