@@ -14,6 +14,8 @@ Optional environment:
   BASELINE_REF    Baseline Git revision, defaults to the initiative baseline
   DURATION_SECS   Per-variant duration, defaults to 600
   RUN_ID          Explicit unique testbox run id
+  REMOTE_SPACE_MARGIN_BYTES
+                  Testbox free-space margin, defaults to the exporter 10GiB default
 EOF
 }
 
@@ -27,10 +29,17 @@ BASELINE_REF="${BASELINE_REF:-1d6d93cbf4de6e673d75811fadd21f45b9a40482}"
 DURATION_SECS="${DURATION_SECS:-600}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_$(git -C "$ROOT_DIR" rev-parse --short HEAD)_recovery_compare}"
+CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse "${BASELINE_REF}^{commit}")"
+REMOTE_SPACE_MARGIN_BYTES="${REMOTE_SPACE_MARGIN_BYTES:-10737418240}"
 
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || { echo "invalid RUN_ID" >&2; exit 2; }
 [[ "$DURATION_SECS" =~ ^[0-9]+$ ]] && (( DURATION_SECS >= 60 )) || {
   echo "DURATION_SECS must be at least 60" >&2
+  exit 2
+}
+[[ "$REMOTE_SPACE_MARGIN_BYTES" =~ ^[0-9]+$ ]] || {
+  echo "REMOTE_SPACE_MARGIN_BYTES must be a non-negative integer" >&2
   exit 2
 }
 git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}" >/dev/null
@@ -63,7 +72,11 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Exporting the read-only 101 dual-database snapshot..."
-snapshot_output="$(RUN_ID="$RUN_ID" "$ROOT_DIR/scripts/export-live-db-snapshot-to-testbox.sh")"
+snapshot_output="$(
+  RUN_ID="$RUN_ID" \
+  REMOTE_SPACE_MARGIN_BYTES="$REMOTE_SPACE_MARGIN_BYTES" \
+  "$ROOT_DIR/scripts/export-live-db-snapshot-to-testbox.sh"
+)"
 printf '%s\n' "$snapshot_output"
 REMOTE_RUN="$(printf '%s\n' "$snapshot_output" | awk -F= '/^REMOTE_RUN=/{print $2; exit}')"
 [[ "$REMOTE_RUN" =~ ^/srv/codex/workspaces/.+/runs/[A-Za-z0-9_.-]+$ ]] || {
@@ -95,6 +108,8 @@ BASELINE_REPO='$REMOTE_RUN/baseline-repo' \\
 SNAPSHOT_DIR='$REMOTE_RUN/live-db' \\
 COMPOSE_PROJECT='$COMPOSE_PROJECT' \\
 DURATION_SECS='$DURATION_SECS' \\
+CANDIDATE_SHA='$CANDIDATE_SHA' \\
+BASELINE_SHA='$BASELINE_SHA' \\
 bash '$REMOTE_RUN/repo/tests/performance_recovery/run_snapshot_comparison.sh'
 " >"$TESTBOX_OUTPUT" 2>&1; then
   :

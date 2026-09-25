@@ -1,0 +1,59 @@
+# ADR 0005: Fair SQLite Maintenance Admission
+
+## Status
+
+Accepted
+
+## Context
+
+The service uses SQLite as its core persistence boundary. Foreground request work and billing
+truth need bounded, synchronous access, while several derived writers share one physical bulk
+permit: request-stat flushing, dashboard projections, HA outbox cleanup, request-log cleanup,
+server-pressure persistence, alert projection, and reconciliation projection. Each existing worker
+already returned a typed defer instead of waiting indefinitely, but independent retry loops could
+repeatedly reacquire the permit and leave an older maintenance class waiting behind a newer one.
+
+The problem is admission fairness and maintenance freshness. Increasing the SQLite pool would not
+remove SQLite's single-writer limit, and compaction or a database migration would not order the
+existing writers. A broad asynchronous waiter queue would also make cancellation and shutdown
+ownership harder to bound.
+
+## Decision
+
+Keep one physical maintenance-bulk semaphore and the existing foreground-capacity and recent-
+contention policy. Add one instance-local coordinator in front of that semaphore:
+
+- The coordinator has a fixed set of maintenance classes and at most one pending ticket per class.
+- Tickets are served oldest-first by their first request time and a monotonic tie-breaker.
+- Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
+  or receives the existing typed defer reason and retries through its existing bounded loop.
+- A pending class expires after 120 seconds without another retry. This bounds abandoned work and
+  leaves durable scheduled-job state responsible for work that must survive process lifetime.
+- The lease is held only for the local SQLite slice. Remote requests and their response handling
+  are outside the lease, and foreground request work, billing truth, and control-plane writes do
+  not become eventual.
+- Runtime workload-window logs expose pending age and per-class admission/completion statistics;
+  each admitted slice logs its class and wait age.
+
+The request-log GC admission-defer continuation uses a 30-second retry, while a normal completed
+GC continuation keeps its existing five-minute cadence. Other maintenance loops retain their
+existing sub-60-second retry schedules.
+
+## Alternatives Rejected
+
+- Expanding the SQLite pool: this increases concurrent connection pressure without increasing the
+  single-writer capacity and can reduce foreground reservation.
+- Treating compaction as contention control: compaction is an operational maintenance action and
+  does not arbitrate ordinary derived writers.
+- Moving core persistence to Postgres: this changes the persistence contract and is outside the
+  scoped contention problem.
+- One unbounded async maintenance queue: it complicates cancellation, process shutdown, and
+  bounded memory without improving durable fairness across restarts.
+
+## Consequences
+
+Fairness is enforced only for the instance-local physical bulk permit. Durable scheduled-job
+queue semantics still provide process-restart recovery. Derived observations may remain boundedly
+eventually consistent, while foreground request and billing correctness are unchanged. The
+coordinator adds a small mutex operation to each bulk admission and observable counters that make
+maintenance starvation and stale retries diagnosable.

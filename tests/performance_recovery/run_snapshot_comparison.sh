@@ -33,6 +33,8 @@ COMPOSE_PROJECT="${COMPOSE_PROJECT:?COMPOSE_PROJECT is required}"
 DURATION_SECS="${DURATION_SECS:-600}"
 ARTIFACTS_DIR="${REMOTE_RUN}/artifacts/performance-recovery"
 WORK_DIR="${REMOTE_RUN}/performance-recovery"
+CANDIDATE_SHA="${CANDIDATE_SHA:-unknown}"
+BASELINE_SHA="${BASELINE_SHA:-unknown}"
 # Testbox retries must not ask Docker Hub to resolve a mutable tag. This digest
 # is the exact Rust 1.91 Bookworm image used by the checked-in test Dockerfile.
 TESTBOX_RUST_BASE_IMAGE="rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33"
@@ -619,12 +621,16 @@ run_variant() {
   compose logs --no-color > "$artifact_dir/compose.log" 2>&1 || true
   python3 - "$name" "$artifact_dir" <<'PY'
 import json
+import os
 import pathlib
+import re
 import statistics
 import sys
 
 name = sys.argv[1]
 artifact_dir = pathlib.Path(sys.argv[2])
+CANDIDATE_SHA = os.environ.get("CANDIDATE_SHA", "unknown")
+BASELINE_SHA = os.environ.get("BASELINE_SHA", "unknown")
 load = json.loads((artifact_dir / "load.json").read_text())
 
 def read_ha_gc_state(path):
@@ -669,6 +675,12 @@ def p95(key):
         return None
     return values[min(len(values) - 1, int(len(values) * 0.95))]
 
+def percentile(values):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    return ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+
 logs = (artifact_dir / "compose.log").read_text(errors="replace")
 sqlite_lock_markers = (
     "database is locked",
@@ -690,7 +702,158 @@ sqlite_lock_lines = [
 ]
 
 def structured_field(line, field, value):
-    return f'"{field}":"{value}"' in line or f"{field}={value}" in line
+    return (
+        f'"{field}":"{value}"' in line
+        or f'"{field}":{value}' in line
+        or f"{field}={value}" in line
+    )
+
+def structured_value(line, field):
+    escaped_field = re.escape(field)
+    json_match = re.search(
+        rf'"{escaped_field}":(?:"((?:\\.|[^"\\])*)"|(-?[0-9]+(?:\.[0-9]+)?))',
+        line,
+    )
+    if json_match:
+        return json_match.group(1) or json_match.group(2)
+    text_match = re.search(rf'(?:^|[\s,]){escaped_field}=([^\s]+)', line)
+    return text_match.group(1).strip('"') if text_match else None
+
+def parse_int(value):
+    if value in (None, "none", "unknown"):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+def parse_maintenance_snapshot(raw):
+    if not raw or ",classes=" not in raw:
+        return None
+    active_raw, classes_raw = raw.split(",classes=", 1)
+    snapshot = {"active": active_raw.removeprefix("active="), "classes": {}}
+    for class_raw in classes_raw.split("|"):
+        class_name, separator, fields_raw = class_raw.partition(":")
+        if not separator or not class_name:
+            continue
+        fields = {}
+        for field_raw in fields_raw.split(","):
+            field, separator, value = field_raw.partition("=")
+            if separator:
+                fields[field] = value
+        snapshot["classes"][class_name] = {
+            "pendingAgeMs": parse_int(fields.get("pending_age_ms")),
+            "admissions": parse_int(fields.get("admissions")) or 0,
+            "completed": parse_int(fields.get("completed")) or 0,
+            "maxWaitMs": parse_int(fields.get("max_wait_ms")) or 0,
+            "stale": parse_int(fields.get("stale")) or 0,
+        }
+    return snapshot
+
+maintenance_snapshots = []
+maintenance_admission_events = []
+foreground_hold_p95_samples = []
+for line in logs.splitlines():
+    snapshot = parse_maintenance_snapshot(structured_value(line, "maintenance_admission"))
+    if snapshot:
+        maintenance_snapshots.append(snapshot)
+    if structured_field(line, "event", "sqlite_maintenance_admitted"):
+        maintenance_admission_events.append({
+            "class": structured_value(line, "maintenance_class"),
+            "pendingAgeMs": parse_int(structured_value(line, "pending_age_ms")),
+        })
+    top_operations = structured_value(line, "top_operations")
+    if top_operations:
+        for operation in top_operations.split(";"):
+            if operation.startswith("foreground_work/"):
+                hold_match = re.search(r"hold_p95_ms=(\d+)", operation)
+                if hold_match:
+                    foreground_hold_p95_samples.append(int(hold_match.group(1)))
+
+maintenance_classes = {}
+pending_age_samples = []
+wait_samples = []
+pending_class_counts = []
+for snapshot in maintenance_snapshots:
+    pending_count = 0
+    for class_name, values in snapshot["classes"].items():
+        state = maintenance_classes.setdefault(
+            class_name,
+            {
+                "admittedSlices": 0,
+                "pendingAgeSamples": [],
+                "waitSamples": [],
+                "maxWaitMs": 0,
+                "eventCount": 0,
+            },
+        )
+        state["admittedSlices"] = max(state["admittedSlices"], values["admissions"])
+        state["maxWaitMs"] = max(state["maxWaitMs"], values["maxWaitMs"])
+        if values["pendingAgeMs"] is not None:
+            pending_count += 1
+            pending_age_samples.append(values["pendingAgeMs"])
+            wait_samples.append(values["pendingAgeMs"])
+            state["pendingAgeSamples"].append(values["pendingAgeMs"])
+            state["waitSamples"].append(values["pendingAgeMs"])
+    pending_class_counts.append(pending_count)
+for event in maintenance_admission_events:
+    class_name = event["class"]
+    if not class_name:
+        continue
+    state = maintenance_classes.setdefault(
+        class_name,
+        {
+            "admittedSlices": 0,
+            "pendingAgeSamples": [],
+            "waitSamples": [],
+            "maxWaitMs": 0,
+            "eventCount": 0,
+        },
+    )
+    state["eventCount"] += 1
+    state["admittedSlices"] = max(state["admittedSlices"], state["eventCount"])
+    if event["pendingAgeMs"] is not None:
+        state["maxWaitMs"] = max(state["maxWaitMs"], event["pendingAgeMs"])
+        wait_samples.append(event["pendingAgeMs"])
+        state["waitSamples"].append(event["pendingAgeMs"])
+
+maintenance_class_summary = {}
+for class_name, state in sorted(maintenance_classes.items()):
+    class_waits = state["waitSamples"]
+    maintenance_class_summary[class_name] = {
+        "admittedSlices": state["admittedSlices"],
+        "eventCount": state["eventCount"],
+        "pendingAgeSampleCount": len(state["pendingAgeSamples"]),
+        "waitSampleCount": len(class_waits),
+        "maxWaitMs": max(state["maxWaitMs"], max(class_waits, default=0)),
+        "p95WaitMs": percentile(class_waits),
+    }
+
+maintenance_admission = {
+    "snapshotCount": len(maintenance_snapshots),
+    "admissionEventCount": len(maintenance_admission_events),
+    "classes": maintenance_class_summary,
+    "pendingAgeSampleCount": len(pending_age_samples),
+    "pendingAgeP95Ms": percentile(pending_age_samples),
+    "maxPendingAgeMs": max(pending_age_samples) if pending_age_samples else 0,
+    "waitSampleCount": len(wait_samples),
+    "waitP95Ms": percentile(wait_samples),
+    "maxWaitMs": max(
+        (class_metrics["maxWaitMs"] for class_metrics in maintenance_class_summary.values()),
+        default=0,
+    ),
+    "maxPendingClassCount": max(pending_class_counts) if pending_class_counts else 0,
+    "finalPendingAgeMaxMs": max(
+        (
+            values["pendingAgeMs"]
+            for values in maintenance_snapshots[-1]["classes"].values()
+            if values["pendingAgeMs"] is not None
+        ),
+        default=0,
+    )
+    if maintenance_snapshots
+    else 0,
+}
 
 sqlite_transient_lock_retries = sum(
     structured_field(line, "event", "sqlite_transient_write_retry")
@@ -712,6 +875,15 @@ sqlite_typed_lock_deferrals = sum(
 sqlite_final_lock_errors = (
     len(sqlite_lock_lines) - sqlite_transient_lock_retries - sqlite_typed_lock_deferrals
 )
+sqlite_pool_timeout_errors = sum(
+    structured_field(line, "workload_class", "foreground_work")
+    and (
+        structured_field(line, "pool_timeout", "true")
+        or "PoolTimedOut" in line
+        or "pool timed out" in line.lower()
+    )
+    for line in logs.splitlines()
+)
 
 def lane_5xx(lane):
     return sum(
@@ -722,8 +894,10 @@ def lane_5xx(lane):
 
 summary = {
     "variant": name,
+    "sourceSha": CANDIDATE_SHA if name == "candidate" else BASELINE_SHA,
     "load": load,
     "rssP95KiB": p95("rss_kib"),
+    "foregroundTransactionP95Ms": percentile(foreground_hold_p95_samples),
     "memoryP95": {
         key: p95(key)
         for key in (
@@ -739,6 +913,8 @@ summary = {
     "sqliteTransientLockRetries": sqlite_transient_lock_retries,
     "sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals,
     "sqliteFinalLockErrors": sqlite_final_lock_errors,
+    "sqlitePoolTimeoutErrors": sqlite_pool_timeout_errors,
+    "maintenanceAdmission": maintenance_admission,
     "nestedTransactionErrors": logs.count("cannot start a transaction within a transaction"),
     "reconciliationProjectionDiscarded": sum(
         structured_field(line, "event", "sqlite_transaction_connection_discarded")
@@ -980,6 +1156,69 @@ if candidate["sqliteFinalLockErrors"]:
         "candidate emitted a final SQLite lock error: "
         f"errors={candidate['sqliteFinalLockErrors']}"
     )
+if candidate["sourceSha"] == "unknown":
+    raise SystemExit("candidate source SHA was not supplied to the comparison")
+
+baseline_request_path_errors = (
+    baseline["sqliteFinalLockErrors"] + baseline["sqlitePoolTimeoutErrors"]
+)
+candidate_request_path_errors = (
+    candidate["sqliteFinalLockErrors"] + candidate["sqlitePoolTimeoutErrors"]
+)
+if candidate_request_path_errors > baseline_request_path_errors:
+    raise SystemExit(
+        "candidate request-path SQLite lock/pool errors increased: "
+        f"baseline={baseline_request_path_errors}, candidate={candidate_request_path_errors}"
+    )
+if baseline_request_path_errors and candidate_request_path_errors * 2 > baseline_request_path_errors:
+    raise SystemExit(
+        "candidate request-path SQLite lock/pool errors did not fall by at least 50%: "
+        f"baseline={baseline_request_path_errors}, candidate={candidate_request_path_errors}"
+    )
+
+candidate_admission = candidate["maintenanceAdmission"]
+for class_name, class_metrics in candidate_admission["classes"].items():
+    exercised = (
+        class_metrics["admittedSlices"] > 0
+        or class_metrics["pendingAgeSampleCount"] > 0
+        or class_metrics["eventCount"] > 0
+    )
+    if exercised and class_metrics["maxWaitMs"] > 60_000:
+        raise SystemExit(
+            "candidate maintenance class exceeded the 60-second fairness bound: "
+            f"class={class_name}, wait_ms={class_metrics['maxWaitMs']}"
+        )
+if candidate_admission["finalPendingAgeMaxMs"] > 120_000:
+    raise SystemExit(
+        "candidate oldest pending maintenance work exceeded the 120-second quiet-tail bound: "
+        f"age_ms={candidate_admission['finalPendingAgeMaxMs']}"
+    )
+baseline_pending_p95 = baseline["maintenanceAdmission"]["pendingAgeP95Ms"]
+candidate_pending_p95 = candidate_admission["pendingAgeP95Ms"]
+if baseline_pending_p95 is not None:
+    candidate_pending_p95_value = candidate_pending_p95 or 0
+    if candidate_pending_p95_value > baseline_pending_p95 * 0.80:
+        raise SystemExit(
+            "candidate maintenance pending-age p95 did not improve by at least 20%: "
+            f"baseline={baseline_pending_p95}, candidate={candidate_pending_p95_value}"
+        )
+else:
+    candidate_age_bound = max(
+        candidate_admission["maxPendingAgeMs"],
+        candidate_admission["maxWaitMs"],
+        candidate_admission["finalPendingAgeMaxMs"],
+    )
+    if candidate_age_bound > 60_000:
+        raise SystemExit(
+            "baseline had no pending-age sample, but candidate maintenance freshness exceeded "
+            f"the 60-second bound: age_ms={candidate_age_bound}"
+        )
+if not diagnostic:
+    assert_not_worse(
+        "foreground transaction hold p95",
+        baseline["foregroundTransactionP95Ms"],
+        candidate["foregroundTransactionP95Ms"],
+    )
 if candidate["foregroundHttp5xx"]:
     raise SystemExit(
         "candidate introduced foreground HTTP 5xx: "
@@ -1030,6 +1269,25 @@ result = {
         if candidate_business_responses
         else None
     ),
+    "empiricalAcceptance": {
+        "status": "passed",
+        "candidateSha": candidate["sourceSha"],
+        "baselineSha": baseline["sourceSha"],
+        "foregroundTransactionP95Ms": {
+            "baseline": baseline["foregroundTransactionP95Ms"],
+            "candidate": candidate["foregroundTransactionP95Ms"],
+        },
+        "requestPathSqliteErrors": {
+            "baseline": baseline_request_path_errors,
+            "candidate": candidate_request_path_errors,
+        },
+        "maintenanceFreshness": {
+            "baselinePendingAgeP95Ms": baseline_pending_p95,
+            "candidatePendingAgeP95Ms": candidate_pending_p95,
+            "candidateFinalPendingAgeMaxMs": candidate_admission["finalPendingAgeMaxMs"],
+            "candidateMaxWaitMs": candidate_admission["maxWaitMs"],
+        },
+    },
     "result": "passed_with_baseline_red" if baseline_red else "passed",
 }
 (artifacts / "comparison.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

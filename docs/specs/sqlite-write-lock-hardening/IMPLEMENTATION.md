@@ -7,6 +7,17 @@
   is rejected before a pooled connection is obtained whenever fewer than two foreground slots
   remain, foreground activity exceeds `5 rps`, or a busy/pool-timeout occurred in the last five
   seconds.
+- The physical bulk permit is fronted by a fixed-size per-runtime coordinator. The ten maintenance
+  classes (`admin_read`, `alert_projection`, `capacity_warm`, `dashboard_integrity`, `ha_outbox_gc`,
+  `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,
+  and `server_pressure_rebuild`) keep at most one pending class ticket and are admitted oldest
+  first. A ticket expires after 120 seconds without a retry, so abandoned callers cannot retain
+  a turn indefinitely. The permit owns both the coordinator lease and the physical semaphore;
+  remote I/O remains outside the lease.
+- Each admitted slice emits `sqlite_maintenance_admitted` with its class and pending age. The
+  periodic `sqlite_workload_window` event includes cumulative admissions, completions, maximum
+  wait, and stale-ticket counts for every class. This makes bounded fairness and quiet-tail
+  freshness inspectable without synchronously flushing derived state from owner-facing reads.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
   background admission commits at most four chunks within one 50ms transaction-start/next-chunk

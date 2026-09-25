@@ -465,6 +465,118 @@ async fn sqlite_runtime_foreground_preempts_bulk_work() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_admission_services_oldest_pending_class_first() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+            .expect_err("request stats waits behind the active slice"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+            .expect_err("alert projection waits behind the active slice"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+            .expect_err("repeated alert admission is coalesced into one pending class"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+            .expect_err("request-log GC waits behind older pending classes"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.pending_count(),
+        3,
+        "the fixed coordinator keeps one pending request per class"
+    );
+
+    drop(holder);
+    for (operation, class) in [
+        (
+            SqliteOperation::RequestStatsFlush,
+            SqliteMaintenanceClass::RequestStatsFlush,
+        ),
+        (
+            SqliteOperation::AlertProjection,
+            SqliteMaintenanceClass::AlertProjection,
+        ),
+        (
+            SqliteOperation::RequestLogsGc,
+            SqliteMaintenanceClass::RequestLogsGc,
+        ),
+    ] {
+        let permit = runtime
+            .try_admit_maintenance_bulk(operation)
+            .expect("oldest pending class is admitted");
+        assert_eq!(
+            runtime.inner.maintenance_coordinator.active_class(),
+            Some(class)
+        );
+        drop(permit);
+    }
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.pending_count(),
+        0,
+        "released slices advance the queue without leaving duplicate tickets"
+    );
+}
+
+#[tokio::test]
+async fn maintenance_bulk_new_class_cannot_jump_a_pending_class() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect_err("reconciliation becomes the oldest pending class");
+    drop(holder);
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::ServerPressureRebuild)
+            .expect_err("a fresh class cannot jump the pending reconciliation class"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    let reconciliation = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect("the oldest pending class is admitted first");
+    drop(reconciliation);
+    let server_pressure = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ServerPressureRebuild)
+        .expect("the next pending class is admitted after reconciliation");
+    drop(server_pressure);
+}
+
+#[tokio::test]
+async fn research_drain_foreground_exception_still_uses_the_fair_coordinator() {
+    let runtime = three_connection_runtime().await;
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+
+    let research = runtime
+        .try_admit_research_drain_bulk()
+        .expect("aged research may bypass only foreground-rate pressure");
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.active_class(),
+        Some(SqliteMaintenanceClass::ReconciliationProjection)
+    );
+    drop(research);
+}
+
+#[tokio::test]
 async fn admin_privacy_read_session_is_bounded_and_independent_of_bulk_admission() {
     let runtime = three_connection_runtime().await;
     let bulk = runtime

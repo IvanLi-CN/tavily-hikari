@@ -62,6 +62,7 @@ const TRIGGER_SOURCE_SCHEDULER: &str = "scheduler";
 const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
+const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 30;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -988,15 +989,16 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 event = "deferred",
                 job_id,
                 defer_reason = reason,
-                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
                 "request-log GC deferred before SQLite connection acquisition"
             );
-            return finish_request_logs_gc_with_continuation(
+            return finish_request_logs_gc_with_continuation_after(
                 &state,
                 job_id,
                 claim_generation,
                 "success",
                 msg,
+                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
             )
             .await;
         }
@@ -1091,11 +1093,30 @@ async fn finish_request_logs_gc_with_continuation(
     status: &str,
     message: String,
 ) -> bool {
+    finish_request_logs_gc_with_continuation_after(
+        state,
+        job_id,
+        claim_generation,
+        status,
+        message,
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+    )
+    .await
+}
+
+async fn finish_request_logs_gc_with_continuation_after(
+    state: &Arc<AppState>,
+    job_id: i64,
+    claim_generation: i64,
+    status: &str,
+    message: String,
+    continuation_delay_secs: i64,
+) -> bool {
     let available_at = state
         .proxy
         .backend_time()
         .now_ts()
-        .saturating_add(REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS);
+        .saturating_add(continuation_delay_secs);
     match state
         .proxy
         .scheduled_job_finish_and_enqueue_auto_at_with_status(
@@ -1117,7 +1138,7 @@ async fn finish_request_logs_gc_with_continuation(
                 job_id,
                 continuation_job_id = continuation.job_id,
                 continuation_created = continuation.created,
-                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                continuation_delay_secs,
                 available_at,
             );
             true
@@ -1129,7 +1150,7 @@ async fn finish_request_logs_gc_with_continuation(
                 event = "continuation_persist_deferred",
                 job_id,
                 claim_generation,
-                continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+                continuation_delay_secs,
                 stale_reaper_after_secs = 120_u64,
                 err = %err,
                 "request-log GC continuation remains running for stale-reaper recovery"

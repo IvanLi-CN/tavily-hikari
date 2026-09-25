@@ -22,6 +22,7 @@ Environment variables:
   SOURCE_BACKUP_TIMEOUT_SECS  Defaults to 600 per database
   SOURCE_COMPRESSION_THREADS  Defaults to 1; low-priority zstd worker count on 101
   SOURCE_DB_DIR               Fallback host path, defaults to /var/lib/docker/volumes/ai-tavily-hikari-data/_data
+  REMOTE_SPACE_MARGIN_BYTES   Testbox free-space margin, defaults to 10GiB
   SOURCE_CORE_DB_NAME         Defaults to tavily_proxy.db
   SOURCE_OBSERVABILITY_DB_NAME Defaults to tavily_proxy-observability.db
   SOURCE_SNAPSHOT_DIR         Defaults to /home/ivan/srv/media/shared_data/<repo>-<run-id>
@@ -59,6 +60,7 @@ SOURCE_DB_DIR="${SOURCE_DB_DIR:-/var/lib/docker/volumes/ai-tavily-hikari-data/_d
 SOURCE_CORE_DB_NAME="${SOURCE_CORE_DB_NAME:-tavily_proxy.db}"
 SOURCE_OBSERVABILITY_DB_NAME="${SOURCE_OBSERVABILITY_DB_NAME:-tavily_proxy-observability.db}"
 KEEP_SOURCE_SNAPSHOTS="${KEEP_SOURCE_SNAPSHOTS:-false}"
+REMOTE_SPACE_MARGIN_BYTES="${REMOTE_SPACE_MARGIN_BYTES:-10737418240}"
 
 if REPO_ROOT="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
   :
@@ -122,6 +124,10 @@ for snapshot_name in "$SOURCE_CORE_DB_NAME" "$SOURCE_OBSERVABILITY_DB_NAME"; do
 done
 [[ "$SOURCE_COMPRESSION_THREADS" =~ ^[1-9][0-9]*$ ]] || {
   echo "SOURCE_COMPRESSION_THREADS must be a positive integer" >&2
+  exit 2
+}
+[[ "$REMOTE_SPACE_MARGIN_BYTES" =~ ^[0-9]+$ ]] || {
+  echo "REMOTE_SPACE_MARGIN_BYTES must be a non-negative integer" >&2
   exit 2
 }
 
@@ -452,9 +458,9 @@ SIDECAR_COMPRESSED_SNAPSHOT_SHA256="$(manifest_get sidecar_compressed_snapshot_s
 
 REMOTE_AVAILABLE_BYTES="$(ssh -o BatchMode=yes "$TESTBOX_HOST" "df -B1 --output=avail '$REMOTE_DB_DIR' | tail -n1 | tr -d ' '")"
 # The testbox retains compressed immutable inputs and expands exactly one writable variant at a
-# time. The 10GiB margin covers the application build/image, WAL growth, artifacts, and ordinary
+# time. The explicit margin covers the application build/image, WAL growth, artifacts, and ordinary
 # filesystem metadata without touching unrelated host images or caches.
-REMOTE_REQUIRED_BYTES="$((CORE_COMPRESSED_SNAPSHOT_BYTES + SIDECAR_COMPRESSED_SNAPSHOT_BYTES + CORE_SNAPSHOT_BYTES + SIDECAR_SNAPSHOT_BYTES + 10 * 1073741824))"
+REMOTE_REQUIRED_BYTES="$((CORE_COMPRESSED_SNAPSHOT_BYTES + SIDECAR_COMPRESSED_SNAPSHOT_BYTES + CORE_SNAPSHOT_BYTES + SIDECAR_SNAPSHOT_BYTES + REMOTE_SPACE_MARGIN_BYTES))"
 if (( REMOTE_AVAILABLE_BYTES < REMOTE_REQUIRED_BYTES )); then
   echo "insufficient testbox free space: available=${REMOTE_AVAILABLE_BYTES} required=${REMOTE_REQUIRED_BYTES}" >&2
   exit 2
@@ -482,6 +488,7 @@ source_backup_sleep_secs=$SOURCE_BACKUP_SLEEP_SECS
 source_backup_progress_secs=$SOURCE_BACKUP_PROGRESS_SECS
 source_backup_timeout_secs=$SOURCE_BACKUP_TIMEOUT_SECS
 source_compression_threads=$SOURCE_COMPRESSION_THREADS
+remote_space_margin_bytes=$REMOTE_SPACE_MARGIN_BYTES
 source_db_dir=$SOURCE_DB_DIR
 snapshot_source_kind=$SNAPSHOT_SOURCE_KIND
 helper_image=$HELPER_IMAGE_REMOTE

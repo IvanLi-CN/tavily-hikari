@@ -169,6 +169,11 @@ source when a usable persisted runtime already exists.
   phases outside the DB execution window, but only one maintenance job may hold the SQLite-writing
   execution gate at a time, and the worker must not fan out multiple remote-I/O maintenance jobs at
   once just because those phases are outside SQLite.
+- Every instance-local derived maintenance writer that uses a SQLite bulk slice must pass through
+  one runtime admission coordinator in front of the physical bulk permit. The coordinator has one
+  pending ticket per maintenance class, serves the oldest pending class first, and expires a class
+  after 120 seconds without a retry. Admission remains non-blocking and returns a typed defer; it
+  must not create an unbounded async waiter queue or acquire a raw pool connection.
 - Request-log GC catch-up must finish one bounded slice, persist its progress message, and requeue a
   fresh `queued` row when more backlog remains instead of keeping one long-lived `running` row while
   waiting for the next catch-up opportunity.
@@ -537,3 +542,4 @@ source when a usable persisted runtime already exists.
 
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
 - [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)
+- [ADR 0005: Fair SQLite Maintenance Admission](../../adr/0005-fair-sqlite-maintenance-admission.md)
