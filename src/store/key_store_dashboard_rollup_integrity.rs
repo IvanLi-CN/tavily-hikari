@@ -225,7 +225,7 @@ impl KeyStore {
             })
         }
         .await;
-        let close = conn.close().await;
+        let close = conn.close_and_discard().await;
         match (result, close) {
             (Ok(result), Ok(())) => Ok(result),
             (Err(err), _) => Err(err),
@@ -1800,7 +1800,7 @@ impl KeyStore {
                 .then_some(day_end))
         }
         .await;
-        let close = conn.close().await;
+        let close = conn.close_and_discard().await;
         match (result, close) {
             (Ok(result), Ok(())) => Ok(result),
             (Err(err), _) => Err(err),

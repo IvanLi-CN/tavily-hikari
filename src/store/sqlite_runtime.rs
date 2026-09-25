@@ -39,6 +39,7 @@ const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
 const MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS: u32 = 2;
 const MAINTENANCE_BULK_HEAP_TRIM_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE: Duration = Duration::from_secs(30);
 const MAINTENANCE_RUN_SLOTS: u32 = 1_024;
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
@@ -257,6 +258,18 @@ impl SqliteMaintenanceCoordinator {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::prune_idle_requests(&mut state, now);
         Self::oldest_pending(&state).is_some_and(|candidate| candidate == class)
+    }
+
+    fn foreground_bypass_due(&self, class: SqliteMaintenanceClass) -> bool {
+        let now = Instant::now();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.get(&class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.first_requested_at)
+                >= MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE
+        })
     }
 
     fn try_start_shared(
@@ -1159,21 +1172,29 @@ impl SqliteRuntime {
             force_recent_contention_defer,
             false,
         );
+        let aged_foreground_bypass =
+            matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) && {
+                self.inner.maintenance_coordinator.register_request(class);
+                self.inner
+                    .maintenance_coordinator
+                    .foreground_bypass_due(class)
+            };
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+            && !aged_foreground_bypass
         {
-            if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
-                self.inner.maintenance_coordinator.register_request(class);
-            } else {
+            if !SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
                 self.inner.maintenance_coordinator.cancel_request(class);
             }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        self.inner.maintenance_coordinator.register_request(class);
+        if !matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) {
+            self.inner.maintenance_coordinator.register_request(class);
+        }
         let reason = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
-            bypass_foreground_pressure,
+            bypass_foreground_pressure || aged_foreground_bypass,
             force_recent_contention_defer,
             true,
         );
@@ -2768,6 +2789,41 @@ impl SqliteOperationConnection {
             0,
         );
         Ok(())
+    }
+
+    pub(crate) async fn close_and_discard(mut self) -> Result<(), ProxyError> {
+        let Some(mut conn) = self.conn.take() else {
+            return Ok(());
+        };
+        if self.cooperative_run_deadline.is_some() {
+            let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
+            handle.remove_progress_handler();
+        }
+        record_connection_cache_write_delta(
+            &self.runtime,
+            self.operation,
+            self.cache_write_pages_start,
+            &mut conn,
+        )
+        .await;
+        match conn.detach().close().await {
+            Ok(()) => {
+                self.runtime.record_success(
+                    self.operation,
+                    self.pool_wait,
+                    Duration::ZERO,
+                    self.started_at.elapsed(),
+                    0,
+                );
+                Ok(())
+            }
+            Err(err) => {
+                let err = ProxyError::Database(err);
+                self.runtime
+                    .record_error(self.operation, self.pool_wait, Duration::ZERO, &err);
+                Err(err)
+            }
+        }
     }
 }
 

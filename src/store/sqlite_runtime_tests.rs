@@ -284,6 +284,31 @@ async fn explicit_read_close_and_write_error_leave_the_single_connection_clean()
 }
 
 #[tokio::test]
+async fn explicit_operation_close_and_discard_releases_the_physical_connection() {
+    let runtime = single_connection_runtime().await;
+    let connection = runtime
+        .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
+        .await
+        .expect("operation connection");
+    connection
+        .close_and_discard()
+        .await
+        .expect("discard operation connection");
+    assert_eq!(runtime.inner.pool.size(), 0);
+    assert_eq!(
+        runtime.discarded_connections_for_test(SqliteOperation::DashboardIntegrityWrite),
+        0,
+        "an explicitly cleaned connection is not an unfinished transaction discard"
+    );
+    runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("pool can replace the released connection");
+}
+
+#[tokio::test]
 async fn successful_short_write_restores_busy_timeout_before_pool_return() {
     let runtime = single_connection_runtime().await;
     let mut transaction = runtime
@@ -597,6 +622,43 @@ async fn maintenance_bulk_cancels_a_pending_class_when_pool_pressure_returns() {
     );
 
     drop((second_foreground, first_foreground));
+}
+
+#[tokio::test]
+async fn maintenance_bulk_ages_a_foreground_ticket_into_a_bounded_slice() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("foreground pressure defers the pending class");
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("foreground defer registers a fair ticket")
+            .first_requested_at = Instant::now() - MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE;
+    }
+    drop(holder);
+
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("an aged foreground ticket receives a bounded slice");
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.active_class(),
+        Some(SqliteMaintenanceClass::RequestStatsFlush)
+    );
+    drop(permit);
 }
 
 #[tokio::test]
