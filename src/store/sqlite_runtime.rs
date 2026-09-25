@@ -219,7 +219,7 @@ impl Drop for SqliteMaintenanceAdmissionLease {
 
 impl SqliteMaintenanceCoordinator {
     fn retain_request_for_defer(reason: SqliteAdmissionDeferReason) -> bool {
-        matches!(reason, SqliteAdmissionDeferReason::ForegroundPressure)
+        !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
     }
 
     fn cancel_request(&self, class: SqliteMaintenanceClass) {
@@ -1172,9 +1172,11 @@ impl SqliteRuntime {
             force_recent_contention_defer,
             false,
         );
+        if reason.is_some_and(|reason| !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)) {
+            self.inner.maintenance_coordinator.register_request(class);
+        }
         let aged_foreground_bypass =
             matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) && {
-                self.inner.maintenance_coordinator.register_request(class);
                 self.inner
                     .maintenance_coordinator
                     .foreground_bypass_due(class)

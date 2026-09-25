@@ -62,7 +62,7 @@ const TRIGGER_SOURCE_SCHEDULER: &str = "scheduler";
 const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
-const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 30;
+const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -533,7 +533,7 @@ async fn run_dashboard_rollup_integrity_claimed_job(
                 job_id,
                 claim_generation,
                 &format!("state=deferred admission={reason}"),
-                now.saturating_add(30),
+                now.saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
             )
             .await;
         }
@@ -1262,22 +1262,22 @@ async fn run_ha_outbox_gc_claimed_job(
     let _bulk_admission = match state.proxy.admit_ha_outbox_gc() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
-        tracing::debug!(
-            component = "ha_outbox_gc",
-            event = "deferred",
-            job_id,
-            claim_generation,
-            defer_reason = reason,
-            continuation_delay_secs = HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-        );
-        return finish_ha_gc_with_continuation(
-            &state,
-            job_id,
-            claim_generation,
-            format!("deferred={reason}"),
-            HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
-        )
-        .await;
+            tracing::debug!(
+                component = "ha_outbox_gc",
+                event = "deferred",
+                job_id,
+                claim_generation,
+                defer_reason = reason,
+                continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+            );
+            return finish_ha_gc_with_continuation(
+                &state,
+                job_id,
+                claim_generation,
+                format!("deferred={reason}"),
+                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+            )
+            .await;
         }
     };
     let proxy = state.proxy.clone();

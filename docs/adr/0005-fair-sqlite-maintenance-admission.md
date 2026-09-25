@@ -27,6 +27,9 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Tickets are served oldest-first by their first request time and a monotonic tie-breaker.
 - Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
   or receives the existing typed defer reason and retries through its existing bounded loop.
+- A class keeps its one pending ticket while a caller is still retrying any typed admission defer;
+  a `bulk_busy` result does not create a second ticket. This preserves the original queue-time
+  fairness anchor across foreground, pool, and recent-contention pressure.
 - A pending class expires after 120 seconds without another retry. This bounds abandoned work and
   leaves durable scheduled-job state responsible for work that must survive process lifetime.
 - The lease is held only for the local SQLite slice. Remote requests and their response handling
@@ -35,9 +38,10 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Runtime workload-window logs expose pending age and per-class admission/completion statistics;
   each admitted slice logs its class and wait age.
 
-The request-log GC admission-defer continuation uses a 30-second retry, while a normal completed
-GC continuation keeps its existing five-minute cadence. Other maintenance loops retain their
-existing sub-60-second retry schedules.
+Admission-defer continuations use a five-second retry so a retained ticket is revisited within the
+fairness bound. A normally completed request-log GC continuation keeps its existing five-minute
+cadence, and HA GC's post-admission channel continuation keeps its separate durable 30-second
+contention delay.
 
 ## Alternatives Rejected
 

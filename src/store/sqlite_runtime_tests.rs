@@ -585,7 +585,7 @@ async fn maintenance_bulk_new_class_cannot_jump_a_pending_class() {
 }
 
 #[tokio::test]
-async fn maintenance_bulk_cancels_a_pending_class_when_pool_pressure_returns() {
+async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
@@ -617,11 +617,22 @@ async fn maintenance_bulk_cancels_a_pending_class_when_pool_pressure_returns() {
     );
     assert_eq!(
         runtime.inner.maintenance_coordinator.pending_count(),
-        0,
-        "an ineligible class must not retain an aged fair-queue ticket"
+        1,
+        "a retrying class keeps its fair-queue ticket while pool pressure is active"
     );
 
     drop((second_foreground, first_foreground));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.pool.num_idle() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("foreground connections return to the pool");
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("the retained class is admitted when foreground capacity returns");
+    drop(permit);
 }
 
 #[tokio::test]
