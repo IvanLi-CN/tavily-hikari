@@ -217,6 +217,14 @@ impl Drop for SqliteMaintenanceAdmissionLease {
 }
 
 impl SqliteMaintenanceCoordinator {
+    fn cancel_request(&self, class: SqliteMaintenanceClass) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.remove(&class);
+    }
+
     fn register_request(&self, class: SqliteMaintenanceClass) {
         let now = Instant::now();
         let mut state = self
@@ -1100,11 +1108,15 @@ impl SqliteRuntime {
             self.maintenance_bulk_defer_reason_for_with_policy(operation, false, false, false)
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
+            self.inner.maintenance_coordinator.cancel_request(class);
             self.record_deferred(operation, reason);
             return Err(reason);
         }
         self.inner.maintenance_coordinator.register_request(class);
         if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
@@ -1138,6 +1150,7 @@ impl SqliteRuntime {
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
+            self.inner.maintenance_coordinator.cancel_request(class);
             self.record_deferred(operation, reason);
             return Err(reason);
         }
@@ -1149,6 +1162,9 @@ impl SqliteRuntime {
             true,
         );
         if let Some(reason) = reason {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }

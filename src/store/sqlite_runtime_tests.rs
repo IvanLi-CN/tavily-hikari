@@ -560,6 +560,46 @@ async fn maintenance_bulk_new_class_cannot_jump_a_pending_class() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_cancels_a_pending_class_when_pool_pressure_returns() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats waits behind the active slice");
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+
+    let first_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("first foreground");
+    let second_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("second foreground");
+    drop(holder);
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+            .expect_err("pool pressure must defer before queue admission"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.pending_count(),
+        0,
+        "an ineligible class must not retain an aged fair-queue ticket"
+    );
+
+    drop((second_foreground, first_foreground));
+}
+
+#[tokio::test]
 async fn research_drain_foreground_exception_still_uses_the_fair_coordinator() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {
