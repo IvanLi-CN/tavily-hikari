@@ -63,6 +63,7 @@ const TRIGGER_SOURCE_MANUAL: &str = "manual";
 const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
 const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
+const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 15;
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -2607,7 +2608,11 @@ async fn run_manual_claimed_job(
                     job_id,
                     claim_generation,
                     "foreground_pressure",
-                    state.proxy.backend_time().now_ts().saturating_add(30),
+                    state
+                        .proxy
+                        .backend_time()
+                        .now_ts()
+                        .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
                 )
                 .await;
             }
@@ -2632,7 +2637,11 @@ async fn run_manual_claimed_job(
                         job_id,
                         claim_generation,
                         "local_pressure",
-                        state.proxy.backend_time().now_ts().saturating_add(30),
+                        state
+                            .proxy
+                            .backend_time()
+                            .now_ts()
+                            .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
                     )
                     .await;
                     return deferred;
@@ -2795,7 +2804,11 @@ async fn persist_claimed_reconciliation_run(
                         job_id,
                         claim_generation,
                         "local_pressure",
-                        state.proxy.backend_time().now_ts().saturating_add(30),
+                        state
+                            .proxy
+                            .backend_time()
+                            .now_ts()
+                            .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
                     )
                     .await
                 }
@@ -2828,7 +2841,11 @@ async fn persist_claimed_reconciliation_run(
                 job_id,
                 claim_generation,
                 "local_pressure",
-                state.proxy.backend_time().now_ts().saturating_add(30),
+                state
+                    .proxy
+                    .backend_time()
+                    .now_ts()
+                    .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
             )
             .await
         }

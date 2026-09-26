@@ -25,10 +25,12 @@
   wait, and stale-ticket counts for every class. This makes bounded fairness and quiet-tail
   freshness inspectable without synchronously flushing derived state from owner-facing reads.
 - A typed admission defer keeps the class's single pending ticket while its caller retries, including
-  foreground, pool, and recent-contention pressure. Durable scheduled jobs retry admission every
-  five seconds; callers with slower independent loops are covered by the coordinator's 15-second
-  aged-turn exception. Completed request-log GC keeps its five-minute continuation, while HA GC
-  keeps its separate 30-second post-admission contention continuation.
+  foreground, pool, and recent-contention pressure. Most durable scheduled jobs retry admission
+  every five seconds; reconciliation admission defers retry after 15 seconds so its scheduler
+  revisits the coordinator within the aged-turn window. Callers with slower independent loops are
+  covered by the coordinator's 15-second aged-turn exception. Completed request-log GC keeps its
+  five-minute continuation, while HA GC keeps its separate 30-second post-admission contention
+  continuation.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
   background admission commits at most four chunks within one 50ms transaction-start/next-chunk
