@@ -983,6 +983,7 @@ candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
 # headroom. These margins are calibrated by a same-SHA A/B run.
 DASHBOARD_P95_NOISE_FLOOR_MS = 15.0
 RSS_P95_NOISE_BAND_KIB = 40 * 1024
+MAINTENANCE_FRESHNESS_BOUND_MS = 60_000
 
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
@@ -1177,20 +1178,26 @@ if baseline_request_path_errors and candidate_request_path_errors * 2 > baseline
     )
 
 candidate_admission = candidate["maintenanceAdmission"]
+if candidate_admission["snapshotCount"] <= 0:
+    raise SystemExit("candidate emitted no maintenance admission snapshots")
+if candidate_admission["admissionEventCount"] <= 0:
+    raise SystemExit("candidate emitted no maintenance admission events")
+if candidate_admission["pendingAgeSampleCount"] <= 0:
+    raise SystemExit("candidate emitted no maintenance pending-age samples")
 for class_name, class_metrics in candidate_admission["classes"].items():
     exercised = (
         class_metrics["admittedSlices"] > 0
         or class_metrics["pendingAgeSampleCount"] > 0
         or class_metrics["eventCount"] > 0
     )
-    if exercised and class_metrics["maxWaitMs"] > 60_000:
+    if exercised and class_metrics["maxWaitMs"] >= MAINTENANCE_FRESHNESS_BOUND_MS:
         raise SystemExit(
             "candidate maintenance class exceeded the 60-second fairness bound: "
             f"class={class_name}, wait_ms={class_metrics['maxWaitMs']}"
         )
-if candidate_admission["finalPendingAgeMaxMs"] > 120_000:
+if candidate_admission["finalPendingAgeMaxMs"] >= MAINTENANCE_FRESHNESS_BOUND_MS:
     raise SystemExit(
-        "candidate oldest pending maintenance work exceeded the 120-second quiet-tail bound: "
+        "candidate oldest pending maintenance work reached the 60-second quiet-tail bound: "
         f"age_ms={candidate_admission['finalPendingAgeMaxMs']}"
     )
 baseline_pending_p95 = baseline["maintenanceAdmission"]["pendingAgeP95Ms"]
@@ -1208,7 +1215,7 @@ else:
         candidate_admission["maxWaitMs"],
         candidate_admission["finalPendingAgeMaxMs"],
     )
-    if candidate_age_bound > 60_000:
+    if candidate_age_bound >= MAINTENANCE_FRESHNESS_BOUND_MS:
         raise SystemExit(
             "baseline had no pending-age sample, but candidate maintenance freshness exceeded "
             f"the 60-second bound: age_ms={candidate_age_bound}"

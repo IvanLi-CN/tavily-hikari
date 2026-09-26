@@ -48,6 +48,14 @@ class SnapshotComparisonTests(unittest.TestCase):
     def test_comparison_keeps_calibrated_noise_bounds_and_raw_metrics(self) -> None:
         self.assertIn("DASHBOARD_P95_NOISE_FLOOR_MS = 15.0", COMPARISON)
         self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
+        self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
+        self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
+        self.assertIn('candidate_admission["admissionEventCount"] <= 0', COMPARISON)
+        self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
+        self.assertIn(
+            'candidate_admission["finalPendingAgeMaxMs"] >= MAINTENANCE_FRESHNESS_BOUND_MS',
+            COMPARISON,
+        )
         self.assertIn("absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS", COMPARISON)
         self.assertIn("additive_tolerance=RSS_P95_NOISE_BAND_KIB", COMPARISON)
         self.assertIn('return summary["load"]["dashboardP95Ms"]', COMPARISON)
