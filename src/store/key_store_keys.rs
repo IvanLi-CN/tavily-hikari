@@ -303,17 +303,31 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
+    /// Bootstrap-sync `keys` into the pool, scoped to ONE provider (plan todo 7
+    /// / M5): inserts are provider-stamped, revives only match same-provider
+    /// rows, and the soft-delete of "the rest" never crosses the provider
+    /// boundary. An empty `keys` list soft-deletes every row of THAT provider
+    /// only; rows of other providers are always untouched. Cross-provider
+    /// duplicate key material violates the global UNIQUE(api_key) constraint
+    /// and surfaces as a typed database error instead of silently reviving
+    /// another provider's row.
+    pub(crate) async fn sync_keys(
+        &self,
+        provider: crate::providers::ProviderId,
+        keys: &[String],
+    ) -> Result<(), ProxyError> {
+        let provider = provider.as_str();
         let mut tx = self.pool.begin().await?;
 
         let now = self.backend_time.now_ts();
 
         for key in keys {
-            // If key exists, undelete by clearing deleted_at
+            // If key exists within this provider's scope, undelete by clearing deleted_at
             if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
-                "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
+                "SELECT id, deleted_at FROM api_keys WHERE api_key = ? AND provider = ? LIMIT 1",
             )
             .bind(key)
+            .bind(provider)
             .fetch_optional(&mut *tx)
             .await?
             {
@@ -336,12 +350,13 @@ impl KeyStore {
             let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (id, api_key, status, created_at, status_changed_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO api_keys (id, api_key, provider, status, created_at, status_changed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
             .bind(key)
+            .bind(provider)
             .bind(STATUS_ACTIVE)
             .bind(now)
             .bind(now)
@@ -356,31 +371,37 @@ impl KeyStore {
             .await?;
         }
 
-        // Soft delete any keys not present in the provided set
+        // Soft delete same-provider keys not present in the provided set
         if keys.is_empty() {
             sqlx::query(
                 r#"
                 UPDATE api_key_membership_intervals
                 SET active_until = ?
                 WHERE active_until IS NULL
-                  AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL)
+                  AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL AND provider = ?)
                 "#,
             )
             .bind(now)
+            .bind(provider)
             .execute(&mut *tx)
             .await?;
-            sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE deleted_at IS NULL")
-                .bind(now)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE api_keys SET deleted_at = ? WHERE deleted_at IS NULL AND provider = ?",
+            )
+            .bind(now)
+            .bind(provider)
+            .execute(&mut *tx)
+            .await?;
         } else {
             let mut interval_builder = QueryBuilder::new(
                 "UPDATE api_key_membership_intervals SET active_until = ",
             );
             interval_builder.push_bind(now);
             interval_builder.push(
-                " WHERE active_until IS NULL AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL AND api_key NOT IN (",
+                " WHERE active_until IS NULL AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL AND provider = ",
             );
+            interval_builder.push_bind(provider);
+            interval_builder.push(" AND api_key NOT IN (");
             {
                 let mut separated = interval_builder.separated(", ");
                 for key in keys {
@@ -392,7 +413,9 @@ impl KeyStore {
 
             let mut builder = QueryBuilder::new("UPDATE api_keys SET deleted_at = ");
             builder.push_bind(now);
-            builder.push(" WHERE deleted_at IS NULL AND api_key NOT IN (");
+            builder.push(" WHERE deleted_at IS NULL AND provider = ");
+            builder.push_bind(provider);
+            builder.push(" AND api_key NOT IN (");
             {
                 let mut separated = builder.separated(", ");
                 for key in keys {

@@ -36,8 +36,9 @@ use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use tavily_hikari::{
     AdminPasskeyScope, DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
-    RuntimeLogFormat, TavilyProxy, TavilyProxyOptions,
-    create_admin_passkey_reset_token_for_database,
+    ProviderBootstrap, RuntimeLogFormat, SERPAPI_MCP_UPSTREAM_DEFAULT, TavilyProxy,
+    TavilyProxyOptions, create_admin_passkey_reset_token_for_database,
+    providers::{BRAVE, EXA, SERPAPI},
 };
 use tracing::{info, warn};
 
@@ -63,6 +64,53 @@ struct Cli {
     /// 上游 Tavily MCP 端点
     #[arg(long, env = "TAVILY_UPSTREAM", default_value = DEFAULT_UPSTREAM)]
     upstream: String,
+
+    /// SerpApi REST 上游基础地址（支持路径前缀反代）
+    #[arg(long, env = "SERPAPI_UPSTREAM", default_value = SERPAPI.rest_base_default)]
+    serpapi_upstream: String,
+
+    /// SerpApi 托管 MCP 上游端点（支持路径前缀反代）
+    #[arg(
+        long,
+        env = "SERPAPI_MCP_UPSTREAM",
+        default_value = SERPAPI_MCP_UPSTREAM_DEFAULT
+    )]
+    serpapi_mcp_upstream: String,
+
+    /// Exa REST 上游基础地址（支持路径前缀反代）
+    #[arg(long, env = "EXA_UPSTREAM", default_value = EXA.rest_base_default)]
+    exa_upstream: String,
+
+    /// Brave REST 上游基础地址（支持路径前缀反代）
+    #[arg(long, env = "BRAVE_UPSTREAM", default_value = BRAVE.rest_base_default)]
+    brave_upstream: String,
+
+    /// SerpApi API keys（逗号分隔或重复传参；未设置时不改动该 provider 的密钥行）
+    #[arg(
+        long,
+        value_delimiter = ',',
+        env = "SERPAPI_API_KEYS",
+        hide_env_values = true
+    )]
+    serpapi_keys: Vec<String>,
+
+    /// Exa API keys（逗号分隔或重复传参；未设置时不改动该 provider 的密钥行）
+    #[arg(
+        long,
+        value_delimiter = ',',
+        env = "EXA_API_KEYS",
+        hide_env_values = true
+    )]
+    exa_keys: Vec<String>,
+
+    /// Brave API keys（逗号分隔或重复传参；未设置时不改动该 provider 的密钥行）
+    #[arg(
+        long,
+        value_delimiter = ',',
+        env = "BRAVE_API_KEYS",
+        hide_env_values = true
+    )]
+    brave_keys: Vec<String>,
 
     /// 代理监听地址
     #[arg(long, env = "PROXY_BIND", default_value = "127.0.0.1")]
@@ -468,11 +516,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         health_readiness_grace_period: std::time::Duration::from_secs(90),
     };
     let ha_mode = HaMode::parse(&cli.ha_mode);
-    let proxy = TavilyProxy::with_options_in_ha_mode(
+    let provider_bootstrap = ProviderBootstrap {
+        serpapi_upstream: cli.serpapi_upstream,
+        serpapi_mcp_upstream: cli.serpapi_mcp_upstream,
+        exa_upstream: cli.exa_upstream,
+        brave_upstream: cli.brave_upstream,
+        serpapi_keys: cli.serpapi_keys,
+        exa_keys: cli.exa_keys,
+        brave_keys: cli.brave_keys,
+    };
+    let proxy = TavilyProxy::with_providers_in_ha_mode(
         cli.keys,
         &cli.upstream,
         &cli.db_path,
         proxy_options,
+        provider_bootstrap,
         ha_mode,
     )
     .await?;
@@ -843,6 +901,7 @@ mod main_tests {
         effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
     };
     use clap::CommandFactory;
+    use clap::Parser;
 
     #[test]
     fn cli_version_uses_the_embedded_product_version() {
@@ -927,6 +986,115 @@ mod main_tests {
                 AdminPasskeyRpHostSource::NodePublicHost,
             )),
         );
+    }
+
+    fn provider_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn clear_provider_config_env() {
+        for key in [
+            "SERPAPI_UPSTREAM",
+            "SERPAPI_MCP_UPSTREAM",
+            "EXA_UPSTREAM",
+            "BRAVE_UPSTREAM",
+            "SERPAPI_API_KEYS",
+            "EXA_API_KEYS",
+            "BRAVE_API_KEYS",
+        ] {
+            // SAFETY: called while holding provider_env_guard; no other test
+            // thread reads or writes these process-env keys concurrently.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    #[test]
+    fn provider_upstream_flags_default_to_provider_registry_specs() {
+        let _guard = provider_env_guard();
+        clear_provider_config_env();
+        let cli = super::Cli::try_parse_from(["tavily-hikari"]).expect("cli defaults parse");
+        assert_eq!(
+            cli.serpapi_upstream,
+            tavily_hikari::providers::SERPAPI.rest_base_default
+        );
+        assert_eq!(
+            cli.serpapi_mcp_upstream,
+            tavily_hikari::providers::SERPAPI
+                .mcp_upstream_default
+                .expect("serpapi hosted mcp default exists")
+        );
+        assert_eq!(
+            cli.exa_upstream,
+            tavily_hikari::providers::EXA.rest_base_default
+        );
+        assert_eq!(
+            cli.brave_upstream,
+            tavily_hikari::providers::BRAVE.rest_base_default
+        );
+        assert!(cli.serpapi_keys.is_empty());
+        assert!(cli.exa_keys.is_empty());
+        assert!(cli.brave_keys.is_empty());
+    }
+
+    #[test]
+    fn provider_upstream_flags_accept_custom_values() {
+        let _guard = provider_env_guard();
+        clear_provider_config_env();
+        let cli = super::Cli::try_parse_from([
+            "tavily-hikari",
+            "--serpapi-upstream",
+            "http://127.0.0.1:59101/gw",
+            "--serpapi-mcp-upstream",
+            "http://127.0.0.1:59101/gw/mcp",
+            "--exa-upstream",
+            "http://127.0.0.1:59102",
+            "--brave-upstream",
+            "http://127.0.0.1:59103",
+        ])
+        .expect("custom provider flags parse");
+        assert_eq!(cli.serpapi_upstream, "http://127.0.0.1:59101/gw");
+        assert_eq!(cli.serpapi_mcp_upstream, "http://127.0.0.1:59101/gw/mcp");
+        assert_eq!(cli.exa_upstream, "http://127.0.0.1:59102");
+        assert_eq!(cli.brave_upstream, "http://127.0.0.1:59103");
+    }
+
+    #[test]
+    fn provider_key_envs_bootstrap_and_flags_take_precedence() {
+        let _guard = provider_env_guard();
+        clear_provider_config_env();
+        // SAFETY: called while holding provider_env_guard; serialized against
+        // the other provider-config tests in this module.
+        unsafe {
+            std::env::set_var("SERPAPI_API_KEYS", "sp-1,sp-2");
+            std::env::set_var("EXA_API_KEYS", "ex-1");
+            std::env::set_var("BRAVE_API_KEYS", "br-1");
+            std::env::set_var("SERPAPI_UPSTREAM", "http://127.0.0.1:59111");
+        }
+        let cli = super::Cli::try_parse_from(["tavily-hikari"]).expect("env-backed parse");
+        assert_eq!(
+            cli.serpapi_keys,
+            vec!["sp-1".to_string(), "sp-2".to_string()]
+        );
+        assert_eq!(cli.exa_keys, vec!["ex-1".to_string()]);
+        assert_eq!(cli.brave_keys, vec!["br-1".to_string()]);
+        assert_eq!(cli.serpapi_upstream, "http://127.0.0.1:59111");
+
+        let cli = super::Cli::try_parse_from([
+            "tavily-hikari",
+            "--serpapi-upstream",
+            "http://127.0.0.1:59112",
+            "--serpapi-keys",
+            "sp-flag",
+        ])
+        .expect("flag-over-env parse");
+        assert_eq!(cli.serpapi_upstream, "http://127.0.0.1:59112");
+        assert_eq!(cli.serpapi_keys, vec!["sp-flag".to_string()]);
+        clear_provider_config_env();
     }
 }
 

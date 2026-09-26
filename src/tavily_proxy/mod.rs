@@ -884,6 +884,7 @@ pub struct TavilyProxy {
     pub(crate) upstream: Url,
     pub(crate) key_store: Arc<KeyStore>,
     pub(crate) upstream_origin: String,
+    pub(crate) provider_upstreams: ProviderUpstreams,
     pub(crate) api_key_geo_origin: String,
     token_quota: TokenQuota,
     token_request_limit: TokenRequestLimit,
@@ -988,6 +989,73 @@ impl TavilyProxyOptions {
             low_quota_depletion_threshold: low_quota_depletion_threshold_from_env(),
             health_readiness_grace_period: Duration::from_secs(90),
         }
+    }
+}
+
+/// SerpApi hosted MCP upstream default, unwrapped from the provider registry
+/// at compile time so a registry regression fails the build instead of
+/// silently shipping an empty default.
+pub const SERPAPI_MCP_UPSTREAM_DEFAULT: &str = match crate::providers::SERPAPI.mcp_upstream_default
+{
+    Some(value) => value,
+    None => panic!("SERPAPI provider spec must define a hosted MCP upstream default"),
+};
+
+/// Per-provider upstream endpoints plus env bootstrap key lists (multi-provider
+/// plan todo 7). `Default` mirrors the static provider registry and carries no
+/// bootstrap keys, so a Tavily-only installation stays byte-identical: absent
+/// provider config means registry-default endpoints and untouched key rows.
+#[derive(Clone, Debug)]
+pub struct ProviderBootstrap {
+    pub serpapi_upstream: String,
+    pub serpapi_mcp_upstream: String,
+    pub exa_upstream: String,
+    pub brave_upstream: String,
+    pub serpapi_keys: Vec<String>,
+    pub exa_keys: Vec<String>,
+    pub brave_keys: Vec<String>,
+}
+
+impl Default for ProviderBootstrap {
+    fn default() -> Self {
+        Self {
+            serpapi_upstream: crate::providers::SERPAPI.rest_base_default.to_owned(),
+            serpapi_mcp_upstream: SERPAPI_MCP_UPSTREAM_DEFAULT.to_owned(),
+            exa_upstream: crate::providers::EXA.rest_base_default.to_owned(),
+            brave_upstream: crate::providers::BRAVE.rest_base_default.to_owned(),
+            serpapi_keys: Vec::new(),
+            exa_keys: Vec::new(),
+            brave_keys: Vec::new(),
+        }
+    }
+}
+
+/// Provider upstream endpoints parsed once at proxy construction. Every base is
+/// path-prefix compatible: request builders append through
+/// `build_path_prefixed_url`, mirroring the Tavily `TAVILY_UPSTREAM` contract.
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderUpstreams {
+    pub(crate) serpapi_rest: Url,
+    pub(crate) serpapi_mcp: Url,
+    pub(crate) exa_rest: Url,
+    pub(crate) brave_rest: Url,
+}
+
+fn parse_provider_upstream(endpoint: &str) -> Result<Url, ProxyError> {
+    Url::parse(endpoint).map_err(|source| ProxyError::InvalidEndpoint {
+        endpoint: endpoint.to_owned(),
+        source,
+    })
+}
+
+impl ProviderUpstreams {
+    pub(crate) fn parse(config: &ProviderBootstrap) -> Result<Self, ProxyError> {
+        Ok(Self {
+            serpapi_rest: parse_provider_upstream(&config.serpapi_upstream)?,
+            serpapi_mcp: parse_provider_upstream(&config.serpapi_mcp_upstream)?,
+            exa_rest: parse_provider_upstream(&config.exa_upstream)?,
+            brave_rest: parse_provider_upstream(&config.brave_upstream)?,
+        })
     }
 }
 

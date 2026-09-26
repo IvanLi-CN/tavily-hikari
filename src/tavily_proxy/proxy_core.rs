@@ -445,15 +445,43 @@ impl TavilyProxy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::with_options_and_time_in_ha_mode(
+        Self::with_providers_in_ha_mode(
             keys,
             upstream,
             database_path,
             options,
+            ProviderBootstrap::default(),
+            ha_mode,
+        )
+        .await
+    }
+
+    /// Full multi-provider constructor (plan todo 7): parses each provider
+    /// upstream URL once and bootstraps provider-scoped keys from the
+    /// per-provider env lists. `ProviderBootstrap::default()` (registry
+    /// endpoints, no keys) keeps Tavily-only installs byte-identical.
+    pub async fn with_providers_in_ha_mode<I, S>(
+        keys: I,
+        upstream: &str,
+        database_path: &str,
+        options: TavilyProxyOptions,
+        providers: ProviderBootstrap,
+        ha_mode: HaMode,
+    ) -> Result<Self, ProxyError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::with_providers_and_time_in_ha_mode(
+            keys,
+            upstream,
+            database_path,
+            options,
+            providers,
             BackendTime::system(),
             ha_mode,
         )
-            .await
+        .await
     }
 
     #[allow(dead_code)]
@@ -491,6 +519,31 @@ impl TavilyProxy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        Self::with_providers_and_time_in_ha_mode(
+            keys,
+            upstream,
+            database_path,
+            options,
+            ProviderBootstrap::default(),
+            backend_time,
+            ha_mode,
+        )
+        .await
+    }
+
+    pub(crate) async fn with_providers_and_time_in_ha_mode<I, S>(
+        keys: I,
+        upstream: &str,
+        database_path: &str,
+        options: TavilyProxyOptions,
+        providers: ProviderBootstrap,
+        backend_time: BackendTime,
+        ha_mode: HaMode,
+    ) -> Result<Self, ProxyError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         #[cfg(test)]
         let _startup_guard = Self::acquire_test_startup_guard().await;
         let startup_started = Instant::now();
@@ -511,7 +564,9 @@ impl TavilyProxy {
         );
         if !sanitized.is_empty() {
             let sync_keys_started = Instant::now();
-            key_store.sync_keys(&sanitized).await?;
+            key_store
+                .sync_keys(crate::providers::ProviderId::Tavily, &sanitized)
+                .await?;
             tracing::debug!(
                 component = "forward_proxy",
                 event = "startup_api_keys_synced",
@@ -519,6 +574,41 @@ impl TavilyProxy {
                 elapsed_ms = sync_keys_started.elapsed().as_millis() as u64,
                 "forward-proxy startup synchronized api keys"
             );
+        }
+        // Multi-provider config surface (plan todo 7): parse each provider base
+        // exactly once at construction; an invalid URL fails startup with a
+        // typed InvalidEndpoint before any provider bootstrap rows are written.
+        let provider_upstreams = ProviderUpstreams::parse(&providers)?;
+        {
+            use crate::providers::ProviderId;
+            for (provider, provider_keys) in [
+                (ProviderId::Serpapi, &providers.serpapi_keys),
+                (ProviderId::Exa, &providers.exa_keys),
+                (ProviderId::Brave, &providers.brave_keys),
+            ] {
+                let sanitized_provider_keys: Vec<String> = provider_keys
+                    .iter()
+                    .map(|key| key.trim().to_owned())
+                    .filter(|key| !key.is_empty())
+                    .collect();
+                if sanitized_provider_keys.is_empty() {
+                    // Provider env UNSET ⇒ that provider's rows stay untouched
+                    // (admin-API-managed only); never soft-delete on absence.
+                    continue;
+                }
+                let provider_sync_started = Instant::now();
+                key_store
+                    .sync_keys(provider, &sanitized_provider_keys)
+                    .await?;
+                tracing::debug!(
+                    component = "forward_proxy",
+                    event = "startup_provider_keys_synced",
+                    provider = %provider,
+                    key_count = sanitized_provider_keys.len(),
+                    elapsed_ms = provider_sync_started.elapsed().as_millis() as u64,
+                    "forward-proxy startup synchronized provider api keys"
+                );
+            }
         }
         let forward_proxy_load_started = Instant::now();
         let upstream = Url::parse(upstream).map_err(|source| ProxyError::InvalidEndpoint {
@@ -578,6 +668,7 @@ impl TavilyProxy {
             upstream,
             key_store,
             upstream_origin,
+            provider_upstreams,
             api_key_geo_origin: std::env::var("API_KEY_IP_GEO_ORIGIN")
                 .ok()
                 .map(|value| value.trim().to_string())
@@ -635,6 +726,15 @@ impl TavilyProxy {
         proxy.user_business_calls_1h_window.backfill_recent().await?;
         proxy.spawn_ha_state_coalescer();
         proxy.spawn_request_stats_coalescer();
+        tracing::debug!(
+            component = "forward_proxy",
+            event = "startup_provider_upstreams_resolved",
+            serpapi_upstream = %proxy.provider_upstreams.serpapi_rest,
+            serpapi_mcp_upstream = %proxy.provider_upstreams.serpapi_mcp,
+            exa_upstream = %proxy.provider_upstreams.exa_rest,
+            brave_upstream = %proxy.provider_upstreams.brave_rest,
+            "forward-proxy startup resolved provider upstream endpoints"
+        );
         info!(
             component = "forward_proxy",
             event = "startup_runtime_graph_deferred",

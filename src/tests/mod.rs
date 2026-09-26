@@ -37,6 +37,7 @@ mod maintenance_and_mcp_affinity;
 mod maintenance_control_admission;
 mod maintenance_queue_performance;
 mod observability_and_lifecycle;
+mod provider_config_bootstrap;
 mod proxy_affinity_and_summary;
 mod proxy_affinity_runtime_geo;
 mod reconciliation_controller;
