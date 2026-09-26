@@ -349,7 +349,6 @@ impl ReconciliationRemoteAttemptContext<'_> {
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
     const DEFER_RETRY_DELAY_SECS: i64 = 30;
-    const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
     const REMOTE_ATTEMPT_ADMISSION_OPERATION: &'static str = "reconciliation_remote_attempt";
     const REMOTE_ATTEMPT_STALE_TURN_REASON: &'static str = "reconciliation_turn_stale";
     const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
@@ -377,18 +376,6 @@ impl ReconciliationEngine {
             .max(ladder_secs)
     }
 
-    fn defer_retry_delay_secs(reason: &'static str) -> i64 {
-        match reason {
-            "bulk_busy"
-            | "foreground_pressure"
-            | "pool_pressure"
-            | "recent_contention"
-            | "query_deadline"
-            | "local_pressure" => Self::SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
-            _ => Self::DEFER_RETRY_DELAY_SECS,
-        }
-    }
-
     fn deferred(proxy: &TavilyProxy, reason: &'static str) -> ClaimedReconciliationRunOutcome {
         Self::deferred_at(
             proxy,
@@ -396,7 +383,7 @@ impl ReconciliationEngine {
             proxy
                 .backend_time()
                 .now_ts()
-                .saturating_add(Self::defer_retry_delay_secs(reason)),
+                .saturating_add(Self::DEFER_RETRY_DELAY_SECS),
         )
     }
 
@@ -907,31 +894,6 @@ mod reconciliation_engine_tests {
         assert_eq!(
             ReconciliationEngine::reconciliation_retry_delay_secs(Some(600), Some(1)),
             1200
-        );
-    }
-
-    #[test]
-    fn sqlite_admission_defers_retry_within_the_fairness_window() {
-        for reason in [
-            "bulk_busy",
-            "foreground_pressure",
-            "pool_pressure",
-            "recent_contention",
-            "query_deadline",
-            "local_pressure",
-        ] {
-            assert_eq!(
-                ReconciliationEngine::defer_retry_delay_secs(reason),
-                ReconciliationEngine::SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
-            );
-        }
-        assert_eq!(
-            ReconciliationEngine::defer_retry_delay_secs("controlled_retry"),
-            ReconciliationEngine::DEFER_RETRY_DELAY_SECS
-        );
-        assert_eq!(
-            ReconciliationEngine::defer_retry_delay_secs("shutdown"),
-            ReconciliationEngine::DEFER_RETRY_DELAY_SECS
         );
     }
 }
