@@ -164,6 +164,13 @@ fn is_sensitive_client_ip_header_name(name: &str) -> bool {
             | "x-tavily-api-key"
             | "x-hikari-token"
             | "x-hikari-api-key"
+            // Provider client key slots (plan todo 4, defense-in-depth for
+            // TRUSTED CLIENT-IP HEADER CONFIG only; the normative log/display
+            // redaction lives in handlers/public.rs + redact_api_key_bytes):
+            // Brave `X-Subscription-Token`. Exa's `x-api-key` and the generic
+            // `api-key` forms are already covered above; SerpApi's `api_key`
+            // slot is query-parameter-only and not a valid header name.
+            | "x-subscription-token"
     )
 }
 

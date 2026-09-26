@@ -520,6 +520,104 @@ pub(crate) fn sanitize_mcp_headers_inner(
     }
 }
 
+/// Outbound header allowlist for the SerpApi REST facade (plan todo 4).
+///
+/// `user-agent` is never forwarded, `x-project-id` is Tavily-only policy, and
+/// the SerpApi `api_key` slot rides the query (stripped/redacted by
+/// `extract_token_from_query_slot`), so all of them are absent by design.
+/// The hosted SerpApi MCP passthrough intentionally reuses
+/// [`sanitize_mcp_headers_inner`] UNCHANGED instead of this list.
+// Wired into live routing by the SerpApi REST facade (plan todo 12).
+#[allow(dead_code)]
+pub(crate) fn sanitize_serpapi_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+    const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type"];
+
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        if !ALLOWED_HEADERS.iter().any(|allowed| key == *allowed) {
+            dropped.push(key);
+            continue;
+        }
+        sanitized.insert(name.clone(), value.clone());
+        forwarded.push(key);
+    }
+
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
+/// Outbound header allowlist for the Exa REST facade (plan todo 4). The Exa
+/// client key slot (`x-api-key`) is a client credential Hikari must never
+/// forward; the pooled upstream key is injected at the facade.
+// Wired into live routing by the Exa REST facade (plan todo 13/17).
+#[allow(dead_code)]
+pub(crate) fn sanitize_exa_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+    const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type"];
+
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        if !ALLOWED_HEADERS.iter().any(|allowed| key == *allowed) {
+            dropped.push(key);
+            continue;
+        }
+        sanitized.insert(name.clone(), value.clone());
+        forwarded.push(key);
+    }
+
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
+/// Outbound header allowlist for the Brave REST facade (plan todo 4). Keeps
+/// `cache-control`/`api-version` because the Brave API documents them as
+/// caller-tunable; the Brave client key slot (`x-subscription-token`) is
+/// dropped here and the pooled key is injected at the facade.
+// Wired into live routing by the Brave REST facade (plan todo 14/16).
+#[allow(dead_code)]
+pub(crate) fn sanitize_brave_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+    const ALLOWED_HEADERS: &[&str] = &[
+        "accept",
+        "accept-encoding",
+        "content-type",
+        "cache-control",
+        "api-version",
+    ];
+
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        if !ALLOWED_HEADERS.iter().any(|allowed| key == *allowed) {
+            dropped.push(key);
+            continue;
+        }
+        sanitized.insert(name.clone(), value.clone());
+        forwarded.push(key);
+    }
+
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
 pub(crate) fn origin_from_url(url: &Url) -> String {
     let mut origin = match url.host_str() {
         Some(host) => format!("{}://{}", url.scheme(), host),

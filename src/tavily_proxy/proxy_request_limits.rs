@@ -1683,6 +1683,43 @@ impl TavilyProxy {
         Ok(project_id)
     }
 
+    /// Provider-gated entry point for the X-Project-ID policy (plan todo 4
+    /// GUARD): `x-project-id` is a TAVILY-ONLY upstream identity/privacy
+    /// policy. Provider facades and shared executors (plan todos 12-17) MUST
+    /// route through this gate instead of calling
+    /// [`Self::apply_upstream_project_id_header`] directly, so SerpApi/Exa/
+    /// Brave outbound requests never carry the header — a client-supplied
+    /// value is removed even if it somehow survived sanitization, and the
+    /// system-settings policy (Passthrough/Fixed/AccessToken) is never even
+    /// read for non-Tavily providers.
+    ///
+    /// The match is exhaustive over [`ProviderId`] on purpose: adding a new
+    /// provider fails to compile here until its X-Project-ID stance is
+    /// decided explicitly.
+    // Consumed by the non-Tavily provider facades as they land (plan todos 12-17).
+    #[allow(dead_code)]
+    pub(crate) async fn apply_upstream_project_id_header_for_provider(
+        &self,
+        provider: crate::providers::ProviderId,
+        sanitized: &mut SanitizedHeaders,
+        original_headers: &HeaderMap,
+        auth_token_id: Option<&str>,
+    ) -> Result<Option<String>, ProxyError> {
+        match provider {
+            crate::providers::ProviderId::Tavily => {
+                self.apply_upstream_project_id_header(sanitized, original_headers, auth_token_id)
+                    .await
+            }
+            crate::providers::ProviderId::Serpapi
+            | crate::providers::ProviderId::Exa
+            | crate::providers::ProviderId::Brave => {
+                sanitized.headers.remove("x-project-id");
+                sanitized.forwarded.retain(|name| name != "x-project-id");
+                Ok(None)
+            }
+        }
+    }
+
     pub async fn find_user_id_by_token(
         &self,
         token_id: &str,

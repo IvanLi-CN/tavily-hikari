@@ -811,6 +811,274 @@ fn sanitize_mcp_headers_omits_user_agent_when_configuration_is_empty() {
     assert!(sanitized.dropped.contains(&"user-agent".to_string()));
 }
 
+// Golden fixture: a superset of every header name the per-provider allowlists
+// care about, plus client fingerprints and provider key slots that must be
+// dropped for ALL providers.
+fn allowlist_golden_header_superset() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for name in [
+        "accept",
+        "accept-encoding",
+        "content-type",
+        "cache-control",
+        "api-version",
+        "last-event-id",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "pragma",
+        "user-agent",
+        "x-project-id",
+        "x-api-key",
+        "x-subscription-token",
+        "authorization",
+        "cookie",
+        "x-forwarded-for",
+        "origin",
+        "referer",
+    ] {
+        headers.insert(name, HeaderValue::from_static("client-value"));
+    }
+    headers
+}
+
+// The Tavily MCP allowlist is shared UNCHANGED by the SerpApi hosted MCP
+// passthrough (plan todo 4), so one golden pins both.
+#[test]
+fn sanitize_mcp_headers_golden_exact_allowlist_and_user_agent_strip() {
+    let sanitized = sanitize_mcp_headers_inner(&allowlist_golden_header_superset(), None);
+
+    let mut forwarded = sanitized.forwarded.clone();
+    forwarded.sort_unstable();
+    assert_eq!(
+        forwarded,
+        vec![
+            "accept".to_string(),
+            "accept-encoding".to_string(),
+            "cache-control".to_string(),
+            "content-type".to_string(),
+            "last-event-id".to_string(),
+            "mcp-protocol-version".to_string(),
+            "mcp-session-id".to_string(),
+            "pragma".to_string(),
+        ]
+    );
+    assert_eq!(sanitized.headers.len(), 8);
+    // Client key slots / fingerprints / Tavily-only policy headers never pass.
+    for dropped_name in [
+        "user-agent",
+        "x-project-id",
+        "x-api-key",
+        "x-subscription-token",
+        "authorization",
+        "cookie",
+        "x-forwarded-for",
+        "origin",
+        "referer",
+    ] {
+        assert!(!sanitized.headers.contains_key(dropped_name));
+        assert!(sanitized.dropped.contains(&dropped_name.to_string()));
+    }
+}
+
+#[test]
+fn tavily_http_allowlists_golden_exact_header_sets_unchanged() {
+    let upstream = Url::parse("https://mcp.tavily.com/mcp").unwrap();
+    let origin = origin_from_url(&upstream);
+    let headers = allowlist_golden_header_superset();
+
+    let plain = sanitize_headers_inner(&headers, &upstream, &origin);
+    let rebalance = sanitize_rebalance_mcp_http_headers_inner(&headers);
+
+    let expected = vec![
+        "accept".to_string(),
+        "accept-encoding".to_string(),
+        "content-type".to_string(),
+        "x-project-id".to_string(),
+    ];
+    for sanitized in [&plain, &rebalance] {
+        let mut forwarded = sanitized.forwarded.clone();
+        forwarded.sort_unstable();
+        assert_eq!(forwarded, expected);
+        assert_eq!(sanitized.headers.len(), 4);
+        // The new provider-only names (cache-control/api-version) and all key
+        // slots stay OUT of the pre-existing Tavily lists.
+        for dropped_name in [
+            "cache-control",
+            "api-version",
+            "user-agent",
+            "x-api-key",
+            "x-subscription-token",
+            "authorization",
+        ] {
+            assert!(!sanitized.headers.contains_key(dropped_name));
+            assert!(sanitized.dropped.contains(&dropped_name.to_string()));
+        }
+    }
+}
+
+#[test]
+fn provider_http_allowlists_golden_exact_sets() {
+    let headers = allowlist_golden_header_superset();
+
+    // SerpApi REST: {accept, accept-encoding, content-type}.
+    let serpapi = sanitize_serpapi_http_headers_inner(&headers);
+    let mut forwarded = serpapi.forwarded.clone();
+    forwarded.sort_unstable();
+    assert_eq!(
+        forwarded,
+        vec![
+            "accept".to_string(),
+            "accept-encoding".to_string(),
+            "content-type".to_string(),
+        ]
+    );
+    assert_eq!(serpapi.headers.len(), 3);
+
+    // Exa REST: {accept, accept-encoding, content-type}.
+    let exa = sanitize_exa_http_headers_inner(&headers);
+    let mut forwarded = exa.forwarded.clone();
+    forwarded.sort_unstable();
+    assert_eq!(
+        forwarded,
+        vec![
+            "accept".to_string(),
+            "accept-encoding".to_string(),
+            "content-type".to_string(),
+        ]
+    );
+    assert_eq!(exa.headers.len(), 3);
+
+    // Brave REST: {accept, accept-encoding, content-type, cache-control,
+    // api-version}.
+    let brave = sanitize_brave_http_headers_inner(&headers);
+    let mut forwarded = brave.forwarded.clone();
+    forwarded.sort_unstable();
+    assert_eq!(
+        forwarded,
+        vec![
+            "accept".to_string(),
+            "accept-encoding".to_string(),
+            "api-version".to_string(),
+            "cache-control".to_string(),
+            "content-type".to_string(),
+        ]
+    );
+    assert_eq!(brave.headers.len(), 5);
+
+    // Every provider list: no x-project-id, no user-agent forwarding, and the
+    // client key slots of all three new providers are stripped + recorded.
+    for sanitized in [&serpapi, &exa, &brave] {
+        for dropped_name in [
+            "user-agent",
+            "x-project-id",
+            "x-api-key",
+            "x-subscription-token",
+            "authorization",
+            "cookie",
+            "x-forwarded-for",
+            "origin",
+            "referer",
+        ] {
+            assert!(!sanitized.headers.contains_key(dropped_name));
+            assert!(sanitized.dropped.contains(&dropped_name.to_string()));
+        }
+    }
+}
+
+#[tokio::test]
+async fn project_id_header_gate_never_emits_for_non_tavily_providers() {
+    use crate::providers::ProviderId;
+
+    let db_path = temp_db_path("project-id-provider-gate");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+
+    // Given: Passthrough mode is ON, so the Tavily policy WOULD forward a
+    // client-sent value — the discriminating fixture for the gate.
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::Passthrough;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("save passthrough mode");
+
+    let mut original = HeaderMap::new();
+    original.insert("x-project-id", HeaderValue::from_static("evil"));
+
+    // When: the gate runs for each non-Tavily provider with the header already
+    // present in the sanitized set (defense-in-depth beyond the allowlists).
+    for provider in [ProviderId::Serpapi, ProviderId::Exa, ProviderId::Brave] {
+        let mut sanitized = SanitizedHeaders {
+            headers: original.clone(),
+            forwarded: vec!["x-project-id".to_string()],
+            dropped: Vec::new(),
+        };
+        let applied = proxy
+            .apply_upstream_project_id_header_for_provider(
+                provider,
+                &mut sanitized,
+                &original,
+                None,
+            )
+            .await
+            .expect("gate runs");
+
+        // Then: nothing is derived and the client value is removed.
+        assert_eq!(applied, None);
+        assert!(!sanitized.headers.contains_key("x-project-id"));
+        assert!(
+            !sanitized
+                .forwarded
+                .iter()
+                .any(|name| name == "x-project-id")
+        );
+    }
+
+    // Tavily delegation is byte-identical: Passthrough still forwards the
+    // client value through the existing policy path.
+    let mut sanitized = SanitizedHeaders {
+        headers: original.clone(),
+        forwarded: vec!["x-project-id".to_string()],
+        dropped: Vec::new(),
+    };
+    let applied = proxy
+        .apply_upstream_project_id_header_for_provider(
+            ProviderId::Tavily,
+            &mut sanitized,
+            &original,
+            None,
+        )
+        .await
+        .expect("tavily policy runs");
+    assert_eq!(applied.as_deref(), Some("evil"));
+    assert_eq!(
+        sanitized.headers.get("x-project-id").unwrap(),
+        &HeaderValue::from_static("evil")
+    );
+}
+
+#[test]
+fn normalize_client_ip_header_name_rejects_provider_key_slots() {
+    // Defense-in-depth CONFIG guard (plan todo 4): provider key slots can never
+    // be configured as trusted client-IP headers.
+    assert_eq!(
+        normalize_client_ip_header_name("X-Subscription-Token"),
+        None
+    );
+    assert_eq!(normalize_client_ip_header_name("x-api-key"), None);
+    assert_eq!(normalize_client_ip_header_name("Tavily-Api-Key"), None);
+    assert_eq!(normalize_client_ip_header_name("authorization"), None);
+    assert_eq!(
+        normalize_client_ip_header_name("X-Forwarded-For").as_deref(),
+        Some("x-forwarded-for")
+    );
+}
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     static CLEANUP_ONCE: OnceLock<()> = OnceLock::new();
     CLEANUP_ONCE.get_or_init(cleanup_stale_test_db_dirs);

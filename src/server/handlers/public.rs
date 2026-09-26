@@ -727,33 +727,40 @@ impl PublicTokenLogView {
 }
 
 fn redact_sensitive(input: &str) -> String {
-    // Redact query parameter values like tavilyApiKey=... (case-insensitive)
+    // Redact per-provider client key-slot query parameter values
+    // (case-insensitive): Tavily `tavilyApiKey=`, SerpApi `api_key=`.
     let mut s = input.to_string();
-    let mut lower = s.to_lowercase();
-    let needle = "tavilyapikey=";
     let redacted = "<redacted>";
-    let mut offset = 0usize;
-    while let Some(pos) = lower[offset..].find(needle) {
-        let idx = offset + pos;
-        let start = idx + needle.len();
-        // find earliest delimiter among &, ), space, quote, newline
-        let mut end = s.len();
-        for delim in ['&', ')', ' ', '"', '\'', '\n'] {
-            if let Some(p) = s[start..].find(delim) {
-                end = (start + p).min(end);
+    for needle in ["tavilyapikey=", "api_key="] {
+        let mut lower = s.to_lowercase();
+        let mut offset = 0usize;
+        while let Some(pos) = lower[offset..].find(needle) {
+            let idx = offset + pos;
+            let start = idx + needle.len();
+            // find earliest delimiter among &, ), space, quote, newline
+            let mut end = s.len();
+            for delim in ['&', ')', ' ', '"', '\'', '\n'] {
+                if let Some(p) = s[start..].find(delim) {
+                    end = (start + p).min(end);
+                }
             }
+            s.replace_range(start..end, redacted);
+            lower = s.to_lowercase();
+            offset = start + redacted.len();
         }
-        s.replace_range(start..end, redacted);
-        lower = s.to_lowercase();
-        offset = start + redacted.len();
     }
-    // Redact header-like phrase "Tavily-Api-Key: <value>"
-    // naive pass: case-insensitive search for "tavily-api-key"
+    // Redact header-like phrase "<name>: <value>" for every provider key
+    // header (naive pass, case-insensitive): Tavily `Tavily-Api-Key`,
+    // Exa `x-api-key`, Brave `X-Subscription-Token` (plan todo 4).
+    const HEADER_PHRASES: &[&str] = &["tavily-api-key", "x-api-key", "x-subscription-token"];
     let mut out = String::new();
     let mut i = 0usize;
     let s_lower = s.to_lowercase();
-    while let Some(pos) = s_lower[i..].find("tavily-api-key") {
-        let idx = i + pos;
+    while let Some((phrase, idx)) = HEADER_PHRASES
+        .iter()
+        .filter_map(|phrase| s_lower[i..].find(phrase).map(|pos| (phrase, i + pos)))
+        .min_by_key(|(_, idx)| *idx)
+    {
         out.push_str(&s[i..idx]);
         // advance to after possible colon
         let rest = &s[idx..];
@@ -772,8 +779,8 @@ fn redact_sensitive(input: &str) -> String {
             i = end;
         } else {
             // no colon, just append token
-            out.push_str("tavily-api-key");
-            i = idx + "tavily-api-key".len();
+            out.push_str(phrase);
+            i = idx + phrase.len();
         }
     }
     out.push_str(&s[i..]);

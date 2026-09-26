@@ -284,7 +284,16 @@ async fn proxy_mcp_follow_up_with_retry(
     Ok(retry_response)
 }
 
-fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<String>) {
+/// Generalized client key-slot strip (plan todo 4): removes EVERY
+/// case-insensitive occurrence of `slot` from the forwarded query and returns
+/// the first non-empty occurrence's value as the client auth token. Provider
+/// facades pass their registry `client_auth_query_slot` (SerpApi `api_key`);
+/// Tavily's MCP query path delegates via [`extract_token_from_query`] so its
+/// byte-level behavior is unchanged.
+fn extract_token_from_query_slot(
+    raw_query: Option<&str>,
+    slot: &str,
+) -> (Option<String>, Option<String>) {
     let Some(raw) = raw_query else {
         return (None, None);
     };
@@ -297,7 +306,7 @@ fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<
     let mut serializer = form_urlencoded::Serializer::new(String::new());
 
     for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
-        if key.eq_ignore_ascii_case("tavilyApiKey") {
+        if key.eq_ignore_ascii_case(slot) {
             // Capture the first non-empty token value and strip it from the forwarded query.
             if token.is_none() {
                 let trimmed = value.trim();
@@ -319,6 +328,13 @@ fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<
     };
 
     (query, token)
+}
+
+fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<String>) {
+    // Tavily byte-stability: the literal slot equals
+    // crate::providers::TAVILY.client_auth_query_slot, pinned by the provider
+    // registry tests (src/providers/tests.rs).
+    extract_token_from_query_slot(raw_query, "tavilyApiKey")
 }
 
 struct AuthenticatedRequestToken {
