@@ -1156,9 +1156,17 @@ impl SqliteRuntime {
         let class = operation
             .maintenance_class()
             .expect("reconciliation projection is a maintenance bulk operation");
-        if let Some(reason) = self
-            .maintenance_bulk_defer_reason_for_with_policy(operation, false, false, false, false)
-            && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+        let aged_foreground_bypass = self
+            .inner
+            .maintenance_coordinator
+            .foreground_bypass_due(class);
+        if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            aged_foreground_bypass,
+            false,
+            false,
+            false,
+        ) && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
             if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
                 self.inner.maintenance_coordinator.register_request(class);
@@ -1169,10 +1177,14 @@ impl SqliteRuntime {
             return Err(reason);
         }
         self.inner.maintenance_coordinator.register_request(class);
+        let aged_foreground_bypass = self
+            .inner
+            .maintenance_coordinator
+            .foreground_bypass_due(class);
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
         if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
-            false,
+            aged_foreground_bypass,
             false,
             true,
             aged_turn_bypass,

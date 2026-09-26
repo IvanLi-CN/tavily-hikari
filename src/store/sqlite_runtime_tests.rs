@@ -720,6 +720,40 @@ async fn maintenance_bulk_ages_a_foreground_ticket_into_a_bounded_slice() {
 }
 
 #[tokio::test]
+async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn() {
+    let runtime = three_connection_runtime().await;
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+
+    assert_eq!(
+        runtime.preflight_reconciliation_projection_admission(),
+        Err(SqliteAdmissionDeferReason::ForegroundPressure)
+    );
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::ReconciliationProjection)
+            .expect("preflight defer registers a fair ticket")
+            .first_requested_at = Instant::now() - MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE;
+    }
+
+    runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("aged preflight bypasses foreground pressure");
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect("aged reconciliation ticket receives its bounded slice");
+    drop(permit);
+}
+
+#[tokio::test]
 async fn research_drain_foreground_exception_still_uses_the_fair_coordinator() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {
