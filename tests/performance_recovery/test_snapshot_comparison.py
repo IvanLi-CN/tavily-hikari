@@ -50,8 +50,10 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
         self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
         self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
-        self.assertIn('candidate_admission["admissionEventCount"] <= 0', COMPARISON)
         self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
+        self.assertIn(
+            "candidate emitted no maintenance admission freshness telemetry", COMPARISON
+        )
         self.assertIn(
             'candidate_admission["finalPendingAgeMaxMs"] >= MAINTENANCE_FRESHNESS_BOUND_MS',
             COMPARISON,

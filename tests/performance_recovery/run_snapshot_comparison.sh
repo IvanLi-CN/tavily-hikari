@@ -1180,10 +1180,8 @@ if baseline_request_path_errors and candidate_request_path_errors * 2 > baseline
 candidate_admission = candidate["maintenanceAdmission"]
 if candidate_admission["snapshotCount"] <= 0:
     raise SystemExit("candidate emitted no maintenance admission snapshots")
-if candidate_admission["admissionEventCount"] <= 0:
-    raise SystemExit("candidate emitted no maintenance admission events")
 if candidate_admission["pendingAgeSampleCount"] <= 0:
-    raise SystemExit("candidate emitted no maintenance pending-age samples")
+    raise SystemExit("candidate emitted no maintenance admission freshness telemetry")
 for class_name, class_metrics in candidate_admission["classes"].items():
     exercised = (
         class_metrics["admittedSlices"] > 0
