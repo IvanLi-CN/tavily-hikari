@@ -16,8 +16,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/tests/jobs_and_request_log_retention.rs",
-        3100,
-        "Request-log retention and scheduled-job regression coverage still lives in the consolidated jobs/request-log suite while the remaining extraction work lands in follow-up slices.",
+        3110,
+        "Request-log retention and scheduled-job regression coverage still lives in the consolidated jobs/request-log suite while the remaining extraction work lands in follow-up slices; the provider dimension (plan todo 8) mechanically extended every AttemptLog fixture literal.",
     ),
     (
         "src/lib.rs",

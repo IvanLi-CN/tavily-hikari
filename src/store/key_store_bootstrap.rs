@@ -859,6 +859,7 @@ impl KeyStore {
                 selection_effect_summary TEXT,
                 gateway_mode TEXT,
                 experiment_variant TEXT,
+                provider TEXT,
                 proxy_session_id TEXT,
                 routing_subject_hash TEXT,
                 upstream_operation TEXT,
@@ -889,8 +890,11 @@ impl KeyStore {
                 .await?;
                 store.ensure_meta_schema().await?;
                 store.ensure_users_debug_info_shared_column().await?;
-                store.migrate_legacy_observability_tables_to_sidecar().await?;
+                // The legacy copy targets the canonical column list (which
+                // now includes provider), so the guarded sidecar upgrade
+                // must run before the copy (plan todo 8).
                 store.upgrade_request_logs_schema().await?;
+                store.migrate_legacy_observability_tables_to_sidecar().await?;
                 store.ensure_request_logs_gc_support_indexes().await?;
                 // Standalone GC must fail closed before it can remove source logs,
                 // including when it runs against a legacy single-database layout.
@@ -976,6 +980,7 @@ impl KeyStore {
                 selection_effect_summary TEXT,
                 gateway_mode TEXT,
                 experiment_variant TEXT,
+                provider TEXT,
                 proxy_session_id TEXT,
                 routing_subject_hash TEXT,
                 upstream_operation TEXT,

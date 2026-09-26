@@ -377,6 +377,7 @@ impl KeyStore {
                 selection_effect_summary,
                 gateway_mode,
                 experiment_variant,
+                provider,
                 proxy_session_id,
                 routing_subject_hash,
                 upstream_operation,
@@ -399,7 +400,7 @@ impl KeyStore {
                 client_ip_trusted,
                 ip_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -427,6 +428,9 @@ impl KeyStore {
         .bind(selection_effect_summary)
         .bind(entry.gateway_mode)
         .bind(entry.experiment_variant)
+        // Absent provider persists the legacy default so pre-provider call
+        // sites stay byte-identical (plan todo 8).
+        .bind(entry.provider.unwrap_or(crate::providers::ProviderId::Tavily.as_str()))
         .bind(entry.proxy_session_id)
         .bind(entry.routing_subject_hash)
         .bind(entry.upstream_operation)
@@ -578,16 +582,20 @@ impl KeyStore {
                     {
                         let request_log_id: i64 = sqlx::query_scalar(
                             r#"
+                            -- Rebalance audit rows are Tavily-exclusive by
+                            -- construction (local rebalance facade), so the
+                            -- provider literal stays 'tavily' (plan todo 8).
                             INSERT INTO observability.request_logs (
                                 auth_token_id, request_user_id, method, path, status_code, tavily_status_code,
                                 result_status, request_kind_key, request_kind_label, request_kind_detail,
                                 counts_business_quota, business_credits, failure_kind,
                                 key_effect_code, binding_effect_code, selection_effect_code,
                                 gateway_mode, experiment_variant,
+                                provider,
                                 proxy_session_id, routing_subject_hash, upstream_operation,
                                 fallback_reason, request_body, response_body, request_body_bytes,
                                 response_body_bytes, forwarded_headers, dropped_headers, created_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'tavily', ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
                             RETURNING id
                             "#,
                         )

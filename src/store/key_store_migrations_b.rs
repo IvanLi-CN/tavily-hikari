@@ -1428,6 +1428,19 @@ impl KeyStore {
 
         request_kind_schema_changed |= self.ensure_request_logs_key_ids().await?;
 
+        // Multi-provider dimension (serpapi/exa/brave plan): request_logs
+        // lives in the observability sidecar and evolves through this
+        // guarded ALTER path, never through the numbered main ledger.
+        // Placed AFTER ensure_request_logs_key_ids so a legacy-shape table
+        // rebuild (which predates this column) can never drop it. No
+        // DEFAULT clause on this huge table: legacy rows stay NULL and
+        // readers coalesce NULL -> 'tavily'.
+        if !self.request_logs_column_exists("provider").await? {
+            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN provider TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(request_kind_schema_changed)
     }
 

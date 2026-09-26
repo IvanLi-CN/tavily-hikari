@@ -420,6 +420,10 @@ pub(crate) struct AttemptLog<'a> {
     pub(crate) selection_effect_summary: Option<&'a str>,
     pub(crate) gateway_mode: Option<&'a str>,
     pub(crate) experiment_variant: Option<&'a str>,
+    /// Upstream provider dimension (`tavily`, `serpapi`, `exa`, `brave`).
+    /// `None` persists the legacy default `tavily`, keeping every
+    /// pre-provider call site byte-identical.
+    pub(crate) provider: Option<&'a str>,
     pub(crate) proxy_session_id: Option<&'a str>,
     pub(crate) routing_subject_hash: Option<&'a str>,
     pub(crate) upstream_operation: Option<&'a str>,
@@ -1129,6 +1133,9 @@ pub struct RequestLogRecord {
     pub selection_effect_summary: Option<String>,
     pub gateway_mode: Option<String>,
     pub experiment_variant: Option<String>,
+    /// Upstream provider dimension; readers coalesce legacy NULL rows to
+    /// `tavily` so this is never empty.
+    pub provider: String,
     pub proxy_session_id: Option<String>,
     pub routing_subject_hash: Option<String>,
     pub upstream_operation: Option<String>,

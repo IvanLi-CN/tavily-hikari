@@ -82,6 +82,9 @@ impl KeyStore {
             ),
             ("gateway_mode", nullable_source("gateway_mode")),
             ("experiment_variant", nullable_source("experiment_variant")),
+            // Legacy sources predate the provider dimension; NULL copies
+            // coalesce to 'tavily' in readers (no DEFAULT on the huge table).
+            ("provider", nullable_source("provider")),
             ("proxy_session_id", nullable_source("proxy_session_id")),
             ("routing_subject_hash", nullable_source("routing_subject_hash")),
             ("upstream_operation", nullable_source("upstream_operation")),

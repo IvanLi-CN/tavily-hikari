@@ -81,6 +81,7 @@ use super::upstream_support_and_manual_jobs::*;
                 dropped_headers: Vec::new(),
                 gateway_mode: None,
                 experiment_variant: None,
+                provider: "tavily".to_string(),
                 proxy_session_id: None,
                 routing_subject_hash: None,
                 upstream_operation: None,

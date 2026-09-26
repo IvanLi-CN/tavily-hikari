@@ -2574,6 +2574,14 @@ impl KeyStore {
             .to_string(),
         };
 
+        let provider = match row.try_get::<Option<String>, _>("provider") {
+            // SELECTs that carry the column already COALESCE legacy NULLs;
+            // selects without it fall back so every pre-provider row reads
+            // as the default provider (plan todo 8).
+            Ok(Some(value)) => value,
+            _ => crate::providers::ProviderId::Tavily.as_str().to_string(),
+        };
+
         Ok(RequestLogRecord {
             id: row.try_get("id")?,
             key_id: row.try_get("api_key_id")?,
@@ -2600,6 +2608,7 @@ impl KeyStore {
             selection_effect_summary: row.try_get("selection_effect_summary")?,
             gateway_mode: row.try_get("gateway_mode")?,
             experiment_variant: row.try_get("experiment_variant")?,
+            provider,
             proxy_session_id: row.try_get("proxy_session_id")?,
             routing_subject_hash: row.try_get("routing_subject_hash")?,
             upstream_operation: row.try_get("upstream_operation")?,

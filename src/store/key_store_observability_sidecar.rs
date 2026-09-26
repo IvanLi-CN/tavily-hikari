@@ -231,6 +231,7 @@ impl KeyStore {
                 selection_effect_summary TEXT,
                 gateway_mode TEXT,
                 experiment_variant TEXT,
+                provider TEXT,
                 proxy_session_id TEXT,
                 routing_subject_hash TEXT,
                 upstream_operation TEXT,

@@ -282,6 +282,7 @@ impl TavilyProxy {
                 selection_effect_summary: None,
                 gateway_mode,
                 experiment_variant,
+                provider: None,
                 proxy_session_id,
                 routing_subject_hash,
                 upstream_operation,

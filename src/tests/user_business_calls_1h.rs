@@ -466,6 +466,7 @@ async fn user_business_calls_1h_sqlite_bridge_returns_applied_receipt() {
             selection_effect_summary: None,
             gateway_mode: None,
             experiment_variant: None,
+            provider: None,
             proxy_session_id: None,
             routing_subject_hash: None,
             upstream_operation: Some("http_search"),

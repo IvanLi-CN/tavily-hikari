@@ -1207,6 +1207,7 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
             selection_effect_summary: None,
             gateway_mode: None,
             experiment_variant: None,
+            provider: None,
             proxy_session_id: None,
             routing_subject_hash: None,
             upstream_operation: None,
