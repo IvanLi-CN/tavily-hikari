@@ -585,6 +585,47 @@ async fn maintenance_bulk_new_class_cannot_jump_a_pending_class() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_ages_a_pending_class_into_a_bounded_turn() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats becomes the oldest pending class");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+        .expect_err("alert projection waits behind request stats");
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::AlertProjection)
+            .expect("alert projection registers a fair ticket")
+            .first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+    }
+    drop(holder);
+
+    let alert = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+        .expect("the aged class receives a bounded turn");
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.active_class(),
+        Some(SqliteMaintenanceClass::AlertProjection)
+    );
+    drop(alert);
+    let request_stats = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("the older class remains available after the aged turn");
+    drop(request_stats);
+}
+
+#[tokio::test]
 async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
