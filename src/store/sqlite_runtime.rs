@@ -39,8 +39,8 @@ const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
 const MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS: u32 = 2;
 const MAINTENANCE_BULK_HEAP_TRIM_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE: Duration = Duration::from_secs(30);
-const MAINTENANCE_BULK_TURN_BYPASS_AGE: Duration = Duration::from_secs(30);
+const MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE: Duration = Duration::from_secs(15);
+const MAINTENANCE_BULK_TURN_BYPASS_AGE: Duration = Duration::from_secs(15);
 const MAINTENANCE_RUN_SLOTS: u32 = 1_024;
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
@@ -398,15 +398,13 @@ impl SqliteMaintenanceCoordinator {
         if !allow_aged_turn {
             return false;
         }
-        state
-            .pending
-            .iter()
-            .filter(|(_, pending)| {
-                now.saturating_duration_since(pending.first_requested_at)
-                    >= MAINTENANCE_BULK_TURN_BYPASS_AGE
-            })
-            .min_by_key(|(class, pending)| (pending.first_requested_at, pending.ticket, **class))
-            .is_some_and(|(candidate, _)| *candidate == class)
+        // The oldest class remains preferred, but its worker may be asleep
+        // after registering the ticket. Let a caller take its own bounded-age
+        // turn instead of leaving the physical slot idle behind that ticket.
+        state.pending.get(&class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.first_requested_at)
+                >= MAINTENANCE_BULK_TURN_BYPASS_AGE
+        })
     }
 
     fn prune_idle_requests(state: &mut SqliteMaintenanceCoordinatorState, now: Instant) {

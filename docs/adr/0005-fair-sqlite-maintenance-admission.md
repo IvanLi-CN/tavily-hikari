@@ -25,8 +25,8 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 
 - The coordinator has a fixed set of maintenance classes and at most one pending ticket per class.
 - Tickets are served oldest-first by their first request time and a monotonic tie-breaker. If the
-  oldest ticket is not being retried, the oldest ticket that has waited at least 30 seconds may
-  take the turn; this keeps a low-frequency worker from holding every other class past the
+  oldest ticket is not being retried, any caller whose own ticket has waited at least 15 seconds
+  may take the turn; this keeps a low-frequency worker from holding every other class past the
   freshness bound.
 - Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
   or receives the existing typed defer reason and retries through its existing bounded loop.
@@ -42,7 +42,7 @@ contention policy. Add one instance-local coordinator in front of that semaphore
   each admitted slice logs its class and wait age.
 
 Admission-defer continuations use a five-second retry so a retained ticket is revisited promptly.
-The coordinator's 30-second aged-turn exception covers callers with their own slower retry cadence.
+The coordinator's 15-second aged-turn exception covers callers with their own slower retry cadence.
 A normally completed request-log GC continuation keeps its existing five-minute cadence, and HA
 GC's post-admission channel continuation keeps its separate durable 30-second contention delay.
 
@@ -64,4 +64,4 @@ queue semantics still provide process-restart recovery. Derived observations may
 eventually consistent, while foreground request and billing correctness are unchanged. The
 coordinator adds a small mutex operation to each bulk admission and observable counters that make
 maintenance starvation and stale retries diagnosable. A slow retrying class can yield its strict
-oldest-first position after 30 seconds, but only the oldest aged class can use that exception.
+oldest-first position after 15 seconds, while every caller remains bounded by its own ticket age.

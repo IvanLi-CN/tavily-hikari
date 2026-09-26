@@ -603,11 +603,17 @@ async fn maintenance_bulk_ages_a_pending_class_into_a_bounded_turn() {
             .state
             .lock()
             .expect("maintenance coordinator state");
+        let aged_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats registers a fair ticket")
+            .first_requested_at = aged_at;
         state
             .pending
             .get_mut(&SqliteMaintenanceClass::AlertProjection)
             .expect("alert projection registers a fair ticket")
-            .first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+            .first_requested_at = aged_at;
     }
     drop(holder);
 

@@ -225,7 +225,7 @@ impl KeyStore {
             })
         }
         .await;
-        let close = conn.close_and_discard().await;
+        let close = conn.close().await;
         match (result, close) {
             (Ok(result), Ok(())) => Ok(result),
             (Err(err), _) => Err(err),
