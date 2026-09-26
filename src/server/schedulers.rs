@@ -2607,7 +2607,11 @@ async fn run_manual_claimed_job(
                     job_id,
                     claim_generation,
                     "foreground_pressure",
-                    state.proxy.backend_time().now_ts().saturating_add(30),
+                    state
+                        .proxy
+                        .backend_time()
+                        .now_ts()
+                        .saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
                 )
                 .await;
             }
@@ -2632,7 +2636,11 @@ async fn run_manual_claimed_job(
                         job_id,
                         claim_generation,
                         "local_pressure",
-                        state.proxy.backend_time().now_ts().saturating_add(30),
+                        state
+                            .proxy
+                            .backend_time()
+                            .now_ts()
+                            .saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
                     )
                     .await;
                     return deferred;
@@ -2795,7 +2803,11 @@ async fn persist_claimed_reconciliation_run(
                         job_id,
                         claim_generation,
                         "local_pressure",
-                        state.proxy.backend_time().now_ts().saturating_add(30),
+                        state
+                            .proxy
+                            .backend_time()
+                            .now_ts()
+                            .saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
                     )
                     .await
                 }
@@ -2828,7 +2840,11 @@ async fn persist_claimed_reconciliation_run(
                 job_id,
                 claim_generation,
                 "local_pressure",
-                state.proxy.backend_time().now_ts().saturating_add(30),
+                state
+                    .proxy
+                    .backend_time()
+                    .now_ts()
+                    .saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
             )
             .await
         }
