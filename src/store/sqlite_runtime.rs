@@ -1156,6 +1156,7 @@ impl SqliteRuntime {
         let class = operation
             .maintenance_class()
             .expect("reconciliation projection is a maintenance bulk operation");
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
         let aged_foreground_bypass = self
             .inner
             .maintenance_coordinator
@@ -1165,7 +1166,7 @@ impl SqliteRuntime {
             aged_foreground_bypass,
             false,
             false,
-            false,
+            aged_turn_bypass,
         ) && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
             if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
@@ -1220,12 +1221,13 @@ impl SqliteRuntime {
         let class = operation
             .maintenance_class()
             .expect("maintenance bulk operations must have a coordinator class");
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
         let reason = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
             bypass_foreground_pressure,
             force_recent_contention_defer,
             false,
-            false,
+            aged_turn_bypass,
         );
         if reason.is_some_and(|reason| !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)) {
             self.inner.maintenance_coordinator.register_request(class);
@@ -1584,7 +1586,7 @@ impl SqliteRuntime {
             && (force_recent_contention_defer || !operation.probes_recent_contention())
         {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if !self.has_foreground_pool_capacity() {
+        } else if !self.has_maintenance_pool_capacity(allow_aged_coordinator_turn) {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else if self.inner.maintenance_bulk.available_permits() == 0
             || (check_coordinator
@@ -1629,6 +1631,30 @@ impl SqliteRuntime {
         idle >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS
             || idle.saturating_add(unopened)
                 >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS.saturating_add(1)
+    }
+
+    fn has_maintenance_pool_capacity(&self, allow_aged_coordinator_turn: bool) -> bool {
+        if allow_aged_coordinator_turn {
+            self.has_aged_maintenance_pool_capacity()
+        } else {
+            self.has_foreground_pool_capacity()
+        }
+    }
+
+    fn has_aged_maintenance_pool_capacity(&self) -> bool {
+        // An aged turn may consume one immediately available slot to avoid
+        // exceeding the freshness bound, but a pool with no spare capacity
+        // must still defer. Pools at or below the two-slot foreground reserve
+        // remain foreground-only even after a ticket ages.
+        if self.inner.maximum_connections <= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS {
+            return false;
+        }
+        let idle = self.inner.pool.num_idle();
+        let unopened = self
+            .inner
+            .maximum_connections
+            .saturating_sub(self.inner.pool.size()) as usize;
+        idle.saturating_add(unopened) > 0
     }
 
     fn recent_contention_active(&self) -> bool {

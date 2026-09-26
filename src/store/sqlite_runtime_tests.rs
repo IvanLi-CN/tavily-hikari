@@ -683,6 +683,70 @@ async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats waits behind the active slice");
+    let first_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("first foreground");
+    let second_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("second foreground");
+    let third_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("third foreground");
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats registers a fair ticket")
+            .first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+    }
+    drop(holder);
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+            .expect_err("an aged ticket must still defer when the pool has no spare slot"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+    drop(third_foreground);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.pool.num_idle() < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the released foreground connection becomes available");
+
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("an aged ticket may use the one available pool slot");
+    drop(permit);
+    drop((second_foreground, first_foreground));
+}
+
+#[tokio::test]
 async fn maintenance_bulk_ages_a_foreground_ticket_into_a_bounded_slice() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
@@ -751,6 +815,50 @@ async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn()
         .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
         .expect("aged reconciliation ticket receives its bounded slice");
     drop(permit);
+}
+
+#[tokio::test]
+async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_turn() {
+    let runtime = three_connection_runtime().await;
+    let first_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("first foreground");
+    let second_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("second foreground");
+
+    assert_eq!(
+        runtime.preflight_reconciliation_projection_admission(),
+        Err(SqliteAdmissionDeferReason::PoolPressure)
+    );
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::ReconciliationProjection)
+            .expect("reconciliation registers a fair ticket")
+            .first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+    }
+
+    runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("aged preflight may use the one available pool slot");
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect("aged reconciliation ticket receives its bounded slice");
+    drop(permit);
+    drop((second_foreground, first_foreground));
 }
 
 #[tokio::test]
