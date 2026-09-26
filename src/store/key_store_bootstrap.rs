@@ -933,6 +933,8 @@ impl KeyStore {
                 quota_limit INTEGER,
                 quota_remaining INTEGER,
                 quota_synced_at INTEGER,
+                provider TEXT NOT NULL DEFAULT 'tavily',
+                quota_renews_at INTEGER,
                 deleted_at INTEGER
             )
             "#,
@@ -1502,6 +1504,7 @@ impl KeyStore {
                 last_event_id TEXT,
                 gateway_mode TEXT NOT NULL DEFAULT 'upstream_mcp',
                 experiment_variant TEXT NOT NULL DEFAULT 'control',
+                provider TEXT,
                 ab_bucket INTEGER,
                 routing_subject_hash TEXT,
                 fallback_reason TEXT,
@@ -1638,6 +1641,7 @@ impl KeyStore {
                 selection_effect_summary TEXT,
                 gateway_mode TEXT,
                 experiment_variant TEXT,
+                provider TEXT,
                 proxy_session_id TEXT,
                 routing_subject_hash TEXT,
                 upstream_operation TEXT,

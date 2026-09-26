@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -2295,9 +2295,319 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         ]
     );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_warm_upgrade_reapplies_after_v44_simulation() {
+    let db_path = temp_db_path("schema-migration-provider-aware-warm-upgrade");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-warm-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+    drop(proxy);
+
+    // Simulate a v44 database: remove the v45 ledger row and every
+    // provider-aware object so the warm path must re-apply the migration.
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 45")
+        .execute(&pool)
+        .await
+        .expect("drop v45 ledger row");
+    sqlx::query("DROP INDEX IF EXISTS idx_api_keys_provider_status")
+        .execute(&pool)
+        .await
+        .expect("drop provider index");
+    for statement in [
+        "ALTER TABLE api_keys DROP COLUMN provider",
+        "ALTER TABLE api_keys DROP COLUMN quota_renews_at",
+        "ALTER TABLE auth_token_logs DROP COLUMN provider",
+        "ALTER TABLE mcp_sessions DROP COLUMN provider",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("restore the v44 table shape");
+    }
+    pool.close().await;
+
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-warm-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("v45 must re-apply cleanly on the warm upgrade path");
+    let api_keys_provider_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('api_keys') \
+         WHERE name IN ('provider', 'quota_renews_at')",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read api_keys columns");
+    assert_eq!(api_keys_provider_columns, 2);
+    let auth_token_logs_provider: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('auth_token_logs') WHERE name = 'provider'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read auth_token_logs columns");
+    assert_eq!(auth_token_logs_provider, 1);
+    let mcp_sessions_provider: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('mcp_sessions') WHERE name = 'provider'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read mcp_sessions columns");
+    assert_eq!(mcp_sessions_provider, 1);
+    let provider_index: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+         AND name = 'idx_api_keys_provider_status'",
+    )
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read provider index");
+    assert_eq!(provider_index, 1);
+    let v45_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 45")
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("read v45 ledger record");
+    assert_eq!(v45_rows, 1);
+    let seeded_providers: Vec<String> = sqlx::query_scalar("SELECT provider FROM api_keys")
+        .fetch_all(&reopened.key_store.pool)
+        .await
+        .expect("read seeded key providers");
+    assert!(
+        !seeded_providers.is_empty(),
+        "bootstrap must seed the configured api key"
+    );
+    assert!(
+        seeded_providers.iter().all(|provider| provider == "tavily"),
+        "seeded keys must default to the tavily provider"
+    );
+
+    drop(reopened);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_apply_path_is_idempotent() {
+    let db_path = temp_db_path("schema-migration-provider-aware-idempotent");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-idempotent".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+
+    // Run the guarded warm apply path twice after the fresh bootstrap already
+    // recorded v45; both passes must be no-ops that keep a single ledger row.
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("first warm v45 pass"),
+        "recorded v45 migration must be a no-op on warm restart"
+    );
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("second warm v45 pass"),
+        "recorded v45 migration must stay a no-op on repeated warm restarts"
+    );
+    let v45_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 45")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v45 ledger record");
+    assert_eq!(v45_rows, 1);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_fresh_bootstrap_records_columns_and_checksum() {
+    let db_path = temp_db_path("schema-migration-provider-aware-fresh");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-fresh".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+
+    let api_keys_provider_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('api_keys') \
+         WHERE name IN ('provider', 'quota_renews_at')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read api_keys columns");
+    assert_eq!(api_keys_provider_columns, 2);
+    let auth_token_logs_provider: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('auth_token_logs') WHERE name = 'provider'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read auth_token_logs columns");
+    assert_eq!(auth_token_logs_provider, 1);
+    let mcp_sessions_provider: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('mcp_sessions') WHERE name = 'provider'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read mcp_sessions columns");
+    assert_eq!(mcp_sessions_provider, 1);
+    let (name, checksum): (String, String) =
+        sqlx::query_as("SELECT name, checksum FROM schema_migrations WHERE version = 45")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fresh bootstrap must record the v45 ledger row");
+    assert_eq!(name, "provider-aware-schema-v1");
+    assert_eq!(
+        checksum,
+        "sha256:77201d3952329ffb3e54be6c2a1bdb08d595e3ecbc3e5279a6fb6f4895f4bd0f"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_checksum_tampering_is_rejected() {
+    let db_path = temp_db_path("schema-migration-provider-aware-tamper");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-tamper".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+
+    sqlx::query(
+        "UPDATE schema_migrations \
+         SET checksum = 'sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+         WHERE version = 45",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("tamper with the v45 checksum");
+    let error = proxy
+        .key_store
+        .prepare_versioned_schema()
+        .await
+        .expect_err("warm verification must reject a tampered v45 checksum");
+    assert!(
+        error
+            .to_string()
+            .contains("schema migration checksum mismatch at version 45"),
+        "unexpected tamper rejection message: {error}"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_legacy_api_key_insert_defaults_to_tavily() {
+    let db_path = temp_db_path("schema-migration-provider-aware-legacy-default");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-legacy-default".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+
+    // A legacy write path (or NDJSON import) that predates the provider
+    // column omits it entirely; SQLite column defaults must fill in 'tavily'.
+    sqlx::query(
+        "INSERT INTO api_keys (id, api_key) VALUES ('legacy-provider-default', 'tvly-legacy-row')",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert a legacy api_keys row without provider");
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM api_keys WHERE id = 'legacy-provider-default'")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read the legacy row back");
+    assert_eq!(provider, "tavily");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn provider_aware_v45_ha_baseline_legacy_ndjson_defaults_to_tavily() {
+    let db_path = temp_db_path("schema-migration-provider-aware-ha-baseline");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-provider-aware-ha-baseline".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("bootstrap database");
+
+    // A legacy HA baseline snapshot captured before v45 carries api_keys rows
+    // without provider/quota_renews_at; the generic NDJSON insert only binds
+    // present JSON keys, so SQLite column defaults must fill in 'tavily'.
+    let legacy_baseline = [
+        serde_json::json!({ "kind": "baseline_start", "highWatermark": 1 }),
+        serde_json::json!({
+            "kind": "resource",
+            "resource": "api_keys",
+            "data": { "id": "ha-legacy-provider", "api_key": "tvly-ha-legacy-baseline" },
+        }),
+        serde_json::json!({ "kind": "baseline_end", "highWatermark": 1 }),
+    ]
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    let baseline_result = proxy
+        .apply_ha_baseline_ndjson(HaSyncChannel::Control, &legacy_baseline)
+        .await
+        .expect("legacy control baseline must apply on a v45 schema");
+    assert_eq!(baseline_result.row_count, 1);
+    let provider: String =
+        sqlx::query_scalar("SELECT provider FROM api_keys WHERE id = 'ha-legacy-provider'")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read the HA-imported api_keys row back");
+    assert_eq!(provider, "tavily");
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);

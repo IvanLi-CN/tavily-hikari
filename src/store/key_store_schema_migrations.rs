@@ -1,3 +1,5 @@
+mod key_store_schema_migrations_provider;
+
 const SCHEMA_BASELINE_VERSION: i64 = 1;
 const SCHEMA_BASELINE_NAME: &str = "production-schema-baseline-v1";
 const SCHEMA_BASELINE_CHECKSUM: &str = "sha256:8c3198e17b914838e07a4938107f3a0f";
@@ -886,6 +888,7 @@ impl KeyStore {
                 RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_NAME,
                 RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_CHECKSUM,
             ),
+            key_store_schema_migrations_provider::provider_aware_schema_migration_record(),
         ];
         expected.extend(convergence_schema_migration_records());
         let recorded: Vec<(i64, String, String)> = sqlx::query_as(
@@ -924,6 +927,7 @@ impl KeyStore {
                 "schema migration object validation failed at version 2".to_string(),
             ));
         }
+        self.validate_provider_aware_schema_objects().await?;
         if self
             .schema_migration_applied(HA_GC_LEGACY_CURSOR_VERSION)
             .await?
@@ -2961,6 +2965,7 @@ impl KeyStore {
                 .await?;
         }
         self.apply_pending_convergence_schema_migrations().await?;
+        self.ensure_provider_aware_schema_migration().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::debug!(
@@ -3032,6 +3037,7 @@ impl KeyStore {
         self.apply_reconciliation_current_source_identity_delete_migration()
             .await?;
         self.apply_all_convergence_schema_migrations().await?;
+        self.apply_provider_aware_schema_migration().await?;
         self.validate_applied_migration_objects().await?;
         self.clear_new_database_bootstrap_marker().await?;
         tracing::info!(
@@ -3039,7 +3045,7 @@ impl KeyStore {
             event = "baseline_adopted",
             outcome = "applied",
             elapsed_ms = started.elapsed().as_millis() as u64,
-            migration_count = 44_i64,
+            migration_count = 45_i64,
         );
         Ok(())
     }
