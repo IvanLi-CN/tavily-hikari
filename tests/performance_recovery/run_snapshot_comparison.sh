@@ -1160,6 +1160,16 @@ if candidate["sqliteFinalLockErrors"]:
 if candidate["sourceSha"] == "unknown":
     raise SystemExit("candidate source SHA was not supplied to the comparison")
 
+for lane, metric in (
+    ("dashboard", "dashboardHttp5xx"),
+    ("maintenance", "maintenanceHttp5xx"),
+):
+    if candidate[metric] > baseline[metric]:
+        raise SystemExit(
+            f"candidate {lane} HTTP 5xx increased: "
+            f"baseline={baseline[metric]}, candidate={candidate[metric]}"
+        )
+
 baseline_request_path_errors = (
     baseline["sqliteFinalLockErrors"] + baseline["sqlitePoolTimeoutErrors"]
 )
