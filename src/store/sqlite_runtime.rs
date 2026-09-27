@@ -163,6 +163,8 @@ struct PendingMaintenanceRequest {
     ticket: u64,
     first_requested_at: Instant,
     last_requested_at: Instant,
+    preflight_holders: u32,
+    ordinary_request: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -216,6 +218,8 @@ impl SqliteMaintenancePreflightLease {
     /// operation's admission boundary.
     pub(crate) fn preserve_ticket(mut self) {
         self.cancel_on_drop = false;
+        self.coordinator
+            .release_preflight_request(self.class, self.ticket, false);
     }
 }
 
@@ -223,7 +227,7 @@ impl Drop for SqliteMaintenancePreflightLease {
     fn drop(&mut self) {
         if self.cancel_on_drop {
             self.coordinator
-                .cancel_request_if_ticket(self.class, self.ticket);
+                .release_preflight_request(self.class, self.ticket, true);
         }
     }
 }
@@ -257,21 +261,37 @@ impl SqliteMaintenanceCoordinator {
         state.pending.remove(&class);
     }
 
-    fn cancel_request_if_ticket(&self, class: SqliteMaintenanceClass, ticket: u64) {
+    fn release_preflight_request(
+        &self,
+        class: SqliteMaintenanceClass,
+        ticket: u64,
+        cancel_if_unused: bool,
+    ) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state
-            .pending
-            .get(&class)
-            .is_some_and(|pending| pending.ticket == ticket)
-        {
+        let cancel = state.pending.get_mut(&class).is_some_and(|pending| {
+            if pending.ticket != ticket {
+                return false;
+            }
+            pending.preflight_holders = pending.preflight_holders.saturating_sub(1);
+            cancel_if_unused && pending.preflight_holders == 0 && !pending.ordinary_request
+        });
+        if cancel {
             state.pending.remove(&class);
         }
     }
 
     fn register_request(&self, class: SqliteMaintenanceClass) -> u64 {
+        self.register_request_with_kind(class, false)
+    }
+
+    fn register_preflight_request(&self, class: SqliteMaintenanceClass) -> u64 {
+        self.register_request_with_kind(class, true)
+    }
+
+    fn register_request_with_kind(&self, class: SqliteMaintenanceClass, preflight: bool) -> u64 {
         let now = Instant::now();
         let mut state = self
             .state
@@ -287,8 +307,15 @@ impl SqliteMaintenanceCoordinator {
                 ticket,
                 first_requested_at: now,
                 last_requested_at: now,
+                preflight_holders: 0,
+                ordinary_request: false,
             });
         pending.last_requested_at = now;
+        if preflight {
+            pending.preflight_holders = pending.preflight_holders.saturating_add(1);
+        } else {
+            pending.ordinary_request = true;
+        }
         pending.ticket
     }
 
@@ -1218,7 +1245,10 @@ impl SqliteRuntime {
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        let ticket = self.inner.maintenance_coordinator.register_request(class);
+        let ticket = self
+            .inner
+            .maintenance_coordinator
+            .register_preflight_request(class);
         let aged_foreground_bypass = self
             .inner
             .maintenance_coordinator
@@ -1238,6 +1268,9 @@ impl SqliteRuntime {
                     self.inner.maintenance_coordinator.cancel_request(class);
                 }
             }
+            self.inner
+                .maintenance_coordinator
+                .release_preflight_request(class, ticket, false);
             self.record_deferred(operation, reason);
             return Err(reason);
         }

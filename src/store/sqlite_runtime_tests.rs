@@ -880,6 +880,23 @@ async fn reconciliation_preflight_guard_does_not_cancel_a_replacement_ticket() {
 }
 
 #[tokio::test]
+async fn reconciliation_preflight_guards_share_ticket_ownership_safely() {
+    let runtime = three_connection_runtime().await;
+    let first = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("first preflight admission");
+    let second = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("second preflight admission");
+
+    drop(first);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+
+    drop(second);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 0);
+}
+
+#[tokio::test]
 async fn research_drain_foreground_exception_still_uses_the_fair_coordinator() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {

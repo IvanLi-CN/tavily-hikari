@@ -985,7 +985,6 @@ DASHBOARD_P95_NOISE_FLOOR_MS = 15.0
 RSS_P95_NOISE_BAND_KIB = 40 * 1024
 MAINTENANCE_FRESHNESS_BOUND_MS = 60_000
 CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5
-CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE = 1
 
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
@@ -1177,10 +1176,7 @@ if not diagnostic:
             if key.startswith(f"{status_lane}:")
         )
         allowed_5xx = (
-            max(
-                CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE,
-                (candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT + 99) // 100,
-            )
+            candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT // 100
             if candidate_attempts
             else 0
         )
@@ -1289,6 +1285,9 @@ for billing_field in ("billingAdjustmentCount", "billingAdjustmentSum"):
             f"baseline={baseline_value}, candidate={candidate_value}"
         )
 
+# Short runs exercise startup/recovery wiring only; keep their receipt
+# explicitly non-accepting because the production-shape comparison gates are skipped.
+acceptance_status = "diagnostic" if diagnostic else "passed"
 result = {
     "baseline": baseline,
     "candidate": candidate,
@@ -1307,7 +1306,7 @@ result = {
         else None
     ),
     "empiricalAcceptance": {
-        "status": "passed",
+        "status": acceptance_status,
         "candidateSha": candidate["sourceSha"],
         "baselineSha": baseline["sourceSha"],
         "foregroundTransactionP95Ms": {
@@ -1325,7 +1324,11 @@ result = {
             "candidateMaxWaitMs": candidate_admission["maxWaitMs"],
         },
     },
-    "result": "passed_with_baseline_red" if baseline_red else "passed",
+    "result": (
+        "diagnostic"
+        if diagnostic
+        else ("passed_with_baseline_red" if baseline_red else "passed")
+    ),
 }
 (artifacts / "comparison.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 print(json.dumps(result, sort_keys=True))
