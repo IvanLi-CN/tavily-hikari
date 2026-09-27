@@ -1165,31 +1165,32 @@ if candidate["sourceSha"] == "unknown":
 # Both variants restart halfway through the run. Compare raw counts in the
 # receipt, but bound candidate failures by rate so phase alignment does not
 # turn one controlled restart response into a false regression.
-for lane, metric in (
-    ("dashboard", "dashboardHttp5xx"),
-    ("maintenance", "maintenanceHttp5xx"),
-):
-    status_lane = "ha_gc_trigger" if lane == "maintenance" else lane
-    candidate_attempts = sum(
-        count
-        for key, count in candidate["load"]["statuses"].items()
-        if key.startswith(f"{status_lane}:")
-    )
-    allowed_5xx = (
-        max(
-            CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE,
-            (candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT + 99) // 100,
+if not diagnostic:
+    for lane, metric in (
+        ("dashboard", "dashboardHttp5xx"),
+        ("maintenance", "maintenanceHttp5xx"),
+    ):
+        status_lane = "ha_gc_trigger" if lane == "maintenance" else lane
+        candidate_attempts = sum(
+            count
+            for key, count in candidate["load"]["statuses"].items()
+            if key.startswith(f"{status_lane}:")
         )
-        if candidate_attempts
-        else 0
-    )
-    if candidate[metric] > allowed_5xx:
-        raise SystemExit(
-            f"candidate {lane} HTTP 5xx rate exceeded the "
-            f"{CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT}% controlled-restart allowance: "
-            f"baseline={baseline[metric]}, candidate={candidate[metric]}, "
-            f"attempts={candidate_attempts}, allowed={allowed_5xx}"
+        allowed_5xx = (
+            max(
+                CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE,
+                (candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT + 99) // 100,
+            )
+            if candidate_attempts
+            else 0
         )
+        if candidate[metric] > allowed_5xx:
+            raise SystemExit(
+                f"candidate {lane} HTTP 5xx rate exceeded the "
+                f"{CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT}% controlled-restart allowance: "
+                f"baseline={baseline[metric]}, candidate={candidate[metric]}, "
+                f"attempts={candidate_attempts}, allowed={allowed_5xx}"
+            )
 
 baseline_request_path_errors = (
     baseline["sqliteFinalLockErrors"] + baseline["sqlitePoolTimeoutErrors"]
