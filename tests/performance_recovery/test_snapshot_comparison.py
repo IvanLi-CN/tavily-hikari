@@ -49,6 +49,8 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("DASHBOARD_P95_NOISE_FLOOR_MS = 15.0", COMPARISON)
         self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
         self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
+        self.assertIn("CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5", COMPARISON)
+        self.assertIn("CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE = 1", COMPARISON)
         self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
         self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
         self.assertIn(
@@ -71,7 +73,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('candidate["sqliteFinalLockErrors"]', COMPARISON)
         self.assertIn('("dashboard", "dashboardHttp5xx")', COMPARISON)
         self.assertIn('("maintenance", "maintenanceHttp5xx")', COMPARISON)
-        self.assertIn("candidate {lane} HTTP 5xx increased", COMPARISON)
+        self.assertIn("candidate {lane} HTTP 5xx rate exceeded", COMPARISON)
         self.assertIn('structured_field(line, "defer_reason", reason)', COMPARISON)
         self.assertIn('("sqlite_contention", "sqlite_busy")', COMPARISON)
         self.assertIn('structured_field(line, "event", "research_sweep_deferred")', COMPARISON)

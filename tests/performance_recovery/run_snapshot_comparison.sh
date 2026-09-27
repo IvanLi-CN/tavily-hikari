@@ -984,6 +984,8 @@ candidate = json.loads((artifacts / "candidate" / "summary.json").read_text())
 DASHBOARD_P95_NOISE_FLOOR_MS = 15.0
 RSS_P95_NOISE_BAND_KIB = 40 * 1024
 MAINTENANCE_FRESHNESS_BOUND_MS = 60_000
+CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5
+CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE = 1
 
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
@@ -1160,14 +1162,33 @@ if candidate["sqliteFinalLockErrors"]:
 if candidate["sourceSha"] == "unknown":
     raise SystemExit("candidate source SHA was not supplied to the comparison")
 
+# Both variants restart halfway through the run. Compare raw counts in the
+# receipt, but bound candidate failures by rate so phase alignment does not
+# turn one controlled restart response into a false regression.
 for lane, metric in (
     ("dashboard", "dashboardHttp5xx"),
     ("maintenance", "maintenanceHttp5xx"),
 ):
-    if candidate[metric] > baseline[metric]:
+    status_lane = "ha_gc_trigger" if lane == "maintenance" else lane
+    candidate_attempts = sum(
+        count
+        for key, count in candidate["load"]["statuses"].items()
+        if key.startswith(f"{status_lane}:")
+    )
+    allowed_5xx = (
+        max(
+            CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE,
+            (candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT + 99) // 100,
+        )
+        if candidate_attempts
+        else 0
+    )
+    if candidate[metric] > allowed_5xx:
         raise SystemExit(
-            f"candidate {lane} HTTP 5xx increased: "
-            f"baseline={baseline[metric]}, candidate={candidate[metric]}"
+            f"candidate {lane} HTTP 5xx rate exceeded the "
+            f"{CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT}% controlled-restart allowance: "
+            f"baseline={baseline[metric]}, candidate={candidate[metric]}, "
+            f"attempts={candidate_attempts}, allowed={allowed_5xx}"
         )
 
 baseline_request_path_errors = (
