@@ -724,26 +724,11 @@ async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
     }
     drop(holder);
 
-    assert_eq!(
-        runtime
-            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
-            .expect_err("an aged ticket must still defer when the pool has no spare slot"),
-        SqliteAdmissionDeferReason::PoolPressure
-    );
-    drop(third_foreground);
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while runtime.inner.pool.num_idle() < 1 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the released foreground connection becomes available");
-
     let permit = runtime
         .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
-        .expect("an aged ticket may use the one available pool slot");
+        .expect("an aged ticket reaches the bounded pool acquire at capacity");
     drop(permit);
-    drop((second_foreground, first_foreground));
+    drop((third_foreground, second_foreground, first_foreground));
 }
 
 #[tokio::test]
@@ -1141,6 +1126,10 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
         .expect("prewarm reconciliation capacity");
     assert_eq!(runtime.inner.pool.size(), 3);
     assert_eq!(runtime.inner.pool.num_idle(), 2);
+    let ha_gc = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("prewarmed capacity services the older HA GC ticket");
+    drop(ha_gc);
     runtime.mark_recent_contention_for_test();
     let projection = runtime
         .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)

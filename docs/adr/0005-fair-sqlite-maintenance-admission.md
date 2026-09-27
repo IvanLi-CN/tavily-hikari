@@ -29,10 +29,10 @@ contention policy. Add one instance-local coordinator in front of that semaphore
   may take the turn; this keeps a low-frequency worker from holding every other class past the
   freshness bound.
 - Ordinary admission still reserves two foreground pool slots. Once a ticket is eligible for an
-  aged turn, it may consume one currently idle or unopened pool slot when that reservation is the
-  only remaining barrier; a full pool with no available slot continues to return `pool_pressure`.
-  The check remains non-blocking, so the aged exception cannot turn pool contention into an
-  unbounded wait.
+  aged turn, it may reach the operation's bounded pool acquire even when all currently-open
+  connections are checked out; the 100ms acquire budget is the safety boundary, so a full pool
+  cannot starve an aged ticket behind a pre-admission `pool_pressure` check. Pools at or below the
+  two-slot foreground reserve remain foreground-only after a ticket ages.
 - Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
   or receives the existing typed defer reason and retries through its existing bounded loop.
 - A class keeps its one pending ticket while a caller is still retrying any typed admission defer;

@@ -1635,26 +1635,23 @@ impl SqliteRuntime {
 
     fn has_maintenance_pool_capacity(&self, allow_aged_coordinator_turn: bool) -> bool {
         if allow_aged_coordinator_turn {
-            self.has_aged_maintenance_pool_capacity()
+            self.allows_aged_maintenance_pool_probe()
         } else {
             self.has_foreground_pool_capacity()
         }
     }
 
-    fn has_aged_maintenance_pool_capacity(&self) -> bool {
-        // An aged turn may consume one immediately available slot to avoid
-        // exceeding the freshness bound, but a pool with no spare capacity
-        // must still defer. Pools at or below the two-slot foreground reserve
-        // remain foreground-only even after a ticket ages.
+    fn allows_aged_maintenance_pool_probe(&self) -> bool {
+        // An aged turn may reach the operation's bounded pool acquire even
+        // when all currently-open connections are checked out. The 100ms
+        // acquire budget is the safety boundary; rejecting a full pool here
+        // would let sustained foreground traffic starve the aged ticket.
+        // Pools at or below the two-slot foreground reserve remain
+        // foreground-only even after a ticket ages.
         if self.inner.maximum_connections <= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS {
             return false;
         }
-        let idle = self.inner.pool.num_idle();
-        let unopened = self
-            .inner
-            .maximum_connections
-            .saturating_sub(self.inner.pool.size()) as usize;
-        idle.saturating_add(unopened) > 0
+        true
     }
 
     fn recent_contention_active(&self) -> bool {
