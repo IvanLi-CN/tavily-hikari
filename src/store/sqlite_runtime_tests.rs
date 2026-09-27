@@ -775,10 +775,10 @@ async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn()
         runtime.record_foreground_activity();
     }
 
-    assert_eq!(
+    assert!(matches!(
         runtime.preflight_reconciliation_projection_admission(),
         Err(SqliteAdmissionDeferReason::ForegroundPressure)
-    );
+    ));
     {
         let mut state = runtime
             .inner
@@ -793,7 +793,7 @@ async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn()
             .first_requested_at = Instant::now() - MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE;
     }
 
-    runtime
+    let _preflight = runtime
         .preflight_reconciliation_projection_admission()
         .expect("aged preflight bypasses foreground pressure");
     let permit = runtime
@@ -818,10 +818,10 @@ async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_tur
         .await
         .expect("second foreground");
 
-    assert_eq!(
+    assert!(matches!(
         runtime.preflight_reconciliation_projection_admission(),
         Err(SqliteAdmissionDeferReason::PoolPressure)
-    );
+    ));
     {
         let mut state = runtime
             .inner
@@ -836,7 +836,7 @@ async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_tur
             .first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
     }
 
-    runtime
+    let _preflight = runtime
         .preflight_reconciliation_projection_admission()
         .expect("aged preflight may use the one available pool slot");
     let permit = runtime
@@ -844,6 +844,39 @@ async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_tur
         .expect("aged reconciliation ticket receives its bounded slice");
     drop(permit);
     drop((second_foreground, first_foreground));
+}
+
+#[tokio::test]
+async fn reconciliation_preflight_guard_cancels_without_a_bulk_attempt() {
+    let runtime = three_connection_runtime().await;
+    let preflight = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("preflight admission");
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+
+    drop(preflight);
+
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 0);
+}
+
+#[tokio::test]
+async fn reconciliation_preflight_guard_does_not_cancel_a_replacement_ticket() {
+    let runtime = three_connection_runtime().await;
+    let preflight = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("preflight admission");
+    let class = SqliteOperation::ReconciliationProjection
+        .maintenance_class()
+        .expect("reconciliation class");
+
+    runtime.inner.maintenance_coordinator.cancel_request(class);
+    runtime
+        .inner
+        .maintenance_coordinator
+        .register_request(class);
+    drop(preflight);
+
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
 }
 
 #[tokio::test]

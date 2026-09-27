@@ -202,6 +202,32 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
     _permit: OwnedSemaphorePermit,
 }
 
+#[derive(Debug)]
+pub(crate) struct SqliteMaintenancePreflightLease {
+    coordinator: Arc<SqliteMaintenanceCoordinator>,
+    class: SqliteMaintenanceClass,
+    ticket: u64,
+    cancel_on_drop: bool,
+}
+
+impl SqliteMaintenancePreflightLease {
+    /// Keep the fair ticket for the actual bulk admission attempt. Before this
+    /// point, dropping the guard cancels a preflight that never reached the
+    /// operation's admission boundary.
+    pub(crate) fn preserve_ticket(mut self) {
+        self.cancel_on_drop = false;
+    }
+}
+
+impl Drop for SqliteMaintenancePreflightLease {
+    fn drop(&mut self) {
+        if self.cancel_on_drop {
+            self.coordinator
+                .cancel_request_if_ticket(self.class, self.ticket);
+        }
+    }
+}
+
 impl Drop for SqliteMaintenanceAdmissionLease {
     fn drop(&mut self) {
         let mut state = self
@@ -231,7 +257,21 @@ impl SqliteMaintenanceCoordinator {
         state.pending.remove(&class);
     }
 
-    fn register_request(&self, class: SqliteMaintenanceClass) {
+    fn cancel_request_if_ticket(&self, class: SqliteMaintenanceClass, ticket: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state
+            .pending
+            .get(&class)
+            .is_some_and(|pending| pending.ticket == ticket)
+        {
+            state.pending.remove(&class);
+        }
+    }
+
+    fn register_request(&self, class: SqliteMaintenanceClass) -> u64 {
         let now = Instant::now();
         let mut state = self
             .state
@@ -249,6 +289,7 @@ impl SqliteMaintenanceCoordinator {
                 last_requested_at: now,
             });
         pending.last_requested_at = now;
+        pending.ticket
     }
 
     fn is_turn(&self, class: SqliteMaintenanceClass, allow_aged_turn: bool) -> bool {
@@ -1143,7 +1184,7 @@ impl SqliteRuntime {
     /// foreground capacity or creates a second admission owner.
     pub(crate) fn preflight_reconciliation_projection_admission(
         &self,
-    ) -> Result<(), SqliteAdmissionDeferReason> {
+    ) -> Result<SqliteMaintenancePreflightLease, SqliteAdmissionDeferReason> {
         let operation = SqliteOperation::ReconciliationProjection;
         if self
             .inner
@@ -1177,7 +1218,7 @@ impl SqliteRuntime {
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        self.inner.maintenance_coordinator.register_request(class);
+        let ticket = self.inner.maintenance_coordinator.register_request(class);
         let aged_foreground_bypass = self
             .inner
             .maintenance_coordinator
@@ -1200,7 +1241,12 @@ impl SqliteRuntime {
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        Ok(())
+        Ok(SqliteMaintenancePreflightLease {
+            coordinator: self.inner.maintenance_coordinator.clone(),
+            class,
+            ticket,
+            cancel_on_drop: true,
+        })
     }
 
     fn try_admit_maintenance_bulk_with_policy(

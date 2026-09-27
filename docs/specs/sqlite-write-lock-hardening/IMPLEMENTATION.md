@@ -32,6 +32,9 @@
   covered by the coordinator's 15-second aged-turn exception. Completed request-log GC keeps its
   five-minute continuation, while HA GC keeps its separate 30-second post-admission contention
   continuation.
+- Reconciliation preflight uses a drop guard so stale claims and controlled retries cancel a ticket
+  that never reached bulk admission; the actual preparation path explicitly transfers the ticket
+  before entering the bulk admission retry loop.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
   background admission commits at most four chunks within one 50ms transaction-start/next-chunk

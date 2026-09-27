@@ -38,6 +38,9 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - A class keeps its one pending ticket while a caller is still retrying any typed admission defer;
   a `bulk_busy` result does not create a second ticket. This preserves the original queue-time
   fairness anchor across foreground, pool, and recent-contention pressure.
+- Reconciliation preflight owns a drop guard: if claim validation or a controlled retry exits before
+  the real bulk admission, the unused ticket is cancelled; only the path entering that admission
+  explicitly transfers the ticket to the bulk admission retry loop.
 - A pending class expires after 120 seconds without another retry. This bounds abandoned work and
   leaves durable scheduled-job state responsible for work that must survive process lifetime.
 - The lease is held only for the local SQLite slice. Remote requests and their response handling

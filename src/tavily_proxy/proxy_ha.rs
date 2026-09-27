@@ -162,6 +162,7 @@ impl TavilyProxy {
     pub fn preflight_reconciliation_projection_admission(&self) -> Result<(), &'static str> {
         self.key_store
             .preflight_upstream_reconciliation_projection()
+            .map(|_| ())
             .map_err(|reason| reason.as_str())
     }
 

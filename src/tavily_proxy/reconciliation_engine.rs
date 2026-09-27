@@ -554,12 +554,13 @@ impl ReconciliationEngine {
             let Some(_run_lease) = proxy.key_store.sqlite_runtime.try_start_maintenance_run() else {
                 return Ok(Self::deferred(&proxy, "shutdown"));
             };
-            if let Err(reason) = proxy
+            let preflight = match proxy
                 .key_store
                 .preflight_upstream_reconciliation_projection()
             {
-                return Ok(Self::deferred(&proxy, reason.as_str()));
-            }
+                Ok(preflight) => preflight,
+                Err(reason) => return Ok(Self::deferred(&proxy, reason.as_str())),
+            };
             let Some(attempt) = proxy
                 .key_store
                 .upstream_reconciliation_claim_attempt(job_id, claim_generation)
@@ -581,6 +582,7 @@ impl ReconciliationEngine {
                     RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY,
                 ));
             }
+            preflight.preserve_ticket();
             proxy
                 .run_upstream_reconciliation_once_inner(
                     &usage_base,
