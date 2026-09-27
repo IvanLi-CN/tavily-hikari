@@ -1270,7 +1270,7 @@ impl SqliteRuntime {
             }
             self.inner
                 .maintenance_coordinator
-                .release_preflight_request(class, ticket, false);
+                .release_preflight_request(class, ticket, true);
             self.record_deferred(operation, reason);
             return Err(reason);
         }
