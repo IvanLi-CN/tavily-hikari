@@ -219,7 +219,7 @@ impl SqliteMaintenancePreflightLease {
     pub(crate) fn preserve_ticket(mut self) {
         self.cancel_on_drop = false;
         self.coordinator
-            .release_preflight_request(self.class, self.ticket, false);
+            .promote_preflight_request(self.class, self.ticket);
     }
 }
 
@@ -280,6 +280,19 @@ impl SqliteMaintenanceCoordinator {
         });
         if cancel {
             state.pending.remove(&class);
+        }
+    }
+
+    fn promote_preflight_request(&self, class: SqliteMaintenanceClass, ticket: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pending) = state.pending.get_mut(&class)
+            && pending.ticket == ticket
+        {
+            pending.preflight_holders = pending.preflight_holders.saturating_sub(1);
+            pending.ordinary_request = true;
         }
     }
 

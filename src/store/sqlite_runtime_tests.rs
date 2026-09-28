@@ -917,6 +917,25 @@ async fn reconciliation_preflight_guards_share_ticket_ownership_safely() {
 }
 
 #[tokio::test]
+async fn preserved_reconciliation_preflight_owns_the_ticket_during_bulk_admission() {
+    let runtime = three_connection_runtime().await;
+    let first = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("first preflight admission");
+    let second = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("second preflight admission");
+
+    first.preserve_ticket();
+    drop(second);
+
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect("the promoted ticket remains available for bulk admission");
+}
+
+#[tokio::test]
 async fn research_drain_foreground_exception_still_uses_the_fair_coordinator() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {
