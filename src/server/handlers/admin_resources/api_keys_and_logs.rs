@@ -1185,83 +1185,126 @@ async fn list_logs(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    state
+    // Plan todo 20 (additive): `?provider=` narrows items and total through
+    // the bounded request_logs read (legacy NULL rows count as `tavily`);
+    // every other filter keeps its existing rollup-backed path. Unknown
+    // provider values simply match zero rows (empty page shape, not error).
+    let provider = normalize_optional_filter(params.provider.as_deref())
+        .map(|value| value.to_ascii_lowercase());
+    let page_result = match provider.as_deref() {
+        Some(provider_value) => {
+            state
+                .proxy
+                .request_logs_page_provider_filtered(
+                    provider_value,
+                    &request_kinds,
+                    result_status,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    None,
+                    auth_token_id,
+                    key_id,
+                    operational_class,
+                    page,
+                    per_page,
+                    include_bodies,
+                )
+                .await
+        }
+        None => {
+            state
+                .proxy
+                .request_logs_page(
+                    &request_kinds,
+                    result_status,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    None,
+                    auth_token_id,
+                    key_id,
+                    operational_class,
+                    page,
+                    per_page,
+                    include_bodies,
+                )
+                .await
+        }
+    };
+    let logs = page_result.map_err(|err| {
+        eprintln!("list logs error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let provider_facets = state
         .proxy
-        .request_logs_page(
-            &request_kinds,
-            result_status,
-            key_effect_code,
-            binding_effect_code,
-            selection_effect_code,
-            None,
-            auth_token_id,
-            key_id,
-            operational_class,
-            page,
-            per_page,
-            include_bodies,
-        )
+        .request_log_provider_facet_options()
         .await
-        .map(|logs| {
-            let view_items = logs
-                .items
-                .into_iter()
-                .map(|record| RequestLogView::from_request_record(record, include_bodies))
-                .collect();
-            Json(PaginatedLogsView {
-                items: view_items,
-                total: logs.total,
-                page,
-                per_page,
-                request_kind_options: logs
-                    .request_kind_options
-                    .into_iter()
-                    .map(TokenRequestKindOptionView::from)
-                    .collect(),
-                facets: RequestLogFacetsView {
-                    results: logs
-                        .facets
-                        .results
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                    key_effects: logs
-                        .facets
-                        .key_effects
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                    binding_effects: logs
-                        .facets
-                        .binding_effects
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                    selection_effects: logs
-                        .facets
-                        .selection_effects
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                    tokens: logs
-                        .facets
-                        .tokens
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                    keys: logs
-                        .facets
-                        .keys
-                        .into_iter()
-                        .map(LogFacetOptionView::from)
-                        .collect(),
-                },
-            })
-        })
         .map_err(|err| {
-            eprintln!("list logs error: {err}");
+            eprintln!("list logs provider facet error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?;
+    let providers = (!provider_facets.is_empty()).then(|| {
+        provider_facets
+            .into_iter()
+            .map(LogFacetOptionView::from)
+            .collect()
+    });
+    let view_items = logs
+        .items
+        .into_iter()
+        .map(|record| RequestLogView::from_request_record(record, include_bodies))
+        .collect();
+    Ok(Json(PaginatedLogsView {
+        items: view_items,
+        total: logs.total,
+        page,
+        per_page,
+        request_kind_options: logs
+            .request_kind_options
+            .into_iter()
+            .map(TokenRequestKindOptionView::from)
+            .collect(),
+        facets: RequestLogFacetsView {
+            results: logs
+                .facets
+                .results
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            key_effects: logs
+                .facets
+                .key_effects
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            binding_effects: logs
+                .facets
+                .binding_effects
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            selection_effects: logs
+                .facets
+                .selection_effects
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            tokens: logs
+                .facets
+                .tokens
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            keys: logs
+                .facets
+                .keys
+                .into_iter()
+                .map(LogFacetOptionView::from)
+                .collect(),
+            providers,
+        },
+    }))
 }
 
 async fn list_logs_cursor(

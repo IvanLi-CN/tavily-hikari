@@ -18,6 +18,8 @@ struct UserTokenLogView {
     result_status: String,
     error_message: Option<String>,
     created_at: i64,
+    /// Plan todo 20 (additive): upstream provider of the logged operation.
+    provider: String,
 }
 
 impl UserTokenLogView {
@@ -37,6 +39,7 @@ impl UserTokenLogView {
             result_status: public_view.result_status,
             error_message: public_view.error_message,
             created_at: public_view.created_at,
+            provider: public_view.provider,
         }
     }
 }

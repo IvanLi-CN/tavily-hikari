@@ -1545,8 +1545,14 @@ impl KeyStore {
         Ok(result)
     }
 
+    /// Plan todo 20 (M18): shared logs-page read. `provider` adds one
+    /// `COALESCE(provider, 'tavily')` predicate to the bounded items query
+    /// and swaps the provider-agnostic rollup total for a mirror COUNT over
+    /// `observability.request_logs`; kind options and rollup facets stay
+    /// provider-agnostic by design. Legacy entry point without the provider
+    /// dimension lives in key_store_request_logs_provider_read.rs.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn fetch_request_logs_page(
+    pub(crate) async fn fetch_request_logs_page_core(
         &self,
         scoped_key_id: Option<&str>,
         since: Option<i64>,
@@ -1559,6 +1565,7 @@ impl KeyStore {
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
+        provider: Option<&str>,
         page: i64,
         per_page: i64,
         include_token_facets: bool,
@@ -1651,9 +1658,32 @@ impl KeyStore {
             key_id,
             operational_class,
         };
-        let total = self
-            .fetch_request_logs_rollup_total(scoped_key_id, since, total_filters)
-            .await?;
+        // Plan todo 20 (M18): the catalog rollups carry no provider column;
+        // a provider-filtered page totals via a bounded COUNT over
+        // request_logs that mirrors the items predicate below.
+        let total = match provider {
+            Some(provider_value) => {
+                self.count_request_logs_page_matching_provider(
+                    scoped_key_id,
+                    since,
+                    request_kinds,
+                    result_status,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    request_user_id,
+                    auth_token_id,
+                    key_id,
+                    operational_class,
+                    provider_value,
+                )
+                .await?
+            }
+            None => {
+                self.fetch_request_logs_rollup_total(scoped_key_id, since, total_filters)
+                    .await?
+            }
+        };
 
         let request_body_select = if include_bodies {
             "request_body"
@@ -1763,6 +1793,10 @@ impl KeyStore {
                 &stored_operational_class_case_sql,
                 &legacy_operational_class_case_sql,
             );
+        }
+        if let Some(provider) = provider {
+            items_query.push(" AND COALESCE(provider, 'tavily') = ");
+            items_query.push_bind(provider.to_string());
         }
         items_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         items_query.push_bind(per_page);

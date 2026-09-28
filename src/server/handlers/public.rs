@@ -3,22 +3,33 @@ async fn fetch_summary(
     headers: HeaderMap,
 ) -> Result<Json<SummaryView>, StatusCode> {
     let is_admin = is_admin_request(state.as_ref(), &headers).await;
-    state
+    let mut summary = state
         .proxy
         .summary()
         .await
-        .map(|mut summary| {
-            if !is_admin {
-                summary.active_keys += summary.temporary_isolated_keys;
-                summary.quarantined_keys = 0;
-                summary.temporary_isolated_keys = 0;
-            }
-            Json(summary.into())
-        })
         .map_err(|err| {
             eprintln!("summary error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?;
+    if !is_admin {
+        summary.active_keys += summary.temporary_isolated_keys;
+        summary.quarantined_keys = 0;
+        summary.temporary_isolated_keys = 0;
+    }
+    // Plan todo 20 (additive, M18): the per-provider breakdown segments the
+    // same aggregates by key-join; a failed segmentation degrades to the
+    // byte-identical legacy payload instead of failing /api/summary.
+    let provider_rows = state
+        .proxy
+        .summary_provider_breakdown()
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("summary provider breakdown error: {err}");
+            Vec::new()
+        });
+    let mut view: SummaryView = summary.into();
+    view.providers = summary_provider_count_views(provider_rows);
+    Ok(Json(view))
 }
 
 fn dashboard_hourly_window_anchor(now_ts: i64) -> i64 {
@@ -52,6 +63,12 @@ struct SummaryWindowView {
     new_keys: i64,
     new_quarantines: i64,
     quota_charge: SummaryQuotaChargeView,
+    /// Plan todo 20 (additive, M18): per-provider counts from bounded
+    /// `request_logs` window scans; absent (`None`) when the window holds no
+    /// rows, so legacy payloads stay byte-identical. The rollup-backed
+    /// legacy counters above stay provider-agnostic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<Vec<SummaryProviderCountView>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,15 +294,36 @@ async fn fetch_summary_windows(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    state
+    let summary = state
         .proxy
         .summary_windows()
         .await
-        .map(|summary| Json(SummaryWindowsView::from(summary)))
         .map_err(|err| {
             eprintln!("summary windows error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })
+        })?;
+    // Plan todo 20 (additive, M18): provider segmentation comes from bounded
+    // request_logs window scans; the rollup-backed legacy buckets above stay
+    // provider-agnostic. A failed segmentation degrades to the legacy
+    // byte-identical payload.
+    let window_bounds = [
+        (summary.today_start, summary.today_end),
+        (summary.yesterday_start, summary.yesterday_end),
+        (summary.month_start, summary.month_end),
+    ];
+    let [today, yesterday, month] = state
+        .proxy
+        .summary_window_provider_counts(window_bounds)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("summary windows provider counts error: {err}");
+            [Vec::new(), Vec::new(), Vec::new()]
+        });
+    let mut view = SummaryWindowsView::from(summary);
+    view.today.providers = summary_provider_count_views(today);
+    view.yesterday.providers = summary_provider_count_views(yesterday);
+    view.month.providers = summary_provider_count_views(month);
+    Ok(Json(view))
 }
 
 async fn get_user_rankings(
@@ -396,6 +434,7 @@ impl From<tavily_hikari::SummaryWindowMetrics> for SummaryWindowView {
                 stale_key_count: summary.quota_charge.stale_key_count,
                 latest_sync_at: summary.quota_charge.latest_sync_at,
             },
+            providers: None,
         }
     }
 }
@@ -696,6 +735,30 @@ struct PublicTokenLogView {
     result_status: String,
     error_message: Option<String>,
     created_at: i64,
+    /// Plan todo 20 (additive): upstream provider of the logged operation.
+    provider: String,
+}
+
+/// Plan todo 20: provider dimension for token-log surfaces. `auth_token_logs`
+/// rows carry no provider stamp, and request kinds are STATIC whitelist keys
+/// (M9), so the provider segment of a canonical provider kind
+/// (`api:<provider>/…` / `mcp:<provider>/…`) is authoritative; every other
+/// kind belongs to the Tavily pipeline (legacy NULL-coalesce semantics).
+fn token_log_provider_from_request_kind(request_kind_key: &str) -> &'static str {
+    let Some((protocol, body)) = request_kind_key.trim().split_once(':') else {
+        return "tavily";
+    };
+    let is_known_protocol =
+        protocol.eq_ignore_ascii_case("api") || protocol.eq_ignore_ascii_case("mcp");
+    if !is_known_protocol {
+        return "tavily";
+    }
+    match body.split('/').next().unwrap_or_default() {
+        "serpapi" => "serpapi",
+        "exa" => "exa",
+        "brave" => "brave",
+        _ => "tavily",
+    }
 }
 
 impl From<TokenLogRecord> for PublicTokenLogView {
@@ -706,6 +769,7 @@ impl From<TokenLogRecord> for PublicTokenLogView {
 
 impl PublicTokenLogView {
     fn from_record(r: TokenLogRecord, language: UiLanguage) -> Self {
+        let provider = token_log_provider_from_request_kind(&r.request_kind_key);
         let result_status =
             display_result_status_for_request_kind(&r.request_kind_key, &r.result_status);
         Self {
@@ -722,6 +786,7 @@ impl PublicTokenLogView {
                 language,
             ),
             created_at: r.created_at,
+            provider: provider.to_string(),
         }
     }
 }

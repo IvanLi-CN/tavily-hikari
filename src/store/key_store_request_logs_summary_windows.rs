@@ -1,3 +1,5 @@
+mod key_store_request_logs_provider_read;
+
 impl KeyStore {
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush_tx(
         tx: &mut sqlx::Transaction<'_, Sqlite>,

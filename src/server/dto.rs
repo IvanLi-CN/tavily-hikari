@@ -254,6 +254,9 @@ struct RequestLogView {
     request_kind_protocol_group: String,
     #[serde(rename = "requestKindBillingGroup")]
     request_kind_billing_group: String,
+    /// Plan todo 20 (additive): upstream provider dimension; store reads
+    /// coalesce legacy NULL rows to `tavily`, so this is never empty.
+    provider: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -312,6 +315,45 @@ struct SummaryView {
     last_activity: Option<i64>,
     total_quota_limit: i64,
     total_quota_remaining: i64,
+    /// Plan todo 20 (additive, M18): per-provider segmentation of the same
+    /// totals sources. `None` (absent from the JSON) when no data exists so
+    /// legacy payloads stay byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<Vec<SummaryProviderCountView>>,
+}
+
+/// Plan todo 20: additive per-provider counters shared by /api/summary and
+/// each /api/summary/windows bucket.
+#[derive(Debug, Clone, Serialize)]
+struct SummaryProviderCountView {
+    provider: String,
+    total_requests: i64,
+    success_count: i64,
+    error_count: i64,
+    quota_exhausted_count: i64,
+}
+
+/// Plan todo 20: map store counter tuples
+/// (provider, total, success, error, quota_exhausted) into views; an empty
+/// breakdown stays `None` so empty fixtures serialize byte-identically.
+fn summary_provider_count_views(
+    rows: Vec<(String, i64, i64, i64, i64)>,
+) -> Option<Vec<SummaryProviderCountView>> {
+    (!rows.is_empty()).then(|| {
+        rows.into_iter()
+            .map(
+                |(provider, total_requests, success_count, error_count, quota_exhausted_count)| {
+                    SummaryProviderCountView {
+                        provider,
+                        total_requests,
+                        success_count,
+                        error_count,
+                        quota_exhausted_count,
+                    }
+                },
+            )
+            .collect()
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -566,6 +608,9 @@ struct LogsQuery {
     key_id: Option<String>,
     operational_class: Option<String>,
     include_bodies: Option<bool>,
+    /// Plan todo 20 (additive): filter items by upstream provider;
+    /// legacy NULL rows are matched as `tavily` by the store predicate.
+    provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -688,6 +733,11 @@ struct RequestLogFacetsView {
     selection_effects: Vec<LogFacetOptionView>,
     tokens: Vec<LogFacetOptionView>,
     keys: Vec<LogFacetOptionView>,
+    /// Plan todo 20 (additive): provider facet list. Only the /api/logs
+    /// surface populates it; every other view keeps the legacy six-field
+    /// payload byte-identically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<Vec<LogFacetOptionView>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -755,6 +805,7 @@ impl From<RequestLogsCatalog> for RequestLogsCatalogView {
                     .into_iter()
                     .map(LogFacetOptionView::from)
                     .collect(),
+                providers: None,
             },
         }
     }
@@ -1631,6 +1682,7 @@ async fn get_key_logs_page(
                         .into_iter()
                         .map(LogFacetOptionView::from)
                         .collect(),
+                    providers: None,
                 },
             })
         })
@@ -2078,6 +2130,7 @@ async fn get_token_logs_page(
                         .into_iter()
                         .map(LogFacetOptionView::from)
                         .collect(),
+                    providers: None,
                 },
             })
         })

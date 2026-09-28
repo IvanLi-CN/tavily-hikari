@@ -2048,6 +2048,88 @@ impl TavilyProxy {
             .await
     }
 
+    /// Plan todo 20 (additive delegate, T10 pattern): exactly
+    /// `request_logs_page` retention/semantics plus one
+    /// `COALESCE(provider, 'tavily')` predicate. Catalog rollups stay
+    /// provider-agnostic (M18), so the filtered total is a bounded COUNT
+    /// over `request_logs`; kind options and rollup facets remain global.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_logs_page_provider_filtered(
+        &self,
+        provider: &str,
+        request_kinds: &[String],
+        result_status: Option<&str>,
+        key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
+        request_user_id: Option<&str>,
+        auth_token_id: Option<&str>,
+        key_id: Option<&str>,
+        operational_class: Option<&str>,
+        page: i64,
+        per_page: i64,
+        include_bodies: bool,
+    ) -> Result<RequestLogsPage, ProxyError> {
+        let (_, retention_since) = self.request_logs_retention_window().await?;
+        self.key_store
+            .fetch_request_logs_page_core(
+                None,
+                Some(retention_since),
+                request_kinds,
+                result_status,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                request_user_id,
+                auth_token_id,
+                key_id,
+                operational_class,
+                Some(provider),
+                page,
+                per_page,
+                true,
+                true,
+                include_bodies,
+            )
+            .await
+    }
+
+    /// Plan todo 20 (additive delegate): provider facet list for the
+    /// /api/logs surface, bounded by the same retention window as the page
+    /// reads; legacy NULL providers coalesce to `tavily`.
+    pub async fn request_log_provider_facet_options(
+        &self,
+    ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        let (_, retention_since) = self.request_logs_retention_window().await?;
+        self.key_store
+            .fetch_request_log_provider_facet_options(Some(retention_since))
+            .await
+    }
+
+    /// Plan todo 20 (additive delegate, M18 key-join): per-provider totals
+    /// segmented from the SAME pre-aggregated source the legacy /api/summary
+    /// totals use. Tuple order: (provider, total, success, error,
+    /// quota_exhausted).
+    pub async fn summary_provider_breakdown(
+        &self,
+    ) -> Result<Vec<(String, i64, i64, i64, i64)>, ProxyError> {
+        self.key_store.fetch_summary_provider_breakdown().await
+    }
+
+    /// Plan todo 20 (additive delegate, M18): per-provider counts for the
+    /// /api/summary/windows buckets via bounded `request_logs` window scans;
+    /// the dashboard rollups themselves stay provider-agnostic. `windows`
+    /// are [today, yesterday, month] as (start, end-exclusive) pairs taken
+    /// from the `SummaryWindows` the caller is rendering.
+    pub async fn summary_window_provider_counts(
+        &self,
+        windows: [(i64, i64); 3],
+    ) -> Result<[Vec<(String, i64, i64, i64, i64)>; 3], ProxyError> {
+        self.key_store
+            .fetch_summary_window_provider_counts(windows)
+            .await
+    }
+
     pub async fn request_log_bodies(
         &self,
         log_id: i64,

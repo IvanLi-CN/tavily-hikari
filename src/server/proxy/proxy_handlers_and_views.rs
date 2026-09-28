@@ -2099,6 +2099,7 @@ impl RequestLogView {
             operational_class: record.operational_class,
             request_kind_protocol_group: record.request_kind_protocol_group,
             request_kind_billing_group: record.request_kind_billing_group,
+            provider: record.provider,
         }
     }
 
@@ -2167,6 +2168,7 @@ impl RequestLogView {
             operational_class,
             request_kind_protocol_group,
             request_kind_billing_group,
+            provider: token_log_provider_from_request_kind(&request_kind_key).to_string(),
         }
     }
 }
@@ -2185,6 +2187,7 @@ impl From<ProxySummary> for SummaryView {
             last_activity: summary.last_activity,
             total_quota_limit: summary.total_quota_limit,
             total_quota_remaining: summary.total_quota_remaining,
+            providers: None,
         }
     }
 }

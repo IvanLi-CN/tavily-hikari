@@ -56,6 +56,7 @@ mod tests {
     mod provider_admin_api_keys;
     mod provider_facade_routing;
     mod provider_privacy_redaction;
+    mod provider_read_surface;
     mod research_result_and_mcp_subpath;
     mod system_settings_and_forward_proxy;
     mod system_settings_reconciliation_status;
