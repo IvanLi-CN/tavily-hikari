@@ -1,3 +1,14 @@
+/// Brave RATE_LIMITED is second-scale (w=1 window): short default backoff with
+/// a wider clamp than the minute-scale MCP-init ladder (plan todo 3). Consumed
+/// by the provider transient-backoff lane (plan todos 11-16); test-covered
+/// until wired, hence the allows (T4 precedent).
+#[allow(dead_code)]
+const BRAVE_RATE_LIMITED_BACKOFF_DEFAULT_SECS: i64 = 2;
+#[allow(dead_code)]
+const BRAVE_RATE_LIMITED_BACKOFF_MIN_SECS: i64 = 1;
+#[allow(dead_code)]
+const BRAVE_RATE_LIMITED_BACKOFF_MAX_SECS: i64 = 30;
+
 impl TavilyProxy {
     pub async fn lock_mcp_session_init(
         &self,
@@ -253,6 +264,45 @@ impl TavilyProxy {
                 );
         }
         Self::mcp_session_init_retry_after_secs(headers, now)
+    }
+
+    /// Provider-aware transient backoff sizing for RateLimited exhaustion-gate
+    /// signals (plan todo 3). Brave is second-scale (w=1 window) with its own
+    /// clamp; other providers keep the existing minute-scale MCP-init ladder
+    /// (Retry-After first, 30..=300 clamp, 60s default). Tavily's LIVE pipeline
+    /// stays failure_kind-driven via `transient_backoff_retry_after_secs` above.
+    #[allow(dead_code)]
+    pub(crate) fn effective_provider_rate_limited_backoff_secs(
+        provider: providers::ProviderId,
+        signal: ProviderFailureSignal,
+        now: i64,
+    ) -> Option<i64> {
+        let ProviderFailureSignal::RateLimited { retry_after_secs } = signal else {
+            return None;
+        };
+        match provider {
+            providers::ProviderId::Brave => Some(
+                retry_after_secs
+                    .map_or(BRAVE_RATE_LIMITED_BACKOFF_DEFAULT_SECS, |secs| secs as i64)
+                    .clamp(
+                        BRAVE_RATE_LIMITED_BACKOFF_MIN_SECS,
+                        BRAVE_RATE_LIMITED_BACKOFF_MAX_SECS,
+                    ),
+            ),
+            _ => Some(
+                retry_after_secs
+                    .and_then(|secs| i64::try_from(secs).ok())
+                    .map_or_else(
+                        || Self::mcp_session_init_retry_after_secs(&HeaderMap::new(), now),
+                        |secs| {
+                            secs.clamp(
+                                MCP_SESSION_INIT_BACKOFF_MIN_SECS,
+                                MCP_SESSION_INIT_BACKOFF_MAX_SECS,
+                            )
+                        },
+                    ),
+            ),
+        }
     }
 
     async fn maybe_arm_mcp_session_init_backoff(
@@ -1326,7 +1376,15 @@ impl TavilyProxy {
             KeyHealthAction::MarkExhausted => {
                 let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
                 let changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                if analysis.tavily_status_code == Some(432) {
+                // Provider-aware exhaustion gate (plan todo 3 + amendment M8):
+                // depletion recording stays Tavily-432-ONLY — new providers'
+                // exhaustion signals drive MarkExhausted but NEVER write
+                // api_key_low_quota_depletions. Leases are Tavily-only until
+                // provider-scoped acquisition lands (plan todo 9).
+                if low_quota_depletion_applies(
+                    providers::ProviderId::Tavily,
+                    analysis.tavily_status_code,
+                ) {
                     let _ = self
                         .key_store
                         .record_low_quota_depletion_if_needed(

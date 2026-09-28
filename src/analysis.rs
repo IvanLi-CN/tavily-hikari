@@ -1,4 +1,5 @@
 use crate::models::*;
+use crate::providers::ProviderId;
 use crate::*;
 
 pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
@@ -352,6 +353,254 @@ pub fn should_append_solution_guidance(kind: &str) -> bool {
             | FAILURE_KIND_TRANSPORT_SEND_ERROR
             | FAILURE_KIND_MCP_ACCEPT_406
     )
+}
+
+// Provider failure signals (plan todo 3); wired by todos 11-16 (allows: T4 precedent).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderFailureSignal {
+    Ok,
+    Exhausted,
+    AuthFailed,
+    RateLimited { retry_after_secs: Option<u64> },
+    ClientError,
+    ServerTransient,
+}
+
+impl ProviderFailureSignal {
+    #[allow(dead_code)]
+    pub(crate) fn failure_kind(self) -> Option<&'static str> {
+        match self {
+            Self::Ok | Self::Exhausted => None,
+            Self::AuthFailed => Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401),
+            Self::RateLimited { .. } => Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            Self::ClientError => Some(FAILURE_KIND_OTHER),
+            Self::ServerTransient => Some(FAILURE_KIND_UPSTREAM_GATEWAY_5XX),
+        }
+    }
+}
+
+/// Exhaustion depletion gate (M8): Tavily-432 ONLY; new providers never write
+/// depletion rows (todo 9 threads provider-scoped leases).
+pub(crate) fn low_quota_depletion_applies(
+    provider: ProviderId,
+    tavily_status_code: Option<i64>,
+) -> bool {
+    provider == ProviderId::Tavily && tavily_status_code == Some(432)
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProviderFailureEvidence<'a> {
+    pub(crate) status: u16,
+    pub(crate) headers: Option<&'a HeaderMap>,
+    pub(crate) body: &'a [u8],
+}
+
+#[allow(dead_code)]
+pub(crate) fn classify_provider_failure(
+    provider: ProviderId,
+    evidence: &ProviderFailureEvidence<'_>,
+) -> ProviderFailureSignal {
+    match provider {
+        ProviderId::Tavily => classify_tavily_failure(evidence),
+        ProviderId::Serpapi => classify_serpapi_failure(evidence),
+        ProviderId::Exa => classify_exa_failure(evidence),
+        ProviderId::Brave => classify_brave_failure(evidence),
+    }
+}
+
+#[allow(dead_code)]
+fn default_provider_failure_signal(status: u16) -> ProviderFailureSignal {
+    if (200..300).contains(&status) {
+        ProviderFailureSignal::Ok
+    } else if status >= 500 {
+        ProviderFailureSignal::ServerTransient
+    } else {
+        ProviderFailureSignal::ClientError
+    }
+}
+
+#[allow(dead_code)]
+fn retry_after_header_secs(headers: Option<&HeaderMap>) -> Option<u64> {
+    let value = headers?.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    value.trim().parse::<u64>().ok()
+}
+
+#[allow(dead_code)]
+pub(crate) fn brave_rate_limit_reset_secs(headers: Option<&HeaderMap>) -> Option<i64> {
+    let value = headers?.get("x-ratelimit-reset")?.to_str().ok()?;
+    value.trim().parse::<i64>().ok()
+}
+
+#[allow(dead_code)]
+fn classify_tavily_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
+    match evidence.status {
+        432 => ProviderFailureSignal::Exhausted,
+        429 => ProviderFailureSignal::RateLimited {
+            retry_after_secs: retry_after_header_secs(evidence.headers),
+        },
+        401 | 403 => ProviderFailureSignal::AuthFailed,
+        _ => default_provider_failure_signal(evidence.status),
+    }
+}
+
+/// SerpApi 429 DUAL-semantic: "run out of searches" (raw JSON or SSE frame)
+/// exhausts; any other message is transient throughput, NEVER exhaustion.
+#[allow(dead_code)]
+fn classify_serpapi_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
+    match evidence.status {
+        401 | 403 => ProviderFailureSignal::AuthFailed,
+        429 => {
+            if upstream_error_texts(evidence.body)
+                .iter()
+                .any(|text| text.to_ascii_lowercase().contains("run out of searches"))
+            {
+                ProviderFailureSignal::Exhausted
+            } else {
+                ProviderFailureSignal::RateLimited {
+                    retry_after_secs: retry_after_header_secs(evidence.headers),
+                }
+            }
+        }
+        _ => default_provider_failure_signal(evidence.status),
+    }
+}
+
+#[allow(dead_code)]
+fn upstream_error_texts(body: &[u8]) -> Vec<String> {
+    let mut messages = Vec::new();
+    if let Ok(parsed) = serde_json::from_slice::<Value>(body) {
+        messages.push(parsed);
+    }
+    if let Ok(text) = std::str::from_utf8(body) {
+        messages.extend(extract_sse_json_messages(text));
+    }
+    let mut texts = Vec::new();
+    for message in &messages {
+        push_upstream_error_texts(message, &mut texts);
+    }
+    texts
+}
+
+#[allow(dead_code)]
+fn push_upstream_error_texts(value: &Value, out: &mut Vec<String>) {
+    match value.get("error") {
+        Some(Value::String(message)) => out.push(message.clone()),
+        Some(error @ Value::Object(_)) => {
+            if let Some(message) = error.get("message").and_then(Value::as_str) {
+                out.push(message.to_string());
+            }
+            if let Some(data) = error.get("data") {
+                if let Some(message) = data.as_str() {
+                    out.push(message.to_string());
+                }
+                push_upstream_error_texts(data, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[allow(dead_code)]
+fn classify_exa_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
+    match evidence.status {
+        401 => ProviderFailureSignal::AuthFailed,
+        402 => {
+            let exhausted = json_string_field(evidence.body, &["tag"]).is_some_and(|tag| {
+                matches!(
+                    tag.to_ascii_uppercase().as_str(),
+                    "NO_MORE_CREDITS" | "API_KEY_BUDGET_EXCEEDED" | "TEAM_BUDGET_EXCEEDED"
+                )
+            });
+            if exhausted {
+                ProviderFailureSignal::Exhausted
+            } else {
+                ProviderFailureSignal::ClientError
+            }
+        }
+        429 => ProviderFailureSignal::RateLimited {
+            retry_after_secs: retry_after_header_secs(evidence.headers),
+        },
+        _ => default_provider_failure_signal(evidence.status),
+    }
+}
+
+#[allow(dead_code)]
+fn json_string_field(body: &[u8], path: &[&str]) -> Option<String> {
+    let parsed = serde_json::from_slice::<Value>(body).ok()?;
+    let (last, parents) = path.split_last()?;
+    let parent = parents
+        .iter()
+        .try_fold(&parsed, |value, key| value.get(key))?;
+    parent
+        .get(*last)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Brave envelope `{error:{code,...}}`. Live-probed: INVALID token = 422
+/// SUBSCRIPTION_TOKEN_INVALID (NOT 401); VALIDATION promotes to AuthFailed
+/// only when meta.errors loc = ["header","x-subscription-token"].
+#[allow(dead_code)]
+fn classify_brave_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
+    let rate_limited = || ProviderFailureSignal::RateLimited {
+        retry_after_secs: retry_after_header_secs(evidence.headers),
+    };
+    if let Some(code) = json_string_field(evidence.body, &["error", "code"]) {
+        match code.to_ascii_uppercase().as_str() {
+            "SUBSCRIPTION_TOKEN_INVALID" => return ProviderFailureSignal::AuthFailed,
+            "QUOTA_LIMITED" => return ProviderFailureSignal::Exhausted,
+            "RATE_LIMITED" => return rate_limited(),
+            "VALIDATION" => {
+                return if brave_validation_flags_subscription_token(evidence.body) {
+                    ProviderFailureSignal::AuthFailed
+                } else {
+                    ProviderFailureSignal::ClientError
+                };
+            }
+            _ => {}
+        }
+    }
+    match evidence.status {
+        401 => ProviderFailureSignal::AuthFailed,
+        402 => ProviderFailureSignal::Exhausted,
+        429 => rate_limited(),
+        _ => default_provider_failure_signal(evidence.status),
+    }
+}
+
+#[allow(dead_code)]
+fn brave_validation_flags_subscription_token(body: &[u8]) -> bool {
+    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    let Some(errors) = parsed
+        .get("error")
+        .and_then(|error| error.get("meta"))
+        .and_then(|meta| meta.get("errors"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    errors.iter().any(|entry| {
+        entry
+            .get("loc")
+            .and_then(Value::as_array)
+            .is_some_and(|loc| {
+                let [place, name, ..] = loc.as_slice() else {
+                    return false;
+                };
+                place
+                    .as_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("header"))
+                    && name
+                        .as_str()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("x-subscription-token"))
+            })
+    })
 }
 
 /// Best-effort detection of whether a Tavily MCP response contains *any* error.
@@ -949,6 +1198,79 @@ pub(crate) fn normalize_tavily_tool_name(tool: &str) -> Option<String> {
     Some(mapped.to_string())
 }
 
+/// Additive provider request-kind catalog (plan todo 3, M7/M9): STATIC keys
+/// only; single source for Rust labels, the whitelist, and all SQL literals.
+pub(crate) const PROVIDER_REQUEST_KINDS: &[(&str, &str)] = &[
+    ("api:serpapi/search", "API | serpapi/search"),
+    ("api:exa/search", "API | exa/search"),
+    ("api:exa/contents", "API | exa/contents"),
+    ("api:exa/answer", "API | exa/answer"),
+    ("api:brave/web", "API | brave/web"),
+    ("api:brave/news", "API | brave/news"),
+    ("api:brave/llm-context", "API | brave/llm-context"),
+    ("mcp:serpapi/search", "MCP | serpapi/search"),
+    ("mcp:serpapi/search_table", "MCP | serpapi/search_table"),
+    ("mcp:serpapi/search_dashboard", "MCP | serpapi/search_dashboard"),
+    ("mcp:brave/web_search", "MCP | brave/web_search"),
+    ("mcp:brave/news_search", "MCP | brave/news_search"),
+    ("mcp:brave/llm_context", "MCP | brave/llm_context"),
+    ("mcp:exa/web_search", "MCP | exa/web_search"),
+    ("mcp:exa/web_fetch", "MCP | exa/web_fetch"),
+    ("mcp:exa/answer", "MCP | exa/answer"),
+];
+
+const PROVIDER_REST_PATH_KINDS: &[(&str, &str)] = &[
+    ("/api/serpapi/search", "api:serpapi/search"),
+    ("/api/exa/search", "api:exa/search"),
+    ("/api/exa/contents", "api:exa/contents"),
+    ("/api/exa/answer", "api:exa/answer"),
+    ("/api/brave/web/search", "api:brave/web"),
+    ("/api/brave/news/search", "api:brave/news"),
+    ("/api/brave/llm/context", "api:brave/llm-context"),
+];
+
+const PROVIDER_MCP_TOOL_KINDS: &[(ProviderId, &str, &str)] = &[
+    (ProviderId::Serpapi, "search", "serpapi/search"),
+    (ProviderId::Serpapi, "search_table", "serpapi/search_table"),
+    (
+        ProviderId::Serpapi,
+        "search_dashboard",
+        "serpapi/search_dashboard",
+    ),
+    (ProviderId::Exa, "web_search_exa", "exa/web_search"),
+    (ProviderId::Exa, "web_fetch_exa", "exa/web_fetch"),
+    (ProviderId::Exa, "exa_answer", "exa/answer"),
+    (ProviderId::Brave, "brave_web_search", "brave/web_search"),
+    (ProviderId::Brave, "brave_news_search", "brave/news_search"),
+    (ProviderId::Brave, "brave_llm_context", "brave/llm_context"),
+];
+
+fn provider_token_request_kind(canonical_key: &str) -> TokenRequestKind {
+    let label = canonical_request_kind_label(canonical_key).unwrap_or(canonical_key);
+    TokenRequestKind::new(canonical_key, label, None)
+}
+
+pub(crate) fn provider_mcp_ingress_path(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Tavily => "/mcp",
+        ProviderId::Serpapi => "/serpapi/mcp",
+        ProviderId::Exa => "/exa/mcp",
+        ProviderId::Brave => "/brave/mcp",
+    }
+}
+
+/// Provider-context tool-name normalization (amendment M7 collision guard).
+pub(crate) fn normalize_provider_tool_name(provider: ProviderId, tool: &str) -> Option<String> {
+    if provider == ProviderId::Tavily {
+        return normalize_tavily_tool_name(tool);
+    }
+    let normalized = tool.trim().to_ascii_lowercase();
+    PROVIDER_MCP_TOOL_KINDS
+        .iter()
+        .find(|(tool_provider, name, _)| *tool_provider == provider && *name == normalized)
+        .map(|(_, _, kind)| (*kind).to_string())
+}
+
 pub(crate) fn request_kind_label_penalty(label: &str) -> (usize, usize, usize, String) {
     let display = label.split('|').nth(1).unwrap_or(label).trim();
     let underscore_count = display.chars().filter(|ch| *ch == '_').count();
@@ -996,7 +1318,10 @@ pub(crate) fn canonical_request_kind_label(key: &str) -> Option<&'static str> {
         key if key.starts_with("mcp:resources/") => None,
         key if key.starts_with("mcp:prompts/") => None,
         key if key.starts_with("mcp:notifications/") => None,
-        _ => None,
+        other => PROVIDER_REQUEST_KINDS
+            .iter()
+            .find(|(canonical, _)| *canonical == other)
+            .map(|(_, label)| *label),
     }
 }
 
@@ -1029,6 +1354,9 @@ pub fn is_canonical_request_kind_key(key: &str) -> bool {
     ) || normalized.starts_with("mcp:resources/")
         || normalized.starts_with("mcp:prompts/")
         || normalized.starts_with("mcp:notifications/")
+        || PROVIDER_REQUEST_KINDS
+            .iter()
+            .any(|(canonical, _)| *canonical == normalized)
 }
 
 pub(crate) fn token_request_kind_from_canonical_key(
@@ -1129,6 +1457,13 @@ fn stored_unknown_method_detail(
 }
 
 pub(crate) fn classify_mcp_request_kind_from_message(value: &Value) -> Option<TokenRequestKind> {
+    classify_provider_mcp_message_kind(ProviderId::Tavily, value)
+}
+
+pub(crate) fn classify_provider_mcp_message_kind(
+    provider: ProviderId,
+    value: &Value,
+) -> Option<TokenRequestKind> {
     let method = value
         .get("method")
         .and_then(|raw| raw.as_str())
@@ -1151,8 +1486,8 @@ pub(crate) fn classify_mcp_request_kind_from_message(value: &Value) -> Option<To
             .map(str::trim)
             .filter(|raw| !raw.is_empty());
         return match tool {
-            Some(tool) => match normalize_tavily_tool_name(tool) {
-                Some(kind) => Some(build_mcp_request_kind(&kind)),
+            Some(tool) => match normalize_provider_tool_name(provider, tool) {
+                Some(kind) => Some(provider_token_request_kind(&format!("mcp:{kind}"))),
                 None => Some(build_mcp_third_party_tool_kind(tool)),
             },
             None => Some(build_mcp_unknown_payload_kind(Some(
@@ -1164,8 +1499,12 @@ pub(crate) fn classify_mcp_request_kind_from_message(value: &Value) -> Option<To
     Some(build_mcp_unknown_method_kind(method))
 }
 
-pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequestKind {
-    if path != "/mcp" {
+pub(crate) fn classify_provider_mcp_request_kind(
+    provider: ProviderId,
+    path: &str,
+    body: Option<&[u8]>,
+) -> TokenRequestKind {
+    if path != provider_mcp_ingress_path(provider) {
         return build_mcp_unsupported_path_kind(path);
     }
     let Some(body) = body else {
@@ -1184,7 +1523,7 @@ pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> Toke
         Value::Array(items) => {
             let mut kinds: Vec<TokenRequestKind> = items
                 .iter()
-                .filter_map(classify_mcp_request_kind_from_message)
+                .filter_map(|item| classify_provider_mcp_message_kind(provider, item))
                 .collect();
             if kinds.is_empty() {
                 return build_mcp_unknown_payload_kind(Some(path.to_string()));
@@ -1207,13 +1546,19 @@ pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> Toke
                 (!labels.is_empty()).then(|| labels.join(", ")),
             )
         }
-        Value::Object(_) => classify_mcp_request_kind_from_message(&parsed)
+        Value::Object(_) => classify_provider_mcp_message_kind(provider, &parsed)
             .unwrap_or_else(|| build_mcp_unknown_payload_kind(Some(path.to_string()))),
         _ => build_mcp_unknown_payload_kind(Some(path.to_string())),
     }
 }
 
 pub fn classify_token_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequestKind {
+    if let Some((_, key)) = PROVIDER_REST_PATH_KINDS
+        .iter()
+        .find(|(route, _)| *route == path)
+    {
+        return provider_token_request_kind(key);
+    }
     match path {
         "/api/tavily/search" => build_api_request_kind("search"),
         "/api/tavily/extract" => build_api_request_kind("extract"),
@@ -1224,7 +1569,18 @@ pub fn classify_token_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequ
         _ if path.starts_with("/api/tavily/research/") => {
             build_api_request_kind_named("research-result", "research result")
         }
-        _ if path.starts_with("/mcp") => classify_mcp_request_kind(path, body),
+        _ if path.starts_with("/mcp") => {
+            classify_provider_mcp_request_kind(ProviderId::Tavily, path, body)
+        }
+        _ if path.starts_with("/serpapi/mcp") => {
+            classify_provider_mcp_request_kind(ProviderId::Serpapi, path, body)
+        }
+        _ if path.starts_with("/exa/mcp") => {
+            classify_provider_mcp_request_kind(ProviderId::Exa, path, body)
+        }
+        _ if path.starts_with("/brave/mcp") => {
+            classify_provider_mcp_request_kind(ProviderId::Brave, path, body)
+        }
         _ => build_api_unknown_path_kind(path),
     }
 }
@@ -1313,10 +1669,31 @@ pub(crate) fn normalize_request_kind_for_response_context(
     }
 }
 
+fn provider_kind_sql_in_list() -> String {
+    PROVIDER_REQUEST_KINDS
+        .iter()
+        .map(|(key, _)| format!(", '{key}'"))
+        .collect()
+}
+
+/// ONE IN-guarded CASE row rendering every provider label as
+/// `UPPER(protocol) || ' | ' || value` — exactly the PROVIDER_REQUEST_KINDS
+/// labels (pinned by executed-SQL tests). Per-key rows would double the
+/// composed alert/trigger SQL; REPLACE/VALUES shapes break SQLite's parser.
+fn provider_kind_label_row_sql(normalized_expr: &str) -> String {
+    let n = normalized_expr;
+    let kind_list = provider_kind_sql_in_list();
+    format!(
+        "WHEN {n} IN ({}) THEN UPPER(SUBSTR({n}, 1, 3)) || ' | ' || SUBSTR({n}, 5)",
+        kind_list.trim_start_matches(", ")
+    )
+}
+
 pub(crate) fn canonical_request_kind_stored_predicate_sql(expr: &str) -> String {
     let value = format!("COALESCE({expr}, '')");
     format!(
-        "({value} IN ('api:search', 'api:extract', 'api:crawl', 'api:map', 'api:research', 'api:research-result', 'api:usage', 'api:unknown-path', 'mcp:search', 'mcp:extract', 'mcp:crawl', 'mcp:map', 'mcp:research', 'mcp:batch', 'mcp:initialize', 'mcp:ping', 'mcp:tools/list', 'mcp:session-delete-unsupported', 'mcp:unsupported-path', 'mcp:unknown-payload', 'mcp:unknown-method', 'mcp:third-party-tool') OR {value} LIKE 'mcp:resources/%' OR {value} LIKE 'mcp:prompts/%' OR {value} LIKE 'mcp:notifications/%')"
+        "({value} IN ('api:search', 'api:extract', 'api:crawl', 'api:map', 'api:research', 'api:research-result', 'api:usage', 'api:unknown-path', 'mcp:search', 'mcp:extract', 'mcp:crawl', 'mcp:map', 'mcp:research', 'mcp:batch', 'mcp:initialize', 'mcp:ping', 'mcp:tools/list', 'mcp:session-delete-unsupported', 'mcp:unsupported-path', 'mcp:unknown-payload', 'mcp:unknown-method', 'mcp:third-party-tool'{}) OR {value} LIKE 'mcp:resources/%' OR {value} LIKE 'mcp:prompts/%' OR {value} LIKE 'mcp:notifications/%')",
+        provider_kind_sql_in_list()
     )
 }
 
@@ -1330,6 +1707,7 @@ pub(crate) fn legacy_request_kind_stored_predicate_sql(expr: &str) -> String {
 
 pub(crate) fn canonical_request_kind_label_sql(kind_expr: &str) -> String {
     let normalized = format!("LOWER(TRIM(COALESCE({kind_expr}, '')))");
+    let provider_rows = provider_kind_label_row_sql(&normalized);
     format!(
         "
         CASE
@@ -1355,6 +1733,7 @@ pub(crate) fn canonical_request_kind_label_sql(kind_expr: &str) -> String {
             WHEN {normalized} = 'mcp:unknown-payload' THEN 'MCP | unknown payload'
             WHEN {normalized} = 'mcp:unknown-method' THEN 'MCP | unknown method'
             WHEN {normalized} = 'mcp:third-party-tool' THEN 'MCP | third-party tool'
+            {provider_rows}
             WHEN {normalized} LIKE 'mcp:resources/%'
                 OR {normalized} LIKE 'mcp:prompts/%'
                 OR {normalized} LIKE 'mcp:notifications/%'
@@ -1401,7 +1780,7 @@ fn token_log_stored_kind_sql(path_expr: &str, key_expr: &str) -> String {
                 'mcp:unsupported-path',
                 'mcp:unknown-payload',
                 'mcp:unknown-method',
-                'mcp:third-party-tool'
+                'mcp:third-party-tool'{provider_in_list}
             ) OR {key} LIKE 'mcp:resources/%'
               OR {key} LIKE 'mcp:prompts/%'
               OR {key} LIKE 'mcp:notifications/%'
@@ -1414,10 +1793,13 @@ fn token_log_stored_kind_sql(path_expr: &str, key_expr: &str) -> String {
             WHEN {path} = '/mcp' THEN 'mcp:unknown-payload'
             ELSE 'api:unknown-path'
         END
-        "
+        ",
+        provider_in_list = provider_kind_sql_in_list()
     )
 }
 
+// Tavily `/mcp`-scoped body SQL; provider rows pass via stored canonical keys
+// (SQL provider discrimination needs request_logs.provider, todo 8).
 fn mcp_message_request_kind_sql(value_expr: &str) -> String {
     let method = request_body_json_text_sql(value_expr, "$.method");
     let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
@@ -1557,6 +1939,12 @@ fn request_value_bucket_from_kind(key: &str) -> RequestValueBucket {
         | "mcp:unknown-payload"
         | "mcp:unsupported-path"
         | "mcp:third-party-tool" => RequestValueBucket::Unknown,
+        key if PROVIDER_REQUEST_KINDS
+            .iter()
+            .any(|(canonical, _)| *canonical == key) =>
+        {
+            RequestValueBucket::Valuable
+        }
         key if key.starts_with("mcp:resources/")
             || key.starts_with("mcp:prompts/")
             || key.starts_with("mcp:notifications/") =>
@@ -1922,7 +2310,7 @@ fn request_value_bucket_from_kind_sql(expr: &str) -> String {
                 'mcp:extract',
                 'mcp:crawl',
                 'mcp:map',
-                'mcp:research'
+                'mcp:research'{provider_in_list}
             ) THEN 'valuable'
             WHEN {normalized} IN (
                 'api:usage',
@@ -1943,7 +2331,8 @@ fn request_value_bucket_from_kind_sql(expr: &str) -> String {
             ) THEN 'unknown'
             ELSE 'unknown'
         END
-        "
+        ",
+        provider_in_list = provider_kind_sql_in_list()
     )
 }
 

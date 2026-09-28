@@ -37,6 +37,7 @@ mod maintenance_and_mcp_affinity;
 mod maintenance_control_admission;
 mod maintenance_queue_performance;
 mod observability_and_lifecycle;
+mod provider_failure_classification;
 mod observability_sidecar_provider;
 mod provider_config_bootstrap;
 mod proxy_affinity_and_summary;

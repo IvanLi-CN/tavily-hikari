@@ -121,7 +121,8 @@
         "tests::request_kind_and_core::analyze_",
         "tests::request_kind_and_core::sanitize_",
         "tests::request_kind_and_core::map_",
-        "tests::request_kind_and_core::operational_"
+        "tests::request_kind_and_core::operational_",
+        "tests::provider_failure_classification::"
       ]
     },
     {
