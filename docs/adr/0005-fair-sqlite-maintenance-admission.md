@@ -25,7 +25,7 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 
 - The coordinator has a fixed set of maintenance classes and at most one pending ticket per class.
 - Tickets are served oldest-first by their first request time and a monotonic tie-breaker. If the
-  oldest ticket is not being retried, any caller whose own ticket has waited at least 15 seconds
+  oldest ticket is not being retried, any caller whose own ticket has waited at least five seconds
   may take the turn; this keeps a low-frequency worker from holding every other class past the
   freshness bound.
 - Ordinary admission still reserves two foreground pool slots. Once a ticket is eligible for an
@@ -49,12 +49,10 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Runtime workload-window logs expose pending age and per-class admission/completion statistics;
   each admitted slice logs its class and wait age.
 
-Admission-defer continuations use a five-second retry so a retained ticket is revisited promptly.
-The coordinator's 15-second aged-turn exception remains the fairness boundary, while the shorter
-retry cadence keeps pending-age p95 below that boundary instead of making the retry interval itself
-the freshness floor. A normally completed request-log GC continuation keeps its existing five-minute
-cadence, and HA GC's post-admission channel continuation keeps its separate durable 30-second
-contention delay.
+Admission-defer continuations and the coordinator's aged-turn exception both use a five-second
+cadence, so a retained ticket is revisited promptly even when the oldest worker is not retrying.
+A normally completed request-log GC continuation keeps its existing five-minute cadence, and HA
+GC's post-admission channel continuation keeps its separate durable 30-second contention delay.
 
 ## Alternatives Rejected
 
@@ -74,4 +72,4 @@ queue semantics still provide process-restart recovery. Derived observations may
 eventually consistent, while foreground request and billing correctness are unchanged. The
 coordinator adds a small mutex operation to each bulk admission and observable counters that make
 maintenance starvation and stale retries diagnosable. A slow retrying class can yield its strict
-oldest-first position after 15 seconds, while every caller remains bounded by its own ticket age.
+oldest-first position after five seconds, while every caller remains bounded by its own ticket age.

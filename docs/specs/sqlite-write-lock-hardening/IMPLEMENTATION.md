@@ -14,7 +14,7 @@
   `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,
   and `server_pressure_rebuild`) keep at most one pending class ticket and are admitted oldest
   first. When the oldest ticket is not being retried, any caller whose own ticket is aged at least
-  15 seconds may take the turn, keeping low-frequency workers within the freshness bound. An aged
+  five seconds may take the turn, keeping low-frequency workers within the freshness bound. An aged
   turn may reach the operation's bounded 100ms pool acquire even when all currently-open
   connections are checked out; pools at or below the two-slot foreground reserve remain
   foreground-only. A ticket expires after 120 seconds without a retry, so abandoned callers
@@ -27,9 +27,9 @@
   freshness inspectable without synchronously flushing derived state from owner-facing reads.
 - A typed admission defer keeps the class's single pending ticket while its caller retries, including
   foreground, pool, and recent-contention pressure. Admission defers retry every five seconds,
-  including reconciliation, while callers with slower independent loops are covered by the
-  coordinator's 15-second aged-turn exception. Completed request-log GC keeps its five-minute
-  continuation, while HA GC keeps its separate 30-second post-admission contention continuation.
+  including reconciliation, and the coordinator's aged-turn exception uses the same five-second
+  boundary. Completed request-log GC keeps its five-minute continuation, while HA GC keeps its
+  separate 30-second post-admission contention continuation.
 - Reconciliation preflight uses a drop guard so stale claims and controlled retries cancel a ticket
   that never reached bulk admission; the actual preparation path explicitly transfers the ticket
   before entering the bulk admission retry loop.
