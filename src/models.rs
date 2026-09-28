@@ -795,6 +795,9 @@ impl QuotaWindow {
 #[derive(Debug, Clone)]
 pub struct ApiKeyMetrics {
     pub id: String,
+    /// Provider identity of the key row (plan todo 10). Legacy rows are
+    /// `Tavily` (v45 DDL: `provider TEXT NOT NULL DEFAULT 'tavily'`).
+    pub provider: crate::providers::ProviderId,
     pub status: String,
     pub group_name: Option<String>,
     pub registration_ip: Option<String>,
@@ -805,6 +808,9 @@ pub struct ApiKeyMetrics {
     pub quota_limit: Option<i64>,
     pub quota_remaining: Option<i64>,
     pub quota_synced_at: Option<i64>,
+    /// Per-key renewal instant (SerpApi `plan_renewal_date` from the
+    /// /account sync); NULL for providers without a renewal date.
+    pub quota_renews_at: Option<i64>,
     pub total_requests: i64,
     pub success_count: i64,
     pub error_count: i64,

@@ -7,13 +7,18 @@ async fn post_validate_api_keys(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let ValidateKeysRequest { api_keys, items } = payload;
+    let ValidateKeysRequest {
+        api_keys,
+        items,
+        provider: default_provider,
+    } = payload;
     let raw_items = if items.is_empty() {
         api_keys
             .into_iter()
             .map(|api_key| ValidateKeyItemInput {
                 api_key,
                 registration_ip: None,
+                provider: default_provider,
             })
             .collect::<Vec<_>>()
     } else {
@@ -42,6 +47,9 @@ async fn post_validate_api_keys(
         trimmed.push(NormalizedValidateKeyItem {
             api_key: api_key.to_string(),
             registration_ip,
+            provider: item
+                .provider
+                .unwrap_or(tavily_hikari::providers::ProviderId::Tavily),
         });
     }
     summary.valid_lines = trimmed.len() as u64;
@@ -61,7 +69,7 @@ async fn post_validate_api_keys(
     )
     .await;
     let mut results = Vec::<ValidateKeyResult>::with_capacity(trimmed.len());
-    let mut pending = Vec::<(usize, String, Option<String>, Option<String>)>::new();
+    let mut pending = Vec::<PendingValidateKey>::new();
     let mut seen = HashSet::<String>::new();
 
     for item in trimmed {
@@ -74,6 +82,8 @@ async fn post_validate_api_keys(
             results.push(ValidateKeyResult {
                 api_key: item.api_key,
                 status: "duplicate_in_input".to_string(),
+                provider: validate_result_provider_echo(item.provider),
+                reason: None,
                 registration_ip: item.registration_ip,
                 registration_region,
                 assigned_proxy_key: None,
@@ -90,6 +100,8 @@ async fn post_validate_api_keys(
         results.push(ValidateKeyResult {
             api_key: item.api_key.clone(),
             status: "pending".to_string(),
+            provider: validate_result_provider_echo(item.provider),
+            reason: None,
             registration_ip: item.registration_ip.clone(),
             registration_region: registration_region.clone(),
             assigned_proxy_key: None,
@@ -99,7 +111,13 @@ async fn post_validate_api_keys(
             quota_remaining: None,
             detail: None,
         });
-        pending.push((pos, item.api_key, item.registration_ip, registration_region));
+        pending.push(PendingValidateKey {
+            pos,
+            api_key: item.api_key,
+            registration_ip: item.registration_ip,
+            registration_region,
+            provider: item.provider,
+        });
     }
 
     summary.unique_in_input = seen.len() as u64;
@@ -113,16 +131,18 @@ async fn post_validate_api_keys(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let mut pending_to_validate = Vec::<(usize, String, Option<String>, Option<String>)>::new();
-    for (pos, api_key, registration_ip, registration_region) in pending {
-        if existing_api_keys.contains(&api_key) {
+    let mut pending_to_validate = Vec::<PendingValidateKey>::new();
+    for pending_item in pending {
+        if existing_api_keys.contains(&pending_item.api_key) {
             summary.already_exists += 1;
-            if let Some(slot) = results.get_mut(pos) {
+            if let Some(slot) = results.get_mut(pending_item.pos) {
                 *slot = ValidateKeyResult {
-                    api_key,
+                    api_key: pending_item.api_key,
                     status: "already_exists".to_string(),
-                    registration_ip,
-                    registration_region,
+                    provider: validate_result_provider_echo(pending_item.provider),
+                    reason: None,
+                    registration_ip: pending_item.registration_ip,
+                    registration_region: pending_item.registration_region,
                     assigned_proxy_key: None,
                     assigned_proxy_label: None,
                     assigned_proxy_match_kind: None,
@@ -132,25 +152,32 @@ async fn post_validate_api_keys(
                 };
             }
         } else {
-            pending_to_validate.push((pos, api_key, registration_ip, registration_region));
+            pending_to_validate.push(pending_item);
         }
     }
 
     let usage_base = state.usage_base.clone();
     let geo_origin = state.api_key_ip_geo_origin.clone();
+    // Zero-cost provider probes (M13) ride a bounded-timeout client; the
+    // tavily branch keeps its legacy executor untouched.
+    let probe_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(PROVIDER_VALIDATE_PROBE_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let checked = futures_stream::iter(pending_to_validate.into_iter())
-        .map(|(pos, api_key, registration_ip, registration_region)| {
+        .map(|pending_item| {
             let proxy = proxy.clone();
             let usage_base = usage_base.clone();
             let geo_origin = geo_origin.clone();
+            let probe_client = probe_client.clone();
+            let pos = pending_item.pos;
             async move {
-                let (result, kind) = validate_single_key(
+                let (result, kind) = validate_key_for_provider(
                     proxy,
                     usage_base,
                     geo_origin,
-                    api_key,
-                    registration_ip,
-                    registration_region,
+                    probe_client,
+                    pending_item,
                 )
                 .await;
                 (pos, result, kind)
@@ -179,6 +206,330 @@ async fn post_validate_api_keys(
         .into_response())
 }
 
+/// One queued validation target (plan todo 10): the pending slot plus the
+/// normalized identity and provider routing the probe.
+struct PendingValidateKey {
+    pos: usize,
+    api_key: String,
+    registration_ip: Option<String>,
+    registration_region: Option<String>,
+    provider: tavily_hikari::providers::ProviderId,
+}
+
+/// Bound for the zero-cost provider probes; keeps a hung upstream from
+/// stalling the batch beyond the admin request lifetime.
+const PROVIDER_VALIDATE_PROBE_TIMEOUT_SECS: u64 = 20;
+
+/// Tavily results keep the legacy byte-identical JSON (no provider echo);
+/// new providers surface their identity additively.
+fn validate_result_provider_echo(
+    provider: tavily_hikari::providers::ProviderId,
+) -> Option<tavily_hikari::providers::ProviderId> {
+    use tavily_hikari::providers::ProviderId;
+    match provider {
+        ProviderId::Tavily => None,
+        ProviderId::Serpapi | ProviderId::Exa | ProviderId::Brave => Some(provider),
+    }
+}
+
+/// Provider dispatch for one validation target: tavily rides the UNCHANGED
+/// legacy usage probe; serpapi/exa/brave ride the M13 zero-cost probes.
+async fn validate_key_for_provider(
+    proxy: TavilyProxy,
+    usage_base: String,
+    geo_origin: String,
+    probe_client: Client,
+    pending: PendingValidateKey,
+) -> (ValidateKeyResult, &'static str) {
+    use tavily_hikari::providers::ProviderId;
+    match pending.provider {
+        ProviderId::Tavily => {
+            validate_single_key(
+                proxy,
+                usage_base,
+                geo_origin,
+                pending.api_key,
+                pending.registration_ip,
+                pending.registration_region,
+            )
+            .await
+        }
+        ProviderId::Serpapi | ProviderId::Exa | ProviderId::Brave => {
+            validate_provider_probe_key(&probe_client, &proxy, pending).await
+        }
+    }
+}
+
+/// Zero-cost probe outcome before it is folded into the result DTO.
+struct ProviderProbeOutcome {
+    status: &'static str,
+    kind: &'static str,
+    reason: Option<String>,
+    quota_limit: Option<i64>,
+    quota_remaining: Option<i64>,
+    detail: Option<String>,
+}
+
+impl ProviderProbeOutcome {
+    fn error(detail: String) -> Self {
+        Self {
+            status: "error",
+            kind: "error",
+            reason: None,
+            quota_limit: None,
+            quota_remaining: None,
+            detail: Some(truncate_detail(detail, 1400)),
+        }
+    }
+}
+
+fn provider_probe_result(
+    pending: PendingValidateKey,
+    outcome: ProviderProbeOutcome,
+) -> (ValidateKeyResult, &'static str) {
+    (
+        ValidateKeyResult {
+            api_key: pending.api_key,
+            status: outcome.status.to_string(),
+            provider: validate_result_provider_echo(pending.provider),
+            reason: outcome.reason,
+            registration_ip: pending.registration_ip,
+            registration_region: pending.registration_region,
+            assigned_proxy_key: None,
+            assigned_proxy_label: None,
+            assigned_proxy_match_kind: None,
+            quota_limit: outcome.quota_limit,
+            quota_remaining: outcome.quota_remaining,
+            detail: outcome.detail,
+        },
+        outcome.kind,
+    )
+}
+
+fn provider_probe_detail(response_status: reqwest::StatusCode, body: &str) -> String {
+    truncate_detail(
+        format!("provider probe failed with {response_status}: {body}"),
+        1400,
+    )
+}
+
+/// Renders an /account plan field for the validate dialog detail; missing
+/// fields stay visibly null instead of being dropped.
+fn account_field_text(value: &Value) -> String {
+    match value {
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => text.clone(),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// M13 zero-cost validation probes. NEVER targets a billable endpoint:
+/// - serpapi: GET {rest}/account (documented free/uncounted) surfaces the
+///   plan fields; 401/403 reject.
+/// - exa: POST {rest}/contents with an EMPTY body — the key authenticates
+///   (400/422 unbilled validation error) or it does not (401). costDollars
+///   only appears on 2xx, which an empty body cannot produce.
+/// - brave: GET {rest}/res/v1/web/search WITHOUT `q` — auth precedes routing,
+///   so a valid token yields 422 VALIDATION (unbilled) and an invalid token
+///   yields 422 SUBSCRIPTION_TOKEN_INVALID.
+async fn validate_provider_probe_key(
+    client: &Client,
+    proxy: &TavilyProxy,
+    pending: PendingValidateKey,
+) -> (ValidateKeyResult, &'static str) {
+    use tavily_hikari::providers::ProviderId;
+    let rest_base = match proxy.provider_rest_base_url(pending.provider) {
+        Ok(base) => base.trim_end_matches('/').to_string(),
+        Err(err) => {
+            return provider_probe_result(
+                pending,
+                ProviderProbeOutcome::error(format!("provider upstream unresolved: {err}")),
+            );
+        }
+    };
+
+    let outcome = match pending.provider {
+        ProviderId::Serpapi => probe_serpapi_account(client, &rest_base, &pending.api_key).await,
+        ProviderId::Exa => probe_exa_contents(client, &rest_base, &pending.api_key).await,
+        ProviderId::Brave => probe_brave_missing_q(client, &rest_base, &pending.api_key).await,
+        ProviderId::Tavily => ProviderProbeOutcome::error(
+            "tavily keys use the legacy usage probe path".to_string(),
+        ),
+    };
+    provider_probe_result(pending, outcome)
+}
+
+async fn probe_serpapi_account(
+    client: &Client,
+    rest_base: &str,
+    api_key: &str,
+) -> ProviderProbeOutcome {
+    let response = match client
+        .get(format!("{rest_base}/account"))
+        .query(&[("api_key", api_key)])
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            return ProviderProbeOutcome::error(format!("SerpApi account probe failed: {err}"));
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::OK {
+        let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        let searches_per_month = parsed["searches_per_month"].as_i64();
+        let total_searches_left = parsed["total_searches_left"].as_i64();
+        let detail = format!(
+            "plan_searches_left={}; total_searches_left={}; searches_per_month={}; plan_renewal_date={}; account_status={}",
+            account_field_text(&parsed["plan_searches_left"]),
+            account_field_text(&parsed["total_searches_left"]),
+            account_field_text(&parsed["searches_per_month"]),
+            account_field_text(&parsed["plan_renewal_date"]),
+            account_field_text(&parsed["account_status"]),
+        );
+        let exhausted = total_searches_left.unwrap_or(1) <= 0;
+        return ProviderProbeOutcome {
+            status: if exhausted { "ok_exhausted" } else { "ok" },
+            kind: if exhausted { "exhausted" } else { "ok" },
+            reason: None,
+            quota_limit: searches_per_month,
+            quota_remaining: total_searches_left,
+            detail: Some(truncate_detail(detail, 1400)),
+        };
+    }
+    let (status_text, kind) = if status == reqwest::StatusCode::UNAUTHORIZED {
+        ("unauthorized", "invalid")
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        ("forbidden", "invalid")
+    } else {
+        ("error", "error")
+    };
+    ProviderProbeOutcome {
+        status: status_text,
+        kind,
+        reason: None,
+        quota_limit: None,
+        quota_remaining: None,
+        detail: Some(provider_probe_detail(status, &body)),
+    }
+}
+
+async fn probe_exa_contents(
+    client: &Client,
+    rest_base: &str,
+    api_key: &str,
+) -> ProviderProbeOutcome {
+    let response = match client
+        .post(format!("{rest_base}/contents"))
+        .header("x-api-key", api_key)
+        .json(&json!({}))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            return ProviderProbeOutcome::error(format!("Exa contents probe failed: {err}"));
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return ProviderProbeOutcome {
+            status: "unauthorized",
+            kind: "invalid",
+            reason: Some("UNAUTHORIZED".to_string()),
+            quota_limit: None,
+            quota_remaining: None,
+            detail: Some(provider_probe_detail(status, &body)),
+        };
+    }
+    if status.is_client_error() || status.is_success() {
+        // The key authenticated; the EMPTY body cannot produce a billable
+        // 2xx, so any validation rejection proves validity at zero cost.
+        return ProviderProbeOutcome {
+            status: "ok",
+            kind: "ok",
+            reason: Some("UNBILLED_VALIDATION_ERROR".to_string()),
+            quota_limit: None,
+            quota_remaining: None,
+            detail: Some(truncate_detail(
+                format!("key authenticated; empty-body probe rejected unbilled with {status}: {body}"),
+                1400,
+            )),
+        };
+    }
+    ProviderProbeOutcome {
+        status: "error",
+        kind: "error",
+        reason: None,
+        quota_limit: None,
+        quota_remaining: None,
+        detail: Some(provider_probe_detail(status, &body)),
+    }
+}
+
+fn brave_probe_error_code(body: &str) -> String {
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    parsed["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+async fn probe_brave_missing_q(
+    client: &Client,
+    rest_base: &str,
+    api_key: &str,
+) -> ProviderProbeOutcome {
+    let response = match client
+        .get(format!("{rest_base}/res/v1/web/search"))
+        .header("X-Subscription-Token", api_key)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            return ProviderProbeOutcome::error(format!("Brave probe failed: {err}"));
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let reason = brave_probe_error_code(&body);
+    let classified = match (status.as_u16(), reason.as_str()) {
+        (422, "VALIDATION") => Some(("ok", "ok")),
+        (422, "SUBSCRIPTION_TOKEN_INVALID") => Some(("invalid", "invalid")),
+        (402, "QUOTA_LIMITED") => Some(("ok_exhausted", "exhausted")),
+        (429, "RATE_LIMITED") => Some(("ok", "ok")),
+        (_, "") if status == reqwest::StatusCode::UNAUTHORIZED => Some(("unauthorized", "invalid")),
+        (_, "") if status == reqwest::StatusCode::FORBIDDEN => Some(("forbidden", "invalid")),
+        _ => None,
+    };
+    let Some((status_text, kind)) = classified else {
+        return ProviderProbeOutcome {
+            status: "error",
+            kind: "error",
+            reason: (!reason.is_empty()).then_some(reason),
+            quota_limit: None,
+            quota_remaining: None,
+            detail: Some(provider_probe_detail(status, &body)),
+        };
+    };
+    ProviderProbeOutcome {
+        status: status_text,
+        kind,
+        reason: (!reason.is_empty()).then_some(reason),
+        quota_limit: None,
+        quota_remaining: None,
+        detail: Some(truncate_detail(
+            format!("zero-cost token probe answered {status}: {body}"),
+            1400,
+        )),
+    }
+}
+
 async fn create_api_key(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -196,10 +547,32 @@ async fn create_api_key(
         group: group_raw,
         registration_ip: registration_ip_raw,
         assigned_proxy_key,
+        provider: provider_raw,
     } = payload;
+    let provider = provider_raw.unwrap_or(tavily_hikari::providers::ProviderId::Tavily);
     let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // M22: the global UNIQUE(api_key) constraint is kept. Re-submitting an
+    // existing key under a DIFFERENT provider is a typed rejection at the
+    // admin API — never a re-stamp or a silent undelete.
+    match state.proxy.fetch_api_key_provider_by_value(api_key).await {
+        Ok(Some(existing)) if existing != provider => {
+            let body = Json(json!({
+                "error": "provider_conflict",
+                "detail": format!(
+                    "api_key is already registered for provider '{existing}'"
+                ),
+            }));
+            return Ok((StatusCode::CONFLICT, body).into_response());
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("create api key provider lookup error: {err}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     let group = group_raw
@@ -223,13 +596,14 @@ async fn create_api_key(
 
     match state
         .proxy
-        .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+        .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint_with_provider(
             api_key,
             group,
             registration_ip.as_deref(),
             registration_region.as_deref(),
             &state.api_key_ip_geo_origin,
             assigned_proxy_key.as_deref(),
+            provider,
         )
         .await
     {

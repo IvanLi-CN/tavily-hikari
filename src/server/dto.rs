@@ -12,6 +12,9 @@ struct ApiKeyQuarantineView {
 #[derive(Debug, Clone, Serialize)]
 struct ApiKeyView {
     id: String,
+    /// Additive provider identity (plan todo 10); legacy tavily-only clients
+    /// see `"provider":"tavily"` and every pre-existing key keeps its shape.
+    provider: tavily_hikari::providers::ProviderId,
     status: String,
     group: Option<String>,
     registration_ip: Option<String>,
@@ -22,6 +25,8 @@ struct ApiKeyView {
     quota_limit: Option<i64>,
     quota_remaining: Option<i64>,
     quota_synced_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quota_renews_at: Option<i64>,
     total_requests: i64,
     success_count: i64,
     error_count: i64,

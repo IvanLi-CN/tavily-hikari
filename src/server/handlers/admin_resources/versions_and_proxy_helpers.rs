@@ -103,13 +103,14 @@ async fn list_keys(
     let query = ListKeysQuery::from_query(uri.query());
     state
         .proxy
-        .list_api_key_metrics_paged(
+        .list_api_key_metrics_paged_with_provider(
             query.page.unwrap_or(1),
             query.per_page.unwrap_or(20),
             &query.group,
             &query.status,
             query.registration_ip.as_deref(),
             &query.region,
+            &query.provider,
         )
         .await
         .map(|result| {
@@ -167,6 +168,8 @@ struct ListKeysQuery {
     status: Vec<String>,
     registration_ip: Option<String>,
     region: Vec<String>,
+    /// `?provider=` filter values (plan todo 10); empty means unfiltered.
+    provider: Vec<String>,
 }
 
 impl ListKeysQuery {
@@ -197,6 +200,12 @@ impl ListKeysQuery {
                     }
                 }
                 "region" => query.region.push(value.into_owned()),
+                "provider" => {
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        query.provider.push(value.to_ascii_lowercase());
+                    }
+                }
                 _ => {}
             }
         }
@@ -236,6 +245,10 @@ struct CreateKeyRequest {
     group: Option<String>,
     registration_ip: Option<String>,
     assigned_proxy_key: Option<String>,
+    /// Optional provider stamp (plan todo 10). Absent means tavily, so
+    /// legacy clients keep their exact create semantics.
+    #[serde(default)]
+    provider: Option<tavily_hikari::providers::ProviderId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -620,6 +633,10 @@ struct ValidateKeysRequest {
     api_keys: Vec<String>,
     #[serde(default)]
     items: Vec<ValidateKeyItemInput>,
+    /// Default provider for plain `api_keys` entries (plan todo 10). Absent
+    /// means tavily and keeps the legacy probe path byte-identical.
+    #[serde(default)]
+    provider: Option<tavily_hikari::providers::ProviderId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,12 +644,15 @@ struct ValidateKeyItemInput {
     api_key: String,
     #[serde(default)]
     registration_ip: Option<String>,
+    #[serde(default)]
+    provider: Option<tavily_hikari::providers::ProviderId>,
 }
 
 #[derive(Debug)]
 struct NormalizedValidateKeyItem {
     api_key: String,
     registration_ip: Option<String>,
+    provider: tavily_hikari::providers::ProviderId,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -652,6 +672,14 @@ struct ValidateKeysSummary {
 struct ValidateKeyResult {
     api_key: String,
     status: String,
+    /// Additive (plan todo 10): echoed only for per-item provider requests;
+    /// tavily results keep the legacy byte-identical shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<tavily_hikari::providers::ProviderId>,
+    /// Additive (plan todo 10): machine-readable probe discrimination code
+    /// (e.g. brave SUBSCRIPTION_TOKEN_INVALID / VALIDATION).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

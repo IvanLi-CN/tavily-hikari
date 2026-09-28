@@ -123,6 +123,7 @@ mod admin_resources_tests {
             State(state.clone()),
             admin_headers(),
             Json(CreateKeyRequest {
+                provider: None,
                 api_key: "tvly-admin-api-key-contention".to_string(),
                 group: None,
                 registration_ip: None,
@@ -150,6 +151,7 @@ mod admin_resources_tests {
             State(state),
             admin_headers(),
             Json(CreateKeyRequest {
+                provider: None,
                 api_key: "tvly-admin-api-key-contention".to_string(),
                 group: None,
                 registration_ip: None,

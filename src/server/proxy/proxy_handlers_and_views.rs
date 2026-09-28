@@ -1973,6 +1973,7 @@ impl ApiKeyView {
     fn from_metrics(metrics: ApiKeyMetrics, include_quarantine_detail: bool) -> Self {
         Self {
             id: metrics.id,
+            provider: metrics.provider,
             status: metrics.status,
             group: metrics.group_name,
             registration_ip: metrics.registration_ip,
@@ -1983,6 +1984,7 @@ impl ApiKeyView {
             quota_limit: metrics.quota_limit,
             quota_remaining: metrics.quota_remaining,
             quota_synced_at: metrics.quota_synced_at,
+            quota_renews_at: metrics.quota_renews_at,
             total_requests: metrics.total_requests,
             success_count: metrics.success_count,
             error_count: metrics.error_count,

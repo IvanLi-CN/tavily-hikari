@@ -1764,8 +1764,41 @@ impl TavilyProxy {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
+        self.list_api_key_metrics_paged_with_provider(
+            page,
+            per_page,
+            groups,
+            statuses,
+            registration_ip,
+            regions,
+            &[],
+        )
+        .await
+    }
+
+    /// Admin: list API key metrics with the plan-todo-10 `?provider=` filter.
+    /// An empty provider list keeps the legacy unfiltered behavior.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_api_key_metrics_paged_with_provider(
+        &self,
+        page: i64,
+        per_page: i64,
+        groups: &[String],
+        statuses: &[String],
+        registration_ip: Option<&str>,
+        regions: &[String],
+        providers: &[String],
+    ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
         self.key_store
-            .fetch_api_key_metrics_page(page, per_page, groups, statuses, registration_ip, regions)
+            .fetch_api_key_metrics_page(
+                page,
+                per_page,
+                groups,
+                statuses,
+                registration_ip,
+                regions,
+                providers,
+            )
             .await
     }
 
@@ -1775,6 +1808,32 @@ impl TavilyProxy {
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
         self.key_store.fetch_api_key_metric_by_id(key_id).await
+    }
+
+    /// Admin: resolved REST upstream base for a provider (plan todo 10
+    /// zero-cost validate probes + serpapi /account sync). Thin pass-through
+    /// to the facade's registry+env-resolved bases; Tavily keeps its legacy
+    /// executors and yields the documented typed error.
+    pub fn provider_rest_base_url(
+        &self,
+        provider: crate::providers::ProviderId,
+    ) -> Result<String, ProxyError> {
+        self.provider_rest_base(provider).map(|base| base.to_string())
+    }
+
+    /// Admin: persist a provider quota-sync snapshot (plan todo 10 serpapi
+    /// /account). Thin pass-through; Tavily quota writes never route here.
+    pub async fn update_provider_key_quota(
+        &self,
+        key_id: &str,
+        limit: i64,
+        remaining: i64,
+        renews_at: Option<i64>,
+        synced_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .update_provider_key_quota(key_id, limit, remaining, renews_at, synced_at)
+            .await
     }
 
     /// 获取最近的请求日志，按时间倒序排列。

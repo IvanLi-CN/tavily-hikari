@@ -776,7 +776,7 @@
       "id": "bin-tavily-http",
       "kind": "bin",
       "name": "Bin Tavily HTTP",
-      "estimated_seconds": 68,
+      "estimated_seconds": 98,
       "coverage_target": "bin-main",
       "run_args": [
         "--bin",
@@ -796,6 +796,7 @@
         "server::tests::tavily_http_free_account_boundary::tavily_",
         "server::tests::tavily_http_search::tavily_",
         "server::tests::system_settings_and_forward_proxy::extract_",
+        "server::tests::provider_admin_api_keys::",
         "server::tests::provider_privacy_redaction::",
         "server::tests::provider_facade_routing::"
       ]

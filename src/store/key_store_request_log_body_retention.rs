@@ -708,6 +708,8 @@ impl KeyStore {
                 ak.quota_limit,
                 ak.quota_remaining,
                 ak.quota_synced_at,
+                ak.quota_renews_at,
+                COALESCE(ak.provider, 'tavily') AS provider,
                 aq.source AS quarantine_source,
                 aq.reason_code AS quarantine_reason_code,
                 aq.reason_summary AS quarantine_reason_summary,
@@ -740,6 +742,15 @@ impl KeyStore {
         let quota_limit: Option<i64> = row.try_get("quota_limit")?;
         let quota_remaining: Option<i64> = row.try_get("quota_remaining")?;
         let quota_synced_at: Option<i64> = row.try_get("quota_synced_at")?;
+        let quota_renews_at: Option<i64> = row.try_get("quota_renews_at")?;
+        // v45 DDL stores the four stable provider spellings (NOT NULL DEFAULT
+        // 'tavily'); unrecognized text degrades to Tavily so legacy readers
+        // never fail on the additive column.
+        let provider: Option<String> = row.try_get("provider")?;
+        let provider = provider
+            .as_deref()
+            .and_then(|value| crate::providers::ProviderId::from_sql_text(value).ok())
+            .unwrap_or(crate::providers::ProviderId::Tavily);
         let total_requests: i64 = row.try_get("total_requests")?;
         let success_count: i64 = row.try_get("success_count")?;
         let error_count: i64 = row.try_get("error_count")?;
@@ -760,6 +771,7 @@ impl KeyStore {
 
         Ok(ApiKeyMetrics {
             id,
+            provider,
             status,
             group_name: normalize_optional_api_key_field(group_name),
             registration_ip: normalize_optional_api_key_field(registration_ip),
@@ -770,6 +782,7 @@ impl KeyStore {
             quota_limit,
             quota_remaining,
             quota_synced_at: quota_synced_at.and_then(normalize_timestamp),
+            quota_renews_at: quota_renews_at.and_then(normalize_timestamp),
             total_requests,
             success_count,
             error_count,
@@ -825,6 +838,23 @@ impl KeyStore {
         let mut normalized = Vec::new();
         for status in statuses {
             let value = status.trim().to_ascii_lowercase();
+            if value.is_empty() {
+                continue;
+            }
+            if !normalized.iter().any(|existing| existing == &value) {
+                normalized.push(value);
+            }
+        }
+        normalized
+    }
+
+    /// Provider filter normalization (plan todo 10): trim + lowercase to the
+    /// stable DB spelling. Unknown values are kept verbatim so the SQL
+    /// predicate simply matches nothing, mirroring group/status/region.
+    pub(crate) fn normalize_api_key_providers(providers: &[String]) -> Vec<String> {
+        let mut normalized = Vec::new();
+        for provider in providers {
+            let value = provider.trim().to_ascii_lowercase();
             if value.is_empty() {
                 continue;
             }
@@ -926,6 +956,29 @@ impl KeyStore {
             builder
                 .push("(TRIM(COALESCE(ak.registration_region, '')) = ")
                 .push_bind(region)
+                .push(")");
+        }
+        builder.push(")");
+    }
+
+    /// `?provider=` list filter (plan todo 10). COALESCE keeps pre-v45 rows
+    /// (or defensive NULLs) matching the `tavily` spelling.
+    pub(crate) fn push_api_key_provider_filters<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        providers: &'a [String],
+    ) {
+        if providers.is_empty() {
+            return;
+        }
+
+        builder.push(" AND (");
+        for (index, provider) in providers.iter().enumerate() {
+            if index > 0 {
+                builder.push(" OR ");
+            }
+            builder
+                .push("(COALESCE(ak.provider, 'tavily') = ")
+                .push_bind(provider)
                 .push(")");
         }
         builder.push(")");

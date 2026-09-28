@@ -29,6 +29,10 @@ struct ApiKeyUpsertInput<'a> {
     registration_region: Option<&'a str>,
     proxy_affinity: Option<&'a forward_proxy::ForwardProxyAffinityRecord>,
     hint_only_proxy_affinity: bool,
+    /// Provider stamp for freshly inserted rows (plan todo 10). Every legacy
+    /// caller passes Tavily, so pre-existing upserts stay byte-identical to
+    /// the v45 column DEFAULT.
+    provider: crate::providers::ProviderId,
     deadline: std::time::Instant,
 }
 
@@ -1628,6 +1632,27 @@ impl KeyStore {
         Ok(rows.into_iter().collect())
     }
 
+    /// Admin: provider stamp of an existing api_key row, including soft-deleted
+    /// rows (an upsert would resurrect them). Backs the M22 typed
+    /// cross-provider duplicate rejection at the admin API.
+    pub(crate) async fn fetch_api_key_provider_by_value(
+        &self,
+        api_key: &str,
+    ) -> Result<Option<crate::providers::ProviderId>, ProxyError> {
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT provider FROM api_keys WHERE api_key = ? LIMIT 1",
+        )
+        .bind(api_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(stored.map(|value| {
+            crate::providers::ProviderId::from_sql_text(&value)
+                // v45 DDL only stores the four stable spellings; a defensive
+                // fallback keeps legacy reads infallible.
+                .unwrap_or(crate::providers::ProviderId::Tavily)
+        }))
+    }
+
     // Admin ops: add/undelete key by secret and optionally assign a group.
     pub(crate) async fn add_or_undelete_key_in_group(
         &self,
@@ -1678,6 +1703,31 @@ impl KeyStore {
         proxy_affinity: Option<&forward_proxy::ForwardProxyAffinityRecord>,
         hint_only_proxy_affinity: bool,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        // Legacy callers always upsert Tavily rows (plan todo 10 keeps every
+        // existing call site byte-identical to the v45 column DEFAULT).
+        self.add_or_undelete_key_with_status_in_group_and_registration_with_provider(
+            api_key,
+            group,
+            registration_ip,
+            registration_region,
+            proxy_affinity,
+            hint_only_proxy_affinity,
+            crate::providers::ProviderId::Tavily,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn add_or_undelete_key_with_status_in_group_and_registration_with_provider(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+        registration_ip: Option<&str>,
+        registration_region: Option<&str>,
+        proxy_affinity: Option<&forward_proxy::ForwardProxyAffinityRecord>,
+        hint_only_proxy_affinity: bool,
+        provider: crate::providers::ProviderId,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
         let normalized_group = group
             .map(str::trim)
             .filter(|g| !g.is_empty())
@@ -1696,6 +1746,7 @@ impl KeyStore {
             registration_region: normalized_registration_region.as_deref(),
             proxy_affinity,
             hint_only_proxy_affinity,
+            provider,
             deadline: std::time::Instant::now() + API_KEY_UPSERT_RETRY_BUDGET,
         };
         let mut retry_idx = 0usize;
@@ -1758,14 +1809,29 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
 
         let operation_result: Result<(String, ApiKeyUpsertStatus), ProxyError> = async {
-            if let Some((id, deleted_at, existing_group, existing_registration_ip, existing_registration_region)) =
-                sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, Option<String>)>(
-                    "SELECT id, deleted_at, group_name, registration_ip, registration_region FROM api_keys WHERE api_key = ? LIMIT 1",
+            if let Some((id, deleted_at, existing_group, existing_registration_ip, existing_registration_region, existing_provider)) =
+                sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+                    "SELECT id, deleted_at, group_name, registration_ip, registration_region, provider FROM api_keys WHERE api_key = ? LIMIT 1",
                 )
                 .bind(api_key)
                 .fetch_optional(&mut *tx)
                 .await?
             {
+                // M22: the global UNIQUE(api_key) constraint is kept. A key
+                // owned by another provider is never resurrected, refreshed,
+                // or re-stamped — the admin API surfaces this as a typed
+                // rejection before reaching the upsert, and this guard closes
+                // the concurrent-create race with a distinct error.
+                let stored_provider = existing_provider
+                    .as_deref()
+                    .and_then(|value| crate::providers::ProviderId::from_sql_text(value).ok())
+                    .unwrap_or(crate::providers::ProviderId::Tavily);
+                if stored_provider != input.provider {
+                    return Err(ProxyError::Other(format!(
+                        "api_key_provider_conflict: stored {}, requested {}",
+                        stored_provider, input.provider
+                    )));
+                }
                 let existing_empty = existing_group
                     .as_deref()
                     .map(str::trim)
@@ -1857,9 +1923,10 @@ impl KeyStore {
                     registration_region,
                     status,
                     created_at,
-                    status_changed_at
+                    status_changed_at,
+                    provider
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
@@ -1870,6 +1937,7 @@ impl KeyStore {
             .bind(STATUS_ACTIVE)
             .bind(now)
             .bind(now)
+            .bind(input.provider.as_str())
             .execute(&mut *tx)
             .await?;
             sqlx::query(
@@ -1983,11 +2051,47 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Admin/provider quota sync write seam (plan todo 10): persists the
+    /// SerpApi /account snapshot — quota_limit, quota_remaining,
+    /// quota_synced_at always, and quota_renews_at when the live fetch
+    /// carried a parsable plan_renewal_date (COALESCE preserves the
+    /// previously stored renewal otherwise). Tavily quota writes keep their
+    /// legacy seams and never route through here.
+    pub(crate) async fn update_provider_key_quota(
+        &self,
+        key_id: &str,
+        limit: i64,
+        remaining: i64,
+        renews_at: Option<i64>,
+        synced_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET quota_limit = ?,
+                quota_remaining = ?,
+                quota_synced_at = ?,
+                quota_renews_at = COALESCE(?, quota_renews_at)
+            WHERE id = ?
+            "#,
+        )
+        .bind(limit)
+        .bind(remaining)
+        .bind(synced_at)
+        .bind(renews_at)
+        .bind(key_id)
+        .execute(&self.pool)
+        .await?;
+        self.request_stats_coalescer.mark_dashboard_read_dirty().await;
+        Ok(())
+    }
+
     pub(crate) async fn fetch_api_key_group_facets(
         &self,
         statuses: &[String],
         registration_ip: Option<&str>,
         regions: &[String],
+        providers: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.group_name, '')) AS value, COUNT(*) AS count",
@@ -1996,6 +2100,7 @@ impl KeyStore {
         Self::push_api_key_status_filters(&mut builder, statuses);
         Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
         Self::push_api_key_region_filters(&mut builder, regions);
+        Self::push_api_key_provider_filters(&mut builder, providers);
         builder.push(" GROUP BY value ORDER BY value ASC");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
@@ -2015,6 +2120,7 @@ impl KeyStore {
         groups: &[String],
         registration_ip: Option<&str>,
         regions: &[String],
+        providers: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
@@ -2029,6 +2135,7 @@ impl KeyStore {
         Self::push_api_key_group_filters(&mut builder, groups);
         Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
         Self::push_api_key_region_filters(&mut builder, regions);
+        Self::push_api_key_provider_filters(&mut builder, providers);
         builder.push(" GROUP BY value ORDER BY value ASC");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
@@ -2048,6 +2155,7 @@ impl KeyStore {
         groups: &[String],
         statuses: &[String],
         registration_ip: Option<&str>,
+        providers: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.registration_region, '')) AS value, COUNT(*) AS count",
@@ -2056,6 +2164,7 @@ impl KeyStore {
         Self::push_api_key_group_filters(&mut builder, groups);
         Self::push_api_key_status_filters(&mut builder, statuses);
         Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
+        Self::push_api_key_provider_filters(&mut builder, providers);
         builder.push(" AND TRIM(COALESCE(ak.registration_region, '')) != ''");
         builder.push(" GROUP BY value ORDER BY value ASC");
 
@@ -2133,6 +2242,7 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn fetch_api_key_metrics_page(
         &self,
         page: i64,
@@ -2141,6 +2251,7 @@ impl KeyStore {
         statuses: &[String],
         registration_ip: Option<&str>,
         regions: &[String],
+        providers: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
         let _permit = self
             .admin_heavy_read_semaphore
@@ -2155,6 +2266,7 @@ impl KeyStore {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let regions = Self::normalize_api_key_regions(regions);
+        let providers = Self::normalize_api_key_providers(providers);
 
         let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*)");
         count_builder.push(Self::api_key_metrics_from_clause());
@@ -2162,6 +2274,7 @@ impl KeyStore {
         Self::push_api_key_status_filters(&mut count_builder, &statuses);
         Self::push_api_key_registration_ip_filter(&mut count_builder, registration_ip);
         Self::push_api_key_region_filters(&mut count_builder, &regions);
+        Self::push_api_key_provider_filters(&mut count_builder, &providers);
         let total = count_builder
             .build_query_scalar::<i64>()
             .fetch_one(&self.pool)
@@ -2175,6 +2288,7 @@ impl KeyStore {
         Self::push_api_key_status_filters(&mut items_builder, &statuses);
         Self::push_api_key_registration_ip_filter(&mut items_builder, registration_ip);
         Self::push_api_key_region_filters(&mut items_builder, &regions);
+        Self::push_api_key_provider_filters(&mut items_builder, &providers);
         items_builder.push(
             " ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
         );
@@ -2189,13 +2303,13 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         let group_counts = self
-            .fetch_api_key_group_facets(&statuses, registration_ip, &regions)
+            .fetch_api_key_group_facets(&statuses, registration_ip, &regions, &providers)
             .await?;
         let status_counts = self
-            .fetch_api_key_status_facets(&groups, registration_ip, &regions)
+            .fetch_api_key_status_facets(&groups, registration_ip, &regions, &providers)
             .await?;
         let region_counts = self
-            .fetch_api_key_region_facets(&groups, &statuses, registration_ip)
+            .fetch_api_key_region_facets(&groups, &statuses, registration_ip, &providers)
             .await?;
 
         Ok(PaginatedApiKeyMetrics {

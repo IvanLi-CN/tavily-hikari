@@ -936,6 +936,15 @@ impl TavilyProxy {
         self.key_store.fetch_active_existing_api_keys(api_keys).await
     }
 
+    /// Admin: provider stamp of an existing api_key row incl. soft-deleted
+    /// rows (plan todo 10 / M22 cross-provider duplicate rejection).
+    pub async fn fetch_api_key_provider_by_value(
+        &self,
+        api_key: &str,
+    ) -> Result<Option<crate::providers::ProviderId>, ProxyError> {
+        self.key_store.fetch_api_key_provider_by_value(api_key).await
+    }
+
     /// Admin: add or undelete an API key and optionally assign it to a group.
     pub async fn add_or_undelete_key_in_group(
         &self,
@@ -1020,6 +1029,32 @@ impl TavilyProxy {
         geo_origin: &str,
         preferred_primary_proxy_key: Option<&str>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        self.add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint_with_provider(
+            api_key,
+            group,
+            registration_ip,
+            registration_region,
+            geo_origin,
+            preferred_primary_proxy_key,
+            crate::providers::ProviderId::Tavily,
+        )
+        .await
+    }
+
+    /// Provider-stamped variant of the hint upsert (plan todo 10). Legacy
+    /// callers delegate here with Tavily, keeping their writes byte-identical
+    /// to the v45 column DEFAULT.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint_with_provider(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+        registration_ip: Option<&str>,
+        registration_region: Option<&str>,
+        geo_origin: &str,
+        preferred_primary_proxy_key: Option<&str>,
+        provider: crate::providers::ProviderId,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
         let has_fresh_registration_metadata =
             registration_ip.is_some() || registration_region.is_some();
         let is_hint_only_affinity =
@@ -1049,13 +1084,14 @@ impl TavilyProxy {
         };
         let result = self
             .key_store
-            .add_or_undelete_key_with_status_in_group_and_registration(
+            .add_or_undelete_key_with_status_in_group_and_registration_with_provider(
                 api_key,
                 group,
                 registration_ip,
                 registration_region,
                 proxy_affinity.as_ref(),
                 is_hint_only_affinity,
+                provider,
             )
             .await?;
         self.remove_proxy_affinity_record_from_cache(&result.0)

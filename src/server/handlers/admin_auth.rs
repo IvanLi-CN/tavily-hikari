@@ -353,16 +353,24 @@ async fn post_sync_key_usage(
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
-    match run_manual_key_quota_sync(state.clone(), &id).await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
-        Err(err) => Ok((
-            err.status_code,
-            Json(json!({
+    match run_manual_key_quota_sync_with_outcome(state.clone(), &id).await {
+        // Tavily keeps its legacy 204 contract (byte-identical behavior).
+        Ok(ManualKeyQuotaSyncOutcome::TavilyJob) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Ok(ManualKeyQuotaSyncOutcome::ProviderSnapshot(snapshot)) => {
+            Ok((StatusCode::OK, Json(snapshot)).into_response())
+        }
+        Err(err) => {
+            let mut payload = json!({
                 "error": err.error_code,
                 "detail": err.detail,
-            })),
-        )
-            .into_response()),
+            });
+            // Additive provider echo for typed per-provider rejections;
+            // legacy tavily error bodies stay byte-identical.
+            if let Some(provider) = err.provider {
+                payload["provider"] = json!(provider);
+            }
+            Ok((err.status_code, Json(payload)).into_response())
+        }
     }
 }
 
@@ -371,6 +379,7 @@ struct ManualQuotaSyncError {
     status_code: StatusCode,
     error_code: &'static str,
     detail: String,
+    provider: Option<tavily_hikari::providers::ProviderId>,
 }
 
 impl ManualQuotaSyncError {
@@ -379,11 +388,212 @@ impl ManualQuotaSyncError {
             status_code,
             error_code,
             detail,
+            provider: None,
         }
+    }
+
+    fn with_provider(
+        mut self,
+        provider: tavily_hikari::providers::ProviderId,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
     }
 }
 
+/// Provider quota-sync snapshot returned by the non-tavily sync-usage arms
+/// (plan todo 10): serpapi `source:"live"` after a successful /account
+/// fetch, brave `source:"passive"` echoing the last harvested snapshot
+/// without any live call.
+#[derive(Debug, Serialize)]
+struct ProviderQuotaSyncSnapshot {
+    source: &'static str,
+    provider: tavily_hikari::providers::ProviderId,
+    quota_limit: Option<i64>,
+    quota_remaining: Option<i64>,
+    quota_renews_at: Option<i64>,
+    quota_synced_at: Option<i64>,
+}
+
+enum ManualKeyQuotaSyncOutcome {
+    TavilyJob,
+    ProviderSnapshot(ProviderQuotaSyncSnapshot),
+}
+
+/// Sync-usage entry shared by the single-key endpoint and bulk actions:
+/// dispatches on the stored key provider. Tavily rows keep the legacy
+/// job-queue flow untouched (incl. unknown ids, which fall through to the
+/// tavily branch exactly as before).
+async fn run_manual_key_quota_sync_with_outcome(
+    state: Arc<AppState>,
+    key_id: &str,
+) -> Result<ManualKeyQuotaSyncOutcome, ManualQuotaSyncError> {
+    use tavily_hikari::providers::ProviderId;
+    let metrics = state.proxy.get_api_key_metric(key_id).await.ok().flatten();
+    let provider = metrics
+        .as_ref()
+        .map(|metric| metric.provider)
+        .unwrap_or(ProviderId::Tavily);
+    match provider {
+        ProviderId::Tavily => {
+            run_manual_key_quota_sync_tavily(state, key_id).await?;
+            Ok(ManualKeyQuotaSyncOutcome::TavilyJob)
+        }
+        ProviderId::Serpapi => {
+            let snapshot = sync_serpapi_key_quota(state.as_ref(), key_id).await?;
+            Ok(ManualKeyQuotaSyncOutcome::ProviderSnapshot(snapshot))
+        }
+        ProviderId::Brave => {
+            // Passive-only provider: return the last harvested snapshot (NULL
+            // until todo 14's X-RateLimit harvest has run). Never a live call.
+            Ok(ManualKeyQuotaSyncOutcome::ProviderSnapshot(
+                ProviderQuotaSyncSnapshot {
+                    source: "passive",
+                    provider,
+                    quota_limit: metrics.as_ref().and_then(|metric| metric.quota_limit),
+                    quota_remaining: metrics.as_ref().and_then(|metric| metric.quota_remaining),
+                    quota_renews_at: metrics.as_ref().and_then(|metric| metric.quota_renews_at),
+                    quota_synced_at: metrics.as_ref().and_then(|metric| metric.quota_synced_at),
+                },
+            ))
+        }
+        ProviderId::Exa => Err(ManualQuotaSyncError::new(
+            StatusCode::CONFLICT,
+            "sync_unsupported",
+            "exa has no upstream balance API; usage is tracked locally per request"
+                .to_string(),
+        )
+        .with_provider(ProviderId::Exa)),
+    }
+}
+
+/// SerpApi live /account sync (plan todo 10): quota_limit=searches_per_month,
+/// quota_remaining=total_searches_left, quota_renews_at=plan_renewal_date
+/// (UTC midnight), quota_synced_at=now. /account is free/uncounted (M13).
+/// The error detail never embeds the transport error's URL (it would carry
+/// the secret in its query string).
+async fn sync_serpapi_key_quota(
+    state: &AppState,
+    key_id: &str,
+) -> Result<ProviderQuotaSyncSnapshot, ManualQuotaSyncError> {
+    use tavily_hikari::providers::ProviderId;
+    let api_key = state
+        .proxy
+        .get_api_key_secret(key_id)
+        .await
+        .map_err(|err| {
+            ManualQuotaSyncError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sync_failed",
+                err.to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            ManualQuotaSyncError::new(
+                StatusCode::NOT_FOUND,
+                "sync_failed",
+                format!("api key secret not found for {key_id}"),
+            )
+        })?;
+    let rest_base = state
+        .proxy
+        .provider_rest_base_url(ProviderId::Serpapi)
+        .map_err(|err| {
+            ManualQuotaSyncError::new(
+                StatusCode::BAD_GATEWAY,
+                "sync_failed",
+                err.to_string(),
+            )
+        })?;
+    let rest_base = rest_base.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(PROVIDER_QUOTA_SYNC_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let response = client
+        .get(format!("{rest_base}/account"))
+        .query(&[("api_key", api_key.as_str())])
+        .send()
+        .await
+        .map_err(|err| {
+            eprintln!("serpapi account sync transport error for key {key_id}: timeout={}", err.is_timeout());
+            ManualQuotaSyncError::new(
+                StatusCode::BAD_GATEWAY,
+                "sync_failed",
+                "SerpApi account request could not reach the upstream".to_string(),
+            )
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if status != reqwest::StatusCode::OK {
+        let http_status = if status == reqwest::StatusCode::UNAUTHORIZED {
+            StatusCode::UNAUTHORIZED
+        } else if status == reqwest::StatusCode::FORBIDDEN {
+            StatusCode::FORBIDDEN
+        } else if status.is_client_error() {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        return Err(ManualQuotaSyncError::new(
+            http_status,
+            "usage_http",
+            format!("SerpApi account request failed with {status}: {body}"),
+        ));
+    }
+    let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let (Some(limit), Some(remaining)) = (
+        parsed["searches_per_month"].as_i64(),
+        parsed["total_searches_left"].as_i64(),
+    ) else {
+        return Err(ManualQuotaSyncError::new(
+            StatusCode::BAD_REQUEST,
+            "quota_data_missing",
+            "SerpApi account response lacks searches_per_month/total_searches_left".to_string(),
+        ));
+    };
+    let renews_at = parsed["plan_renewal_date"]
+        .as_str()
+        .and_then(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok())
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .map(|renewal| renewal.and_utc().timestamp());
+    let synced_at = state.proxy.backend_time().now_ts();
+    state
+        .proxy
+        .update_provider_key_quota(key_id, limit, remaining, renews_at, synced_at)
+        .await
+        .map_err(|err| {
+            ManualQuotaSyncError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sync_failed",
+                err.to_string(),
+            )
+        })?;
+    Ok(ProviderQuotaSyncSnapshot {
+        source: "live",
+        provider: ProviderId::Serpapi,
+        quota_limit: Some(limit),
+        quota_remaining: Some(remaining),
+        quota_renews_at: renews_at,
+        quota_synced_at: Some(synced_at),
+    })
+}
+
+/// Bound for the serpapi /account fetch; /account is free but must not stall
+/// the admin request beyond the legacy job-timeout scale.
+const PROVIDER_QUOTA_SYNC_TIMEOUT_SECS: u64 = 20;
+
 async fn run_manual_key_quota_sync(
+    state: Arc<AppState>,
+    key_id: &str,
+) -> Result<(), ManualQuotaSyncError> {
+    run_manual_key_quota_sync_with_outcome(state, key_id)
+        .await
+        .map(|_| ())
+}
+
+/// Legacy tavily job-queue sync — UNCHANGED (plan todo 10 byte-stability).
+async fn run_manual_key_quota_sync_tavily(
     state: Arc<AppState>,
     key_id: &str,
 ) -> Result<(), ManualQuotaSyncError> {

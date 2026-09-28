@@ -813,6 +813,8 @@ async fn validate_single_key(
             if remaining <= 0 {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "ok_exhausted".to_string(),
                         registration_ip,
@@ -829,6 +831,8 @@ async fn validate_single_key(
             } else {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "ok".to_string(),
                         registration_ip,
@@ -850,6 +854,8 @@ async fn validate_single_key(
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "unauthorized".to_string(),
                         registration_ip,
@@ -866,6 +872,8 @@ async fn validate_single_key(
             } else if status == reqwest::StatusCode::FORBIDDEN {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "forbidden".to_string(),
                         registration_ip,
@@ -882,6 +890,8 @@ async fn validate_single_key(
             } else if status == reqwest::StatusCode::BAD_REQUEST {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "invalid".to_string(),
                         registration_ip,
@@ -898,6 +908,8 @@ async fn validate_single_key(
             } else {
                 (
                     ValidateKeyResult {
+                        provider: None,
+                        reason: None,
                         api_key,
                         status: "error".to_string(),
                         registration_ip,
@@ -915,6 +927,8 @@ async fn validate_single_key(
         }
         Err(ProxyError::QuotaDataMissing { reason }) => (
             ValidateKeyResult {
+                provider: None,
+                reason: None,
                 api_key,
                 status: "invalid".to_string(),
                 registration_ip,
@@ -933,6 +947,8 @@ async fn validate_single_key(
         ),
         Err(err) => (
             ValidateKeyResult {
+                provider: None,
+                reason: None,
                 api_key,
                 status: "error".to_string(),
                 registration_ip,
