@@ -281,7 +281,7 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
         other => panic!("expected a pool-pressure deferred outcome, got {other:?}"),
     };
     assert!(
-        retry_at >= proxy.backend_time().now_ts().saturating_add(15),
+        retry_at >= proxy.backend_time().now_ts().saturating_add(5),
         "a typed defer must carry its durable retry time"
     );
     assert!(

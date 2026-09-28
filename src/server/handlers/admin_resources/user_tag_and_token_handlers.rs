@@ -1528,6 +1528,9 @@ async fn create_token(
             )
         })
         .map_err(|err| {
+            if err.is_deferred() || tavily_hikari::is_transient_sqlite_write_error(&err) {
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
             eprintln!("create token error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })
