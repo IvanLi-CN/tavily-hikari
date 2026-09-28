@@ -40,6 +40,7 @@ mod observability_and_lifecycle;
 mod provider_failure_classification;
 mod observability_sidecar_provider;
 mod provider_config_bootstrap;
+mod provider_pool_scoping;
 mod proxy_affinity_and_summary;
 mod proxy_affinity_runtime_geo;
 mod reconciliation_controller;

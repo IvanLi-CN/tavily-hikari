@@ -105,19 +105,23 @@ impl TavilyProxy {
 
     async fn rebind_user_primary_affinity(
         &self,
+        provider: providers::ProviderId,
         user_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
         let lease = match self
             .key_store
             .acquire_key_avoiding_transient_backoff_excluding(
+                provider,
                 HTTP_GLOBAL_BACKOFF_SCOPE,
                 old_key_id,
             )
             .await
         {
             Ok(lease) => lease,
-            Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
+            Err(ProxyError::NoAvailableKeys) => {
+                self.key_store.acquire_key_for_provider(provider).await?
+            }
             Err(err) => return Err(err),
         };
         self.key_store
@@ -135,19 +139,23 @@ impl TavilyProxy {
 
     async fn rebind_token_primary_affinity(
         &self,
+        provider: providers::ProviderId,
         token_id: &str,
         old_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
         let lease = match self
             .key_store
             .acquire_key_avoiding_transient_backoff_excluding(
+                provider,
                 HTTP_GLOBAL_BACKOFF_SCOPE,
                 old_key_id,
             )
             .await
         {
             Ok(lease) => lease,
-            Err(ProxyError::NoAvailableKeys) => self.key_store.acquire_key().await?,
+            Err(ProxyError::NoAvailableKeys) => {
+                self.key_store.acquire_key_for_provider(provider).await?
+            }
             Err(err) => return Err(err),
         };
         self.key_store
@@ -165,11 +173,15 @@ impl TavilyProxy {
 
     async fn rank_mcp_session_affinity_candidate_keys(
         &self,
+        provider: providers::ProviderId,
         token_id: &str,
         user_id: Option<&str>,
         desired_count: i64,
     ) -> Result<Vec<String>, ProxyError> {
-        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        let mut candidates = self
+            .key_store
+            .list_mcp_session_candidate_key_ids(provider)
+            .await?;
         if candidates.is_empty() {
             return Err(ProxyError::NoAvailableKeys);
         }
@@ -339,9 +351,25 @@ impl TavilyProxy {
         &self,
         auth_token_id: Option<&str>,
     ) -> Result<McpSessionInitSelection, ProxyError> {
+        // Legacy Tavily entry point (plan todo 9): byte-stable delegation to
+        // the provider-scoped variant.
+        self.acquire_key_for_mcp_session_init_provider(
+            providers::ProviderId::Tavily,
+            auth_token_id,
+        )
+        .await
+    }
+
+    /// MCP-session-init acquisition scoped to the REQUESTED provider (plan
+    /// todo 9): candidate ranking and affinity leases never cross providers.
+    pub(crate) async fn acquire_key_for_mcp_session_init_provider(
+        &self,
+        provider: providers::ProviderId,
+        auth_token_id: Option<&str>,
+    ) -> Result<McpSessionInitSelection, ProxyError> {
         let Some(token_id) = auth_token_id else {
             return Ok(McpSessionInitSelection {
-                lease: self.key_store.acquire_key().await?,
+                lease: self.key_store.acquire_key_for_provider(provider).await?,
                 key_effect: KeyEffect::none(),
             });
         };
@@ -350,6 +378,7 @@ impl TavilyProxy {
         let settings = self.key_store.get_system_settings().await?;
         let ranked = self
             .rank_mcp_session_affinity_candidate_keys(
+                provider,
                 token_id,
                 user_id.as_deref(),
                 settings.mcp_session_affinity_key_count,
@@ -366,7 +395,7 @@ impl TavilyProxy {
             let key_id = candidate.key_id.clone();
             if let Some(lease) = self
                 .key_store
-                .try_acquire_affinity_specific_key(&key_id)
+                .try_acquire_affinity_specific_key(provider, &key_id)
                 .await?
             {
                 let key_effect = if preferred_key_id.as_deref() == Some(key_id.as_str()) {
@@ -435,10 +464,14 @@ impl TavilyProxy {
     #[allow(dead_code)]
     async fn rank_http_project_affinity_candidate_keys(
         &self,
+        provider: providers::ProviderId,
         affinity_subject: &str,
         desired_count: i64,
     ) -> Result<Vec<String>, ProxyError> {
-        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        let mut candidates = self
+            .key_store
+            .list_mcp_session_candidate_key_ids(provider)
+            .await?;
         if candidates.is_empty() {
             return Err(ProxyError::NoAvailableKeys);
         }
@@ -454,10 +487,14 @@ impl TavilyProxy {
 
     async fn rank_api_route_affinity_candidate_keys(
         &self,
+        provider: providers::ProviderId,
         affinity_subject: &str,
         desired_count: Option<i64>,
     ) -> Result<Vec<String>, ProxyError> {
-        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        let mut candidates = self
+            .key_store
+            .list_mcp_session_candidate_key_ids(provider)
+            .await?;
         if candidates.is_empty() {
             return Err(ProxyError::NoAvailableKeys);
         }
@@ -682,6 +719,26 @@ impl TavilyProxy {
         auth_token_id: Option<&str>,
         project_id: Option<&str>,
     ) -> Result<Option<HttpProjectAffinitySelection>, ProxyError> {
+        // Legacy Tavily entry point (plan todo 9): byte-stable delegation to
+        // the provider-scoped variant.
+        self.acquire_key_for_http_project_provider(
+            providers::ProviderId::Tavily,
+            auth_token_id,
+            project_id,
+        )
+        .await
+    }
+
+    /// HTTP-project affinity acquisition scoped to the REQUESTED provider
+    /// (plan todo 9): existing bindings pointing at a foreign provider's key
+    /// fail the provider predicate and the flow re-ranks within the provider.
+    #[allow(dead_code)]
+    pub(crate) async fn acquire_key_for_http_project_provider(
+        &self,
+        provider: providers::ProviderId,
+        auth_token_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<Option<HttpProjectAffinitySelection>, ProxyError> {
         let Some(context) = self
             .resolve_http_project_affinity_context(auth_token_id, project_id)
             .await?
@@ -720,7 +777,7 @@ impl TavilyProxy {
             if !is_cooled
                 && let Some(lease) = self
                     .key_store
-                    .try_acquire_affinity_specific_key(existing_key_id)
+                    .try_acquire_affinity_specific_key(provider, existing_key_id)
                     .await?
             {
                 return Ok(Some(HttpProjectAffinitySelection {
@@ -737,7 +794,11 @@ impl TavilyProxy {
             .await?
             .mcp_session_affinity_key_count;
         let ranked = self
-            .rank_http_project_affinity_candidate_keys(&context.affinity_subject, desired_count)
+            .rank_http_project_affinity_candidate_keys(
+                provider,
+                &context.affinity_subject,
+                desired_count,
+            )
             .await?;
         let ordered = self
             .build_http_project_affinity_candidates(&ranked, now)
@@ -755,7 +816,7 @@ impl TavilyProxy {
             let key_id = candidate.key_id.clone();
             if let Some(lease) = self
                 .key_store
-                .try_acquire_affinity_specific_key(&key_id)
+                .try_acquire_affinity_specific_key(provider, &key_id)
                 .await?
             {
                 self.key_store
@@ -812,6 +873,25 @@ impl TavilyProxy {
         auth_token_id: Option<&str>,
         route_key: Option<&str>,
     ) -> Result<ApiRouteAffinitySelection, ProxyError> {
+        // Legacy Tavily entry point (plan todo 9): byte-stable delegation to
+        // the provider-scoped variant.
+        self.acquire_key_for_api_route_provider(
+            providers::ProviderId::Tavily,
+            auth_token_id,
+            route_key,
+        )
+        .await
+    }
+
+    /// API-route affinity acquisition scoped to the REQUESTED provider (plan
+    /// todo 9): candidate ranking and existing bindings never cross
+    /// providers; NoAvailableKeys only when the provider's tiers are empty.
+    pub(crate) async fn acquire_key_for_api_route_provider(
+        &self,
+        provider: providers::ProviderId,
+        auth_token_id: Option<&str>,
+        route_key: Option<&str>,
+    ) -> Result<ApiRouteAffinitySelection, ProxyError> {
         let context = self
             .resolve_api_route_affinity_context(auth_token_id, route_key)
             .await?;
@@ -838,7 +918,7 @@ impl TavilyProxy {
                 if !backoff.contains_key(existing_key_id)
                     && let Some(lease) = self
                         .key_store
-                        .try_acquire_affinity_specific_key(existing_key_id)
+                        .try_acquire_affinity_specific_key(provider, existing_key_id)
                         .await?
                 {
                     return Ok(ApiRouteAffinitySelection {
@@ -856,6 +936,7 @@ impl TavilyProxy {
                 .mcp_session_affinity_key_count;
             let ranked = self
                 .rank_api_route_affinity_candidate_keys(
+                    provider,
                     &context.affinity_subject,
                     Some(desired_count),
                 )
@@ -874,7 +955,7 @@ impl TavilyProxy {
                 let key_id = candidate.key_id.clone();
                 if let Some(lease) = self
                     .key_store
-                    .try_acquire_affinity_specific_key(&key_id)
+                    .try_acquire_affinity_specific_key(provider, &key_id)
                     .await?
                 {
                     self.key_store
@@ -937,7 +1018,7 @@ impl TavilyProxy {
             None => "anonymous:api".to_string(),
         };
         let ranked = self
-            .rank_api_route_affinity_candidate_keys(&affinity_subject, None)
+            .rank_api_route_affinity_candidate_keys(provider, &affinity_subject, None)
             .await?;
         let ordered = self.build_api_rebalance_candidates(&ranked, now).await?;
         let selection_effect = Self::api_rebalance_selection_effect(&ordered);
@@ -947,7 +1028,7 @@ impl TavilyProxy {
             let key_id = candidate.key_id.clone();
             if let Some(lease) = self
                 .key_store
-                .try_acquire_affinity_specific_key(&key_id)
+                .try_acquire_affinity_specific_key(provider, &key_id)
                 .await?
             {
                 let selection_effect = if preferred_key_id.as_deref() == Some(key_id.as_str()) {
@@ -969,7 +1050,14 @@ impl TavilyProxy {
     pub(crate) async fn acquire_key_for_rebalance_mcp_http_call(
         &self,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let ranked = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        // Rebalance MCP HTTP is the Tavily legacy control channel (M6): new
+        // provider facades never route through it, so the provider scope is
+        // pinned to Tavily here.
+        let provider = providers::ProviderId::Tavily;
+        let ranked = self
+            .key_store
+            .list_mcp_session_candidate_key_ids(provider)
+            .await?;
         if ranked.is_empty() {
             return Err(ProxyError::NoAvailableKeys);
         }
@@ -981,7 +1069,7 @@ impl TavilyProxy {
         for candidate in ordered {
             if let Some(lease) = self
                 .key_store
-                .try_acquire_affinity_specific_key(&candidate.key_id)
+                .try_acquire_affinity_specific_key(provider, &candidate.key_id)
                 .await?
             {
                 return Ok(lease);
@@ -1072,11 +1160,28 @@ impl TavilyProxy {
         &self,
         auth_token_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
+        // Legacy Tavily entry point (plan todo 9): byte-stable delegation to
+        // the provider-scoped variant.
+        self.acquire_key_for_provider(providers::ProviderId::Tavily, auth_token_id)
+            .await
+    }
+
+    /// Token/user primary-affinity acquisition scoped to the REQUESTED
+    /// provider (plan todo 9). Primary-affinity rows need no schema change
+    /// because the key implies its provider: a binding that points at
+    /// another provider's key fails the provider-scoped lease and the flow
+    /// rebinds within the requested provider (shared affinity rows may
+    /// rebind across providers; last writer wins).
+    pub(crate) async fn acquire_key_for_provider(
+        &self,
+        provider: providers::ProviderId,
+        auth_token_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
         let Some(token_id) = auth_token_id else {
             // No token id (e.g. certain internal or dev flows) → plain global scheduling.
             return self
                 .key_store
-                .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+                .acquire_key_avoiding_transient_backoff(provider, HTTP_GLOBAL_BACKOFF_SCOPE)
                 .await;
         };
 
@@ -1120,7 +1225,8 @@ impl TavilyProxy {
             for (key_id, sync_on_acquire) in candidates {
                 if let Some(lease) = self
                     .key_store
-                    .try_acquire_affinity_specific_key_avoiding_transient_backoff(
+.try_acquire_affinity_specific_key_avoiding_transient_backoff_for_provider(
+                        provider,
                         &key_id,
                         HTTP_GLOBAL_BACKOFF_SCOPE,
                     )
@@ -1137,13 +1243,13 @@ impl TavilyProxy {
 
             if user_primary.is_some() || token_primary.is_some() {
                 return self
-                    .rebind_user_primary_affinity(&user_id, user_primary.as_deref())
+                    .rebind_user_primary_affinity(provider, &user_id, user_primary.as_deref())
                     .await;
             }
 
             let lease = self
                 .key_store
-                .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+                .acquire_key_avoiding_transient_backoff(provider, HTTP_GLOBAL_BACKOFF_SCOPE)
                 .await?;
             self.key_store
                 .sync_user_primary_api_key_affinity(&user_id, &lease.id)
@@ -1158,7 +1264,8 @@ impl TavilyProxy {
         {
             if let Some(lease) = self
                 .key_store
-                .try_acquire_affinity_specific_key_avoiding_transient_backoff(
+                .try_acquire_affinity_specific_key_avoiding_transient_backoff_for_provider(
+                    provider,
                     &token_primary.api_key_id,
                     HTTP_GLOBAL_BACKOFF_SCOPE,
                 )
@@ -1168,13 +1275,17 @@ impl TavilyProxy {
             }
 
             return self
-                .rebind_token_primary_affinity(token_id, Some(&token_primary.api_key_id))
+                .rebind_token_primary_affinity(
+                    provider,
+                    token_id,
+                    Some(&token_primary.api_key_id),
+                )
                 .await;
         }
 
         let lease = self
             .key_store
-            .acquire_key_avoiding_transient_backoff(HTTP_GLOBAL_BACKOFF_SCOPE)
+            .acquire_key_avoiding_transient_backoff(provider, HTTP_GLOBAL_BACKOFF_SCOPE)
             .await?;
         self.key_store
             .set_token_primary_api_key_affinity(token_id, None, &lease.id)
@@ -1212,9 +1323,11 @@ impl TavilyProxy {
             }
 
             if let Some(key_id) = candidate_key_id {
+                // Research requests are a Tavily-only upstream surface, so the
+                // affinity lease stays pinned to the Tavily provider scope.
                 if let Some(lease) = self
                     .key_store
-                    .try_acquire_affinity_specific_key(&key_id)
+                    .try_acquire_affinity_specific_key(providers::ProviderId::Tavily, &key_id)
                     .await?
                 {
                     return Ok(lease);

@@ -124,6 +124,7 @@
         "tests::request_kind_and_core::operational_",
         "tests::provider_failure_classification::",
         "tests::provider_config_bootstrap::",
+        "tests::provider_pool_scoping::",
         "tests::observability_sidecar_provider::",
         "providers::tests::",
         "tests::request_kind_and_core::normalize_",

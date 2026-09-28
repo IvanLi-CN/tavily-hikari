@@ -430,17 +430,36 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Legacy zero-provider entry point (plan todo 9): every pre-provider
+    /// call site keeps byte-identical behavior through Tavily scoping.
+    /// Production paths now call `acquire_key_for_provider` directly; this
+    /// wrapper is retained for the existing test surface.
+    #[cfg(test)]
     pub(crate) async fn acquire_key(&self) -> Result<ApiKeyLease, ProxyError> {
-        self.reset_monthly().await?;
+        self.acquire_key_for_provider(crate::providers::ProviderId::Tavily)
+            .await
+    }
+
+    /// 3-tier provider-scoped acquisition (plan todo 9): active -> regular
+    /// exhausted -> low-quota-depleted exhausted, restricted to ONE provider
+    /// at every tier. NoAvailableKeys is raised only when the REQUESTED
+    /// provider's tiers are empty; there is no cross-provider fallback.
+    pub(crate) async fn acquire_key_for_provider(
+        &self,
+        provider: crate::providers::ProviderId,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly(provider).await?;
 
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -456,6 +475,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_ACTIVE)
+        .bind(provider)
         .bind(month_start)
         .fetch_optional(&self.pool)
         .await?
@@ -472,6 +492,7 @@ impl KeyStore {
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -490,6 +511,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(provider)
         .bind(month_start)
         .fetch_optional(&self.pool)
         .await?
@@ -506,6 +528,7 @@ impl KeyStore {
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -524,6 +547,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(provider)
         .bind(month_start)
         .fetch_optional(&self.pool)
         .await?
@@ -540,18 +564,20 @@ impl KeyStore {
 
     pub(crate) async fn acquire_key_avoiding_transient_backoff(
         &self,
+        provider: crate::providers::ProviderId,
         scope: &str,
     ) -> Result<ApiKeyLease, ProxyError> {
-        self.acquire_key_avoiding_transient_backoff_excluding(scope, None)
+        self.acquire_key_avoiding_transient_backoff_excluding(provider, scope, None)
             .await
     }
 
     pub(crate) async fn acquire_key_avoiding_transient_backoff_excluding(
         &self,
+        provider: crate::providers::ProviderId,
         scope: &str,
         excluded_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
 
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
@@ -563,7 +589,8 @@ impl KeyStore {
             WHERE status = "#,
         );
         builder.push_bind(STATUS_ACTIVE);
-        builder.push(" AND deleted_at IS NULL");
+        builder.push(" AND deleted_at IS NULL AND provider = ");
+        builder.push_bind(provider.as_str());
         if let Some(excluded_key_id) = excluded_key_id {
             builder.push(" AND id != ");
             builder.push_bind(excluded_key_id);
@@ -614,22 +641,25 @@ impl KeyStore {
         }
 
         match excluded_key_id {
-            Some(key_id) => self.acquire_active_key_excluding(Some(key_id)).await,
-            None => self.acquire_key().await,
+            Some(key_id) => self.acquire_active_key_excluding(provider, Some(key_id)).await,
+            None => self.acquire_key_for_provider(provider).await,
         }
     }
 
     pub(crate) async fn list_mcp_session_candidate_key_ids(
         &self,
+        provider: crate::providers::ProviderId,
     ) -> Result<Vec<String>, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
         let active = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -644,6 +674,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_ACTIVE)
+        .bind(provider)
         .bind(month_start)
         .fetch_all(&self.pool)
         .await?;
@@ -656,6 +687,7 @@ impl KeyStore {
             SELECT id
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -670,6 +702,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(provider)
         .bind(month_start)
         .fetch_all(&self.pool)
         .await?;
@@ -682,6 +715,7 @@ impl KeyStore {
             SELECT id
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND provider = ?
               AND EXISTS (
                   SELECT 1
                   FROM api_key_low_quota_depletions d
@@ -696,6 +730,7 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(provider)
         .bind(month_start)
         .fetch_all(&self.pool)
         .await
@@ -706,9 +741,21 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
-        self.reset_monthly().await?;
+// Legacy zero-provider entry point (plan todo 9): byte-identical
+        // Tavily-scoped specific acquisition.
+        self.try_acquire_specific_key_for_provider(crate::providers::ProviderId::Tavily, key_id)
+            .await
+    }
+
+    pub(crate) async fn try_acquire_specific_key_for_provider(
+        &self,
+        provider: crate::providers::ProviderId,
+        key_id: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.reset_monthly(provider).await?;
+
         match self
-            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false, None)
+            .try_acquire_specific_key_with_status(provider, key_id, STATUS_ACTIVE, false, None)
             .await?
         {
             SpecificKeySelection::Lease(lease) => return Ok(Some(lease)),
@@ -716,7 +763,7 @@ impl KeyStore {
         }
 
         match self
-            .try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true, None)
+            .try_acquire_specific_key_with_status(provider, key_id, STATUS_EXHAUSTED, true, None)
             .await?
         {
             SpecificKeySelection::Lease(lease) => Ok(Some(lease)),
@@ -724,32 +771,51 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn try_acquire_affinity_specific_key(
-        &self,
-        key_id: &str,
-    ) -> Result<Option<ApiKeyLease>, ProxyError> {
-        self.try_acquire_affinity_specific_key_with_transient_backoff(key_id, None)
-            .await
-    }
-
+    /// Transient-backoff-aware affinity acquisition, Tavily-pinned legacy
+    /// entry point. Byte-identical to the upstream pre-provider surface so the
+    /// existing single-provider callers/tests keep working; production paths
+    /// thread the request provider through
+    /// [`Self::try_acquire_affinity_specific_key_avoiding_transient_backoff_for_provider`].
     pub(crate) async fn try_acquire_affinity_specific_key_avoiding_transient_backoff(
         &self,
         key_id: &str,
         scope: &str,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
-        self.try_acquire_affinity_specific_key_with_transient_backoff(key_id, Some(scope))
-            .await
+        self.try_acquire_affinity_specific_key_avoiding_transient_backoff_for_provider(
+            crate::providers::ProviderId::Tavily,
+            key_id,
+            scope,
+        )
+        .await
+    }
+
+    /// Provider-scoped transient-backoff-aware affinity acquisition (plan todo
+    /// 9): the cooldown check and every tier are restricted to ONE provider.
+    pub(crate) async fn try_acquire_affinity_specific_key_avoiding_transient_backoff_for_provider(
+        &self,
+        provider: crate::providers::ProviderId,
+        key_id: &str,
+        scope: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.try_acquire_affinity_specific_key_with_transient_backoff(
+            provider,
+            key_id,
+            Some(scope),
+        )
+        .await
     }
 
     async fn try_acquire_affinity_specific_key_with_transient_backoff(
         &self,
+        provider: crate::providers::ProviderId,
         key_id: &str,
         transient_backoff_scope: Option<&str>,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
 
         match self
             .try_acquire_specific_key_with_status(
+                provider,
                 key_id,
                 STATUS_ACTIVE,
                 false,
@@ -762,12 +828,13 @@ impl KeyStore {
             SpecificKeySelection::Unavailable => {}
         }
 
-        if self.has_available_active_key_excluding(None).await? {
+        if self.has_available_active_key_excluding(provider, None).await? {
             return Ok(None);
         }
 
         match self
             .try_acquire_specific_key_with_status(
+                provider,
                 key_id,
                 STATUS_EXHAUSTED,
                 false,
@@ -780,12 +847,16 @@ impl KeyStore {
             SpecificKeySelection::Unavailable => {}
         }
 
-        if self.has_available_regular_exhausted_key_excluding(Some(key_id)).await? {
+        if self
+            .has_available_regular_exhausted_key_excluding(provider, Some(key_id))
+            .await?
+        {
             return Ok(None);
         }
 
         match self
             .try_acquire_specific_key_with_status(
+                provider,
                 key_id,
                 STATUS_EXHAUSTED,
                 true,
@@ -798,8 +869,25 @@ impl KeyStore {
         }
     }
 
+    /// Affinity-row acquisition scoped to ONE provider (plan todo 9). The
+    /// affinity tables need no schema change because the key implies its
+    /// provider: a stored key id belonging to another provider simply fails
+    /// the provider predicate below and the caller re-ranks within the
+    /// requested provider (no cross-provider fallback, hard rule).
+    pub(crate) async fn try_acquire_affinity_specific_key(
+        &self,
+        provider: crate::providers::ProviderId,
+        key_id: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.reset_monthly(provider).await?;
+
+        self.try_acquire_affinity_specific_key_with_transient_backoff(provider, key_id, None)
+            .await
+    }
+
     async fn try_acquire_specific_key_with_status(
         &self,
+        provider: crate::providers::ProviderId,
         key_id: &str,
         status: &str,
         allow_low_quota_depleted: bool,
@@ -807,8 +895,9 @@ impl KeyStore {
     ) -> Result<SpecificKeySelection, ProxyError> {
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
-        let lease_with_cooldown = if let Some(scope) = transient_backoff_scope {
+let lease_with_cooldown = if let Some(scope) = transient_backoff_scope {
             sqlx::query_as::<_, (String, String, bool)>(
                 r#"
                 SELECT id, api_key, EXISTS (
@@ -818,6 +907,7 @@ impl KeyStore {
                 ) AS is_cooled_down
                 FROM api_keys
                 WHERE id = ? AND status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND (
                       ? = 1
                       OR NOT EXISTS (
@@ -838,6 +928,7 @@ impl KeyStore {
             .bind(now)
             .bind(key_id)
             .bind(status)
+            .bind(provider)
             .bind(if allow_low_quota_depleted { 1 } else { 0 })
             .bind(month_start)
             .fetch_optional(&self.pool)
@@ -848,6 +939,7 @@ impl KeyStore {
                 SELECT id, api_key
                 FROM api_keys
                 WHERE id = ? AND status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND (
                       ? = 1
                       OR NOT EXISTS (
@@ -866,6 +958,7 @@ impl KeyStore {
             )
             .bind(key_id)
             .bind(status)
+            .bind(provider)
             .bind(if allow_low_quota_depleted { 1 } else { 0 })
             .bind(month_start)
             .fetch_optional(&self.pool)
@@ -889,10 +982,12 @@ impl KeyStore {
 
     pub(crate) async fn has_available_active_key_excluding(
         &self,
+        provider: crate::providers::ProviderId,
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
         let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_scalar(
@@ -900,6 +995,7 @@ impl KeyStore {
                 SELECT COUNT(*)
                 FROM api_keys
                 WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -914,6 +1010,7 @@ impl KeyStore {
             )
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
+            .bind(provider)
             .bind(month_start)
             .fetch_one(&self.pool)
             .await?
@@ -923,6 +1020,7 @@ impl KeyStore {
                 SELECT COUNT(*)
                 FROM api_keys
                 WHERE status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -936,6 +1034,7 @@ impl KeyStore {
                 "#,
             )
             .bind(STATUS_ACTIVE)
+            .bind(provider)
             .bind(month_start)
             .fetch_one(&self.pool)
             .await?
@@ -946,10 +1045,12 @@ impl KeyStore {
 
     pub(crate) async fn has_available_regular_exhausted_key_excluding(
         &self,
+        provider: crate::providers::ProviderId,
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
         let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_scalar(
@@ -957,6 +1058,7 @@ impl KeyStore {
                 SELECT COUNT(*)
                 FROM api_keys
                 WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -971,6 +1073,7 @@ impl KeyStore {
             )
             .bind(excluded_key_id)
             .bind(STATUS_EXHAUSTED)
+            .bind(provider)
             .bind(month_start)
             .fetch_one(&self.pool)
             .await?
@@ -980,6 +1083,7 @@ impl KeyStore {
                 SELECT COUNT(*)
                 FROM api_keys
                 WHERE status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -993,6 +1097,7 @@ impl KeyStore {
                 "#,
             )
             .bind(STATUS_EXHAUSTED)
+            .bind(provider)
             .bind(month_start)
             .fetch_one(&self.pool)
             .await?
@@ -1070,12 +1175,14 @@ impl KeyStore {
 
     pub(crate) async fn acquire_active_key_excluding(
         &self,
+        provider: crate::providers::ProviderId,
         excluded_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        self.reset_monthly().await?;
+        self.reset_monthly(provider).await?;
 
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let provider = provider.as_str();
 
         let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
             sqlx::query_as::<_, (String, String)>(
@@ -1083,6 +1190,7 @@ impl KeyStore {
                 SELECT id, api_key
                 FROM api_keys
                 WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -1099,6 +1207,7 @@ impl KeyStore {
             )
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
+            .bind(provider)
             .bind(month_start)
             .fetch_optional(&self.pool)
             .await?
@@ -1108,6 +1217,7 @@ impl KeyStore {
                 SELECT id, api_key
                 FROM api_keys
                 WHERE status = ? AND deleted_at IS NULL
+                  AND provider = ?
                   AND NOT EXISTS (
                       SELECT 1
                       FROM api_key_low_quota_depletions d
@@ -1123,6 +1233,7 @@ impl KeyStore {
             "#,
             )
             .bind(STATUS_ACTIVE)
+            .bind(provider)
             .bind(month_start)
             .fetch_optional(&self.pool)
             .await?

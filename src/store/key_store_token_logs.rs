@@ -1408,27 +1408,86 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn reset_monthly(&self) -> Result<(), ProxyError> {
-        let now = self.backend_time.now_utc();
-        let month_start = start_of_month(now).timestamp();
+    /// Provider-scoped recovery of exhausted keys (plan todo 9, amendment M3).
+    ///
+    /// Runs at the top of EVERY acquire path. It used to flip all exhausted
+    /// rows back to active at the UTC month rollover; with SerpApi/Exa/Brave
+    /// rows in the pool that naive upgrade would resurrect exhausted Exa keys
+    /// on a calendar the provider does not honor and SerpApi keys before
+    /// their plan renewal date, burning wallet credits on guaranteed
+    /// 402/429 upstream calls. Each provider therefore recovers by its
+    /// registry policy (`providers::RecoveryPolicy`):
+    ///
+    /// - `UtcMonth` (Tavily): unchanged exhausted -> active flip at the UTC
+    ///   month start, now scoped to `provider = ?` so the Tavily pool stays
+    ///   byte-stable and foreign rows are never touched.
+    /// - `RateLimitResetWindow` (Brave): documented UtcMonth default for the
+    ///   pool flip; the harvested X-RateLimit-Reset window informs transient
+    ///   backoff only, never this month window.
+    /// - `RenewalDate` (SerpApi): exhausted -> active only once the per-key
+    ///   `quota_renews_at` (plan_renewal_date from the /account sync) is
+    ///   reached; keys with an unknown renewal date stay exhausted
+    ///   (success-restore also applies to them).
+    /// - `SuccessOnly` (Exa): NO calendar flip at all; recovery happens via
+    ///   `restore_active_status` on the next successful call or manual admin
+    ///   restore.
+    pub(crate) async fn reset_monthly(
+        &self,
+        provider: crate::providers::ProviderId,
+    ) -> Result<(), ProxyError> {
+        let recovery = match provider {
+            crate::providers::ProviderId::Tavily => crate::providers::TAVILY.recovery,
+            crate::providers::ProviderId::Serpapi => crate::providers::SERPAPI.recovery,
+            crate::providers::ProviderId::Exa => crate::providers::EXA.recovery,
+            crate::providers::ProviderId::Brave => crate::providers::BRAVE.recovery,
+        };
 
+        let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
 
-        sqlx::query(
-            r#"
-            UPDATE api_keys
-            SET status = ?, status_changed_at = ?
-            WHERE status = ?
-              AND status_changed_at IS NOT NULL
-              AND status_changed_at < ?
-            "#,
-        )
-        .bind(STATUS_ACTIVE)
-        .bind(now_ts)
-        .bind(STATUS_EXHAUSTED)
-        .bind(month_start)
-        .execute(&self.pool)
-        .await?;
+        match recovery {
+            crate::providers::RecoveryPolicy::UtcMonth
+            | crate::providers::RecoveryPolicy::RateLimitResetWindow => {
+                let month_start = start_of_month(now).timestamp();
+                sqlx::query(
+                    r#"
+                    UPDATE api_keys
+                    SET status = ?, status_changed_at = ?
+                    WHERE status = ?
+                      AND status_changed_at IS NOT NULL
+                      AND status_changed_at < ?
+                      AND provider = ?
+                    "#,
+                )
+                .bind(STATUS_ACTIVE)
+                .bind(now_ts)
+                .bind(STATUS_EXHAUSTED)
+                .bind(month_start)
+                .bind(provider.as_str())
+                .execute(&self.pool)
+                .await?;
+            }
+            crate::providers::RecoveryPolicy::RenewalDate => {
+                sqlx::query(
+                    r#"
+                    UPDATE api_keys
+                    SET status = ?, status_changed_at = ?
+                    WHERE status = ?
+                      AND provider = ?
+                      AND quota_renews_at IS NOT NULL
+                      AND quota_renews_at <= ?
+                    "#,
+                )
+                .bind(STATUS_ACTIVE)
+                .bind(now_ts)
+                .bind(STATUS_EXHAUSTED)
+                .bind(provider.as_str())
+                .bind(now_ts)
+                .execute(&self.pool)
+                .await?;
+            }
+            crate::providers::RecoveryPolicy::SuccessOnly => {}
+        }
 
         Ok(())
     }
