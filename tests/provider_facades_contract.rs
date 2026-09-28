@@ -860,3 +860,808 @@ mod serpapi {
         pool.close().await;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Exa REST facade section (plan todo 13).
+// ---------------------------------------------------------------------------
+
+mod exa {
+    use super::*;
+
+    /// Exact bodies mock_exa emits (mirrors src/bin/mock_exa.rs so the
+    /// verbatim-passthrough assertions compare against the stub's contract,
+    /// costDollars/requestId/statuses included).
+    fn mock_search_body() -> Value {
+        json!({
+            "requestId": "mock",
+            "results": [
+                {
+                    "title": "Mock",
+                    "url": "https://example.com/1",
+                    "text": "mock text",
+                    "publishedDate": "2026-01-01T00:00:00.000Z"
+                }
+            ],
+            "costDollars": { "total": 0.007 },
+            "searchTime": 123.4
+        })
+    }
+
+    fn mock_contents_body() -> Value {
+        json!({
+            "results": [
+                { "title": "Mock", "url": "https://example.com/1", "text": "mock text" }
+            ],
+            "statuses": [
+                { "id": "https://example.com/1", "status": "success", "source": "cached" }
+            ]
+        })
+    }
+
+    fn mock_answer_body() -> Value {
+        json!({
+            "requestId": "mock",
+            "answer": "mock answer",
+            "citations": [{ "url": "https://example.com/1" }],
+            "costDollars": { "total": 0.005 }
+        })
+    }
+
+    fn mock_invalid_key_body() -> Value {
+        json!({
+            "requestId": "mock",
+            "error": "Invalid API key",
+            "tag": "INVALID_API_KEY"
+        })
+    }
+
+    fn mock_no_more_credits_body() -> Value {
+        json!({
+            "requestId": "mock",
+            "error": "You have no more credits",
+            "tag": "NO_MORE_CREDITS"
+        })
+    }
+
+    fn mock_rate_limited_body() -> Value {
+        json!({
+            "requestId": "mock",
+            "error": "Rate limit exceeded",
+            "tag": "RATE_LIMIT_EXCEEDED"
+        })
+    }
+
+    /// Documented todo-13 boundary message (typed 400, pre-upstream).
+    const STREAM_REJECT_MESSAGE: &str = "streaming not supported; omit stream or set false";
+
+    struct ExaHarness {
+        base_url: String,
+        mock_base_url: String,
+        token: String,
+        token_id: String,
+        db_path: PathBuf,
+        db_str: String,
+        _server: ChildGuard,
+        _mock: ChildGuard,
+    }
+
+    impl Drop for ExaHarness {
+        fn drop(&mut self) {
+            remove_sqlite_files(&self.db_path);
+        }
+    }
+
+    /// Spawn mock_exa + the real server binary (stub upstreams ONLY; every
+    /// non-Exa provider upstream points at a dead local port so production
+    /// endpoints are unreachable by construction).
+    async fn spawn_harness(prefix: &str, pool_keys: &[&str], mock_keys: &[&str]) -> ExaHarness {
+        // Port reservations race across the parallel suite; retry with fresh
+        // ephemeral ports (serpapi section pattern).
+        for attempt in 1..=5usize {
+            if let Some(harness) = try_spawn_harness(prefix, pool_keys, mock_keys).await {
+                return harness;
+            }
+            if attempt < 5 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        panic!("exa harness never became healthy after 5 spawn attempts");
+    }
+
+    async fn try_spawn_harness(
+        prefix: &str,
+        pool_keys: &[&str],
+        mock_keys: &[&str],
+    ) -> Option<ExaHarness> {
+        let mock_port = reserve_local_port();
+        let mock = Command::new(support_binaries::resolve_support_binary(
+            "MOCK_EXA_TEST_BIN",
+            env!("CARGO_BIN_EXE_mock_exa"),
+        ))
+        .arg("--bind")
+        .arg(format!("127.0.0.1:{mock_port}"))
+        .arg("--keys")
+        .arg(mock_keys.join(","))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_exa");
+
+        let port = reserve_local_port();
+        let db_path = temp_db_path(prefix);
+        let db_str = db_path.to_string_lossy().to_string();
+        let dead_port = reserve_local_port();
+        let server = Command::new(support_binaries::resolve_support_binary(
+            "TAVILY_HIKARI_TEST_BIN",
+            env!("CARGO_BIN_EXE_tavily-hikari"),
+        ))
+        .env("TAVILY_API_KEYS", "tvly-facade-contract-key")
+        .env(
+            "TAVILY_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}/mcp"),
+        )
+        .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
+        .env("EXA_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
+        .env("EXA_API_KEYS", pool_keys.join(","))
+        .env(
+            "SERPAPI_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}"),
+        )
+        .env(
+            "SERPAPI_MCP_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}/mcp"),
+        )
+        .env(
+            "BRAVE_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}"),
+        )
+        .env("PROXY_BIND", "127.0.0.1")
+        .env("PROXY_PORT", port.to_string())
+        .env("PROXY_DB_PATH", &db_str)
+        .env("DEV_OPEN_ADMIN", "true")
+        .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn tavily-hikari");
+
+        if !health_ready_within(port, 25).await {
+            // Guards below kill both children on drop; the caller retries.
+            drop(ChildGuard { child: server });
+            drop(ChildGuard { child: mock });
+            remove_sqlite_files(&db_path);
+            return None;
+        }
+        wait_for_provider_keys(&db_str, "exa", i64::try_from(pool_keys.len()).unwrap()).await;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let mock_base_url = format!("http://127.0.0.1:{mock_port}");
+        let (token, token_id) = create_test_token(&base_url).await;
+
+        Some(ExaHarness {
+            base_url,
+            mock_base_url,
+            token,
+            token_id,
+            db_path,
+            db_str,
+            _server: ChildGuard { child: server },
+            _mock: ChildGuard { child: mock },
+        })
+    }
+
+    impl ExaHarness {
+        async fn pool(&self) -> sqlx::SqlitePool {
+            connect_sqlite_test_pool(&self.db_str).await
+        }
+
+        /// POST one facade path with the harness token (universal Bearer
+        /// slot); returns status + response headers + decoded JSON body.
+        async fn post_facade(
+            &self,
+            path: &str,
+            body: &Value,
+        ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, Value) {
+            self.post_facade_with_token(path, &self.token, body)
+                .await
+        }
+
+        async fn post_facade_with_token(
+            &self,
+            path: &str,
+            token: &str,
+            body: &Value,
+        ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, Value) {
+            let response = Client::new()
+                .post(format!("{}{path}", self.base_url))
+                .bearer_auth(token)
+                .json(body)
+                .send()
+                .await
+                .expect("exa facade request");
+            let status = response.status();
+            let headers = response.headers().clone();
+            (status, headers, response.json().await.expect("json body"))
+        }
+
+        /// mock_exa per-endpoint call counters (zero-cost proof source).
+        async fn mock_metrics(&self) -> Value {
+            Client::new()
+                .get(format!("{}/metrics", self.mock_base_url))
+                .send()
+                .await
+                .expect("mock metrics request")
+                .json::<Value>()
+                .await
+                .expect("mock metrics body")
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Acceptance tests (plan L196; one named test per acceptance criterion).
+    // -----------------------------------------------------------------------
+
+    /// Happy passthrough for all three endpoints: field-identical bodies
+    /// (costDollars/requestId/statuses included), provider='exa' rows with
+    /// api:exa/{search,contents,answer} kinds, and credit tiers 1/1/2 from
+    /// the committed todo-2 registry charged with settled billing_ledger
+    /// rows.
+    #[tokio::test]
+    async fn exa_happy_passthrough_bills_credit_tiers_and_logs_rows() {
+        let harness = spawn_harness("facades-exa-happy", &["ex-pool-1"], &["ex-pool-1"]).await;
+
+        let expectations = [
+            (
+                "/api/exa/search",
+                json!({ "query": "rust", "numResults": 3 }),
+                mock_search_body(),
+                "api:exa/search",
+                "exa_http_search",
+                1i64,
+            ),
+            (
+                "/api/exa/contents",
+                json!({ "urls": ["https://example.com/1"] }),
+                mock_contents_body(),
+                "api:exa/contents",
+                "exa_http_contents",
+                1,
+            ),
+            (
+                "/api/exa/answer",
+                json!({ "query": "why", "type": "fast" }),
+                mock_answer_body(),
+                "api:exa/answer",
+                "exa_http_answer",
+                2,
+            ),
+        ];
+        for (path, request_body, expected, kind_key, operation, credits) in expectations {
+            // Fresh token per endpoint so the ledger/quota asserts are exact.
+            let (token, token_id) = create_test_token(&harness.base_url).await;
+            let (status, _headers, body) = harness
+                .post_facade_with_token(path, &token, &request_body)
+                .await;
+            assert_eq!(status, reqwest::StatusCode::OK, "{path}");
+            // Field-identical to the mock response (verbatim passthrough, no
+            // transformation).
+            assert_eq!(body, expected, "{path} body must pass through verbatim");
+
+            let pool = harness.pool().await;
+            let row = sqlx::query(
+                "SELECT id, api_key_id, method, path, status_code, tavily_status_code, \
+                  result_status, request_kind_key, provider, upstream_operation, \
+                  CAST(request_body AS TEXT) AS request_body_text \
+                  FROM observability.request_logs WHERE auth_token_id = ? \
+                  ORDER BY id DESC LIMIT 1",
+            )
+            .bind(&token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("request log row");
+            assert_eq!(row.get::<String, _>("provider"), "exa", "{path}");
+            assert_eq!(row.get::<String, _>("path"), path, "{path}");
+            assert_eq!(row.get::<String, _>("method"), "POST", "{path}");
+            assert_eq!(row.get::<String, _>("request_kind_key"), kind_key, "{path}");
+            assert_eq!(row.get::<i64, _>("status_code"), 200, "{path}");
+            // Legacy column carries the upstream HTTP status verbatim.
+            assert_eq!(row.get::<i64, _>("tavily_status_code"), 200, "{path}");
+            assert_eq!(row.get::<String, _>("result_status"), "success", "{path}");
+            assert_eq!(
+                row.get::<Option<String>, _>("upstream_operation").as_deref(),
+                Some(operation),
+                "{path}"
+            );
+            assert!(row.get::<Option<String>, _>("api_key_id").is_some());
+            let request_body_text = row
+                .get::<Option<String>, _>("request_body_text")
+                .unwrap_or_default();
+            assert!(!request_body_text.contains("ex-pool-1"), "{path}");
+            assert!(!request_body_text.contains("th-"), "{path}");
+
+            // Credit tier from the registry table charged + settled ledger row.
+            let log_id = row.get::<i64, _>("id");
+            let ledger = sqlx::query(
+                "SELECT billing_state, business_credits, request_log_id, settled_at \
+                  FROM billing_ledger WHERE token_id = ? \
+                  ORDER BY auth_token_log_id DESC LIMIT 1",
+            )
+            .bind(&token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("billing ledger row");
+            assert_eq!(ledger.get::<String, _>("billing_state"), "charged", "{path}");
+            assert_eq!(
+                ledger.get::<Option<i64>, _>("business_credits"),
+                Some(credits),
+                "{path} credit tier"
+            );
+            assert_eq!(
+                ledger.get::<Option<i64>, _>("request_log_id"),
+                Some(log_id),
+                "{path}"
+            );
+            assert!(ledger.get::<Option<i64>, _>("settled_at").is_some());
+
+            let month_count: i64 = sqlx::query_scalar(
+                "SELECT COALESCE((SELECT month_count FROM auth_token_quota \
+                  WHERE token_id = ? LIMIT 1), 0)",
+            )
+            .bind(&token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("token quota row");
+            assert_eq!(month_count, credits, "{path} month_count");
+            pool.close().await;
+        }
+
+        // One upstream call per endpoint (the counters prove the calls hit
+        // the mock exactly once each).
+        assert_eq!(
+            harness.mock_metrics().await,
+            json!({ "search": 1, "contents": 1, "answer": 1 })
+        );
+    }
+
+    /// stream:true — and ANY truthy stream value — is a typed 400 Hikari
+    /// rejection BEFORE any upstream call: mock counters UNCHANGED (zero
+    /// upstream cost), zero persisted rows, zero billing. stream:false and
+    /// an omitted stream pass through verbatim.
+    #[tokio::test]
+    async fn exa_truthy_stream_gets_typed_400_with_zero_upstream_cost() {
+        let harness =
+            spawn_harness("facades-exa-stream", &["ex-pool-stream"], &["ex-pool-stream"]).await;
+
+        let before = harness.mock_metrics().await;
+        assert_eq!(before, json!({ "search": 0, "contents": 0, "answer": 0 }));
+
+        for (path, body) in [
+            ("/api/exa/answer", json!({ "query": "x", "stream": true })),
+            ("/api/exa/answer", json!({ "query": "x", "stream": "always" })),
+            ("/api/exa/answer", json!({ "query": "x", "stream": 1 })),
+            ("/api/exa/search", json!({ "query": "y", "stream": "auto" })),
+            ("/api/exa/contents", json!({ "urls": ["u"], "stream": true })),
+        ] {
+            let (status, _headers, response_body) = harness.post_facade(path, &body).await;
+            assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{path} {body}");
+            assert_eq!(
+                response_body.get("error").and_then(Value::as_str),
+                Some("invalid_request"),
+                "{path} {body}"
+            );
+            assert_eq!(
+                response_body.get("message").and_then(Value::as_str),
+                Some(STREAM_REJECT_MESSAGE),
+                "{path} {body} must name the documented streaming boundary"
+            );
+        }
+
+        // Zero upstream cost: the mock never saw ANY of the rejected calls.
+        assert_eq!(
+            harness.mock_metrics().await,
+            before,
+            "rejected stream calls must never reach the mock"
+        );
+
+        // Zero persistence and zero billing for the local rejections.
+        let pool = harness.pool().await;
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("row count");
+        assert_eq!(rows, 0, "stream 400 must not persist rows");
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE billing_state = 'charged'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("ledger count");
+        assert_eq!(charged, 0, "stream 400 must not bill");
+        pool.close().await;
+
+        // Explicit stream:false is NOT truthy: verbatim passthrough.
+        let (status, _headers, body) = harness
+            .post_facade(
+                "/api/exa/answer",
+                &json!({ "query": "x", "stream": false }),
+            )
+            .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(body, mock_answer_body());
+        assert_eq!(
+            harness.mock_metrics().await,
+            json!({ "search": 0, "contents": 0, "answer": 1 })
+        );
+    }
+
+    /// Client auth never relays upstream and never persists: a forged
+    /// x-api-key header is stripped (the pool key replaces it), body
+    /// api_key-like fields are removed before forwarding/persistence, and
+    /// the th- token appears on no persisted surface.
+    #[tokio::test]
+    async fn exa_client_key_slots_stripped_and_th_token_never_persisted() {
+        let harness =
+            spawn_harness("facades-exa-redact", &["ex-pool-3"], &["ex-pool-3"]).await;
+
+        // Forged native header + body key slots alongside the Bearer token:
+        // 200 is positive proof the POOLED key arrived in x-api-key (the
+        // mock 401s on any unknown key value).
+        let response = Client::new()
+            .post(format!("{}/api/exa/search", harness.base_url))
+            .bearer_auth(&harness.token)
+            .header("x-api-key", "client-forged-not-a-token")
+            .json(&json!({
+                "query": "redaction scan",
+                "api_key": "th-body-sneaky-slot",
+                "apiKey": "client-api-key-value"
+            }))
+            .send()
+            .await
+            .expect("forged slot request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.expect("json body");
+        assert_eq!(body, mock_search_body());
+
+        // Native x-api-key slot auth (token in the header, no Bearer) works
+        // and routes to /contents verbatim.
+        let response = Client::new()
+            .post(format!("{}/api/exa/contents", harness.base_url))
+            .header("x-api-key", harness.token.clone())
+            .header("content-type", "application/json")
+            .body(r#"{"urls":["https://example.com/1"]}"#)
+            .send()
+            .await
+            .expect("native slot request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.expect("json body");
+        assert_eq!(body, mock_contents_body());
+        // Raw untouched body bytes forward verbatim when no field is stripped.
+        let pool = harness.pool().await;
+        let raw_row = sqlx::query(
+            "SELECT CAST(request_body AS TEXT) AS request_body_text \
+              FROM observability.request_logs WHERE path = '/api/exa/contents' \
+              ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("contents row");
+        let raw_body_text = raw_row
+            .get::<Option<String>, _>("request_body_text")
+            .unwrap_or_default();
+        assert!(
+            raw_body_text.contains(r#"https://example.com/1"#),
+            "{raw_body_text}"
+        );
+
+        let row = sqlx::query(
+            "SELECT query, CAST(request_body AS TEXT) AS request_body_text \
+              FROM observability.request_logs WHERE path = '/api/exa/search' \
+              ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("search row");
+        let request_body_text = row
+            .get::<Option<String>, _>("request_body_text")
+            .unwrap_or_default();
+        assert!(
+            request_body_text.contains("redaction scan"),
+            "client fields survive: {request_body_text}"
+        );
+        assert!(
+            !request_body_text.contains("th-body-sneaky-slot"),
+            "body api_key slot persisted raw: {request_body_text}"
+        );
+        assert!(
+            !request_body_text.contains("client-api-key-value"),
+            "body apiKey slot persisted raw: {request_body_text}"
+        );
+        assert!(
+            !request_body_text.contains("client-forged-not-a-token"),
+            "forged header value persisted: {request_body_text}"
+        );
+        pool.close().await;
+
+        // Full-surface leak scan: the th- token and the pooled key never
+        // survive into any persisted text column.
+        let pool = harness.pool().await;
+        for (label, sql) in [
+            (
+                "request_logs.query",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE query LIKE '%th-%' OR query LIKE ?1",
+            ),
+            (
+                "request_logs.request_body",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE CAST(request_body AS TEXT) LIKE '%th-%' OR CAST(request_body AS TEXT) LIKE ?1",
+            ),
+            (
+                "request_logs.response_body",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE CAST(response_body AS TEXT) LIKE '%th-%' OR CAST(response_body AS TEXT) LIKE ?1",
+            ),
+            (
+                "request_logs.error_message",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE error_message LIKE '%th-%' OR error_message LIKE ?1",
+            ),
+            (
+                "auth_token_logs.query",
+                "SELECT COUNT(*) FROM auth_token_logs WHERE query LIKE '%th-%' OR query LIKE ?1",
+            ),
+            (
+                "auth_token_logs.error_message",
+                "SELECT COUNT(*) FROM auth_token_logs WHERE error_message LIKE '%th-%' OR error_message LIKE ?1",
+            ),
+        ] {
+            let leaks: i64 = sqlx::query_scalar(sql)
+                .bind(format!("%{}%", harness.token))
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(1);
+            assert_eq!(leaks, 0, "{label} leaked a client token");
+        }
+        let key_leaks: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM observability.request_logs WHERE query LIKE '%ex-pool-3%' \
+              OR CAST(request_body AS TEXT) LIKE '%ex-pool-3%' \
+              OR CAST(response_body AS TEXT) LIKE '%ex-pool-3%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("key leak scan");
+        assert_eq!(key_leaks, 0, "pooled exa key persisted");
+        pool.close().await;
+    }
+
+    /// 402 NO_MORE_CREDITS passes through verbatim and emits the exhausted
+    /// signal through reconcile_key_health (key flips to exhausted —
+    /// Exa's SuccessOnly recovery clears it on the next success, todo 18);
+    /// the next request leases the other pooled key and bills 1.
+    #[tokio::test]
+    async fn exa_402_budget_tag_passes_through_and_marks_key_exhausted() {
+        let harness = spawn_harness(
+            "facades-exa-402",
+            &["key-exhausted", "ex-good-2"],
+            &["ex-good-2"],
+        )
+        .await;
+
+        // Same LRU-driving pattern as the serpapi run-out test: fresh tokens
+        // land on the untouched special key within a few leases.
+        let mut budget_token: Option<(String, String)> = None;
+        for _ in 0..3 {
+            let (token, token_id) = create_test_token(&harness.base_url).await;
+            let (status, _headers, body) = harness
+                .post_facade_with_token("/api/exa/search", &token, &json!({ "query": "budget" }))
+                .await;
+            if status == reqwest::StatusCode::PAYMENT_REQUIRED {
+                assert_eq!(body, mock_no_more_credits_body(), "402 body verbatim");
+                budget_token = Some((token, token_id));
+                break;
+            }
+            assert_eq!(status, reqwest::StatusCode::OK, "fresh key leases succeed");
+            assert_eq!(body, mock_search_body());
+        }
+        let Some((budget_token, budget_token_id)) = budget_token else {
+            panic!("budget-402 never observed while the special key is pooled");
+        };
+
+        let pool = harness.pool().await;
+        let exhausted_status: String =
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-exhausted'")
+                .fetch_one(&pool)
+                .await
+                .expect("exhausted key row");
+        assert_eq!(
+            exhausted_status, "exhausted",
+            "402 budget tag must emit the exhausted signal"
+        );
+
+        let row = sqlx::query(
+            "SELECT api_key_id, result_status, key_effect_code, failure_kind, tavily_status_code \
+              FROM observability.request_logs WHERE auth_token_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&budget_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("402 request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "quota_exhausted");
+        assert_eq!(row.get::<String, _>("key_effect_code"), "marked_exhausted");
+        assert!(row.get::<Option<String>, _>("failure_kind").is_none());
+        assert_eq!(row.get::<i64, _>("tavily_status_code"), 402);
+        let exhausted_key_id = row.get::<Option<String>, _>("api_key_id");
+        assert!(exhausted_key_id.is_some());
+        pool.close().await;
+
+        // The 402 attempt billed nothing.
+        let pool = harness.pool().await;
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&budget_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0, "exhausted attempt bills nothing");
+        pool.close().await;
+
+        // Next request on the SAME token rebinds off the exhausted key.
+        let (status2, _headers, body2) = harness
+            .post_facade_with_token("/api/exa/search", &budget_token, &json!({ "query": "budget" }))
+            .await;
+        assert_eq!(status2, reqwest::StatusCode::OK);
+        assert_eq!(body2, mock_search_body());
+
+        let pool = harness.pool().await;
+        let row2 = sqlx::query(
+            "SELECT api_key_id FROM observability.request_logs WHERE auth_token_id = ? \
+              ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&budget_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("follow-up request log row");
+        assert_ne!(
+            row2.get::<Option<String>, _>("api_key_id"),
+            exhausted_key_id,
+            "next request must lease a different key"
+        );
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(business_credits), 0) FROM billing_ledger \
+              WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&budget_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger sum");
+        assert_eq!(charged, 1, "the successful retry bills exactly 1");
+        pool.close().await;
+    }
+
+    /// 429 passes through verbatim (Retry-After header visible to the
+    /// client) and the parsed Retry-After arms the transient backoff on the
+    /// shared HTTP scope; the key stays active and nothing bills.
+    #[tokio::test]
+    async fn exa_429_retry_after_passes_through_and_arms_transient_backoff() {
+        let harness =
+            spawn_harness("facades-exa-429", &["key-throttled"], &["ex-x"]).await;
+
+        let (status, headers, body) = harness
+            .post_facade("/api/exa/search", &json!({ "query": "throttle" }))
+            .await;
+        assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body, mock_rate_limited_body(), "429 body verbatim");
+        assert_eq!(
+            headers
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("2"),
+            "upstream Retry-After must survive the verbatim passthrough"
+        );
+
+        let pool = harness.pool().await;
+        let key_status: String =
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-throttled'")
+                .fetch_one(&pool)
+                .await
+                .expect("throttled key row");
+        assert_eq!(key_status, "active", "429 must NOT exhaust the key");
+
+        let row = sqlx::query(
+            "SELECT result_status, failure_kind, key_effect_code, tavily_status_code \
+              FROM observability.request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "error");
+        assert_eq!(
+            row.get::<Option<String>, _>("failure_kind").as_deref(),
+            Some("upstream_rate_limited_429")
+        );
+        assert_eq!(
+            row.get::<String, _>("key_effect_code"),
+            "transient_backoff_set"
+        );
+        assert_eq!(row.get::<i64, _>("tavily_status_code"), 429);
+
+        // Retry-After parsed into the backoff signal: the armed row carries
+        // the sized value (2s header → 30s shared min-ladder clamp).
+        let backoff = sqlx::query(
+            "SELECT b.retry_after_secs FROM api_key_transient_backoffs b \
+              JOIN api_keys k ON k.id = b.key_id \
+              WHERE k.api_key = 'key-throttled' AND b.scope = 'http_global' \
+              AND b.reason_code = 'upstream_rate_limited_429'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("backoff row");
+        assert_eq!(
+            backoff.get::<i64, _>("retry_after_secs"),
+            30,
+            "parsed Retry-After must size the armed backoff"
+        );
+
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&harness.token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0, "failed attempt bills nothing");
+        pool.close().await;
+    }
+
+    /// Invalid pooled key: upstream 401 passes through verbatim and the
+    /// auth-fail signal quarantines the key through the existing machinery.
+    #[tokio::test]
+    async fn exa_401_invalid_key_passes_through_and_applies_auth_fail() {
+        let harness = spawn_harness(
+            "facades-exa-401",
+            &["ex-invalid-at-mock"],
+            &["ex-some-other-key"],
+        )
+        .await;
+
+        let (status, _headers, body) = harness
+            .post_facade("/api/exa/search", &json!({ "query": "auth" }))
+            .await;
+        assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(body, mock_invalid_key_body(), "401 body verbatim");
+
+        let pool = harness.pool().await;
+        let row = sqlx::query(
+            "SELECT result_status, failure_kind, key_effect_code, status_code, tavily_status_code \
+              FROM observability.request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "error");
+        assert_eq!(
+            row.get::<Option<String>, _>("failure_kind").as_deref(),
+            Some("upstream_account_deactivated_401")
+        );
+        assert_eq!(row.get::<String, _>("key_effect_code"), "quarantined");
+        assert_eq!(row.get::<i64, _>("status_code"), 401);
+        assert_eq!(row.get::<i64, _>("tavily_status_code"), 401);
+
+        let quarantined: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM api_key_quarantines q \
+              JOIN api_keys k ON k.id = q.key_id \
+              WHERE k.api_key = 'ex-invalid-at-mock' AND q.cleared_at IS NULL \
+              AND q.reason_code = 'invalid_api_key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("quarantine scan");
+        assert_eq!(quarantined, 1, "401 must quarantine the pooled key");
+
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&harness.token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0);
+        pool.close().await;
+    }
+}

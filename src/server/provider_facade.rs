@@ -16,9 +16,10 @@
 
 use super::*;
 use tavily_hikari::{
-    ProviderRestFacadeRequest, SerpapiFacadeOutcome, TokenBillingGuard, TokenRequestKind,
+    ExaFacadeOutcome, ProviderRestFacadeRequest, SerpapiFacadeOutcome, TokenBillingGuard,
+    TokenRequestKind,
     providers::{self, ProviderId},
-    serpapi_facade_outcome,
+    exa_facade_outcome, serpapi_facade_outcome,
 };
 
 /// Client-facing surface deciding which native client key slots are accepted
@@ -409,6 +410,22 @@ async fn provider_rest_facade(
         auth.query.clone()
     };
 
+    // Exa POST passthrough prep (plan todo 13): a truthy `stream` value is a
+    // typed 400 Hikari rejection BEFORE the gates and before any upstream
+    // call (zero upstream cost, mirroring the /api/tavily free-account
+    // streaming boundary handlers/tavily.rs:794-798), and client api_key-like
+    // body fields are stripped so no client-supplied provider auth is ever
+    // relayed or persisted. Every other body byte forwards verbatim — Exa
+    // owns request validation (M22) and answers native 4xx passthrough.
+    let forward_body = if route.provider == ProviderId::Exa {
+        match prepare_exa_post_body(&body_bytes) {
+            Ok(body) => body,
+            Err(message) => return invalid_tavily_http_request_response(message),
+        }
+    } else {
+        body_bytes.to_vec()
+    };
+
     let system_settings = state.proxy.get_system_settings().await.map_err(|err| {
         eprintln!("get system settings failed for {path}: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -613,7 +630,7 @@ async fn provider_rest_facade(
             upstream_path: route.upstream_path,
             query: forward_query,
             headers: auth.headers,
-            body: body_bytes.to_vec(),
+            body: forward_body,
             auth_token_id: token_id,
             upstream_operation: route.upstream_operation,
             client_ip: Some(client_ip),
@@ -622,19 +639,27 @@ async fn provider_rest_facade(
 
     match result {
         Ok(response) => {
-            // Todo 12 (SerpApi): the deterministic lib-side outcome projection
-            // drives token-log/billing rows and the business-call
-            // finalization. Exa/Brave keep the T11 binary success/error
-            // boundary untouched until todos 13/14.
-            let serpapi_outcome = (route.provider == ProviderId::Serpapi)
-                .then(|| serpapi_facade_outcome(response.status, &response.body));
-            let outcome_status = match &serpapi_outcome {
+            // Todos 12-13 (SerpApi, Exa): the deterministic lib-side outcome
+            // projections drive token-log/billing rows and the business-call
+            // finalization. Brave keeps the T11 binary success/error boundary
+            // untouched until todo 14.
+            let facade_outcome = match route.provider {
+                ProviderId::Serpapi => Some(ProviderFacadeOutcomeView::from(
+                    serpapi_facade_outcome(response.status, &response.body),
+                )),
+                ProviderId::Exa => Some(ProviderFacadeOutcomeView::from(exa_facade_outcome(
+                    response.status,
+                    &response.body,
+                ))),
+                ProviderId::Brave | ProviderId::Tavily => None,
+            };
+            let outcome_status = match &facade_outcome {
                 Some(outcome) => outcome.result_status,
                 None if response.status.is_success() => "success",
                 None => "error",
             };
-            if let Some(outcome) = &serpapi_outcome {
-                record_serpapi_facade_attempt(SerpapiFacadeBilling {
+            if let Some(outcome) = &facade_outcome {
+                record_provider_facade_billing(ProviderFacadeBilling {
                     state: &state,
                     method: &method_for_logs,
                     path: &path_for_logs,
@@ -945,9 +970,96 @@ fn merge_serpapi_post_query(
     Ok((!merged.is_empty()).then_some(merged))
 }
 
-/// Everything the SerpApi billing/attempt recording needs, grouped so the
-/// facade flow stays readable (mirrors the handlers/tavily.rs settle block).
-struct SerpapiFacadeBilling<'a> {
+/// Documented Exa streaming boundary message (plan todo 13): the typed 400
+/// names the rule exactly like the /api/tavily free-account boundary helper
+/// (handlers/tavily.rs:254-275,794-798).
+const EXA_STREAM_REJECT_MESSAGE: &str = "streaming not supported; omit stream or set false";
+
+/// Client api_key-like JSON body field names stripped from Exa POST bodies:
+/// the pooled key rides the x-api-key header (ProviderSpec injection), so a
+/// client-supplied provider auth field is never relayed nor persisted.
+fn is_exa_client_auth_body_field(key: &str) -> bool {
+    ["api_key", "apikey", "x-api-key", "x_api_key"]
+        .iter()
+        .any(|candidate| key.eq_ignore_ascii_case(candidate))
+}
+
+/// Truthy-`stream` detector. Exa's `stream` accepts booleans and streaming
+/// mode strings ("auto"/"always"/"sources-first") — anything except an
+/// explicit `false` (or null) would make the upstream answer an SSE stream,
+/// which this facade never supports, so every other present value rejects
+/// BEFORE any upstream call.
+fn exa_stream_value_is_truthy(value: &Value) -> bool {
+    !matches!(value, Value::Bool(false) | Value::Null)
+}
+
+/// Exa POST body preparation (plan todo 13). Policy:
+/// * a truthy `stream` value → Err (typed 400 Hikari rejection naming the
+///   documented streaming boundary) before any gate or upstream call;
+/// * client api_key-like fields removed from JSON object bodies;
+/// * every other byte — including non-JSON and non-object payloads — forwards
+///   UNCHANGED: Exa owns request validation beyond the stream rejection and
+///   answers native 4xx that pass through verbatim (transformation ban, M22).
+fn prepare_exa_post_body(body: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
+        // Not JSON: verbatim passthrough for Exa's own free 400.
+        return Ok(body.to_vec());
+    };
+    let Value::Object(map) = parsed else {
+        // Arrays/scalars pass through untouched (Exa owns the schema).
+        return Ok(body.to_vec());
+    };
+    if map.get("stream").is_some_and(exa_stream_value_is_truthy) {
+        return Err(EXA_STREAM_REJECT_MESSAGE);
+    }
+    let original_len = map.len();
+    let stripped: serde_json::Map<String, Value> = map
+        .into_iter()
+        .filter(|(key, _)| !is_exa_client_auth_body_field(key))
+        .collect();
+    if stripped.len() == original_len {
+        // Nothing removed: the client bytes forward byte-identical.
+        return Ok(body.to_vec());
+    }
+    serde_json::to_vec(&Value::Object(stripped))
+        .map_err(|_| "request body must be JSON-serializable after key-slot removal")
+}
+
+/// Classifier-driven token-log outcome shared by the settling REST facades
+/// (SerpApi todo 12, Exa todo 13); both lib-side projections fold onto this
+/// view so the billing recorder stays single-sourced.
+#[derive(Clone, Copy)]
+struct ProviderFacadeOutcomeView {
+    /// `success` / `quota_exhausted` / `error` (shared OUTCOME_* vocabulary).
+    result_status: &'static str,
+    failure_kind: Option<&'static str>,
+}
+
+impl From<SerpapiFacadeOutcome> for ProviderFacadeOutcomeView {
+    fn from(outcome: SerpapiFacadeOutcome) -> Self {
+        Self {
+            result_status: outcome.result_status,
+            failure_kind: outcome.failure_kind,
+        }
+    }
+}
+
+impl From<ExaFacadeOutcome> for ProviderFacadeOutcomeView {
+    fn from(outcome: ExaFacadeOutcome) -> Self {
+        Self {
+            result_status: outcome.result_status,
+            failure_kind: outcome.failure_kind,
+        }
+    }
+}
+
+/// Everything the provider REST facade billing/attempt recording needs,
+/// grouped so the facade flow stays readable (mirrors the handlers/tavily.rs
+/// settle block).
+struct ProviderFacadeBilling<'a> {
     state: &'a Arc<AppState>,
     method: &'a Method,
     path: &'a str,
@@ -958,17 +1070,19 @@ struct SerpapiFacadeBilling<'a> {
     billing_guard: Option<&'a TokenBillingGuard>,
     request_kind: &'a TokenRequestKind,
     credits: i64,
-    outcome: &'a SerpapiFacadeOutcome,
+    outcome: &'a ProviderFacadeOutcomeView,
     response: &'a ProxyResponse,
 }
 
-/// Reserve -> settle billing and token-log recording for the SerpApi REST
-/// facade (plan todo 12; mirrors handlers/tavily.rs:1345-1524). M22: SerpApi
-/// responses are NEVER inspected for billing — business success is 2xx and
-/// the credit amount is the committed todo-2 ProviderSpec table value. Local
-/// persistence failures never replace the verbatim upstream response
-/// (duplicate-charge protection, handlers/tavily.rs:1512-1514 rule).
-async fn record_serpapi_facade_attempt(ctx: SerpapiFacadeBilling<'_>) {
+/// Reserve -> settle billing and token-log recording for the settling
+/// provider REST facades (plan todo 12 SerpApi; todo 13 Exa extends the same
+/// recorder with its credit tiers search=1/contents=1/answer=2 from the
+/// committed todo-2 ProviderSpec table — mirrors handlers/tavily.rs:1345-1524).
+/// M22: provider responses are NEVER inspected for billing — business success
+/// is 2xx and the credit amount is the registry table value. Local persistence
+/// failures never replace the verbatim upstream response (duplicate-charge
+/// protection, handlers/tavily.rs:1512-1514 rule).
+async fn record_provider_facade_billing(ctx: ProviderFacadeBilling<'_>) {
     if ctx.using_dev_open_admin_fallback {
         return;
     }
@@ -1119,4 +1233,79 @@ async fn record_serpapi_facade_attempt(ctx: SerpapiFacadeBilling<'_>) {
             ctx.response.request_log_id,
         )
         .await;
+}
+
+#[cfg(test)]
+mod exa_post_body_tests {
+    use super::*;
+
+    #[test]
+    fn truthy_stream_values_reject_with_the_documented_boundary_message() {
+        // Given an Exa POST body carrying any present stream value other than
+        // an explicit false/null; When the boundary prepares the body; Then
+        // it rejects with the typed streaming-boundary message BEFORE any
+        // gate or upstream call (plan todo 13 zero-cost rule).
+        for stream in [
+            json!(true),
+            json!("true"),
+            json!("always"),
+            json!("auto"),
+            json!("sources-first"),
+            json!(1),
+            json!(2.5),
+            json!({ "mode": "on" }),
+        ] {
+            let body = serde_json::to_vec(&json!({ "query": "x", "stream": stream }))
+                .expect("encode body");
+            assert_eq!(
+                prepare_exa_post_body(&body),
+                Err(EXA_STREAM_REJECT_MESSAGE),
+                "stream={stream} must reject"
+            );
+        }
+    }
+
+    #[test]
+    fn falsy_and_absent_stream_pass_bytes_through_unchanged() {
+        // Given stream:false, stream:null, or no stream field; Then the
+        // original bytes forward verbatim (only truthy values reject).
+        for body in [
+            br#"{"query":"x","stream":false}"#.to_vec(),
+            br#"{"query":"x","stream":null}"#.to_vec(),
+            br#"{"query":"x"}"#.to_vec(),
+        ] {
+            assert_eq!(prepare_exa_post_body(&body), Ok(body.clone()));
+        }
+    }
+
+    #[test]
+    fn client_api_key_like_body_fields_are_stripped_and_rest_verbatim() {
+        // Given client api_key-like fields mixed into an object body; When
+        // prepared; Then only those fields disappear (never relayed, never
+        // persisted) and the remaining fields survive.
+        let body =
+            br#"{"query":"x","api_key":"th-a","APIKEY":"th-b","x-api-key":"th-c","x_api_key":"th-d","keep":1}"#;
+        let prepared = prepare_exa_post_body(body).expect("prepared");
+        let parsed: Value = serde_json::from_slice(&prepared).expect("json");
+        assert_eq!(parsed, json!({ "query": "x", "keep": 1 }));
+        let text = String::from_utf8_lossy(&prepared);
+        for slot in ["th-a", "th-b", "th-c", "th-d"] {
+            assert!(!text.contains(slot), "{text}");
+        }
+    }
+
+    #[test]
+    fn non_json_and_non_object_bodies_forward_unchanged() {
+        // Given payloads Exa itself must validate; Then they pass through
+        // byte-identical for a native upstream 4xx (no request-body schema
+        // validation beyond the stream rejection, M22).
+        for body in [
+            br#"not json at all"#.to_vec(),
+            br#"["array","body"]"#.to_vec(),
+            br#""scalar""#.to_vec(),
+        ] {
+            assert_eq!(prepare_exa_post_body(&body), Ok(body.clone()));
+        }
+        assert_eq!(prepare_exa_post_body(b""), Ok(Vec::new()));
+    }
 }

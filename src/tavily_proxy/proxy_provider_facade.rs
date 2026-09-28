@@ -15,11 +15,22 @@ use reqwest::header::{AUTHORIZATION, HeaderName};
 // SerpApi REST execution layer (plan todo 12): response classification onto
 // the shared AttemptAnalysis contract, reconcile/backoff/request_logs
 // bookkeeping, and the bin-side outcome projection. Declared here so the
-// provider facade family keeps ONE lib seam; todos 13/14 extend the gate in
-// `record_provider_rest_facade_attempt` for Exa/Brave.
+// provider facade family keeps ONE lib seam; todo 14 extends the same family
+// for Brave.
 mod proxy_provider_facade_serpapi;
 pub use proxy_provider_facade_serpapi::{SerpapiFacadeOutcome, serpapi_facade_outcome};
-pub(crate) use proxy_provider_facade_serpapi::ProviderFacadeAttemptContext;
+pub(crate) use proxy_provider_facade_serpapi::{
+    ProviderFacadeAttemptContext, ProviderFacadeAttemptRecord,
+};
+
+// Exa REST execution layer (plan todo 13): the same bookkeeping contract over
+// the todo-3 exa classifier — 402 budget tags exhaust (SuccessOnly recovery),
+// 429 Retry-After arms the shared HTTP backoff scope, 401 quarantines — plus
+// the bin-side outcome projection driving the search=1/contents=1/answer=2
+// credit tiers. The SerpApi record path stays byte-identical behind its own
+// gate; the executor below dispatches per provider.
+mod proxy_provider_facade_exa;
+pub use proxy_provider_facade_exa::{ExaFacadeOutcome, exa_facade_outcome};
 
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
@@ -66,10 +77,11 @@ impl TavilyProxy {
     /// x-project-id strip (M2), native key-slot injection, verbatim upstream
     /// response passthrough in every status.
     ///
-    /// Documented boundary: SerpApi records request_logs, applies key-health
-    /// reconcile, and exposes its outcome for bin-side billing settle (todo
-    /// 12); Exa/Brave keep the T11 boundary (no row, no reconcile, no settle)
-    /// until todos 13/14 extend the same gate.
+    /// Documented boundary: SerpApi (todo 12) records request_logs, applies
+    /// key-health reconcile, and exposes its outcome for bin-side billing
+    /// settle; Exa (todo 13) books the same set over its own record path
+    /// (`record_exa_rest_facade_attempt`); Brave keeps the T11 boundary (no
+    /// row, no reconcile, no settle) until todo 14 extends the same family.
     pub async fn proxy_provider_rest_facade(
         &self,
         request: ProviderRestFacadeRequest,
@@ -174,10 +186,11 @@ impl TavilyProxy {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
-                // Failure-signal classification (todo 3). SerpApi books the
-                // full attempt (reconcile + request_logs + backoff, todo 12);
-                // Exa/Brave keep the documented T11 boundary — todos 13/14
-                // extend the gate inside the record fn.
+                // Failure-signal classification (todo 3). SerpApi (todo 12)
+                // and Exa (todo 13) book the full attempt (reconcile +
+                // request_logs + backoff) through their per-provider record
+                // paths; Brave keeps the documented T11 boundary — todo 14
+                // extends the same family.
                 let signal = classify_provider_failure(
                     request.provider,
                     &ProviderFailureEvidence {
@@ -196,16 +209,25 @@ impl TavilyProxy {
                     api_key_id = %lease.id,
                     "provider facade upstream response classified"
                 );
-                let recorded = self
-                    .record_provider_rest_facade_attempt(&ProviderFacadeAttemptContext {
-                        request: &request,
-                        lease: &lease,
-                        sanitized_headers: &sanitized_headers,
-                        status,
-                        body_bytes: &body_bytes,
-                        signal,
-                    })
-                    .await?;
+                let attempt_ctx = ProviderFacadeAttemptContext {
+                    request: &request,
+                    lease: &lease,
+                    sanitized_headers: &sanitized_headers,
+                    status,
+                    body_bytes: &body_bytes,
+                    signal,
+                };
+                let recorded = match request.provider {
+                    providers::ProviderId::Exa => {
+                        self.record_exa_rest_facade_attempt(&attempt_ctx).await?
+                    }
+                    providers::ProviderId::Tavily
+                    | providers::ProviderId::Serpapi
+                    | providers::ProviderId::Brave => {
+                        self.record_provider_rest_facade_attempt(&attempt_ctx)
+                            .await?
+                    }
+                };
                 Ok(ProxyResponse {
                     status,
                     headers,
@@ -228,15 +250,31 @@ impl TavilyProxy {
                     request.query.as_deref(),
                     &err,
                 );
-                // SerpApi transport failures persist an audit row (Tavily
-                // executor parity); the gate no-ops for Exa/Brave (todo 12).
-                self.log_provider_rest_facade_transport_error(
-                    &request,
-                    &lease,
-                    &sanitized_headers,
-                    &err,
-                )
-                .await?;
+                // SerpApi (todo 12) and Exa (todo 13) transport failures
+                // persist an audit row (Tavily executor parity); the gates
+                // no-op for Brave (todo 14).
+                match request.provider {
+                    providers::ProviderId::Exa => {
+                        self.log_exa_rest_facade_transport_error(
+                            &request,
+                            &lease,
+                            &sanitized_headers,
+                            &err,
+                        )
+                        .await?;
+                    }
+                    providers::ProviderId::Tavily
+                    | providers::ProviderId::Serpapi
+                    | providers::ProviderId::Brave => {
+                        self.log_provider_rest_facade_transport_error(
+                            &request,
+                            &lease,
+                            &sanitized_headers,
+                            &err,
+                        )
+                        .await?;
+                    }
+                }
                 Err(err)
             }
         }

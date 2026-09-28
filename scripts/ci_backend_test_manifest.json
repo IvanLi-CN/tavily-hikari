@@ -138,7 +138,8 @@
         "tests::request_kind_and_core::provider_http_",
         "tests::request_kind_and_core::tavily_http_",
         "tavily_proxy::provider_facade_tests::",
-        "tavily_proxy::proxy_provider_facade_serpapi::serpapi_facade_translation_tests::"
+        "tavily_proxy::proxy_provider_facade_serpapi::serpapi_facade_translation_tests::",
+        "tavily_proxy::proxy_provider_facade_exa::exa_facade_translation_tests::"
       ]
     },
     {
@@ -806,7 +807,8 @@
         "server::tests::provider_admin_api_keys::",
         "server::tests::provider_privacy_redaction::",
         "server::tests::provider_facade_routing::",
-        "server::tests::provider_read_surface::"
+        "server::tests::provider_read_surface::",
+        "server::provider_facade::exa_post_body_tests::"
       ]
     },
     {

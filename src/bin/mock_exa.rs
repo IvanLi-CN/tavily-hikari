@@ -1,11 +1,16 @@
 //! Mock Exa AI upstream (POST /search, /contents, /answer) for offline tests.
+//!
+//! Per-endpoint call counters are exposed via GET /metrics so facade suites
+//! can prove zero-cost local rejections (plan todo 13 QA: a typed stream-400
+//! must leave the answer counter untouched).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde_json::json;
@@ -37,8 +42,16 @@ enum KeyStatus {
     Throttled,
 }
 
+#[derive(Debug, Default)]
+struct MockCounters {
+    search: AtomicU64,
+    contents: AtomicU64,
+    answer: AtomicU64,
+}
+
 struct MockState {
     keys: Vec<String>,
+    counters: MockCounters,
 }
 
 impl MockState {
@@ -117,6 +130,7 @@ async fn handle_search(
     headers: HeaderMap,
     _body: Option<String>,
 ) -> Response {
+    state.counters.search.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -141,6 +155,7 @@ async fn handle_contents(
     headers: HeaderMap,
     _body: Option<String>,
 ) -> Response {
+    state.counters.contents.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -160,6 +175,7 @@ async fn handle_answer(
     headers: HeaderMap,
     _body: Option<String>,
 ) -> Response {
+    state.counters.answer.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -172,18 +188,33 @@ async fn handle_answer(
     .into_response()
 }
 
+/// Request-counter readout (plan todo 13 zero-cost proof): counts EVERY
+/// received per-endpoint call, authorized or not.
+async fn handle_metrics(State(state): State<Arc<MockState>>) -> Response {
+    Json(json!({
+        "search": state.counters.search.load(Ordering::Relaxed),
+        "contents": state.counters.contents.load(Ordering::Relaxed),
+        "answer": state.counters.answer.load(Ordering::Relaxed),
+    }))
+    .into_response()
+}
+
 fn build_router(state: Arc<MockState>) -> Router {
     Router::new()
         .route("/search", post(handle_search))
         .route("/contents", post(handle_contents))
         .route("/answer", post(handle_answer))
+        .route("/metrics", get(handle_metrics))
         .with_state(state)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let state = Arc::new(MockState { keys: cli.keys });
+    let state = Arc::new(MockState {
+        keys: cli.keys,
+        counters: MockCounters::default(),
+    });
     let app = build_router(state);
     println!("Mock Exa upstream listening on http://{}", cli.bind);
     axum::serve(tokio::net::TcpListener::bind(cli.bind).await?, app).await?;
@@ -202,6 +233,7 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().expect("local addr"));
         let state = Arc::new(MockState {
             keys: vec!["mock-exa-key".to_string()],
+            counters: MockCounters::default(),
         });
         tokio::spawn(async move {
             axum::serve(listener, build_router(state))
@@ -328,5 +360,37 @@ mod tests {
         assert_eq!(body["answer"], json!("mock answer"));
         assert_eq!(body["citations"][0]["url"], json!("https://example.com/1"));
         assert_eq!(body["costDollars"]["total"], json!(0.005));
+    }
+
+    #[tokio::test]
+    async fn metrics_counters_track_received_calls_per_endpoint() {
+        // Given a running mock with all counters at zero
+        let base = spawn_mock().await;
+        let metrics = client()
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("metrics request");
+        assert_eq!(
+            metrics.json::<Value>().await.expect("json body"),
+            json!({ "search": 0, "contents": 0, "answer": 0 })
+        );
+
+        // When /search (valid + invalid key) and /answer are each called once
+        post_with_key(&base, "/search", Some("mock-exa-key")).await;
+        post_with_key(&base, "/search", Some("not-a-key")).await;
+        post_with_key(&base, "/answer", Some("mock-exa-key")).await;
+
+        // Then /metrics reflects every received call, authorized or not, and
+        // an uncalled endpoint stays at zero (todo 13 zero-cost assertion).
+        let metrics = client()
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("metrics request");
+        assert_eq!(
+            metrics.json::<Value>().await.expect("json body"),
+            json!({ "search": 2, "contents": 0, "answer": 1 })
+        );
     }
 }
