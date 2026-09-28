@@ -122,7 +122,14 @@
         "tests::request_kind_and_core::sanitize_",
         "tests::request_kind_and_core::map_",
         "tests::request_kind_and_core::operational_",
-        "tests::provider_failure_classification::"
+        "tests::provider_failure_classification::",
+        "tests::provider_config_bootstrap::",
+        "tests::observability_sidecar_provider::",
+        "providers::tests::",
+        "tests::request_kind_and_core::normalize_",
+        "tests::request_kind_and_core::project_id_",
+        "tests::request_kind_and_core::provider_http_",
+        "tests::request_kind_and_core::tavily_http_"
       ]
     },
     {
@@ -786,7 +793,8 @@
         "server::tests::research_result_and_mcp_subpath::tavily_",
         "server::tests::tavily_http_free_account_boundary::tavily_",
         "server::tests::tavily_http_search::tavily_",
-        "server::tests::system_settings_and_forward_proxy::extract_"
+        "server::tests::system_settings_and_forward_proxy::extract_",
+        "server::tests::provider_privacy_redaction::"
       ]
     },
     {
