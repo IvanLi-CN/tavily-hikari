@@ -15,3 +15,16 @@ pub use id::{ProviderId, UnknownProviderId};
 pub use spec::{
     BRAVE, EXA, KeyAuthInjection, McpMode, ProviderSpec, RecoveryPolicy, SERPAPI, TAVILY,
 };
+
+/// Exhaustive registry lookup (plan todo 11): the ONE path from a runtime
+/// [`ProviderId`] to its static [`ProviderSpec`], so route plumbing and the
+/// facade executors never re-hardcode spec fields. Adding a provider fails
+/// to compile here until its registry entry is wired.
+pub fn spec_for(id: ProviderId) -> &'static ProviderSpec {
+    match id {
+        ProviderId::Tavily => &TAVILY,
+        ProviderId::Serpapi => &SERPAPI,
+        ProviderId::Exa => &EXA,
+        ProviderId::Brave => &BRAVE,
+    }
+}

@@ -130,7 +130,8 @@
         "tests::request_kind_and_core::normalize_",
         "tests::request_kind_and_core::project_id_",
         "tests::request_kind_and_core::provider_http_",
-        "tests::request_kind_and_core::tavily_http_"
+        "tests::request_kind_and_core::tavily_http_",
+        "tavily_proxy::provider_facade_tests::"
       ]
     },
     {
@@ -795,7 +796,8 @@
         "server::tests::tavily_http_free_account_boundary::tavily_",
         "server::tests::tavily_http_search::tavily_",
         "server::tests::system_settings_and_forward_proxy::extract_",
-        "server::tests::provider_privacy_redaction::"
+        "server::tests::provider_privacy_redaction::",
+        "server::tests::provider_facade_routing::"
       ]
     },
     {

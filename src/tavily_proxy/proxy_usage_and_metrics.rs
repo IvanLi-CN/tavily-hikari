@@ -236,9 +236,106 @@ impl TavilyProxy {
         .await
     }
 
+    /// Provider-tagged null-key local log (plan todo 11, amendment M16):
+    /// provider MCP subpath rejections persist `request_logs.provider` so the
+    /// provider dimension never coalesces into the legacy tavily default for
+    /// non-Tavily traffic. Mirrors
+    /// [`Self::record_local_request_log_without_key`] otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_local_provider_request_log_without_key(
+        &self,
+        provider: crate::providers::ProviderId,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: StatusCode,
+        mcp_status: Option<i64>,
+        request_body: &[u8],
+        response_body: &[u8],
+        result_status: &str,
+        failure_kind: Option<&str>,
+        forwarded_headers: &[String],
+        dropped_headers: &[String],
+        client_ip: Option<&ClientIpInfo>,
+    ) -> Result<i64, ProxyError> {
+        self.record_local_request_log_without_key_inner(
+            Some(provider.as_str()),
+            auth_token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            request_body,
+            response_body,
+            result_status,
+            failure_kind,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            forwarded_headers,
+            dropped_headers,
+            client_ip,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_local_request_log_without_key_with_diagnostics(
         &self,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: StatusCode,
+        mcp_status: Option<i64>,
+        request_body: &[u8],
+        response_body: &[u8],
+        result_status: &str,
+        failure_kind: Option<&str>,
+        gateway_mode: Option<&str>,
+        experiment_variant: Option<&str>,
+        proxy_session_id: Option<&str>,
+        routing_subject_hash: Option<&str>,
+        upstream_operation: Option<&str>,
+        fallback_reason: Option<&str>,
+        forwarded_headers: &[String],
+        dropped_headers: &[String],
+        client_ip: Option<&ClientIpInfo>,
+    ) -> Result<i64, ProxyError> {
+        self.record_local_request_log_without_key_inner(
+            None,
+            auth_token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            request_body,
+            response_body,
+            result_status,
+            failure_kind,
+            gateway_mode,
+            experiment_variant,
+            proxy_session_id,
+            routing_subject_hash,
+            upstream_operation,
+            fallback_reason,
+            forwarded_headers,
+            dropped_headers,
+            client_ip,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_local_request_log_without_key_inner(
+        &self,
+        provider: Option<&str>,
         auth_token_id: Option<&str>,
         method: &Method,
         path: &str,
@@ -282,7 +379,7 @@ impl TavilyProxy {
                 selection_effect_summary: None,
                 gateway_mode,
                 experiment_variant,
-                provider: None,
+                provider,
                 proxy_session_id,
                 routing_subject_hash,
                 upstream_operation,

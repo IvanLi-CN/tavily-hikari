@@ -88,6 +88,7 @@ use tokio::signal::unix::{SignalKind, signal as unix_signal};
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 use tokio_util::io::{ReaderStream, StreamReader};
+mod provider_facade;
 include!("state.rs");
 include!("schedulers.rs");
 include!("spa.rs");

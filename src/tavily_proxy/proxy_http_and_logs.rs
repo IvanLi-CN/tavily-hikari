@@ -94,12 +94,13 @@ impl TavilyProxy {
             &request.path,
             Some(&settings.upstream_mcp_user_agent),
         );
-        let gateway_mode = request.gateway_mode.as_deref().or_else(|| {
-            request
-                .path
-                .starts_with("/mcp")
-                .then_some(MCP_GATEWAY_MODE_UPSTREAM)
-        });
+        // M1 (plan todo 11): the literal-`/mcp` ingress defaults become
+        // provider-scoped; this executor keeps the Tavily default, so the
+        // recorded values are byte-identical to the pre-provider behavior.
+        let gateway_mode = request
+            .gateway_mode
+            .as_deref()
+            .or_else(|| mcp_gateway_mode_default(providers::ProviderId::Tavily, &request.path));
         let experiment_variant = request
             .experiment_variant
             .as_deref()
@@ -107,7 +108,9 @@ impl TavilyProxy {
         let upstream_operation = request
             .upstream_operation
             .as_deref()
-            .or_else(|| request.path.starts_with("/mcp").then_some("mcp"));
+            .or_else(|| {
+                mcp_upstream_operation_default(providers::ProviderId::Tavily, &request.path)
+            });
         let request_method = request.method.clone();
         let request_body = request.body.clone();
         let request_url = url.clone();
@@ -326,7 +329,9 @@ impl TavilyProxy {
         let url = build_path_prefixed_url(&base, upstream_path);
 
         let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
-        self.apply_upstream_project_id_header(
+        // M2: X-Project-ID is Tavily-only policy at every shared executor.
+        self.apply_upstream_project_id_header_for_provider(
+            providers::ProviderId::Tavily,
             &mut sanitized_headers,
             original_headers,
             auth_token_id,
@@ -672,7 +677,9 @@ impl TavilyProxy {
         })?;
         let url = build_path_prefixed_url(&base, upstream_path);
         let mut sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
-        self.apply_upstream_project_id_header(
+        // M2: X-Project-ID is Tavily-only policy at every shared executor.
+        self.apply_upstream_project_id_header_for_provider(
+            providers::ProviderId::Tavily,
             &mut sanitized_headers,
             original_headers,
             auth_token_id,
@@ -919,7 +926,9 @@ impl TavilyProxy {
         })?;
         let url = build_path_prefixed_url(&base, "/research");
         let mut sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
-        self.apply_upstream_project_id_header(
+        // M2: X-Project-ID is Tavily-only policy at every shared executor.
+        self.apply_upstream_project_id_header_for_provider(
+            providers::ProviderId::Tavily,
             &mut sanitized_headers,
             original_headers,
             auth_token_id,
@@ -1191,7 +1200,9 @@ impl TavilyProxy {
         let url = build_path_prefixed_url(&base, "/research");
 
         let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
-        self.apply_upstream_project_id_header(
+        // M2: X-Project-ID is Tavily-only policy at every shared executor.
+        self.apply_upstream_project_id_header_for_provider(
+            providers::ProviderId::Tavily,
             &mut sanitized_headers,
             original_headers,
             auth_token_id,
@@ -1473,7 +1484,9 @@ impl TavilyProxy {
         let url = build_path_prefixed_url(&base, upstream_path);
 
         let mut sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
-        self.apply_upstream_project_id_header(
+        // M2: X-Project-ID is Tavily-only policy at every shared executor.
+        self.apply_upstream_project_id_header_for_provider(
+            providers::ProviderId::Tavily,
             &mut sanitized_headers,
             original_headers,
             auth_token_id,

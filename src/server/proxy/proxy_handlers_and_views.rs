@@ -50,7 +50,13 @@ async fn proxy_handler(
             trusted_client_ip_headers: system_settings.trusted_client_ip_headers.clone(),
         },
     );
-    let is_mcp_request = path.starts_with("/mcp");
+    // M1 (plan todo 11): provider-aware ingress check replaces the literal
+    // `/mcp` prefix test; this handler serves the Tavily registration, so
+    // the default keeps the byte-stable `path.starts_with("/mcp")` result.
+    let is_mcp_request = tavily_hikari::is_mcp_ingress_path(
+        tavily_hikari::providers::ProviderId::Tavily,
+        &path,
+    );
     let is_mcp_delete_root_request = is_mcp_session_delete_request(&method, &path);
     if is_mcp_request && using_dev_open_admin_fallback {
         return mcp_session_response(

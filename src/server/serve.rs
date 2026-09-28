@@ -566,6 +566,12 @@ async fn serve_with_shutdown(
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(mcp_subpath_reject_handler));
 
+    // Provider REST + MCP facades (plan todo 11). The resolver table and
+    // registration live in `provider_facade`; the provider MCP subpath
+    // reject routes guarantee those paths NEVER fall through to the SPA
+    // HTML 302 fallback below (amendment M16).
+    router = router.merge(provider_facade::provider_facade_routes());
+
     // 404 landing page that updates URL back to original via history API
     router = router.route("/__404", get(not_found_landing));
 

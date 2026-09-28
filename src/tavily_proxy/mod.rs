@@ -1259,6 +1259,7 @@ fn low_quota_depletion_threshold_from_env() -> i64 {
 include!("proxy_core.rs");
 include!("proxy_affinity.rs");
 include!("proxy_http_and_logs.rs");
+include!("proxy_provider_facade.rs");
 include!("proxy_auth_and_oauth.rs");
 include!("proxy_usage_and_metrics.rs");
 include!("proxy_request_limits.rs");

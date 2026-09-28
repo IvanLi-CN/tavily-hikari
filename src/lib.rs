@@ -1613,6 +1613,43 @@ pub(crate) fn build_mcp_upstream_url(base: &Url, request_path: &str) -> Url {
     build_path_prefixed_url(base, appended_path)
 }
 
+/// Provider-aware MCP upstream URL builder (plan todo 11, amendment M1).
+///
+/// [`build_mcp_upstream_url`] strips the Tavily-literal `/mcp` ingress from
+/// the client-facing request path before appending the remainder under the
+/// configured upstream base. Provider MCP ingress paths (`/serpapi/mcp`,
+/// `/exa/mcp`, `/brave/mcp`) must strip THEIR OWN prefix so a path-prefixed
+/// upstream (`SERPAPI_MCP_UPSTREAM=http://host/gw/mcp` + request
+/// `/serpapi/mcp`) resolves to the exact configured `/gw/mcp` target.
+///
+/// Root-path bases resolve to `/` plus the ingress-stripped suffix: unlike
+/// the Tavily contract above, the client-facing ingress prefix is NEVER
+/// appended verbatim to a provider upstream. The legacy Tavily function is
+/// kept untouched (byte-stability rule) instead of delegating here.
+pub(crate) fn build_mcp_upstream_url_with_ingress(
+    base: &Url,
+    request_path: &str,
+    ingress_prefix: &str,
+) -> Url {
+    if matches!(base.path(), "" | "/") {
+        let suffix = request_path
+            .strip_prefix(ingress_prefix)
+            .unwrap_or(request_path)
+            .trim_start_matches('/');
+        return build_path_prefixed_url(base, suffix);
+    }
+
+    let appended_path = if request_path == ingress_prefix {
+        ""
+    } else if let Some(relative) = request_path.strip_prefix(&format!("{ingress_prefix}/")) {
+        relative
+    } else {
+        request_path
+    };
+
+    build_path_prefixed_url(base, appended_path)
+}
+
 const STATUS_ACTIVE: &str = "active";
 const STATUS_EXHAUSTED: &str = "exhausted";
 const STATUS_DISABLED: &str = "disabled";

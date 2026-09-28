@@ -53,6 +53,7 @@ mod tests {
     mod mcp_billing_and_sessions;
     mod mcp_rebalance_and_follow_up;
     mod observability_audit_support;
+    mod provider_facade_routing;
     mod provider_privacy_redaction;
     mod research_result_and_mcp_subpath;
     mod system_settings_and_forward_proxy;
