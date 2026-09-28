@@ -49,12 +49,12 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Runtime workload-window logs expose pending age and per-class admission/completion statistics;
   each admitted slice logs its class and wait age.
 
-Most admission-defer continuations use a five-second retry so a retained ticket is revisited
-promptly. Reconciliation admission defers use a 15-second retry so their scheduler revisits the
-coordinator within the aged-turn window. The coordinator's 15-second aged-turn exception covers
-callers with their own slower retry cadence. A normally completed request-log GC continuation keeps
-its existing five-minute cadence, and HA GC's post-admission channel continuation keeps its separate
-durable 30-second contention delay.
+Admission-defer continuations use a five-second retry so a retained ticket is revisited promptly.
+The coordinator's 15-second aged-turn exception remains the fairness boundary, while the shorter
+retry cadence keeps pending-age p95 below that boundary instead of making the retry interval itself
+the freshness floor. A normally completed request-log GC continuation keeps its existing five-minute
+cadence, and HA GC's post-admission channel continuation keeps its separate durable 30-second
+contention delay.
 
 ## Alternatives Rejected
 

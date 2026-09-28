@@ -349,7 +349,7 @@ impl ReconciliationRemoteAttemptContext<'_> {
 impl ReconciliationEngine {
     const MAX_REMOTE_ATTEMPTS: i64 = 2;
     const DEFER_RETRY_DELAY_SECS: i64 = 30;
-    const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 15;
+    const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
     const REMOTE_ATTEMPT_ADMISSION_OPERATION: &'static str = "reconciliation_remote_attempt";
     const REMOTE_ATTEMPT_STALE_TURN_REASON: &'static str = "reconciliation_turn_stale";
     const REMOTE_ATTEMPT_BUDGET_REASON: &'static str = "remote_attempt_budget";
@@ -927,6 +927,10 @@ mod reconciliation_engine_tests {
                 ReconciliationEngine::SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
             );
         }
+        assert_eq!(
+            ReconciliationEngine::SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+            5
+        );
         assert_eq!(
             ReconciliationEngine::defer_retry_delay_secs("controlled_retry"),
             ReconciliationEngine::DEFER_RETRY_DELAY_SECS
