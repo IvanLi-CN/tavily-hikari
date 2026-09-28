@@ -16,8 +16,9 @@
 
 use super::*;
 use tavily_hikari::{
-    ProviderRestFacadeRequest,
+    ProviderRestFacadeRequest, SerpapiFacadeOutcome, TokenBillingGuard, TokenRequestKind,
     providers::{self, ProviderId},
+    serpapi_facade_outcome,
 };
 
 /// Client-facing surface deciding which native client key slots are accepted
@@ -394,6 +395,20 @@ async fn provider_rest_facade(
     // The stripped query is the ONLY query text forwarded, logged, or recorded.
     let stripped_query = auth.query.clone();
 
+    // SerpApi convenience POST (plan todo 12): map the JSON body fields onto
+    // upstream query params BEFORE the gates so a malformed body is a cheap
+    // typed 400 with zero upstream cost. The lib executor completes the
+    // translation (SerpApi upstream is GET-only with an empty body); the
+    // merged query is what gets forwarded AND persisted.
+    let forward_query = if route.provider == ProviderId::Serpapi && method == Method::POST {
+        match merge_serpapi_post_query(auth.query.as_deref(), &body_bytes) {
+            Ok(merged) => merged,
+            Err(message) => return invalid_tavily_http_request_response(message),
+        }
+    } else {
+        auth.query.clone()
+    };
+
     let system_settings = state.proxy.get_system_settings().await.map_err(|err| {
         eprintln!("get system settings failed for {path}: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -583,8 +598,9 @@ async fn provider_rest_facade(
 
     // Generic execution seam (lib): provider-scoped acquire, path-prefix URL
     // building, native key-slot injection, provider allowlists, verbatim
-    // upstream passthrough. Todos 12-14 extend this seam with billing
-    // settle + request_logs detail + provider-specific translation.
+    // upstream passthrough. Todo 12 layers the SerpApi bookkeeping (attempt
+    // rows, reconcile, backoff) inside this seam; billing settle for SerpApi
+    // lands below. Todos 13/14 extend the same seam for Exa/Brave.
     let method_for_logs = method.clone();
     let path_for_logs = path.clone();
     let token_id_for_logs = token_id.clone();
@@ -595,7 +611,7 @@ async fn provider_rest_facade(
             method,
             path,
             upstream_path: route.upstream_path,
-            query: auth.query,
+            query: forward_query,
             headers: auth.headers,
             body: body_bytes.to_vec(),
             auth_token_id: token_id,
@@ -606,11 +622,34 @@ async fn provider_rest_facade(
 
     match result {
         Ok(response) => {
-            let outcome_status = if response.status.is_success() {
-                "success"
-            } else {
-                "error"
+            // Todo 12 (SerpApi): the deterministic lib-side outcome projection
+            // drives token-log/billing rows and the business-call
+            // finalization. Exa/Brave keep the T11 binary success/error
+            // boundary untouched until todos 13/14.
+            let serpapi_outcome = (route.provider == ProviderId::Serpapi)
+                .then(|| serpapi_facade_outcome(response.status, &response.body));
+            let outcome_status = match &serpapi_outcome {
+                Some(outcome) => outcome.result_status,
+                None if response.status.is_success() => "success",
+                None => "error",
             };
+            if let Some(outcome) = &serpapi_outcome {
+                record_serpapi_facade_attempt(SerpapiFacadeBilling {
+                    state: &state,
+                    method: &method_for_logs,
+                    path: &path_for_logs,
+                    query: stripped_query.as_deref(),
+                    token_id: token_id_for_logs.as_deref(),
+                    using_dev_open_admin_fallback,
+                    billing_subject: billing_subject.as_deref(),
+                    billing_guard: token_billing_guard.as_ref(),
+                    request_kind: &request_kind,
+                    credits: reserved_credits,
+                    outcome,
+                    response: &response,
+                })
+                .await;
+            }
             state
                 .proxy
                 .finalize_business_calls_1h_reservation_from_status(
@@ -862,4 +901,222 @@ async fn provider_mcp_subpath_reject_entry(
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from(response_body.to_vec()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// SerpApi convenience-POST translation (plan todo 12): every JSON body field
+/// becomes an upstream query parameter. Documented policy: `api_key`-slotted
+/// fields are DROPPED (the pooled key is injected by the lib executor and a
+/// client slot is never relayed nor persisted raw); null fields are skipped;
+/// scalars pass through verbatim; structured values (arrays/objects) are
+/// JSON-encoded into the parameter value; explicit URL query parameters win
+/// over same-name body fields. NO `q` re-validation — upstream answers a free
+/// 400 that passes through natively (transformation ban, M22).
+fn merge_serpapi_post_query(
+    client_query: Option<&str>,
+    body: &[u8],
+) -> Result<Option<String>, &'static str> {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    let mut query_keys = HashSet::new();
+    if let Some(query) = client_query {
+        for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+            serializer.append_pair(&key, &value);
+            query_keys.insert(key.into_owned());
+        }
+    }
+    if !body.is_empty() {
+        let parsed: Value =
+            serde_json::from_slice(body).map_err(|_| "request body must be valid JSON")?;
+        let Value::Object(map) = parsed else {
+            return Err("POST body must be a JSON object of SerpApi query parameters");
+        };
+        for (key, value) in &map {
+            if key.eq_ignore_ascii_case("api_key") || query_keys.contains(key) {
+                continue;
+            }
+            let rendered = match value {
+                Value::Null => continue,
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            serializer.append_pair(key, &rendered);
+        }
+    }
+    let merged = serializer.finish();
+    Ok((!merged.is_empty()).then_some(merged))
+}
+
+/// Everything the SerpApi billing/attempt recording needs, grouped so the
+/// facade flow stays readable (mirrors the handlers/tavily.rs settle block).
+struct SerpapiFacadeBilling<'a> {
+    state: &'a Arc<AppState>,
+    method: &'a Method,
+    path: &'a str,
+    query: Option<&'a str>,
+    token_id: Option<&'a str>,
+    using_dev_open_admin_fallback: bool,
+    billing_subject: Option<&'a str>,
+    billing_guard: Option<&'a TokenBillingGuard>,
+    request_kind: &'a TokenRequestKind,
+    credits: i64,
+    outcome: &'a SerpapiFacadeOutcome,
+    response: &'a ProxyResponse,
+}
+
+/// Reserve -> settle billing and token-log recording for the SerpApi REST
+/// facade (plan todo 12; mirrors handlers/tavily.rs:1345-1524). M22: SerpApi
+/// responses are NEVER inspected for billing — business success is 2xx and
+/// the credit amount is the committed todo-2 ProviderSpec table value. Local
+/// persistence failures never replace the verbatim upstream response
+/// (duplicate-charge protection, handlers/tavily.rs:1512-1514 rule).
+async fn record_serpapi_facade_attempt(ctx: SerpapiFacadeBilling<'_>) {
+    if ctx.using_dev_open_admin_fallback {
+        return;
+    }
+    let Some(token_id) = ctx.token_id else {
+        return;
+    };
+    let http_code = i64::from(ctx.response.status.as_u16());
+
+    if ctx.response.status.is_success() {
+        if ctx.credits <= 0 {
+            return;
+        }
+        let recorded = match ctx.billing_subject {
+            Some(subject) => {
+                ctx.state
+                    .proxy
+                    .record_pending_billing_attempt_for_subject_with_kind_request_log(
+                        token_id,
+                        ctx.method,
+                        ctx.path,
+                        ctx.query,
+                        Some(http_code),
+                        Some(http_code),
+                        true,
+                        ctx.outcome.result_status,
+                        None,
+                        ctx.credits,
+                        subject,
+                        ctx.request_kind,
+                        ctx.response.api_key_id.as_deref(),
+                        ctx.outcome.failure_kind,
+                        Some(ctx.response.key_effect_code.as_str()),
+                        ctx.response.key_effect_summary.as_deref(),
+                        Some(ctx.response.binding_effect_code.as_str()),
+                        ctx.response.binding_effect_summary.as_deref(),
+                        Some(ctx.response.selection_effect_code.as_str()),
+                        ctx.response.selection_effect_summary.as_deref(),
+                        ctx.response.request_log_id,
+                    )
+                    .await
+            }
+            None => {
+                ctx.state
+                    .proxy
+                    .record_pending_billing_attempt_with_kind_request_log_metadata(
+                        token_id,
+                        ctx.method,
+                        ctx.path,
+                        ctx.query,
+                        Some(http_code),
+                        Some(http_code),
+                        true,
+                        ctx.outcome.result_status,
+                        None,
+                        ctx.credits,
+                        ctx.request_kind,
+                        ctx.response.api_key_id.as_deref(),
+                        ctx.outcome.failure_kind,
+                        Some(ctx.response.key_effect_code.as_str()),
+                        ctx.response.key_effect_summary.as_deref(),
+                        Some(ctx.response.binding_effect_code.as_str()),
+                        ctx.response.binding_effect_summary.as_deref(),
+                        Some(ctx.response.selection_effect_code.as_str()),
+                        ctx.response.selection_effect_summary.as_deref(),
+                        ctx.response.request_log_id,
+                    )
+                    .await
+            }
+        };
+        let log_id = match recorded {
+            Ok(log_id) => log_id,
+            Err(err) => {
+                eprintln!(
+                    "record_pending_billing_attempt failed for {}: {err}",
+                    ctx.path
+                );
+                return;
+            }
+        };
+        let lock_lost_msg = ctx
+            .billing_guard
+            .and_then(|guard| guard.ensure_live().err())
+            .map(|err| {
+                format!(
+                    "charge_token_quota deferred for {}: {err}; pending billing will retry",
+                    ctx.path
+                )
+            });
+        if let Some(msg) = lock_lost_msg {
+            eprintln!("{msg}");
+            let _ = ctx
+                .state
+                .proxy
+                .annotate_pending_billing_attempt(log_id, &msg)
+                .await;
+            return;
+        }
+        match ctx.state.proxy.settle_pending_billing_attempt(log_id).await {
+            Ok(PendingBillingSettleOutcome::Charged)
+            | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
+            Ok(PendingBillingSettleOutcome::RetryLater) => {
+                let msg = format!(
+                    "charge_token_quota delayed for {}: pending billing claim miss; will retry",
+                    ctx.path
+                );
+                eprintln!("{msg}");
+                let _ = ctx
+                    .state
+                    .proxy
+                    .annotate_pending_billing_attempt(log_id, &msg)
+                    .await;
+            }
+            Err(err) => {
+                let msg = format!("charge_token_quota failed for {}: {err}", ctx.path);
+                eprintln!("{msg}");
+                let _ = ctx
+                    .state
+                    .proxy
+                    .annotate_pending_billing_attempt(log_id, &msg)
+                    .await;
+            }
+        }
+        return;
+    }
+
+    // Non-2xx passthrough: error attempt row, never billable (Tavily parity).
+    let _ = ctx
+        .state
+        .proxy
+        .record_token_attempt_with_kind_request_log_metadata(
+            token_id,
+            ctx.method,
+            ctx.path,
+            ctx.query,
+            Some(http_code),
+            Some(http_code),
+            true,
+            ctx.outcome.result_status,
+            None,
+            ctx.request_kind,
+            ctx.outcome.failure_kind,
+            Some(ctx.response.key_effect_code.as_str()),
+            ctx.response.key_effect_summary.as_deref(),
+            Some(ctx.response.binding_effect_code.as_str()),
+            ctx.response.binding_effect_summary.as_deref(),
+            Some(ctx.response.selection_effect_code.as_str()),
+            ctx.response.selection_effect_summary.as_deref(),
+            ctx.response.request_log_id,
+        )
+        .await;
 }

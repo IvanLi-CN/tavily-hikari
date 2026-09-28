@@ -59,6 +59,12 @@
         "mcp_session_affinity_e2e"
       ]
     },
+    "integration:provider_facades_contract": {
+      "list_args": [
+        "--test",
+        "provider_facades_contract"
+      ]
+    },
     "integration:request_kind_canonical_backfill": {
       "list_args": [
         "--test",
@@ -131,7 +137,8 @@
         "tests::request_kind_and_core::project_id_",
         "tests::request_kind_and_core::provider_http_",
         "tests::request_kind_and_core::tavily_http_",
-        "tavily_proxy::provider_facade_tests::"
+        "tavily_proxy::provider_facade_tests::",
+        "tavily_proxy::proxy_provider_facade_serpapi::serpapi_facade_translation_tests::"
       ]
     },
     {
@@ -1094,6 +1101,17 @@
       "run_args": [
         "--test",
         "mcp_session_affinity_e2e"
+      ]
+    },
+    {
+      "id": "integration-provider-facades-contract",
+      "kind": "integration",
+      "name": "Integration Provider Facades Contract",
+      "estimated_seconds": 45,
+      "coverage_target": "integration:provider_facades_contract",
+      "run_args": [
+        "--test",
+        "provider_facades_contract"
       ]
     },
     {

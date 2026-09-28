@@ -12,6 +12,15 @@
 
 use reqwest::header::{AUTHORIZATION, HeaderName};
 
+// SerpApi REST execution layer (plan todo 12): response classification onto
+// the shared AttemptAnalysis contract, reconcile/backoff/request_logs
+// bookkeeping, and the bin-side outcome projection. Declared here so the
+// provider facade family keeps ONE lib seam; todos 13/14 extend the gate in
+// `record_provider_rest_facade_attempt` for Exa/Brave.
+mod proxy_provider_facade_serpapi;
+pub use proxy_provider_facade_serpapi::{SerpapiFacadeOutcome, serpapi_facade_outcome};
+pub(crate) use proxy_provider_facade_serpapi::ProviderFacadeAttemptContext;
+
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
 /// provider selects its parsed base inside the executor, so no state field
@@ -57,11 +66,10 @@ impl TavilyProxy {
     /// x-project-id strip (M2), native key-slot injection, verbatim upstream
     /// response passthrough in every status.
     ///
-    /// Documented T11 boundary: no request_logs row, no billing
-    /// reserve/settle, and no key-health reconcile are emitted here — todos
-    /// 12-14 own those bodies and extend this seam (the failure signal is
-    /// already classified and emitted for them at
-    /// `event="provider_upstream_response"`).
+    /// Documented boundary: SerpApi records request_logs, applies key-health
+    /// reconcile, and exposes its outcome for bin-side billing settle (todo
+    /// 12); Exa/Brave keep the T11 boundary (no row, no reconcile, no settle)
+    /// until todos 13/14 extend the same gate.
     pub async fn proxy_provider_rest_facade(
         &self,
         request: ProviderRestFacadeRequest,
@@ -137,9 +145,17 @@ impl TavilyProxy {
             }
         }
 
-        let request_method = request.method.clone();
+        // SerpApi upstream is GET-only (plan todo 12): the convenience POST's
+        // JSON body arrives pre-mapped into `request.query` by the bin
+        // boundary, so the upstream call is always GET with an empty body
+        // while `request.method`/`request.body` stay the audit identity.
+        // Exa/Brave keep their T11 verbatim method+body forwarding.
+        let (request_method, request_body) = if request.provider == providers::ProviderId::Serpapi {
+            (Method::GET, Vec::new())
+        } else {
+            (request.method.clone(), request.body.clone())
+        };
         let request_url = url.clone();
-        let request_body = request.body.clone();
         let response = self
             .send_with_forward_proxy(&lease.id, request.upstream_operation, |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -158,9 +174,10 @@ impl TavilyProxy {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
-                // Failure-signal emission (todo 3 classifier). No key-state
-                // mutation here: reconcile hooks wire in todo 18, billing in
-                // todos 12-14.
+                // Failure-signal classification (todo 3). SerpApi books the
+                // full attempt (reconcile + request_logs + backoff, todo 12);
+                // Exa/Brave keep the documented T11 boundary — todos 13/14
+                // extend the gate inside the record fn.
                 let signal = classify_provider_failure(
                     request.provider,
                     &ProviderFailureEvidence {
@@ -179,14 +196,24 @@ impl TavilyProxy {
                     api_key_id = %lease.id,
                     "provider facade upstream response classified"
                 );
+                let recorded = self
+                    .record_provider_rest_facade_attempt(&ProviderFacadeAttemptContext {
+                        request: &request,
+                        lease: &lease,
+                        sanitized_headers: &sanitized_headers,
+                        status,
+                        body_bytes: &body_bytes,
+                        signal,
+                    })
+                    .await?;
                 Ok(ProxyResponse {
                     status,
                     headers,
                     body: body_bytes,
                     api_key_id: Some(lease.id.clone()),
-                    request_log_id: None,
-                    key_effect_code: KEY_EFFECT_NONE.to_string(),
-                    key_effect_summary: None,
+                    request_log_id: recorded.request_log_id,
+                    key_effect_code: recorded.key_effect.code,
+                    key_effect_summary: recorded.key_effect.summary,
                     binding_effect_code: KEY_EFFECT_NONE.to_string(),
                     binding_effect_summary: None,
                     selection_effect_code: KEY_EFFECT_NONE.to_string(),
@@ -201,6 +228,15 @@ impl TavilyProxy {
                     request.query.as_deref(),
                     &err,
                 );
+                // SerpApi transport failures persist an audit row (Tavily
+                // executor parity); the gate no-ops for Exa/Brave (todo 12).
+                self.log_provider_rest_facade_transport_error(
+                    &request,
+                    &lease,
+                    &sanitized_headers,
+                    &err,
+                )
+                .await?;
                 Err(err)
             }
         }
