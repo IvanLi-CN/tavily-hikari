@@ -1865,6 +1865,47 @@ async fn warm_schema_compatibility_restores_api_key_membership_intervals() {
 }
 
 #[tokio::test]
+async fn warm_schema_compatibility_skips_complete_schema_write_under_lock() {
+    let db_path = temp_db_path("schema-migration-membership-intervals-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-membership-intervals-read-only".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    let mut lock = lock_pool
+        .acquire()
+        .await
+        .expect("acquire writer lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .expect("hold writer lock");
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy.key_store.ensure_warm_schema_compatibility(),
+    )
+    .await
+    .expect("complete warm schema must not wait for a writer")
+    .expect("complete warm schema compatibility succeeds");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock)
+        .await
+        .expect("release writer lock");
+    drop(lock);
+    lock_pool.close().await;
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn versioned_schema_migrations_reject_missing_recorded_objects() {
     let db_path = temp_db_path("schema-migration-missing-object");
     let db_str = db_path.to_string_lossy().to_string();

@@ -900,6 +900,35 @@ impl KeyStore {
     pub(crate) async fn ensure_api_key_membership_intervals_schema(
         &self,
     ) -> Result<(), ProxyError> {
+        // Normal restarts already have the complete compatibility schema. Keep this
+        // path read-only so warm startup does not compete with foreground writers.
+        let schema_objects = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE (type = 'table' AND name IN (
+                'api_key_membership_history_state',
+                'api_key_membership_intervals'
+            ))
+               OR (type = 'index' AND name IN (
+                'idx_api_key_membership_intervals_key_start',
+                'idx_api_key_membership_intervals_open'
+            ))
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if schema_objects == 4 {
+            let history_initialized = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM api_key_membership_history_state WHERE singleton = 1)",
+            )
+            .fetch_one(&self.pool)
+            .await?;
+            if history_initialized != 0 {
+                return Ok(());
+            }
+        }
+
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
