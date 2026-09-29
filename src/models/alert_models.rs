@@ -133,6 +133,13 @@ pub struct AlertEventRecord {
     pub job: Option<AlertJobRef>,
     pub request: Option<AlertRequestRef>,
     pub request_kind: Option<TokenRequestKind>,
+    /// Provider dimension for alert payloads (plan todo 18, amendment M18):
+    /// inherited from the key/log fields for serpapi/exa/brave events.
+    /// Tavily/legacy rows stay `None` and omit the key from the wire JSON so
+    /// existing payloads remain byte-identical (frontend coalesces absent →
+    /// Tavily per the todo-20/23 NULL-legacy convention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub failure_kind: Option<String>,
     pub result_status: Option<String>,
     pub error_message: Option<String>,

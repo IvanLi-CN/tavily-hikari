@@ -299,8 +299,9 @@ impl TavilyProxy {
         // 429 RATE_LIMITED (todo-3 RateLimited — Brave has no exhaustion-flavored
         // 429): arm the shared HTTP backoff scope that provider-scoped
         // acquisition avoids. Sizing uses the committed todo-3 SECOND-scale
-        // Brave ladder (default 2s, 1..=30 clamp), distinct from Exa/SerpApi's
-        // minute-scale floor; Brave second-scale scope strings land with todo 18.
+        // Brave ladder (default 2s, 1..=30 clamp), distinct from Exa's
+        // minute-scale floor and SerpApi's hour-scale envelope; todo 18 keeps
+        // the second-scale sizing on the shared golden-pinned scope (D1).
         let armed_backoff = match ctx.signal {
             ProviderFailureSignal::RateLimited { .. } => {
                 let now = self.backend_time.now_ts();

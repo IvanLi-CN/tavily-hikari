@@ -65,6 +65,12 @@
         "provider_facades_contract"
       ]
     },
+    "integration:provider_health_matrix_e2e": {
+      "list_args": [
+        "--test",
+        "provider_health_matrix_e2e"
+      ]
+    },
     "integration:provider_mcp_e2e": {
       "list_args": [
         "--test",
@@ -136,6 +142,7 @@
         "tests::request_kind_and_core::operational_",
         "tests::provider_failure_classification::",
         "tests::provider_config_bootstrap::",
+        "tests::provider_health_matrix::",
         "tests::provider_pool_scoping::",
         "tests::observability_sidecar_provider::",
         "providers::tests::",
@@ -1122,6 +1129,17 @@
       "run_args": [
         "--test",
         "provider_facades_contract"
+      ]
+    },
+    {
+      "id": "integration-provider-health-matrix-e2e",
+      "kind": "integration",
+      "name": "Integration Provider Health Matrix E2E",
+      "estimated_seconds": 60,
+      "coverage_target": "integration:provider_health_matrix_e2e",
+      "run_args": [
+        "--test",
+        "provider_health_matrix_e2e"
       ]
     },
     {

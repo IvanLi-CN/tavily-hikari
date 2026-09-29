@@ -17,13 +17,14 @@
 //!   tiers (search=1, contents=1, answer=2) from the committed todo-2
 //!   ProviderSpec table without re-implementing the classifier.
 //!
-//! Boundary notes: alerts with provider fields, per-provider backoff scope
-//! strings, and the SuccessOnly calendar-free recovery clearing (402-exhausted
-//! keys restore on the next successful call) remain todo 18 — this layer only
-//! emits the signals and applies the reconcile actions, exactly as SerpApi
-//! does. M22 forbids response inspection, so business success is 2xx. The
-//! typed stream-400 rejection is a bin-boundary rule (never reaches this
-//! seam). Brave keeps its documented T11 boundary (todo 14).
+//! Boundary notes: todo 18 landed the remaining depth — alert projections
+//! inherit the provider field, the SuccessOnly calendar-free recovery
+//! (402-exhausted keys restore on the next successful call via the shared
+//! `reconcile_key_health` success arm) is matrix-pinned, and the Retry-After
+//! minute-ladder sizing on the shared golden-pinned backoff scope is final
+//! (M12: per-key backoff only, no new global limiter). M22 forbids response
+//! inspection, so business success is 2xx. The typed stream-400 rejection is
+//! a bin-boundary rule (never reaches this seam).
 
 use super::*;
 
@@ -157,8 +158,9 @@ impl TavilyProxy {
         // 429 (todo-3 RateLimited — Exa has no exhaustion-flavored 429): arm
         // the shared HTTP backoff scope that provider-scoped acquisition
         // avoids. Sizing parses the upstream Retry-After through the
-        // committed todo-3 helper (minute-scale ladder clamp); Exa
-        // second-scale scope strings land with todo 18.
+        // committed todo-3 helper (minute-scale ladder clamp); todo 18 KEEPS
+        // this ladder and the shared scope (goldens pin Retry-After 2 → 30s
+        // on scope http_global; M12 per-key backoff only — evidence D1/D2).
         let armed_backoff = match ctx.signal {
             ProviderFailureSignal::RateLimited { .. } => {
                 let now = self.backend_time.now_ts();

@@ -173,8 +173,12 @@ impl TavilyProxy {
 
         // Hourly-flavor 429 (todo-3 RateLimited — NEVER exhaustion): arm the
         // shared HTTP backoff scope that provider-scoped acquisition avoids.
-        // Sizing uses the committed todo-3 helper; SerpApi hour-scale scope
-        // strings land with todo 18.
+        // Sizing uses the committed todo-3 helper; todo 18 lands the SerpApi
+        // HOUR-scale envelope there (3600s default — live hourly 429s carry
+        // no Retry-After — with a parsed Retry-After honored from the
+        // minute-ladder floor up to the hour ceiling; D6 "hour scope").
+        // Scope/reason columns stay on the golden-pinned shared values
+        // (todo-18 evidence D1).
         let armed_backoff = match ctx.signal {
             ProviderFailureSignal::RateLimited { .. } => {
                 let now = self.backend_time.now_ts();

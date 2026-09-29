@@ -2250,6 +2250,16 @@ impl KeyStore {
             result_status: row.try_get("result_status")?,
             failure_kind: row.try_get("failure_kind")?,
             error_message: row.try_get("error_message")?,
+            // Provider normalization (plan todo 18, M18): the CTE inherits
+            // provider from the token-log stamp or the key row; Tavily/legacy
+            // values collapse to None so persisted payloads and wire JSON
+            // stay byte-identical for existing providers.
+            provider: row
+                .try_get::<Option<String>, _>("provider")?
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| {
+                    !value.is_empty() && value != crate::providers::ProviderId::Tavily.as_str()
+                }),
             counts_business_quota: row
                 .try_get::<Option<i64>, _>("counts_business_quota")?
                 .map(|value| value != 0),
@@ -2308,6 +2318,7 @@ impl KeyStore {
             result_status,
             failure_kind,
             error_message,
+            provider,
             counts_business_quota,
             user_id,
             user_display_name,
@@ -2403,6 +2414,9 @@ impl KeyStore {
             job,
             request,
             request_kind,
+            // Normalized at decode time (Tavily/legacy → None); the wire JSON
+            // omits the key entirely for None (byte-stable legacy payloads).
+            provider,
             failure_kind,
             result_status,
             error_message,

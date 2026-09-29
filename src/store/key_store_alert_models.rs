@@ -46,6 +46,11 @@ pub(crate) struct AlertEventProjectionRow {
     result_status: Option<String>,
     failure_kind: Option<String>,
     error_message: Option<String>,
+    /// Provider dimension (plan todo 18): carried through the raw CTE and
+    /// the projection payload. Legacy payloads without the key decode to
+    /// `None`; Tavily rows serialize WITHOUT the key (byte-stable payloads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
     counts_business_quota: Option<bool>,
     user_id: Option<String>,
     user_display_name: Option<String>,

@@ -1101,6 +1101,7 @@ mod tests {
             }),
             request: None,
             request_kind: None,
+            provider: None,
             failure_kind: None,
             result_status: None,
             error_message: None,

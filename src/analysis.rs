@@ -919,6 +919,15 @@ const PROVIDER_REST_PATH_KINDS: &[(&str, &str)] = &[
     ("/api/brave/web/search", "api:brave/web"),
     ("/api/brave/news/search", "api:brave/news"),
     ("/api/brave/llm/context", "api:brave/llm-context"),
+    // FU-A (plan todo 18): ADDITIVE aliases for the REGISTERED native Brave
+    // `/res/v1` routes so any surface classifying the full client-facing path
+    // resolves the same canonical kinds/labels/value buckets as the short
+    // form. request_logs keeps the canonical path (golden-pinned contract);
+    // auth_token_logs carries the registered path (T14 bin boundary). No
+    // existing Tavily or provider kind semantics change.
+    ("/api/brave/res/v1/web/search", "api:brave/web"),
+    ("/api/brave/res/v1/news/search", "api:brave/news"),
+    ("/api/brave/res/v1/llm/context", "api:brave/llm-context"),
 ];
 
 const PROVIDER_MCP_TOOL_KINDS: &[(ProviderId, &str, &str)] = &[

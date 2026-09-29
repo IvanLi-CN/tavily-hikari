@@ -212,6 +212,7 @@ fn make_alert_event(
             request_kind_label,
             Some(request_kind_label.to_string()),
         )),
+        provider: None,
         failure_kind: None,
         result_status: Some("quota_exhausted".to_string()),
         error_message: error_message.map(str::to_string),

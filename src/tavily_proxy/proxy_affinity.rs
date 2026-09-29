@@ -8,6 +8,15 @@ const BRAVE_RATE_LIMITED_BACKOFF_DEFAULT_SECS: i64 = 2;
 const BRAVE_RATE_LIMITED_BACKOFF_MIN_SECS: i64 = 1;
 #[allow(dead_code)]
 const BRAVE_RATE_LIMITED_BACKOFF_MAX_SECS: i64 = 30;
+/// SerpApi's hourly-flavor 429 ("exceeded its hourly throughput limit") is
+/// hour-scale (draft D6 "hour scope"; plan todo 18): the throughput window
+/// resets within the hour, so the armed backoff DEFAULTS to the full hour
+/// (live SerpApi hourly 429s carry no Retry-After) and a parsed Retry-After
+/// is honored from the existing minute-ladder floor up to the hour ceiling —
+/// the committed T3 pin (45s → 45s) stays byte-stable. The run-out flavor of
+/// SerpApi's dual 429 is exhaustion, never this lane.
+const SERPAPI_RATE_LIMITED_BACKOFF_DEFAULT_SECS: i64 = 3600;
+const SERPAPI_RATE_LIMITED_BACKOFF_MAX_SECS: i64 = 3600;
 
 impl TavilyProxy {
     pub async fn lock_mcp_session_init(
@@ -279,10 +288,14 @@ impl TavilyProxy {
     }
 
     /// Provider-aware transient backoff sizing for RateLimited exhaustion-gate
-    /// signals (plan todo 3). Brave is second-scale (w=1 window) with its own
-    /// clamp; other providers keep the existing minute-scale MCP-init ladder
-    /// (Retry-After first, 30..=300 clamp, 60s default). Tavily's LIVE pipeline
-    /// stays failure_kind-driven via `transient_backoff_retry_after_secs` above.
+    /// signals (plan todo 3 + todo 18). Brave is second-scale (w=1 window),
+    /// SerpApi's hourly 429 defaults to the hour scale (Retry-After honored
+    /// from the minute-ladder floor up to the hour ceiling), and Exa honors
+    /// Retry-After through the minute-scale ladder clamp (M12: per-key backoff
+    /// only, no new global limiter). Tavily's LIVE pipeline stays
+    /// failure_kind-driven via `transient_backoff_retry_after_secs` above.
+    /// Arms land on the shared `http_global` scope whose column values the
+    /// goldens pin (todo 18, evidence decision D1).
     #[allow(dead_code)]
     pub(crate) fn effective_provider_rate_limited_backoff_secs(
         provider: providers::ProviderId,
@@ -300,6 +313,16 @@ impl TavilyProxy {
                         BRAVE_RATE_LIMITED_BACKOFF_MIN_SECS,
                         BRAVE_RATE_LIMITED_BACKOFF_MAX_SECS,
                     ),
+            ),
+            providers::ProviderId::Serpapi => Some(
+                retry_after_secs
+                    .and_then(|secs| i64::try_from(secs).ok())
+                    .map_or(SERPAPI_RATE_LIMITED_BACKOFF_DEFAULT_SECS, |secs| {
+                        secs.clamp(
+                            MCP_SESSION_INIT_BACKOFF_MIN_SECS,
+                            SERPAPI_RATE_LIMITED_BACKOFF_MAX_SECS,
+                        )
+                    }),
             ),
             _ => Some(
                 retry_after_secs

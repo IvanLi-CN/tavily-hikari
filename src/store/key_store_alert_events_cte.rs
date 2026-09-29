@@ -240,6 +240,7 @@ impl KeyStore {
                 atl.result_status AS result_status,
                 atl.failure_kind AS failure_kind,
                 atl.error_message AS error_message,
+                COALESCE(NULLIF(TRIM(atl.provider), ''), (SELECT ak.provider FROM api_keys ak WHERE ak.id = COALESCE(atl.api_key_id, rl.api_key_id))) AS provider,
                 atl.counts_business_quota AS counts_business_quota,
                 u.id AS user_id,
                 u.display_name AS user_display_name,
@@ -270,7 +271,7 @@ impl KeyStore {
                  OR atl.request_kind_label = ''
                  OR atl.api_key_id IS NULL
                  OR atl.query IS NULL
-                )
+                 )
             LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
             LEFT JOIN users u ON u.id = b.user_id
             WHERE (
@@ -316,6 +317,7 @@ impl KeyStore {
                 atl.result_status AS result_status,
                 atl.failure_kind AS failure_kind,
                 atl.error_message AS error_message,
+                (SELECT ak.provider FROM api_keys ak WHERE ak.id = m.key_id) AS provider,
                 NULL AS counts_business_quota,
                 u.id AS user_id,
                 u.display_name AS user_display_name,
@@ -385,6 +387,7 @@ impl KeyStore {
                 atl.result_status AS result_status,
                 atl.failure_kind AS failure_kind,
                 atl.error_message AS error_message,
+                (SELECT ak.provider FROM api_keys ak WHERE ak.id = m.key_id) AS provider,
                 NULL AS counts_business_quota,
                 u.id AS user_id,
                 u.display_name AS user_display_name,
@@ -456,6 +459,7 @@ impl KeyStore {
                 j.status AS result_status,
                 'job_failed' AS failure_kind,
                 j.message AS error_message,
+                (SELECT ak.provider FROM api_keys ak WHERE ak.id = j.key_id) AS provider,
                 NULL AS counts_business_quota,
                 NULL AS user_id,
                 NULL AS user_display_name,
@@ -525,6 +529,7 @@ impl KeyStore {
                        json_extract(payload_json, '$.result_status') AS result_status,
                        json_extract(payload_json, '$.failure_kind') AS failure_kind,
                        json_extract(payload_json, '$.error_message') AS error_message,
+                       json_extract(payload_json, '$.provider') AS provider,
                        json_extract(payload_json, '$.counts_business_quota') AS counts_business_quota,
                        json_extract(payload_json, '$.user_id') AS user_id,
                        json_extract(payload_json, '$.user_display_name') AS user_display_name,
