@@ -1999,3 +1999,966 @@ async fn brave_exhausted_pool_returns_no_available_keys_without_upstream_call() 
         "quarantined pool → zero additional upstream calls (counter unchanged)"
     );
 }
+
+// ===========================================================================
+// Exa LOCAL MCP facade (`/exa/mcp`) — plan todo 17.
+//
+// The local facade answers initialize/tools-list/ping/notifications LOCALLY
+// (session-less, SSE-wrapped, server_name `exa-search-hikari`, EXACTLY the 3
+// exa-labs/exa-mcp-server-mirror tools) and translates tools/call into a
+// pooled-key exa REST POST (x-api-key injection), returning the native body as
+// the MCP tool-result content. Billing runs the reserve→settle path with the
+// registry credits (search=1, contents=1, answer=2); provider errors surface an
+// isError result carrying the NATIVE body and emit the todo-3 health signals
+// (402 budget tags→exhausted, 401→quarantine, 429→Retry-After backoff).
+// web_fetch_exa enforces the M19 urls-XOR-ids contract guard LOCALLY (typed
+// invalid-params, ZERO upstream calls); exa_answer never carries `stream` on
+// the wire (T13 semantics — a truthy smuggled stream rejects locally).
+// Deprecated shims (crawling_exa, company_research_exa, deep_researcher_*)
+// and agent_run are NOT in the catalog — unknown-tool typed errors.
+//
+// Real server binary + real mock_exa binary + direct sqlite assertions (the
+// proven brave-section pattern). Every upstream is a stub — production
+// endpoints are never contacted.
+// ===========================================================================
+
+struct ExaMcpHarness {
+    base_url: String,
+    mock_base: String,
+    token: String,
+    token_id: String,
+    db_path: PathBuf,
+    db_str: String,
+    _server: ChildGuard,
+    _mock: ChildGuard,
+}
+
+impl Drop for ExaMcpHarness {
+    fn drop(&mut self) {
+        remove_sqlite_files(&self.db_path);
+    }
+}
+
+async fn spawn_exa_harness(prefix: &str, pool_keys: &[&str], mock_keys: &[&str]) -> ExaMcpHarness {
+    for attempt in 1..=5usize {
+        if let Some(harness) = try_spawn_exa_harness(prefix, pool_keys, mock_keys).await {
+            return harness;
+        }
+        if attempt < 5 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+    panic!("exa mcp harness never became healthy after 5 spawn attempts");
+}
+
+async fn try_spawn_exa_harness(
+    prefix: &str,
+    pool_keys: &[&str],
+    mock_keys: &[&str],
+) -> Option<ExaMcpHarness> {
+    let mock_port = reserve_local_port();
+    let mock = Command::new(support_binaries::resolve_support_binary(
+        "MOCK_EXA_TEST_BIN",
+        env!("CARGO_BIN_EXE_mock_exa"),
+    ))
+    .arg("--bind")
+    .arg(format!("127.0.0.1:{mock_port}"))
+    .arg("--keys")
+    .arg(mock_keys.join(","))
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn mock_exa");
+
+    let port = reserve_local_port();
+    let db_path = temp_db_path(prefix);
+    let db_str = db_path.to_string_lossy().to_string();
+    // Every non-Exa provider upstream points at a dead local port so the
+    // production endpoints are unreachable by construction (incident rule).
+    let dead_port = reserve_local_port();
+    let server = Command::new(support_binaries::resolve_support_binary(
+        "TAVILY_HIKARI_TEST_BIN",
+        env!("CARGO_BIN_EXE_tavily-hikari"),
+    ))
+    .env("TAVILY_API_KEYS", "tvly-mcp-e2e-key")
+    .env(
+        "TAVILY_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}/mcp"),
+    )
+    .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
+    .env("EXA_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
+    .env("EXA_API_KEYS", pool_keys.join(","))
+    .env(
+        "SERPAPI_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}"),
+    )
+    .env(
+        "SERPAPI_MCP_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}/mcp"),
+    )
+    .env("BRAVE_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
+    .env("PROXY_BIND", "127.0.0.1")
+    .env("PROXY_PORT", port.to_string())
+    .env("PROXY_DB_PATH", &db_str)
+    .env("DEV_OPEN_ADMIN", "true")
+    .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn tavily-hikari");
+
+    if !health_ready_within(port, 25).await {
+        drop(ChildGuard { child: server });
+        drop(ChildGuard { child: mock });
+        remove_sqlite_files(&db_path);
+        return None;
+    }
+    wait_for_provider_keys(&db_str, "exa", i64::try_from(pool_keys.len()).unwrap()).await;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let (token, token_id) = create_test_token(&base_url).await;
+
+    Some(ExaMcpHarness {
+        base_url,
+        mock_base: format!("http://127.0.0.1:{mock_port}"),
+        token,
+        token_id,
+        db_path,
+        db_str,
+        _server: ChildGuard { child: server },
+        _mock: ChildGuard { child: mock },
+    })
+}
+
+impl ExaMcpHarness {
+    async fn pool(&self) -> sqlx::SqlitePool {
+        connect_sqlite_test_pool(&self.db_str).await
+    }
+
+    /// POST one JSON-RPC message to `/exa/mcp` with the Hikari Bearer token.
+    async fn exa_mcp_call(&self, message: &Value) -> McpCallResult {
+        let response = Client::new()
+            .post(format!("{}/exa/mcp", self.base_url))
+            .bearer_auth(&self.token)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .json(message)
+            .send()
+            .await
+            .expect("exa mcp request");
+        McpCallResult {
+            status: response.status(),
+            session_header: response
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            content_type: response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            body: response.bytes().await.expect("response body").to_vec(),
+        }
+    }
+
+    /// POST + decode the SSE-wrapped JSON-RPC payload in one step.
+    async fn exa_mcp_json(&self, message: &Value) -> Value {
+        let result = self.exa_mcp_call(message).await;
+        assert_eq!(
+            result.status,
+            StatusCode::OK,
+            "local facade answers tools/call + methods at HTTP 200: {}",
+            result.body_text()
+        );
+        parse_sse_json(&result.body)
+    }
+
+    fn initialize_message(id: u64) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "provider-mcp-e2e", "version": "0.1.0" }
+            }
+        })
+    }
+
+    fn tools_call(id: u64, tool: &str, arguments: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        })
+    }
+
+    /// POST initialize (session-less local response — no mcp-session-id).
+    async fn initialize(&self, id: u64) -> Value {
+        let result = self.exa_mcp_call(&Self::initialize_message(id)).await;
+        assert_eq!(result.status, StatusCode::OK, "initialize 200");
+        assert!(
+            result.session_header.is_none(),
+            "session-less local facade must not mint an mcp-session-id: {:?}",
+            result.session_header
+        );
+        parse_sse_json(&result.body)
+    }
+
+    async fn mock_metrics(&self) -> Value {
+        Client::new()
+            .get(format!("{}/metrics", self.mock_base))
+            .send()
+            .await
+            .expect("mock metrics request")
+            .json::<Value>()
+            .await
+            .expect("mock metrics json")
+    }
+
+    /// Last request body the mock received per endpoint (todo-17 additive
+    /// knob): proves the MCP→REST translation wire body.
+    async fn mock_last_bodies(&self) -> Value {
+        Client::new()
+            .get(format!("{}/last-bodies", self.mock_base))
+            .send()
+            .await
+            .expect("mock last-bodies request")
+            .json::<Value>()
+            .await
+            .expect("mock last-bodies json")
+    }
+
+    /// (billing_state, business_credits) for every ledger row on the token.
+    async fn charged_ledger_rows(&self) -> Vec<(String, i64)> {
+        let pool = self.pool().await;
+        let rows = sqlx::query(
+            "SELECT billing_state, business_credits FROM billing_ledger \
+             WHERE token_id = ? ORDER BY auth_token_log_id ASC",
+        )
+        .bind(&self.token_id)
+        .fetch_all(&pool)
+        .await
+        .expect("ledger rows");
+        pool.close().await;
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("billing_state"),
+                    row.get::<i64, _>("business_credits"),
+                )
+            })
+            .collect()
+    }
+
+    /// (request_kind_key, business_credits, provider) per auth_token_logs row.
+    async fn token_log_rows(&self) -> Vec<(Option<String>, Option<i64>, Option<String>)> {
+        let pool = self.pool().await;
+        let rows = sqlx::query(
+            "SELECT request_kind_key, business_credits, provider FROM auth_token_logs \
+             WHERE token_id = ? ORDER BY id ASC",
+        )
+        .bind(&self.token_id)
+        .fetch_all(&pool)
+        .await
+        .expect("token log rows");
+        pool.close().await;
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.get::<Option<String>, _>("request_kind_key"),
+                    row.get::<Option<i64>, _>("business_credits"),
+                    row.get::<Option<String>, _>("provider"),
+                )
+            })
+            .collect()
+    }
+}
+
+fn exa_tool_names(catalog: &Value) -> Vec<String> {
+    catalog["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn exa_tool_by_name<'a>(catalog: &'a Value, name: &str) -> &'a Value {
+    catalog["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("tool {name} missing from the catalog"))
+}
+
+/// Criterion (plan L224): initialize then tools/list shows EXACTLY the three
+/// exa-labs/exa-mcp-server-mirror tools with their schemas (no deprecated
+/// shims, no agent_run, no `stream` property anywhere); non-billable (zero
+/// ledger) and zero upstream calls.
+#[tokio::test]
+async fn exa_initialize_and_tools_list_advertise_exactly_three_tools() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-catalog", &["mock-exa-key"], &["mock-exa-key"]).await;
+
+    let init = harness.initialize(1).await;
+    assert_eq!(init["jsonrpc"], json!("2.0"));
+    assert_eq!(init["id"], json!(1));
+    assert_eq!(
+        init["result"]["serverInfo"]["name"],
+        json!("exa-search-hikari"),
+        "server name is the exa facade identity"
+    );
+    assert!(init["result"]["capabilities"]["tools"].is_object());
+
+    let listed = harness
+        .exa_mcp_json(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+        .await;
+    let mut names = exa_tool_names(&listed);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "exa_answer".to_string(),
+            "web_fetch_exa".to_string(),
+            "web_search_exa".to_string(),
+        ],
+        "tools/list advertises EXACTLY the three exa tools (no crawling_exa/company_research_exa/deep_researcher_*/agent_run shims)"
+    );
+    for tool in listed["result"]["tools"].as_array().expect("tools") {
+        assert_eq!(
+            tool["inputSchema"]["type"],
+            json!("object"),
+            "each tool carries an object inputSchema"
+        );
+        for property in tool["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties object")
+            .keys()
+        {
+            assert_ne!(
+                property, "stream",
+                "the facade NEVER advertises a stream parameter (no SSE)"
+            );
+        }
+    }
+
+    // Schema-detail pins (M19 registry-mirror defaults).
+    let search = exa_tool_by_name(&listed, "web_search_exa");
+    assert_eq!(search["inputSchema"]["required"], json!(["query"]));
+    assert_eq!(search["inputSchema"]["properties"]["numResults"]["minimum"], json!(1));
+    assert_eq!(search["inputSchema"]["properties"]["numResults"]["maximum"], json!(100));
+    for property in [
+        "type",
+        "category",
+        "includeDomains",
+        "excludeDomains",
+        "startPublishedDate",
+        "endPublishedDate",
+        "contents",
+    ] {
+        assert!(
+            search["inputSchema"]["properties"][property].is_object(),
+            "web_search_exa advertises the registry `{property}` parameter"
+        );
+    }
+    let fetch = exa_tool_by_name(&listed, "web_fetch_exa");
+    assert_eq!(fetch["inputSchema"]["properties"]["urls"]["type"], json!("array"));
+    assert_eq!(fetch["inputSchema"]["properties"]["ids"]["type"], json!("array"));
+    assert_eq!(
+        fetch["inputSchema"]["properties"]["urls"]["maxItems"],
+        json!(100),
+        "urls advertises the 1-100 bound"
+    );
+    let answer = exa_tool_by_name(&listed, "exa_answer");
+    assert_eq!(answer["inputSchema"]["required"], json!(["query"]));
+    assert_eq!(
+        answer["inputSchema"]["properties"]["model"]["enum"],
+        json!(["exa", "exa-pro", "exa-research", "exa-fast"]),
+        "exa_answer advertises the model enum"
+    );
+
+    // initialize + tools/list are non-billable and never touch exa upstream.
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "control-plane methods create zero ledger rows"
+    );
+    let metrics = harness.mock_metrics().await;
+    assert_eq!(
+        metrics,
+        json!({ "search": 0, "contents": 0, "answer": 0 }),
+        "initialize/tools-list answered locally, zero upstream calls"
+    );
+}
+
+/// Criterion (plan L224): tools/call web_search_exa bills EXACTLY 1 credit,
+/// returns the mock native body as MCP content, translates onto POST /search
+/// (mock sees the REST body), and records provider='exa' + mcp:exa/web_search.
+#[tokio::test]
+async fn exa_web_search_bills_one_credit_and_returns_native_body() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-search", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "web_search_exa",
+            json!({ "query": "hikari exa test", "numResults": 5 }),
+        ))
+        .await;
+    assert_eq!(result["id"], json!(2));
+    assert!(
+        result["result"]["isError"].is_null() || result["result"]["isError"] == json!(false),
+        "successful web search is not an error: {result}"
+    );
+    // Native mock body as text content + structuredContent projection.
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let parsed: Value = serde_json::from_str(content_text).expect("native body text is json");
+    assert_eq!(parsed["results"][0]["url"], json!("https://example.com/1"));
+    assert_eq!(
+        result["result"]["structuredContent"]["results"][0]["title"],
+        json!("Mock"),
+        "structuredContent mirrors the native body"
+    );
+    assert_eq!(
+        result["result"]["structuredContent"]["status"],
+        json!(200),
+        "upstream status projected into structuredContent"
+    );
+
+    // The mock received the translated REST body on POST /search.
+    let bodies = harness.mock_last_bodies().await;
+    assert_eq!(
+        bodies["search"],
+        json!({ "query": "hikari exa test", "numResults": 5 }),
+        "arguments translate verbatim onto the exa REST /search body"
+    );
+
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(charged.len(), 1, "exactly one ledger row: {charged:?}");
+    assert_eq!(charged[0].0, "charged");
+    assert_eq!(charged[0].1, 1, "web_search_exa bills 1 credit");
+
+    let pool = harness.pool().await;
+    let (kind, credits): (Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT request_kind_key, business_credits FROM auth_token_logs \
+         WHERE token_id = ? AND business_credits > 0 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&harness.token_id)
+    .fetch_one(&pool)
+    .await
+    .expect("billed token log row");
+    assert_eq!(kind.as_deref(), Some("mcp:exa/web_search"));
+    assert_eq!(credits, Some(1));
+
+    let log = sqlx::query(
+        "SELECT provider, request_kind_key, result_status FROM observability.request_logs \
+         WHERE path = '/exa/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("request log row");
+    assert_eq!(
+        log.get::<Option<String>, _>("provider").as_deref(),
+        Some("exa")
+    );
+    assert_eq!(
+        log.get::<Option<String>, _>("request_kind_key").as_deref(),
+        Some("mcp:exa/web_search"),
+        "request_logs kind is the committed T3 mcp:exa/web_search"
+    );
+    assert_eq!(log.get::<String, _>("result_status"), "success");
+
+    let month_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1), 0)",
+    )
+    .bind(&harness.token_id)
+    .fetch_one(&pool)
+    .await
+    .expect("quota row");
+    assert_eq!(month_count, 1);
+    pool.close().await;
+
+    assert_eq!(
+        harness.mock_metrics().await["search"],
+        json!(1),
+        "exactly one upstream /search call"
+    );
+}
+
+/// Criterion (plan L224 + gate 1): web_fetch_exa maps urls→POST /contents (the
+/// mock asserts the received body), the ids variant works identically, and
+/// each call bills 1 credit under mcp:exa/web_fetch.
+#[tokio::test]
+async fn exa_web_fetch_maps_urls_and_ids_onto_contents() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-fetch", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let urls_result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "web_fetch_exa",
+            json!({ "urls": ["https://example.com/1"] }),
+        ))
+        .await;
+    assert_eq!(urls_result["id"], json!(2));
+    assert!(
+        urls_result["result"]["isError"].is_null()
+            || urls_result["result"]["isError"] == json!(false),
+        "urls variant succeeds: {urls_result}"
+    );
+    assert_eq!(
+        urls_result["result"]["structuredContent"]["statuses"][0]["id"],
+        json!("https://example.com/1"),
+        "native /contents body projected"
+    );
+    let bodies = harness.mock_last_bodies().await;
+    assert_eq!(
+        bodies["contents"],
+        json!({ "urls": ["https://example.com/1"] }),
+        "urls variant lands on the REST /contents body verbatim"
+    );
+
+    let ids_result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            3,
+            "web_fetch_exa",
+            json!({ "ids": ["mock-content-id"] }),
+        ))
+        .await;
+    assert_eq!(ids_result["id"], json!(3));
+    assert!(
+        ids_result["result"]["isError"].is_null() || ids_result["result"]["isError"] == json!(false),
+        "ids variant succeeds: {ids_result}"
+    );
+    let bodies = harness.mock_last_bodies().await;
+    assert_eq!(
+        bodies["contents"],
+        json!({ "ids": ["mock-content-id"] }),
+        "ids variant lands on the REST /contents body verbatim"
+    );
+
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(
+        charged,
+        vec![("charged".to_string(), 1), ("charged".to_string(), 1)],
+        "each successful web_fetch_exa bills 1 credit: {charged:?}"
+    );
+    let logs = harness.token_log_rows().await;
+    let fetch_kinds: Vec<&str> = logs
+        .iter()
+        .filter(|(_, credits, _)| credits.unwrap_or(0) > 0)
+        .map(|(kind, _, _)| kind.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        fetch_kinds,
+        vec!["mcp:exa/web_fetch", "mcp:exa/web_fetch"],
+        "both variants bill under the committed T3 kind"
+    );
+
+    let metrics = harness.mock_metrics().await;
+    assert_eq!(metrics["contents"], json!(2), "two upstream /contents calls");
+    assert_eq!(metrics["search"], json!(0));
+    assert_eq!(metrics["answer"], json!(0));
+}
+
+/// Criterion (M19 XOR guard + gate 1): supplying BOTH urls and ids, or
+/// NEITHER, is a typed local invalid-params MCP error with ZERO upstream calls
+/// and ZERO billing.
+#[tokio::test]
+async fn exa_web_fetch_xor_violations_are_local_invalid_params() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-xor", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    for (id, arguments) in [
+        // Both present.
+        (
+            2u64,
+            json!({ "urls": ["https://example.com/1"], "ids": ["mock-id"] }),
+        ),
+        // Neither present.
+        (3u64, json!({})),
+        // Both present but empty (an empty array supplies no documents).
+        (4u64, json!({ "urls": [], "ids": [] })),
+    ] {
+        let result = harness
+            .exa_mcp_json(&ExaMcpHarness::tools_call(
+                id,
+                "web_fetch_exa",
+                arguments.clone(),
+            ))
+            .await;
+        assert_eq!(result["id"], json!(id));
+        assert_eq!(
+            result["result"]["isError"],
+            json!(true),
+            "XOR violation {arguments} is a typed isError result"
+        );
+        let content_text = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(
+            content_text.contains("exactly one") && content_text.contains("urls"),
+            "invalid-params message names the XOR contract: {content_text}"
+        );
+    }
+
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "search": 0, "contents": 0, "answer": 0 }),
+        "XOR violations never reach exa upstream"
+    );
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "local invalid-params bills nothing"
+    );
+}
+
+/// Criterion (plan L224 + gate 1): exa_answer bills EXACTLY 2 credits, hits
+/// POST /answer once, and the wire body NEVER carries `stream`.
+#[tokio::test]
+async fn exa_answer_bills_two_credits_and_never_streams() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-answer", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "exa_answer",
+            json!({ "query": "what changed?", "model": "exa-pro" }),
+        ))
+        .await;
+    assert_eq!(result["id"], json!(2));
+    assert!(
+        result["result"]["isError"].is_null() || result["result"]["isError"] == json!(false),
+        "successful answer is not an error: {result}"
+    );
+    assert_eq!(
+        result["result"]["structuredContent"]["answer"],
+        json!("mock answer"),
+        "native /answer body projected"
+    );
+
+    // Stream-never proof: the REST body the mock received has no stream key.
+    let bodies = harness.mock_last_bodies().await;
+    assert_eq!(bodies["answer"]["query"], json!("what changed?"));
+    assert_eq!(bodies["answer"]["model"], json!("exa-pro"));
+    assert!(
+        bodies["answer"].get("stream").is_none(),
+        "stream is OMITTED from the exa REST /answer body: {}",
+        bodies["answer"]
+    );
+
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(charged.len(), 1, "exactly one ledger row: {charged:?}");
+    assert_eq!(charged[0].1, 2, "exa_answer bills 2 credits");
+
+    let pool = harness.pool().await;
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT request_kind_key FROM observability.request_logs \
+         WHERE path = '/exa/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("log row");
+    assert_eq!(kind.as_deref(), Some("mcp:exa/answer"));
+    let month_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1), 0)",
+    )
+    .bind(&harness.token_id)
+    .fetch_one(&pool)
+    .await
+    .expect("quota row");
+    assert_eq!(month_count, 2);
+    pool.close().await;
+
+    let metrics = harness.mock_metrics().await;
+    assert_eq!(metrics["answer"], json!(1), "exactly one upstream /answer call");
+}
+
+/// Criterion (T13 stream-gate reuse): a truthy `stream` smuggled through tool
+/// arguments is a LOCAL typed rejection (the documented boundary message) with
+/// ZERO upstream calls and ZERO billing.
+#[tokio::test]
+async fn exa_truthy_stream_arguments_reject_locally_without_upstream() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-stream", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    for (id, tool, arguments) in [
+        (2u64, "exa_answer", json!({ "query": "q", "stream": true })),
+        (3u64, "web_search_exa", json!({ "query": "q", "stream": "always" })),
+    ] {
+        let result = harness
+            .exa_mcp_json(&ExaMcpHarness::tools_call(id, tool, arguments))
+            .await;
+        assert_eq!(result["id"], json!(id));
+        assert_eq!(
+            result["result"]["isError"],
+            json!(true),
+            "{tool} truthy stream must reject locally: {result}"
+        );
+        let content_text = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(
+            content_text.contains("streaming not supported"),
+            "rejection carries the documented T13 streaming boundary message: {content_text}"
+        );
+    }
+
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "search": 0, "contents": 0, "answer": 0 }),
+        "stream rejections never reach exa upstream"
+    );
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (plan L224 + gate 1): 402 NO_MORE_CREDITS surfaces an isError MCP
+/// result carrying the NATIVE error body (tag included), marks the pooled key
+/// exhausted in the DB, records result_status='quota_exhausted', and bills 0.
+#[tokio::test]
+async fn exa_402_no_more_credits_is_error_marks_exhausted_and_bills_zero() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-402", &["key-exhausted"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "web_search_exa",
+            json!({ "query": "quota probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "402 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    assert!(
+        content_text.contains("NO_MORE_CREDITS"),
+        "native error body carried in content: {content_text}"
+    );
+    assert_eq!(
+        result["result"]["structuredContent"]["tag"],
+        json!("NO_MORE_CREDITS"),
+        "structuredContent carries the native error body"
+    );
+
+    let pool = harness.pool().await;
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM api_keys WHERE provider = 'exa' AND deleted_at IS NULL LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("key row");
+    assert_eq!(
+        status, "exhausted",
+        "402 NO_MORE_CREDITS marks the pooled key exhausted"
+    );
+    let log = sqlx::query(
+        "SELECT provider, result_status, request_kind_key FROM observability.request_logs \
+         WHERE path = '/exa/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("log row");
+    assert_eq!(log.get::<String, _>("result_status"), "quota_exhausted");
+    assert_eq!(
+        log.get::<Option<String>, _>("provider").as_deref(),
+        Some("exa")
+    );
+    pool.close().await;
+
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "provider error bills nothing"
+    );
+    assert_eq!(
+        harness.mock_metrics().await["search"],
+        json!(1),
+        "the 402 came from one real upstream call"
+    );
+}
+
+/// Criterion (gate 1): 401 INVALID_API_KEY surfaces an isError result and
+/// quarantines the pooled key through the existing auth-fail machinery; bills 0.
+#[tokio::test]
+async fn exa_401_invalid_key_is_error_and_quarantines() {
+    // Pooled key is NOT in the mock's valid key list → 401 INVALID_API_KEY.
+    let harness =
+        spawn_exa_harness("mcp-e2e-exa-401", &["ex-invalid-at-mock"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "web_search_exa",
+            json!({ "query": "auth probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "401 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("INVALID_API_KEY"),
+        "native 401 body carried: {content_text}"
+    );
+
+    let pool = harness.pool().await;
+    let quarantined: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_quarantines q \
+         JOIN api_keys k ON k.id = q.key_id \
+         WHERE k.api_key = 'ex-invalid-at-mock' AND q.cleared_at IS NULL \
+         AND q.reason_code = 'invalid_api_key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("quarantine scan");
+    assert_eq!(
+        quarantined, 1,
+        "401 INVALID_API_KEY quarantines the pooled key"
+    );
+    pool.close().await;
+
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (M12 + gate 1): 429 RATE_LIMITED surfaces an isError result, the
+/// key STAYS active, and the Retry-After-sized shared HTTP backoff is armed
+/// (record path reused from the T13 REST facade); bills 0.
+#[tokio::test]
+async fn exa_429_rate_limited_is_error_and_arms_backoff() {
+    let harness = spawn_exa_harness("mcp-e2e-exa-429", &["key-throttled"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .exa_mcp_json(&ExaMcpHarness::tools_call(
+            2,
+            "web_search_exa",
+            json!({ "query": "throttle probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "429 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("RATE_LIMIT_EXCEEDED"),
+        "native 429 body carried: {content_text}"
+    );
+
+    let pool = harness.pool().await;
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-throttled'")
+            .fetch_one(&pool)
+            .await
+            .expect("key row");
+    assert_eq!(status, "active", "429 must NOT exhaust the exa key");
+    let backoff: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_transient_backoffs b \
+         JOIN api_keys k ON k.id = b.key_id \
+         WHERE k.api_key = 'key-throttled' AND b.scope = 'http_global' \
+         AND b.reason_code = 'upstream_rate_limited_429'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("backoff scan");
+    assert_eq!(
+        backoff, 1,
+        "429 arms the shared HTTP transient backoff (Retry-After honored)"
+    );
+    pool.close().await;
+
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (gate 1): non-billable methods (initialize, ping, tools/list,
+/// resources/prompts lists, notifications) record ZERO ledger rows and ZERO
+/// upstream calls.
+#[tokio::test]
+async fn exa_non_billable_methods_record_zero_ledger_and_zero_upstream() {
+    let harness =
+        spawn_exa_harness("mcp-e2e-exa-nonbillable", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    for message in [
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }),
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }),
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "resources/list" }),
+        json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" }),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    ] {
+        let result = harness.exa_mcp_call(&message).await;
+        assert!(
+            result.status == StatusCode::OK || result.status == StatusCode::ACCEPTED,
+            "non-billable method status {}: {}",
+            result.status,
+            result.body_text()
+        );
+    }
+
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "control-plane methods bill nothing"
+    );
+    let logs = harness.token_log_rows().await;
+    assert!(
+        logs.iter().all(|(_, credits, _)| credits.unwrap_or(0) == 0),
+        "no business credits recorded: {logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .all(|(_, _, provider)| provider.as_deref().is_none_or(|value| value == "exa")),
+        "token-log rows stay provider-stamped: {logs:?}"
+    );
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "search": 0, "contents": 0, "answer": 0 }),
+        "control-plane answered locally, zero upstream calls"
+    );
+}
+
+/// Criterion (gate 1 + MUST NOT list): an unknown tool — including every
+/// deprecated shim name — is a TYPED MCP error with ZERO upstream calls and
+/// ZERO billing.
+#[tokio::test]
+async fn exa_unknown_tool_and_deprecated_shims_are_typed_errors() {
+    let harness =
+        spawn_exa_harness("mcp-e2e-exa-unknown", &["mock-exa-key"], &["mock-exa-key"]).await;
+    harness.initialize(1).await;
+
+    for (id, tool) in [
+        (2u64, "crawling_exa"),
+        (3u64, "company_research_exa"),
+        (4u64, "deep_researcher_start"),
+        (5u64, "agent_run"),
+    ] {
+        let result = harness
+            .exa_mcp_json(&ExaMcpHarness::tools_call(id, tool, json!({ "query": "nope" })))
+            .await;
+        assert_eq!(result["id"], json!(id));
+        assert_eq!(
+            result["result"]["isError"],
+            json!(true),
+            "{tool} must be an unknown-tool error"
+        );
+        let content_text = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(
+            content_text.contains("Unknown tool"),
+            "typed unknown-tool error for {tool}: {content_text}"
+        );
+    }
+
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "search": 0, "contents": 0, "answer": 0 }),
+        "unknown tools never reach exa upstream"
+    );
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}

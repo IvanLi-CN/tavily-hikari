@@ -5,6 +5,7 @@
 //! must leave the answer counter untouched).
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::State;
@@ -13,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
-use serde_json::json;
+use serde_json::{Value, json};
 
 const KEY_EXHAUSTED: &str = "key-exhausted";
 const KEY_THROTTLED: &str = "key-throttled";
@@ -49,9 +50,31 @@ struct MockCounters {
     answer: AtomicU64,
 }
 
+/// Last request body received per endpoint (plan todo 17 additive knob): lets
+/// facade suites assert the MCP→REST translation wire body (e.g. urls-vs-ids
+/// mapping and the stream-never rule) without changing any existing response.
+#[derive(Debug, Default)]
+struct LastBodies {
+    search: Mutex<Option<String>>,
+    contents: Mutex<Option<String>>,
+    answer: Mutex<Option<String>>,
+}
+
+fn remember_last_body(slot: &Mutex<Option<String>>, body: Option<&str>) {
+    *slot.lock().expect("last body lock") = Some(body.unwrap_or_default().to_string());
+}
+
+fn read_last_body(slot: &Mutex<Option<String>>) -> Value {
+    let Some(text) = slot.lock().expect("last body lock").clone() else {
+        return Value::Null;
+    };
+    serde_json::from_str(&text).unwrap_or(Value::String(text))
+}
+
 struct MockState {
     keys: Vec<String>,
     counters: MockCounters,
+    last_bodies: LastBodies,
 }
 
 impl MockState {
@@ -128,9 +151,10 @@ fn authorize(state: &MockState, headers: &HeaderMap) -> Option<Response> {
 async fn handle_search(
     State(state): State<Arc<MockState>>,
     headers: HeaderMap,
-    _body: Option<String>,
+    body: Option<String>,
 ) -> Response {
     state.counters.search.fetch_add(1, Ordering::Relaxed);
+    remember_last_body(&state.last_bodies.search, body.as_deref());
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -153,9 +177,10 @@ async fn handle_search(
 async fn handle_contents(
     State(state): State<Arc<MockState>>,
     headers: HeaderMap,
-    _body: Option<String>,
+    body: Option<String>,
 ) -> Response {
     state.counters.contents.fetch_add(1, Ordering::Relaxed);
+    remember_last_body(&state.last_bodies.contents, body.as_deref());
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -173,9 +198,10 @@ async fn handle_contents(
 async fn handle_answer(
     State(state): State<Arc<MockState>>,
     headers: HeaderMap,
-    _body: Option<String>,
+    body: Option<String>,
 ) -> Response {
     state.counters.answer.fetch_add(1, Ordering::Relaxed);
+    remember_last_body(&state.last_bodies.answer, body.as_deref());
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -199,12 +225,25 @@ async fn handle_metrics(State(state): State<Arc<MockState>>) -> Response {
     .into_response()
 }
 
+/// Last received request body per endpoint (plan todo 17 additive knob):
+/// parsed back to JSON when possible, else the raw string; null before the
+/// first call. Used by the exa MCP e2e to assert the translated wire body.
+async fn handle_last_bodies(State(state): State<Arc<MockState>>) -> Response {
+    Json(json!({
+        "search": read_last_body(&state.last_bodies.search),
+        "contents": read_last_body(&state.last_bodies.contents),
+        "answer": read_last_body(&state.last_bodies.answer),
+    }))
+    .into_response()
+}
+
 fn build_router(state: Arc<MockState>) -> Router {
     Router::new()
         .route("/search", post(handle_search))
         .route("/contents", post(handle_contents))
         .route("/answer", post(handle_answer))
         .route("/metrics", get(handle_metrics))
+        .route("/last-bodies", get(handle_last_bodies))
         .with_state(state)
 }
 
@@ -214,6 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(MockState {
         keys: cli.keys,
         counters: MockCounters::default(),
+        last_bodies: LastBodies::default(),
     });
     let app = build_router(state);
     println!("Mock Exa upstream listening on http://{}", cli.bind);
@@ -234,6 +274,7 @@ mod tests {
         let state = Arc::new(MockState {
             keys: vec!["mock-exa-key".to_string()],
             counters: MockCounters::default(),
+            last_bodies: LastBodies::default(),
         });
         tokio::spawn(async move {
             axum::serve(listener, build_router(state))
@@ -391,6 +432,59 @@ mod tests {
         assert_eq!(
             metrics.json::<Value>().await.expect("json body"),
             json!({ "search": 2, "contents": 0, "answer": 1 })
+        );
+    }
+
+    #[tokio::test]
+    async fn last_bodies_readout_records_received_request_bodies() {
+        // Given a running mock with no calls yet; Then the readout is all-null.
+        let base = spawn_mock().await;
+        let readout = client()
+            .get(format!("{base}/last-bodies"))
+            .send()
+            .await
+            .expect("last-bodies request");
+        assert_eq!(
+            readout.json::<Value>().await.expect("json body"),
+            json!({ "search": null, "contents": null, "answer": null })
+        );
+
+        // When /search and /contents each receive one JSON body (including one
+        // rejected by auth); Then the readout echoes the LAST body per endpoint
+        // parsed back to JSON, and the uncalled endpoint stays null.
+        client()
+            .post(format!("{base}/search"))
+            .header("x-api-key", "mock-exa-key")
+            .json(&json!({ "query": "first", "numResults": 3 }))
+            .send()
+            .await
+            .expect("search request");
+        client()
+            .post(format!("{base}/search"))
+            .header("x-api-key", "not-a-key")
+            .json(&json!({ "query": "second" }))
+            .send()
+            .await
+            .expect("search request");
+        client()
+            .post(format!("{base}/contents"))
+            .header("x-api-key", "mock-exa-key")
+            .json(&json!({ "urls": ["https://example.com"] }))
+            .send()
+            .await
+            .expect("contents request");
+        let readout = client()
+            .get(format!("{base}/last-bodies"))
+            .send()
+            .await
+            .expect("last-bodies request");
+        assert_eq!(
+            readout.json::<Value>().await.expect("json body"),
+            json!({
+                "search": { "query": "second" },
+                "contents": { "urls": ["https://example.com"] },
+                "answer": null
+            })
         );
     }
 }

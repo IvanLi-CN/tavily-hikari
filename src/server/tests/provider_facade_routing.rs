@@ -683,20 +683,40 @@ use super::*;
         let harness = spawn_provider_facade_harness("provider-facade-exa-mcp").await;
         let client = Client::new();
 
-        // MCP query slot exaApiKey (plan todo 11 auth matrix) authenticates.
+        // Todo-17 contract: the typed pending boundary is replaced by the exa
+        // LOCAL facade — every response is an `event: message\ndata: {..}` SSE
+        // frame carrying ONE JSON-RPC payload (session-less, local answers).
+        let parse_sse = |text: &str| -> Value {
+            let data = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data:"))
+                .unwrap_or_else(|| panic!("expected an SSE data frame, got: {text:?}"));
+            serde_json::from_str(data.trim()).expect("sse payload decodes")
+        };
+
+        // MCP query slot exaApiKey (plan todo 11 auth matrix) authenticates;
+        // initialize is answered locally with the exa facade identity.
         let resp = client
             .post(format!(
                 "http://{}/exa/mcp?exaApiKey={}",
                 harness.addr, harness.token
             ))
             .header("content-type", "application/json")
-            .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
             .send()
             .await
             .expect("exa mcp query slot request");
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().await.expect("response body");
+        let payload = parse_sse(&text);
+        assert_eq!(
+            payload["result"]["serverInfo"]["name"],
+            serde_json::json!("exa-search-hikari"),
+            "todo-17 exa local facade identity"
+        );
 
-        // Native x-api-key header slot authenticates on the MCP surface too.
+        // Native x-api-key header slot authenticates on the MCP surface too;
+        // tools/list advertises the local catalog of EXACTLY three tools.
         let resp = client
             .post(format!("http://{}/exa/mcp", harness.addr))
             .header("x-api-key", harness.token.clone())
@@ -705,7 +725,65 @@ use super::*;
             .send()
             .await
             .expect("exa mcp header request");
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().await.expect("response body");
+        let payload = parse_sse(&text);
+        let mut tool_names: Vec<String> = payload["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec![
+                "exa_answer".to_string(),
+                "web_fetch_exa".to_string(),
+                "web_search_exa".to_string(),
+            ],
+            "the exa facade catalog is exactly the three todo-17 tools"
+        );
+
+        // tools/call dispatches through the pooled-key REST translation: the
+        // upstream mock sees POST /search with the pooled key in x-api-key.
+        let resp = client
+            .post(format!("http://{}/exa/mcp", harness.addr))
+            .header("authorization", format!("Bearer {}", harness.token))
+            .header("content-type", "application/json")
+            .body(
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"web_search_exa","arguments":{"query":"routing probe"}}}"#,
+            )
+            .send()
+            .await
+            .expect("exa mcp tools call request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().await.expect("response body");
+        let payload = parse_sse(&text);
+        assert!(
+            payload["result"]["isError"].is_null()
+                || payload["result"]["isError"] == serde_json::json!(false),
+            "translated tools/call succeeds against the capturing mock: {payload}"
+        );
+        {
+            let captures = harness.rest_captures.lock().expect("captures lock");
+            assert_eq!(captures.len(), 1, "exactly one upstream REST call");
+            let capture = &captures[0];
+            assert_eq!(capture.method, "POST");
+            assert_eq!(capture.path, "/search");
+            assert_eq!(
+                capture.header("x-api-key"),
+                Some("mock-exa-key"),
+                "pooled exa key injected into the native header"
+            );
+            assert!(!capture.has_header("authorization"));
+            let body = String::from_utf8_lossy(&capture.body);
+            assert!(
+                body.contains("\"query\":\"routing probe\""),
+                "translated REST body carries the tool arguments: {body}"
+            );
+            assert!(!body.contains("th-"), "client token never forwarded");
+        }
 
         // Foreign exaApiKey stays a Hikari 401.
         let resp = client

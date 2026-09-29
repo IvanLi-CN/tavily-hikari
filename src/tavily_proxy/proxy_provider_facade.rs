@@ -68,6 +68,17 @@ pub use proxy_provider_facade_serpapi_mcp::{
 // Tavily rebalance keeps its own byte-stable executors and never reaches here.
 mod proxy_provider_facade_brave_mcp;
 
+// Exa LOCAL MCP facade execution layer (plan todo 17; amendments M12/M19/M22):
+// `/exa/mcp` tools/call translated into a pooled-key Exa REST POST re-using
+// the committed todo-13 Exa record path (classification → reconcile: 402
+// budget tags → exhausted (SuccessOnly recovery), 401 → auth-fail quarantine,
+// 429 → per-key Retry-After-sized shared HTTP backoff — M12: no new global
+// limiter; provider='exa' request_logs keyed on /exa/mcp + the tools/call body
+// → mcp:exa/{web_search,web_fetch,answer}). The executor is a pub TavilyProxy
+// method; the module stays private (methods resolve on the type). Tavily
+// rebalance keeps its own byte-stable executors and never reaches here.
+mod proxy_provider_facade_exa_mcp;
+
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
 /// provider selects its parsed base inside the executor, so no state field

@@ -9,12 +9,12 @@
 //! catalog DATA ([`LocalMcpToolDefinition`]) and a translate hook.
 //!
 //! M19: the catalog is per-provider DATA with validation rules (the single-
-//! required-field model is expressed as a per-tool validate fn so todo-17 can add
-//! an XOR variant); identity constants are parameterized (`server_name`,
-//! `ingress_path`); provider translation lives in NEW modules (never editing the
-//! Tavily translation). The framework carries TWO small provider seams — the
-//! lib-executor dispatch and the outcome projection — that todo-17 extends with
-//! an Exa arm.
+//! required-field model is expressed as a per-tool validate fn; todo-17's exa
+//! module adds the XOR variant for web_fetch_exa); identity constants are
+//! parameterized (`server_name`, `ingress_path`); provider translation lives
+//! in NEW modules (never editing the Tavily translation). The framework
+//! carries TWO small provider seams — the lib-executor dispatch and the
+//! outcome projection — extended with the todo-17 Exa (POST) arms.
 //!
 //! M22: local validation is the minimal contract guard (required fields only);
 //! the brave upstream enforces bounds. No streaming, no hosted passthrough.
@@ -26,12 +26,11 @@ use tavily_hikari::{BusinessCalls1hReservationOutcome, TokenBillingGuard};
 /// constant; a local facade advertises the Hikari build, not an upstream).
 const LOCAL_MCP_SERVER_VERSION: &str = REBALANCE_MCP_SERVER_VERSION;
 
-/// The translated upstream REST request a tool call maps to. Brave is a GET with
-/// query params; todo-17 Exa is a POST with a JSON body — the enum lets the one
-/// framework express both without an escape hatch.
+/// The translated upstream REST request a tool call maps to. Brave is a GET
+/// with query params; Exa (todo 17) is a POST with a JSON body — the enum lets
+/// the one framework express both without an escape hatch.
 pub(super) enum LocalMcpUpstreamRequest {
     Get { query: Option<String> },
-    #[allow(dead_code)] // consumed by todo-17 (Exa local facade)
     Post { body: Vec<u8> },
 }
 
@@ -252,7 +251,8 @@ async fn local_tool_error_response(
 }
 
 /// Dispatch the provider lib executor for one translated tools/call and project
-/// the outcome. The provider match is the small seam todo-17 extends for Exa.
+/// the outcome. The provider match is the small seam todo-16 reserved and
+/// todo-17 extended with the Exa (POST) arms.
 async fn execute_local_mcp_upstream(
     ctx: &LocalMcpDispatchCtx<'_>,
     tool: &LocalMcpToolDefinition,
@@ -282,6 +282,12 @@ async fn execute_local_mcp_upstream(
                 .proxy_provider_mcp_brave_facade_call(audit_request, query)
                 .await?
         }
+        (tavily_hikari::providers::ProviderId::Exa, LocalMcpUpstreamRequest::Post { body }) => {
+            ctx.state
+                .proxy
+                .proxy_provider_mcp_exa_facade_call(audit_request, body)
+                .await?
+        }
         (provider, _) => {
             return Err(ProxyError::Other(format!(
                 "{provider} local MCP facade executor is not wired yet"
@@ -292,6 +298,10 @@ async fn execute_local_mcp_upstream(
     let outcome = match ctx.facade.provider {
         tavily_hikari::providers::ProviderId::Brave => {
             let outcome = brave_facade_outcome(resp.status, &resp.body);
+            (outcome.result_status, outcome.failure_kind)
+        }
+        tavily_hikari::providers::ProviderId::Exa => {
+            let outcome = exa_facade_outcome(resp.status, &resp.body);
             (outcome.result_status, outcome.failure_kind)
         }
         provider => {

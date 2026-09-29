@@ -31,16 +31,18 @@ use tavily_hikari::{
 mod provider_mcp_serpapi;
 
 // Provider-parameterized LOCAL MCP facade framework (plan todo 16; M19) + the
-// Brave facade built on it. The framework generalizes the rebalance local-facade
-// plumbing (envelope/batch/SSE/dispatch/billing) into `LocalMcpFacade` without
-// touching the Tavily golden path; `provider_mcp_brave` supplies the brave
-// catalog DATA + tools/call→REST translation and replaces the typed
-// `provider_mcp_pending` boundary for the brave surface only. Exa keeps that
-// boundary until todo 17 (it will add an analogous module on this framework).
+// Brave and Exa facades built on it. The framework generalizes the rebalance
+// local-facade plumbing (envelope/batch/SSE/dispatch/billing) into
+// `LocalMcpFacade` without touching the Tavily golden path;
+// `provider_mcp_brave` (todo 16) and `provider_mcp_exa` (todo 17) supply the
+// per-provider catalog DATA + tools/call→REST translations and replace the
+// typed `provider_mcp_pending` boundary for both surfaces.
 #[path = "local_mcp_facade.rs"]
 mod local_mcp_facade;
 #[path = "provider_mcp_brave.rs"]
 mod provider_mcp_brave;
+#[path = "provider_mcp_exa.rs"]
+mod provider_mcp_exa;
 
 /// Client-facing surface deciding which native client key slots are accepted
 /// (plan todo 11): the Exa MCP surface additionally honors the `exaApiKey`
@@ -765,9 +767,10 @@ async fn provider_rest_facade(
 /// Provider MCP ingress handler (plan todo 11). Auth (universal Bearer +
 /// native slots incl. the Exa `exaApiKey` MCP query slot) and the hourly
 /// any-request gate are final here. SerpApi dispatches to the hosted
-/// passthrough pipeline (todo 15); the execution bodies for the Exa/Brave
-/// LOCAL MCP facades stay the documented boundary until todos 16-17 replace
-/// them behind the same seam.
+/// passthrough pipeline (todo 15); Brave (todo 16) and Exa (todo 17)
+/// dispatch to their LOCAL facades on the shared framework — every registered
+/// provider ingress is wired, and the typed pending fallback below now only
+/// guards unexpected provider ids (Tavily never routes here).
 async fn provider_mcp_facade(
     state: Arc<AppState>,
     req: Request<Body>,
@@ -839,10 +842,10 @@ async fn provider_mcp_facade(
         }
     }
 
-    // SerpApi hosted passthrough (todo 15) and the Brave LOCAL facade (todo 16)
-    // each replace the typed boundary behind the same seam; Exa keeps the todo-17
-    // boundary below. Both build the SHARED facade context (the serpapi module
-    // owns it as the first consumer of the seam).
+    // SerpApi hosted passthrough (todo 15), the Brave LOCAL facade (todo 16),
+    // and the Exa LOCAL facade (todo 17) each replaced the typed boundary
+    // behind the same seam. All three build the SHARED facade context (the
+    // serpapi module owns it as the first consumer of the seam).
     if provider == ProviderId::Serpapi {
         return provider_mcp_serpapi::provider_mcp_passthrough(
             state,
@@ -875,14 +878,32 @@ async fn provider_mcp_facade(
         )
         .await;
     }
+    if provider == ProviderId::Exa {
+        return provider_mcp_exa::provider_mcp_exa_local_facade(
+            state,
+            provider_mcp_serpapi::ProviderMcpFacadeContext {
+                provider,
+                method: &method,
+                path: &path,
+                request_kind: &request_kind,
+                body: &body_bytes,
+                auth: &auth,
+                original_headers: &parts.headers,
+                remote_addr,
+            },
+        )
+        .await;
+    }
 
     provider_mcp_execution_pending_response(provider)
 }
 
-/// Typed Hikari boundary response for provider MCP surfaces whose execution
-/// bodies are owned by todos 15-17. Never a provider-shaped error and never
-/// an upstream call (acceptance C1 keeps every mock counter at zero until
-/// the owner todo replaces this body behind the same seam).
+/// Typed Hikari boundary response for provider MCP surfaces without a wired
+/// execution body. All three registered ingresses (SerpApi todo 15, Brave
+/// todo 16, Exa todo 17) dispatch above; Tavily keeps its pinned `/mcp`
+/// handler and never routes here — this fallback stays as the typed shape for
+/// any unexpected provider id (never a provider-shaped error, never an
+/// upstream call).
 fn provider_mcp_execution_pending_response(
     provider: ProviderId,
 ) -> Result<Response<Body>, StatusCode> {
