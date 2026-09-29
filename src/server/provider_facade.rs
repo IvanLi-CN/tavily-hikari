@@ -22,6 +22,14 @@ use tavily_hikari::{
     brave_facade_outcome, exa_facade_outcome, serpapi_facade_outcome,
 };
 
+// SerpApi hosted MCP passthrough pipeline (plan todo 15): session-provider
+// tagging + translation, tool billing matrix, retry-ladder follow-ups, and
+// provider-scoped session gating (M6). Replaces the typed todo-11
+// `provider_mcp_pending` boundary for the serpapi surface only; Exa/Brave
+// MCP facades keep that boundary until todos 16-17.
+#[path = "provider_mcp_serpapi.rs"]
+mod provider_mcp_serpapi;
+
 /// Client-facing surface deciding which native client key slots are accepted
 /// (plan todo 11): the Exa MCP surface additionally honors the `exaApiKey`
 /// query slot, mirroring Tavily's `tavilyApiKey` query parity on `/mcp`.
@@ -744,10 +752,10 @@ async fn provider_rest_facade(
 
 /// Provider MCP ingress handler (plan todo 11). Auth (universal Bearer +
 /// native slots incl. the Exa `exaApiKey` MCP query slot) and the hourly
-/// any-request gate are final here; the execution body is the documented
-/// boundary: hosted passthrough for SerpApi lands in todo 15 and the local
-/// MCP facades for Exa/Brave in todos 16-17 (session provider-tagging,
-/// billing classification, and tool translation are their seams).
+/// any-request gate are final here. SerpApi dispatches to the hosted
+/// passthrough pipeline (todo 15); the execution bodies for the Exa/Brave
+/// LOCAL MCP facades stay the documented boundary until todos 16-17 replace
+/// them behind the same seam.
 async fn provider_mcp_facade(
     state: Arc<AppState>,
     req: Request<Body>,
@@ -759,6 +767,10 @@ async fn provider_mcp_facade(
     if let Err(response) = ensure_ha_allows_basic_business(&state, &path).await {
         return Ok(response);
     }
+    let remote_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0);
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -813,6 +825,25 @@ async fn provider_mcp_facade(
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
+    }
+
+    // SerpApi hosted passthrough (plan todo 15) replaces the typed boundary
+    // for this surface; Exa/Brave keep the todo 16-17 boundary below.
+    if provider == ProviderId::Serpapi {
+        return provider_mcp_serpapi::provider_mcp_passthrough(
+            state,
+            provider_mcp_serpapi::ProviderMcpFacadeContext {
+                provider,
+                method: &method,
+                path: &path,
+                request_kind: &request_kind,
+                body: &body_bytes,
+                auth: &auth,
+                original_headers: &parts.headers,
+                remote_addr,
+            },
+        )
+        .await;
     }
 
     provider_mcp_execution_pending_response(provider)

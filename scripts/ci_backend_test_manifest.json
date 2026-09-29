@@ -65,6 +65,12 @@
         "provider_facades_contract"
       ]
     },
+    "integration:provider_mcp_e2e": {
+      "list_args": [
+        "--test",
+        "provider_mcp_e2e"
+      ]
+    },
     "integration:request_kind_canonical_backfill": {
       "list_args": [
         "--test",
@@ -139,6 +145,7 @@
         "tests::request_kind_and_core::tavily_http_",
         "tavily_proxy::provider_facade_tests::",
         "tavily_proxy::proxy_provider_facade_serpapi::serpapi_facade_translation_tests::",
+        "tavily_proxy::proxy_provider_facade_serpapi_mcp::serpapi_mcp_passthrough_tests::",
         "tavily_proxy::proxy_provider_facade_exa::exa_facade_translation_tests::",
         "tavily_proxy::proxy_provider_facade_brave::brave_facade_translation_tests::"
       ]
@@ -1115,6 +1122,17 @@
       "run_args": [
         "--test",
         "provider_facades_contract"
+      ]
+    },
+    {
+      "id": "integration-provider-mcp-e2e",
+      "kind": "integration",
+      "name": "Integration Provider MCP E2E",
+      "estimated_seconds": 60,
+      "coverage_target": "integration:provider_mcp_e2e",
+      "run_args": [
+        "--test",
+        "provider_mcp_e2e"
       ]
     },
     {

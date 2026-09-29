@@ -565,6 +565,19 @@ fn is_mcp_session_delete_request(method: &Method, path: &str) -> bool {
     *method == Method::DELETE && path == "/mcp"
 }
 
+/// Method-level non-billable gate shared by the Tavily `/mcp` billing
+/// pipeline and the provider hosted-MCP passthrough (plan todo 15): the
+/// control-plane methods plus the resources/prompts/notifications families
+/// never consume business quota. Extracted verbatim from the /mcp pipeline's
+/// LOCAL CLOSURE so both surfaces gate on ONE truth source; the closure below
+/// (proxy_handlers_and_views.rs) delegates here with identical behavior.
+fn is_non_billable_mcp_method(method: &str) -> bool {
+    matches!(method, "initialize" | "ping" | "tools/list")
+        || method.starts_with("resources/")
+        || method.starts_with("prompts/")
+        || method.starts_with("notifications/")
+}
+
 fn is_mcp_session_delete_unsupported_response(
     method: &Method,
     path: &str,

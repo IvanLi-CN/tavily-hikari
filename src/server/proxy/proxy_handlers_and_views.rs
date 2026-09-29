@@ -100,9 +100,15 @@ async fn proxy_handler(
             session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
         } else {
             let has_active_control_session = if let Some(token_id) = token_id.as_deref() {
+                // M6 (plan todo 15): provider-scoped gating — sessions created
+                // on other provider surfaces (e.g. serpapi passthrough) never
+                // suppress the Tavily rebalance transport decision.
                 state
                     .proxy
-                    .token_has_active_non_rebalance_mcp_session(token_id)
+                    .token_has_active_non_rebalance_mcp_session_for_provider(
+                        token_id,
+                        tavily_hikari::providers::ProviderId::Tavily,
+                    )
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             } else {
@@ -287,9 +293,14 @@ async fn proxy_handler(
                     && incoming_proxy_session_id.is_none() =>
             {
                 let requires_session = if let Some(token_id) = token_id.as_deref() {
+                    // M6 (plan todo 15): provider-scoped — a serpapi session
+                    // must never trip the Tavily requires-session gate.
                     state
                         .proxy
-                        .token_has_active_non_rebalance_mcp_session(token_id)
+                        .token_has_active_non_rebalance_mcp_session_for_provider(
+                            token_id,
+                            tavily_hikari::providers::ProviderId::Tavily,
+                        )
                         .await
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 } else {
@@ -381,6 +392,27 @@ async fn proxy_handler(
             );
         };
 
+        // M6 (plan todo 15): provider-scoped resolution — a proxy session
+        // stamped for another provider surface (e.g. serpapi passthrough)
+        // never resolves here; legacy NULL tags keep the Tavily default so
+        // every pre-provider row stays byte-stable.
+        let session_provider_tag = state
+            .proxy
+            .mcp_session_provider_tag(proxy_session_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if session_provider_tag
+            .flatten()
+            .as_deref()
+            .is_some_and(|tag| tag != "tavily")
+        {
+            return mcp_session_response(
+                StatusCode::NOT_FOUND,
+                "session_unavailable",
+                "MCP session is unavailable, please reconnect to initialize a new session.",
+            );
+        }
+
         if session.auth_token_id.as_deref() != token_id.as_deref() {
             return mcp_session_response(
                 StatusCode::FORBIDDEN,
@@ -433,7 +465,12 @@ async fn proxy_handler(
         && let Some(token_id) = token_id.as_deref()
         && let Some(session) = state
             .proxy
-            .latest_active_mcp_session_for_token(token_id)
+            // M6 (plan todo 15): provider-scoped so a serpapi passthrough
+            // session never shadows the token's Tavily rebalance session.
+            .latest_active_mcp_session_for_token_in_provider(
+                token_id,
+                tavily_hikari::providers::ProviderId::Tavily,
+            )
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         && session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
@@ -524,10 +561,10 @@ async fn proxy_handler(
                     let mut expected_search_total = 0i64;
 
                     let is_non_billable_method = |method: &str| {
-                        matches!(method, "initialize" | "ping" | "tools/list")
-                            || method.starts_with("resources/")
-                            || method.starts_with("prompts/")
-                            || method.starts_with("notifications/")
+                        // Shared gate with the provider hosted-MCP passthrough
+                        // (plan todo 15; extracted verbatim into
+                        // is_non_billable_mcp_method — behavior unchanged).
+                        is_non_billable_mcp_method(method)
                     };
 
                     let handle_tool_call = |map: &mut serde_json::Map<String, Value>,

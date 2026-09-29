@@ -1,9 +1,10 @@
 //! Mock SerpAPI upstream (HTTP search + account + streamable MCP) for offline tests.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Query, State};
+use axum::extract::{Query, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -52,6 +53,14 @@ struct MockState {
     searches_left: AtomicU64,
     plan_renewal_date: String,
     sse_errors: bool,
+    // Additive request observability counters (plan todo 15; D1 precedent).
+    // Response behavior is untouched — these only back GET /mock-metrics.
+    mcp_requests: AtomicU64,
+    mcp_initialize_requests: AtomicU64,
+    mcp_tools_call_requests: AtomicU64,
+    tavily_slot_seen: AtomicU64,
+    last_authorization: Mutex<Option<String>>,
+    last_session_header: Mutex<Option<String>>,
 }
 
 impl MockState {
@@ -61,6 +70,38 @@ impl MockState {
             searches_left: AtomicU64::new(MONTHLY_SEARCHES),
             plan_renewal_date,
             sse_errors,
+            mcp_requests: AtomicU64::new(0),
+            mcp_initialize_requests: AtomicU64::new(0),
+            mcp_tools_call_requests: AtomicU64::new(0),
+            tavily_slot_seen: AtomicU64::new(0),
+            last_authorization: Mutex::new(None),
+            last_session_header: Mutex::new(None),
+        }
+    }
+
+    /// Record what an inbound request carried (additive; never changes the
+    /// response): the last Authorization bearer value, the last
+    /// `mcp-session-id` header, and whether ANY Tavily-only client slot
+    /// (`Tavily-Api-Key` header or `tavilyApiKey` query) was observed — the
+    /// passthrough contract says it never should be on serpapi outbound.
+    fn note_outbound_observation(&self, headers: &HeaderMap, raw_query: Option<&str>) {
+        if let Some(value) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            *self.last_authorization.lock().expect("auth lock") = Some(value.to_string());
+        }
+        if let Some(value) = headers.get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+            *self.last_session_header.lock().expect("session lock") = Some(value.to_string());
+        }
+        let header_slot = headers
+            .keys()
+            .any(|name| name.as_str().eq_ignore_ascii_case("tavily-api-key"));
+        let query_slot = raw_query
+            .map(|query| query.to_ascii_lowercase().contains("tavilyapikey"))
+            .unwrap_or(false);
+        if header_slot || query_slot {
+            self.tavily_slot_seen.store(1, Ordering::Relaxed);
         }
     }
 
@@ -134,7 +175,10 @@ fn error_response(status: StatusCode, body: Value, sse: bool) -> Response {
 async fn handle_search(
     State(state): State<Arc<MockState>>,
     Query(query): Query<SearchQuery>,
+    RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
 ) -> Response {
+    state.note_outbound_observation(&headers, raw_query.as_deref());
     let sse = query.sse_error.as_deref() == Some("1") || state.sse_errors;
     let Some(key) = query.api_key.as_deref().filter(|key| !key.is_empty()) else {
         return error_response(StatusCode::UNAUTHORIZED, invalid_key_body(), sse);
@@ -192,11 +236,25 @@ fn mcp_tool(name: &str) -> Value {
     })
 }
 
+/// Additive MCP query knob mirroring /search's `sse_error=1`: error responses
+/// wrap in an SSE `data:` frame (M7 requires BOTH run-out flavors be
+/// emittable on /mcp). Absent knob + absent env keeps the raw-JSON behavior
+/// byte-identical.
+#[derive(Deserialize)]
+struct McpQuery {
+    sse_error: Option<String>,
+}
+
 async fn handle_mcp(
     State(state): State<Arc<MockState>>,
+    Query(query): Query<McpQuery>,
+    RawQuery(raw_query): RawQuery,
     headers: HeaderMap,
     body: Option<String>,
 ) -> Response {
+    state.mcp_requests.fetch_add(1, Ordering::Relaxed);
+    state.note_outbound_observation(&headers, raw_query.as_deref());
+    let sse = query.sse_error.as_deref() == Some("1") || state.sse_errors;
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -205,13 +263,13 @@ async fn handle_mcp(
     match state.classify(bearer) {
         KeyStatus::Valid => {}
         KeyStatus::Invalid => {
-            return (StatusCode::UNAUTHORIZED, Json(invalid_key_body())).into_response();
+            return error_response(StatusCode::UNAUTHORIZED, invalid_key_body(), sse);
         }
         KeyStatus::Exhausted => {
-            return (StatusCode::TOO_MANY_REQUESTS, Json(run_out_body())).into_response();
+            return error_response(StatusCode::TOO_MANY_REQUESTS, run_out_body(), sse);
         }
         KeyStatus::Throttled => {
-            return (StatusCode::TOO_MANY_REQUESTS, Json(throttled_body())).into_response();
+            return error_response(StatusCode::TOO_MANY_REQUESTS, throttled_body(), sse);
         }
     }
 
@@ -231,23 +289,28 @@ async fn handle_mcp(
         .unwrap_or_default();
 
     match method {
-        "initialize" => (
-            StatusCode::OK,
-            [(
-                HeaderName::from_static("mcp-session-id"),
-                "mock-serpapi-mcp-session",
-            )],
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "mock-serpapi", "version": "0.1.0" }
-                }
-            })),
-        )
-            .into_response(),
+        "initialize" => {
+            state
+                .mcp_initialize_requests
+                .fetch_add(1, Ordering::Relaxed);
+            (
+                StatusCode::OK,
+                [(
+                    HeaderName::from_static("mcp-session-id"),
+                    "mock-serpapi-mcp-session",
+                )],
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": { "tools": {} },
+                        "serverInfo": { "name": "mock-serpapi", "version": "0.1.0" }
+                    }
+                })),
+            )
+                .into_response()
+        }
         "tools/list" => jsonrpc_result(
             id,
             json!({
@@ -256,6 +319,9 @@ async fn handle_mcp(
         )
         .into_response(),
         "tools/call" => {
+            state
+                .mcp_tools_call_requests
+                .fetch_add(1, Ordering::Relaxed);
             let encoded = serde_json::to_string(&search_success_body()).unwrap_or_default();
             jsonrpc_result(id, json!({ "structuredContent": { "result": encoded } })).into_response()
         }
@@ -272,11 +338,29 @@ async fn handle_mcp(
     }
 }
 
+/// Additive observability endpoint (plan todo 15): request counters and the
+/// last-seen auth/session evidence for passthrough contract assertions.
+async fn handle_mock_metrics(State(state): State<Arc<MockState>>) -> Json<Value> {
+    Json(json!({
+        "mcp_requests": state.mcp_requests.load(Ordering::Relaxed),
+        "mcp_initialize_requests": state.mcp_initialize_requests.load(Ordering::Relaxed),
+        "mcp_tools_call_requests": state.mcp_tools_call_requests.load(Ordering::Relaxed),
+        "tavily_slot_seen": state.tavily_slot_seen.load(Ordering::Relaxed) != 0,
+        "last_authorization": state.last_authorization.lock().expect("auth lock").clone(),
+        "last_session_header": state
+            .last_session_header
+            .lock()
+            .expect("session lock")
+            .clone(),
+    }))
+}
+
 fn build_router(state: Arc<MockState>) -> Router {
     Router::new()
         .route("/search", get(handle_search))
         .route("/account", get(handle_account))
         .route("/mcp", get(handle_mcp).post(handle_mcp))
+        .route("/mock-metrics", get(handle_mock_metrics))
         .with_state(state)
 }
 

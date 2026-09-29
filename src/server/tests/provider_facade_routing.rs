@@ -618,7 +618,7 @@ use super::*;
     }
 
     #[tokio::test]
-    async fn serpapi_mcp_route_returns_typed_boundary_without_upstream_calls() {
+    async fn serpapi_mcp_route_passes_through_with_bearer_injection() {
         let harness = spawn_provider_facade_harness("provider-facade-serpapi-mcp").await;
         let client = Client::new();
         let resp = client
@@ -631,15 +631,33 @@ use super::*;
             .send()
             .await
             .expect("serpapi mcp request");
-        // Documented T11 boundary: todo 15 owns the hosted passthrough body.
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        // Todo-15 contract (replaces the documented T11 `provider_mcp_pending`
+        // boundary placeholder, orchestrator-approved): the hosted passthrough
+        // calls the upstream MCP base and its body passes through verbatim.
+        assert_eq!(resp.status(), StatusCode::OK);
         let body: Value = resp.json().await.expect("json body");
-        assert_eq!(
-            body.get("error").and_then(Value::as_str),
-            Some("provider_mcp_pending")
-        );
-        // Amendment M1/C1: no upstream call happens before todo 15 wires it.
-        assert!(harness.mcp_captures.lock().expect("captures lock").is_empty());
+        assert_eq!(body.get("mock_ok"), Some(&Value::Bool(true)));
+
+        // Amendment M1: the path-prefixed SERPAPI_MCP_UPSTREAM is targeted
+        // exactly (/gw/mcp), never the client-facing ingress path. The guard
+        // is scoped so it never lives across the awaits below.
+        {
+            let captures = harness.mcp_captures.lock().expect("captures lock");
+            assert_eq!(captures.len(), 1, "exactly one upstream MCP call");
+            let capture = &captures[0];
+            assert_eq!(capture.method, "POST");
+            assert_eq!(capture.path, "/gw/mcp");
+            // The pooled key rides Authorization: Bearer; the Tavily-only
+            // client slots never appear on serpapi outbound (header or query).
+            assert_eq!(
+                capture.header("authorization"),
+                Some("Bearer mock-serpapi-key"),
+                "pooled serpapi key injected as Bearer"
+            );
+            assert!(!capture.has_header("tavily-api-key"));
+            let query = capture.query.clone().unwrap_or_default();
+            assert!(!query.to_ascii_lowercase().contains("tavilyapikey"));
+        }
         assert!(harness.rest_captures.lock().expect("captures lock").is_empty());
 
         // Dev-open-admin parity with /mcp: explicit token required.

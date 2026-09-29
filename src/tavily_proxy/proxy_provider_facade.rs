@@ -46,6 +46,19 @@ pub use proxy_provider_facade_exa::{ExaFacadeOutcome, exa_facade_outcome};
 mod proxy_provider_facade_brave;
 pub use proxy_provider_facade_brave::{BraveFacadeOutcome, brave_facade_outcome};
 
+// SerpApi hosted MCP passthrough execution layer (plan todo 15; amendments
+// M6/M7): the upstream-MCP path generalized by ProviderSpec — ingress-aware
+// SERPAPI_MCP_UPSTREAM URL building, pooled-key Bearer injection (never the
+// Tavily-only auth slots), Tavily-Control-identical MCP header allowlist and
+// UA policy, byte-passthrough bodies (SSE included), the todo-3 classifier
+// projected onto reconcile_key_health, provider/gateway-stamped request_logs
+// rows, and the provider-scoped mcp_sessions stamping/resolution wrappers
+// that keep Tavily rows byte-stable. Tavily MCP never reaches this seam.
+mod proxy_provider_facade_serpapi_mcp;
+pub use proxy_provider_facade_serpapi_mcp::{
+    ProviderMcpPassthroughRequest, provider_mcp_upstream_operation,
+};
+
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
 /// provider selects its parsed base inside the executor, so no state field
