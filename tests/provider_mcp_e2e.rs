@@ -1216,3 +1216,786 @@ async fn tavily_control_session_never_suppresses_or_entangles_serpapi() {
         "tavily proxy session must not resolve on the serpapi surface"
     );
 }
+
+// ===========================================================================
+// Brave LOCAL MCP facade (`/brave/mcp`) — plan todo 16.
+//
+// The local facade answers initialize/tools-list/ping/notifications LOCALLY
+// (session-less, SSE-wrapped, server_name `brave-search-hikari`, EXACTLY the 3
+// v2.1.4-mirror tools) and translates tools/call into a pooled-key brave REST
+// GET, returning the native body as the MCP tool-result content. Billing runs
+// the reserve→settle path (web=1, news=1, llm_context=2); provider errors
+// surface an isError result carrying the NATIVE body and emit the todo-3 health
+// signals (402→exhausted, 422 token→quarantine, 429→backoff). Forbidden tools
+// and pool exhaustion are typed MCP errors with ZERO upstream calls.
+//
+// Real server binary + real mock_brave binary + direct sqlite assertions (the
+// proven provider_facades_contract / serpapi-section pattern). Every upstream
+// is a stub — production endpoints are never contacted.
+// ===========================================================================
+
+/// Extract the single JSON-RPC payload from an `event: message\ndata: {..}`
+/// SSE frame (the local facade's session-less transport, rebalance-shaped).
+fn parse_sse_json(body: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(body);
+    let data = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data:"))
+        .unwrap_or_else(|| panic!("expected an SSE data frame, got: {text:?}"));
+    serde_json::from_str(data.trim()).unwrap_or_else(|err| panic!("sse data decodes: {err}"))
+}
+
+struct BraveMcpHarness {
+    base_url: String,
+    mock_base: String,
+    token: String,
+    token_id: String,
+    db_path: PathBuf,
+    db_str: String,
+    _server: ChildGuard,
+    _mock: ChildGuard,
+}
+
+impl Drop for BraveMcpHarness {
+    fn drop(&mut self) {
+        remove_sqlite_files(&self.db_path);
+    }
+}
+
+async fn spawn_brave_harness(
+    prefix: &str,
+    pool_keys: &[&str],
+    mock_keys: &[&str],
+) -> BraveMcpHarness {
+    for attempt in 1..=5usize {
+        if let Some(harness) = try_spawn_brave_harness(prefix, pool_keys, mock_keys).await {
+            return harness;
+        }
+        if attempt < 5 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+    panic!("brave mcp harness never became healthy after 5 spawn attempts");
+}
+
+async fn try_spawn_brave_harness(
+    prefix: &str,
+    pool_keys: &[&str],
+    mock_keys: &[&str],
+) -> Option<BraveMcpHarness> {
+    let mock_port = reserve_local_port();
+    let mock = Command::new(support_binaries::resolve_support_binary(
+        "MOCK_BRAVE_TEST_BIN",
+        env!("CARGO_BIN_EXE_mock_brave"),
+    ))
+    .arg("--bind")
+    .arg(format!("127.0.0.1:{mock_port}"))
+    .arg("--keys")
+    .arg(mock_keys.join(","))
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn mock_brave");
+
+    let port = reserve_local_port();
+    let db_path = temp_db_path(prefix);
+    let db_str = db_path.to_string_lossy().to_string();
+    // Every non-Brave provider upstream points at a dead local port so the
+    // production endpoints are unreachable by construction (incident rule).
+    let dead_port = reserve_local_port();
+    let server = Command::new(support_binaries::resolve_support_binary(
+        "TAVILY_HIKARI_TEST_BIN",
+        env!("CARGO_BIN_EXE_tavily-hikari"),
+    ))
+    .env("TAVILY_API_KEYS", "tvly-mcp-e2e-key")
+    .env(
+        "TAVILY_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}/mcp"),
+    )
+    .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
+    .env("BRAVE_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
+    .env("BRAVE_API_KEYS", pool_keys.join(","))
+    .env(
+        "SERPAPI_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}"),
+    )
+    .env(
+        "SERPAPI_MCP_UPSTREAM",
+        format!("http://127.0.0.1:{dead_port}/mcp"),
+    )
+    .env("EXA_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
+    .env("PROXY_BIND", "127.0.0.1")
+    .env("PROXY_PORT", port.to_string())
+    .env("PROXY_DB_PATH", &db_str)
+    .env("DEV_OPEN_ADMIN", "true")
+    .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("spawn tavily-hikari");
+
+    if !health_ready_within(port, 25).await {
+        drop(ChildGuard { child: server });
+        drop(ChildGuard { child: mock });
+        remove_sqlite_files(&db_path);
+        return None;
+    }
+    wait_for_provider_keys(&db_str, "brave", i64::try_from(pool_keys.len()).unwrap()).await;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let (token, token_id) = create_test_token(&base_url).await;
+
+    Some(BraveMcpHarness {
+        base_url,
+        mock_base: format!("http://127.0.0.1:{mock_port}"),
+        token,
+        token_id,
+        db_path,
+        db_str,
+        _server: ChildGuard { child: server },
+        _mock: ChildGuard { child: mock },
+    })
+}
+
+impl BraveMcpHarness {
+    async fn pool(&self) -> sqlx::SqlitePool {
+        connect_sqlite_test_pool(&self.db_str).await
+    }
+
+    /// POST one JSON-RPC message to `/brave/mcp` with the Hikari Bearer token.
+    async fn brave_mcp_call(&self, message: &Value) -> McpCallResult {
+        let response = Client::new()
+            .post(format!("{}/brave/mcp", self.base_url))
+            .bearer_auth(&self.token)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .json(message)
+            .send()
+            .await
+            .expect("brave mcp request");
+        McpCallResult {
+            status: response.status(),
+            session_header: response
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            content_type: response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            body: response.bytes().await.expect("response body").to_vec(),
+        }
+    }
+
+    /// POST + decode the SSE-wrapped JSON-RPC payload in one step.
+    async fn brave_mcp_json(&self, message: &Value) -> Value {
+        let result = self.brave_mcp_call(message).await;
+        assert_eq!(
+            result.status,
+            StatusCode::OK,
+            "local facade answers tools/call + methods at HTTP 200: {}",
+            result.body_text()
+        );
+        parse_sse_json(&result.body)
+    }
+
+    fn initialize_message(id: u64) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "provider-mcp-e2e", "version": "0.1.0" }
+            }
+        })
+    }
+
+    fn tools_call(id: u64, tool: &str, arguments: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        })
+    }
+
+    /// POST initialize (session-less local response — no mcp-session-id).
+    async fn initialize(&self, id: u64) -> Value {
+        let result = self.brave_mcp_call(&Self::initialize_message(id)).await;
+        assert_eq!(result.status, StatusCode::OK, "initialize 200");
+        assert!(
+            result.session_header.is_none(),
+            "session-less local facade must not mint an mcp-session-id: {:?}",
+            result.session_header
+        );
+        parse_sse_json(&result.body)
+    }
+
+    async fn mock_metrics(&self) -> Value {
+        Client::new()
+            .get(format!("{}/metrics", self.mock_base))
+            .send()
+            .await
+            .expect("mock metrics request")
+            .json::<Value>()
+            .await
+            .expect("mock metrics json")
+    }
+
+    /// (billing_state, business_credits) for every ledger row on the token.
+    async fn charged_ledger_rows(&self) -> Vec<(String, i64)> {
+        let pool = self.pool().await;
+        let rows = sqlx::query(
+            "SELECT billing_state, business_credits FROM billing_ledger \
+             WHERE token_id = ? ORDER BY auth_token_log_id ASC",
+        )
+        .bind(&self.token_id)
+        .fetch_all(&pool)
+        .await
+        .expect("ledger rows");
+        pool.close().await;
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("billing_state"),
+                    row.get::<i64, _>("business_credits"),
+                )
+            })
+            .collect()
+    }
+
+    /// (request_kind_key, business_credits, provider) per auth_token_logs row.
+    async fn token_log_rows(&self) -> Vec<(Option<String>, Option<i64>, Option<String>)> {
+        let pool = self.pool().await;
+        let rows = sqlx::query(
+            "SELECT request_kind_key, business_credits, provider FROM auth_token_logs \
+             WHERE token_id = ? ORDER BY id ASC",
+        )
+        .bind(&self.token_id)
+        .fetch_all(&pool)
+        .await
+        .expect("token log rows");
+        pool.close().await;
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.get::<Option<String>, _>("request_kind_key"),
+                    row.get::<Option<i64>, _>("business_credits"),
+                    row.get::<Option<String>, _>("provider"),
+                )
+            })
+            .collect()
+    }
+}
+
+fn brave_tool_names(catalog: &Value) -> Vec<String> {
+    catalog["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Criterion (plan L217): initialize then tools/list shows EXACTLY the three
+/// v2.1.4-mirror tools, each with an object inputSchema; non-billable (zero
+/// ledger) and zero upstream calls.
+#[tokio::test]
+async fn brave_initialize_and_tools_list_advertise_exactly_three_tools() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-catalog", &["mock-brave-key"], &["mock-brave-key"]).await;
+
+    let init = harness.initialize(1).await;
+    assert_eq!(init["jsonrpc"], json!("2.0"));
+    assert_eq!(init["id"], json!(1));
+    assert_eq!(
+        init["result"]["serverInfo"]["name"],
+        json!("brave-search-hikari"),
+        "server name is the brave facade identity"
+    );
+    assert!(init["result"]["capabilities"]["tools"].is_object());
+
+    let listed = harness
+        .brave_mcp_json(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+        .await;
+    let mut names = brave_tool_names(&listed);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "brave_llm_context".to_string(),
+            "brave_news_search".to_string(),
+            "brave_web_search".to_string(),
+        ],
+        "tools/list advertises EXACTLY the three brave tools (no summarizer/place/images/videos/suggest/spellcheck)"
+    );
+    for tool in listed["result"]["tools"].as_array().expect("tools") {
+        assert_eq!(
+            tool["inputSchema"]["type"],
+            json!("object"),
+            "each tool carries an object inputSchema"
+        );
+        assert!(
+            tool["inputSchema"]["properties"]["query"].is_object(),
+            "each brave tool exposes a query property"
+        );
+        assert_eq!(
+            tool["inputSchema"]["required"],
+            json!(["query"]),
+            "query is the minimal required-field contract guard"
+        );
+    }
+
+    // initialize + tools/list are non-billable and never touch brave upstream.
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "control-plane methods create zero ledger rows"
+    );
+    let metrics = harness.mock_metrics().await;
+    assert_eq!(
+        metrics,
+        json!({ "web": 0, "news": 0, "llm_context": 0 }),
+        "initialize/tools-list answered locally, zero upstream calls"
+    );
+}
+
+/// Criterion (plan L217): tools/call brave_web_search bills EXACTLY 1 credit,
+/// returns the mock native body as MCP content, records provider='brave' +
+/// kind mcp:brave/web_search, and hits web/search once.
+#[tokio::test]
+async fn brave_web_search_bills_one_credit_and_returns_native_body() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-web", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "query": "hikari test", "count": 5 }),
+        ))
+        .await;
+    assert_eq!(result["id"], json!(2));
+    assert!(
+        result["result"]["isError"].is_null() || result["result"]["isError"] == json!(false),
+        "successful web search is not an error: {result}"
+    );
+    // Native mock body as text content + structuredContent projection.
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let parsed: Value = serde_json::from_str(content_text).expect("native body text is json");
+    assert_eq!(parsed["type"], json!("search"));
+    assert_eq!(parsed["web"]["results"][0]["title"], json!("Mock"));
+    assert_eq!(
+        result["result"]["structuredContent"]["web"]["results"][0]["url"],
+        json!("https://example.com/1"),
+        "structuredContent mirrors the native body"
+    );
+
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(charged.len(), 1, "exactly one ledger row: {charged:?}");
+    assert_eq!(charged[0].0, "charged");
+    assert_eq!(charged[0].1, 1, "brave_web_search bills 1 credit");
+
+    let pool = harness.pool().await;
+    let log = sqlx::query(
+        "SELECT provider, request_kind_key, tavily_status_code, result_status \
+         FROM observability.request_logs WHERE path = '/brave/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("request log row");
+    assert_eq!(
+        log.get::<Option<String>, _>("provider").as_deref(),
+        Some("brave")
+    );
+    assert_eq!(
+        log.get::<Option<String>, _>("request_kind_key").as_deref(),
+        Some("mcp:brave/web_search"),
+        "request_logs kind is the committed T3 mcp:brave/web_search"
+    );
+    assert_eq!(log.get::<String, _>("result_status"), "success");
+    pool.close().await;
+
+    let metrics = harness.mock_metrics().await;
+    assert_eq!(metrics["web"], json!(1), "exactly one upstream web/search call");
+}
+
+/// Criterion (plan L217): brave_llm_context bills 2 credits (llm_context tier)
+/// and reaches the llm/context endpoint once.
+#[tokio::test]
+async fn brave_llm_context_bills_two_credits() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-llm", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_llm_context",
+            json!({ "query": "context test", "count": 3 }),
+        ))
+        .await;
+    assert_eq!(result["id"], json!(2));
+    assert!(
+        result["result"]["structuredContent"]["grounding"].is_object(),
+        "native grounding body projected into structuredContent: {result}"
+    );
+
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(charged.len(), 1, "one ledger row: {charged:?}");
+    assert_eq!(charged[0].1, 2, "brave_llm_context bills 2 credits");
+
+    let pool = harness.pool().await;
+    let kind: Option<String> = sqlx::query_scalar(
+        "SELECT request_kind_key FROM observability.request_logs \
+         WHERE path = '/brave/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("log row");
+    assert_eq!(kind.as_deref(), Some("mcp:brave/llm_context"));
+    pool.close().await;
+
+    assert_eq!(harness.mock_metrics().await["llm_context"], json!(1));
+}
+
+/// Criterion: brave_news_search bills 1 credit and reaches news/search once.
+#[tokio::test]
+async fn brave_news_search_bills_one_credit() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-news", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_news_search",
+            json!({ "query": "news test" }),
+        ))
+        .await;
+    assert_eq!(
+        result["result"]["structuredContent"]["type"],
+        json!("news"),
+        "native news body projected: {result}"
+    );
+    let charged = harness.charged_ledger_rows().await;
+    assert_eq!(charged.len(), 1);
+    assert_eq!(charged[0].1, 1, "brave_news_search bills 1 credit");
+    assert_eq!(harness.mock_metrics().await["news"], json!(1));
+}
+
+/// Criterion (plan L217): 402 QUOTA_LIMITED surfaces an isError MCP result
+/// carrying the NATIVE error body, marks the pooled key exhausted, and bills 0.
+#[tokio::test]
+async fn brave_402_quota_limited_is_error_marks_exhausted_and_bills_zero() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-402", &["key-exhausted"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "query": "quota probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "402 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    assert!(
+        content_text.contains("QUOTA_LIMITED"),
+        "native error body carried in content: {content_text}"
+    );
+    assert_eq!(
+        result["result"]["structuredContent"]["error"]["code"],
+        json!("QUOTA_LIMITED"),
+        "structuredContent carries the native error body"
+    );
+
+    let pool = harness.pool().await;
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM api_keys WHERE provider = 'brave' AND deleted_at IS NULL LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("key row");
+    assert_eq!(status, "exhausted", "402 QUOTA_LIMITED marks the pooled key exhausted");
+    let log = sqlx::query(
+        "SELECT provider, result_status, request_kind_key FROM observability.request_logs \
+         WHERE path = '/brave/mcp' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("log row");
+    assert_eq!(log.get::<String, _>("result_status"), "quota_exhausted");
+    assert_eq!(
+        log.get::<Option<String>, _>("provider").as_deref(),
+        Some("brave")
+    );
+    pool.close().await;
+
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "provider error bills nothing"
+    );
+}
+
+/// Criterion (plan L217): 422 SUBSCRIPTION_TOKEN_INVALID surfaces an isError
+/// result and quarantines the pooled key through the existing machinery.
+#[tokio::test]
+async fn brave_422_invalid_token_is_error_and_quarantines() {
+    // Pooled key is NOT in the mock's valid key list → 422 SUBSCRIPTION_TOKEN_INVALID.
+    let harness =
+        spawn_brave_harness("mcp-e2e-brave-422", &["bogus-at-mock"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "query": "auth probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "422 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("SUBSCRIPTION_TOKEN_INVALID"),
+        "native 422 body carried: {content_text}"
+    );
+
+    let pool = harness.pool().await;
+    let quarantined: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_quarantines q \
+         JOIN api_keys k ON k.id = q.key_id \
+         WHERE k.api_key = 'bogus-at-mock' AND q.cleared_at IS NULL \
+         AND q.reason_code = 'invalid_api_key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("quarantine scan");
+    assert_eq!(
+        quarantined, 1,
+        "422 SUBSCRIPTION_TOKEN_INVALID quarantines the pooled key"
+    );
+    pool.close().await;
+
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (plan L217): 429 RATE_LIMITED surfaces an isError result and arms
+/// the shared second-scale transient backoff (key stays active), bills 0.
+#[tokio::test]
+async fn brave_429_rate_limited_is_error_and_arms_backoff() {
+    let harness = spawn_brave_harness("mcp-e2e-brave-429", &["key-throttled"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "query": "throttle probe" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true), "429 → isError true");
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("RATE_LIMITED"),
+        "native 429 body carried: {content_text}"
+    );
+
+    let pool = harness.pool().await;
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-throttled'")
+            .fetch_one(&pool)
+            .await
+            .expect("key row");
+    assert_eq!(status, "active", "429 RATE_LIMITED must NOT exhaust the key");
+    let backoff: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_transient_backoffs b \
+         JOIN api_keys k ON k.id = b.key_id \
+         WHERE k.api_key = 'key-throttled' AND b.scope = 'http_global' \
+         AND b.reason_code = 'upstream_rate_limited_429'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("backoff scan");
+    assert_eq!(backoff, 1, "429 arms the shared HTTP transient backoff");
+    pool.close().await;
+
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (plan L217 / gate 1): non-billable methods (initialize, ping,
+/// tools/list, resources/prompts lists, notifications) record ZERO ledger rows
+/// and ZERO upstream calls.
+#[tokio::test]
+async fn brave_non_billable_methods_record_zero_ledger_and_zero_upstream() {
+    let harness =
+        spawn_brave_harness("mcp-e2e-brave-nonbillable", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    for message in [
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }),
+        json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }),
+        json!({ "jsonrpc": "2.0", "id": 4, "method": "resources/list" }),
+        json!({ "jsonrpc": "2.0", "id": 5, "method": "prompts/list" }),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    ] {
+        let result = harness.brave_mcp_call(&message).await;
+        assert!(
+            result.status == StatusCode::OK || result.status == StatusCode::ACCEPTED,
+            "non-billable method status {}: {}",
+            result.status,
+            result.body_text()
+        );
+    }
+
+    assert!(
+        harness.charged_ledger_rows().await.is_empty(),
+        "control-plane methods bill nothing"
+    );
+    let logs = harness.token_log_rows().await;
+    assert!(
+        logs.iter().all(|(_, credits, _)| credits.unwrap_or(0) == 0),
+        "no business credits recorded: {logs:?}"
+    );
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "web": 0, "news": 0, "llm_context": 0 }),
+        "control-plane answered locally, zero upstream calls"
+    );
+}
+
+/// Criterion (gate 1): an unknown tool is a TYPED MCP error result with ZERO
+/// upstream calls and ZERO billing.
+#[tokio::test]
+async fn brave_unknown_tool_is_typed_error_without_upstream_call() {
+    let harness =
+        spawn_brave_harness("mcp-e2e-brave-unknown", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_summarizer",
+            json!({ "query": "should never dispatch" }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true));
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("Unknown tool"),
+        "typed unknown-tool error: {content_text}"
+    );
+
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "web": 0, "news": 0, "llm_context": 0 }),
+        "unknown tool never reaches brave upstream"
+    );
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (M22 minimal contract guard): a tools/call missing the required
+/// `query` is a local invalid-arguments error — no upstream call, no billing.
+#[tokio::test]
+async fn brave_missing_required_query_is_local_invalid_arguments() {
+    let harness =
+        spawn_brave_harness("mcp-e2e-brave-noargs", &["mock-brave-key"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    let result = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "count": 5 }),
+        ))
+        .await;
+    assert_eq!(result["result"]["isError"], json!(true));
+    let content_text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.contains("query"),
+        "invalid-arguments message names the missing required field: {content_text}"
+    );
+    assert_eq!(
+        harness.mock_metrics().await,
+        json!({ "web": 0, "news": 0, "llm_context": 0 }),
+        "local validation rejects before any upstream call"
+    );
+    assert!(harness.charged_ledger_rows().await.is_empty());
+}
+
+/// Criterion (plan L218 QA failure): once the whole brave pool is quarantined
+/// (the only key auth-fails 422 → excluded at every acquire tier), a further
+/// tools/call returns an isError NoAvailableKeys-shaped MCP result with ZERO
+/// additional upstream calls (mock counter unchanged) and ZERO billing.
+/// (Exhaustion alone is NOT this state: acquire re-leases a lone exhausted key
+/// as a fallback, whereas quarantine is excluded at every tier — the faithful
+/// "pool unavailable" trigger.)
+#[tokio::test]
+async fn brave_exhausted_pool_returns_no_available_keys_without_upstream_call() {
+    // Pooled key is invalid at the mock → 422 SUBSCRIPTION_TOKEN_INVALID → the
+    // T3 classifier auth-fails it into quarantine.
+    let harness =
+        spawn_brave_harness("mcp-e2e-brave-nopool", &["bogus-at-mock"], &["mock-brave-key"]).await;
+    harness.initialize(1).await;
+
+    // First call hits upstream once (422) and quarantines the only pooled key.
+    let first = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            2,
+            "brave_web_search",
+            json!({ "query": "quarantine trigger" }),
+        ))
+        .await;
+    assert_eq!(first["result"]["isError"], json!(true), "422 → isError");
+    let counter_after_first = harness.mock_metrics().await;
+    assert_eq!(counter_after_first["web"], json!(1), "one upstream 422 call");
+    let pool = harness.pool().await;
+    let quarantined: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_quarantines q \
+         JOIN api_keys k ON k.id = q.key_id \
+         WHERE k.api_key = 'bogus-at-mock' AND q.cleared_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("quarantine scan");
+    assert_eq!(quarantined, 1, "the pooled key is quarantined");
+    pool.close().await;
+
+    // Second call: the quarantined pool is unavailable → NoAvailableKeys-shaped
+    // local MCP error, ZERO additional upstream calls (counter unchanged).
+    let second = harness
+        .brave_mcp_json(&BraveMcpHarness::tools_call(
+            3,
+            "brave_web_search",
+            json!({ "query": "should not dispatch" }),
+        ))
+        .await;
+    assert_eq!(
+        second["result"]["isError"],
+        json!(true),
+        "unavailable pool is an isError result"
+    );
+    let content_text = second["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    assert!(
+        content_text.to_ascii_lowercase().contains("available"),
+        "NoAvailableKeys-shaped message: {content_text}"
+    );
+    let counter_after_second = harness.mock_metrics().await;
+    assert_eq!(
+        counter_after_second["web"], counter_after_first["web"],
+        "quarantined pool → zero additional upstream calls (counter unchanged)"
+    );
+}

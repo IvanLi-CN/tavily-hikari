@@ -30,6 +30,18 @@ use tavily_hikari::{
 #[path = "provider_mcp_serpapi.rs"]
 mod provider_mcp_serpapi;
 
+// Provider-parameterized LOCAL MCP facade framework (plan todo 16; M19) + the
+// Brave facade built on it. The framework generalizes the rebalance local-facade
+// plumbing (envelope/batch/SSE/dispatch/billing) into `LocalMcpFacade` without
+// touching the Tavily golden path; `provider_mcp_brave` supplies the brave
+// catalog DATA + tools/call→REST translation and replaces the typed
+// `provider_mcp_pending` boundary for the brave surface only. Exa keeps that
+// boundary until todo 17 (it will add an analogous module on this framework).
+#[path = "local_mcp_facade.rs"]
+mod local_mcp_facade;
+#[path = "provider_mcp_brave.rs"]
+mod provider_mcp_brave;
+
 /// Client-facing surface deciding which native client key slots are accepted
 /// (plan todo 11): the Exa MCP surface additionally honors the `exaApiKey`
 /// query slot, mirroring Tavily's `tavilyApiKey` query parity on `/mcp`.
@@ -827,10 +839,28 @@ async fn provider_mcp_facade(
         }
     }
 
-    // SerpApi hosted passthrough (plan todo 15) replaces the typed boundary
-    // for this surface; Exa/Brave keep the todo 16-17 boundary below.
+    // SerpApi hosted passthrough (todo 15) and the Brave LOCAL facade (todo 16)
+    // each replace the typed boundary behind the same seam; Exa keeps the todo-17
+    // boundary below. Both build the SHARED facade context (the serpapi module
+    // owns it as the first consumer of the seam).
     if provider == ProviderId::Serpapi {
         return provider_mcp_serpapi::provider_mcp_passthrough(
+            state,
+            provider_mcp_serpapi::ProviderMcpFacadeContext {
+                provider,
+                method: &method,
+                path: &path,
+                request_kind: &request_kind,
+                body: &body_bytes,
+                auth: &auth,
+                original_headers: &parts.headers,
+                remote_addr,
+            },
+        )
+        .await;
+    }
+    if provider == ProviderId::Brave {
+        return provider_mcp_brave::provider_mcp_brave_local_facade(
             state,
             provider_mcp_serpapi::ProviderMcpFacadeContext {
                 provider,

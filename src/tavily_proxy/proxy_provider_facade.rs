@@ -59,6 +59,15 @@ pub use proxy_provider_facade_serpapi_mcp::{
     ProviderMcpPassthroughRequest, provider_mcp_upstream_operation,
 };
 
+// Brave LOCAL MCP facade execution layer (plan todo 16; amendments M19/M22):
+// `/brave/mcp` tools/call translated into a pooled-key Brave REST GET re-using
+// the committed todo-14 Brave record path (classification → reconcile, 429
+// second-scale backoff, M11 passive harvest, provider='brave' request_logs keyed
+// on /brave/mcp + the tools/call body → mcp:brave/*). The executor is a pub
+// TavilyProxy method; the module stays private (methods resolve on the type).
+// Tavily rebalance keeps its own byte-stable executors and never reaches here.
+mod proxy_provider_facade_brave_mcp;
+
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
 /// provider selects its parsed base inside the executor, so no state field
