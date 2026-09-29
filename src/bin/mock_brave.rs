@@ -1,4 +1,8 @@
 //! Mock Brave Search upstream (web/news/llm-context) for offline tests.
+//!
+//! Per-endpoint call counters are exposed via GET /metrics so facade suites
+//! can prove zero-extra-request passive quota harvest (plan todo 14 / M11:
+//! the harvest must never add an outbound call beyond the facade request).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,9 +44,17 @@ enum KeyStatus {
     Throttled,
 }
 
+#[derive(Debug, Default)]
+struct MockCounters {
+    web: AtomicU64,
+    news: AtomicU64,
+    llm_context: AtomicU64,
+}
+
 struct MockState {
     keys: Vec<String>,
     monthly_remaining: AtomicU64,
+    counters: MockCounters,
 }
 
 impl MockState {
@@ -146,6 +158,7 @@ fn rate_limit_headers(remaining: u64) -> [(HeaderName, String); 4] {
 }
 
 async fn handle_web_search(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+    state.counters.web.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -171,6 +184,7 @@ async fn handle_web_search(State(state): State<Arc<MockState>>, headers: HeaderM
 }
 
 async fn handle_news_search(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+    state.counters.news.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -184,6 +198,7 @@ async fn handle_news_search(State(state): State<Arc<MockState>>, headers: Header
 }
 
 async fn handle_llm_context(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+    state.counters.llm_context.fetch_add(1, Ordering::Relaxed);
     if let Some(response) = authorize(&state, &headers) {
         return response;
     }
@@ -202,11 +217,25 @@ async fn handle_llm_context(State(state): State<Arc<MockState>>, headers: Header
     .into_response()
 }
 
+/// Request-counter readout (plan todo 14 / M11 zero-extra-request proof):
+/// counts EVERY received per-endpoint call, authorized or not. The passive
+/// harvest must never add a call, so a facade suite's counter total equals
+/// its own request count exactly.
+async fn handle_metrics(State(state): State<Arc<MockState>>) -> Response {
+    Json(json!({
+        "web": state.counters.web.load(Ordering::Relaxed),
+        "news": state.counters.news.load(Ordering::Relaxed),
+        "llm_context": state.counters.llm_context.load(Ordering::Relaxed),
+    }))
+        .into_response()
+}
+
 fn build_router(state: Arc<MockState>) -> Router {
     Router::new()
         .route("/res/v1/web/search", get(handle_web_search))
         .route("/res/v1/news/search", get(handle_news_search))
         .route("/res/v1/llm/context", get(handle_llm_context))
+        .route("/metrics", get(handle_metrics))
         .with_state(state)
 }
 
@@ -216,6 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(MockState {
         keys: cli.keys,
         monthly_remaining: AtomicU64::new(MONTHLY_LIMIT),
+        counters: MockCounters::default(),
     });
     let app = build_router(state);
     println!("Mock Brave upstream listening on http://{}", cli.bind);
@@ -236,6 +266,7 @@ mod tests {
         let state = Arc::new(MockState {
             keys: vec!["mock-brave-key".to_string()],
             monthly_remaining: AtomicU64::new(MONTHLY_LIMIT),
+            counters: MockCounters::default(),
         });
         tokio::spawn(async move {
             axum::serve(listener, build_router(state))
@@ -377,5 +408,39 @@ mod tests {
             json!(["mock snippet"])
         );
         assert_eq!(body["sources"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn metrics_counters_track_received_calls_per_endpoint() {
+        // Given a running mock with all counters at zero (plan todo 14 / M11)
+        let base = spawn_mock().await;
+        let client = reqwest::Client::new();
+        let metrics = client
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("metrics request");
+        assert_eq!(
+            metrics.json::<Value>().await.expect("json body"),
+            json!({ "web": 0, "news": 0, "llm_context": 0 })
+        );
+
+        // When web (valid + invalid key), news, and llm-context are each called
+        get_with_token(&base, "/res/v1/web/search", Some("mock-brave-key")).await;
+        get_with_token(&base, "/res/v1/web/search", Some("bogus")).await;
+        get_with_token(&base, "/res/v1/news/search", Some("mock-brave-key")).await;
+        get_with_token(&base, "/res/v1/llm/context", Some("mock-brave-key")).await;
+
+        // Then /metrics reflects every received call, authorized or not, and an
+        // uncalled endpoint stays at zero (zero-extra-request harvest proof).
+        let metrics = client
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("metrics request");
+        assert_eq!(
+            metrics.json::<Value>().await.expect("json body"),
+            json!({ "web": 2, "news": 1, "llm_context": 1 })
+        );
     }
 }

@@ -16,10 +16,10 @@
 
 use super::*;
 use tavily_hikari::{
-    ExaFacadeOutcome, ProviderRestFacadeRequest, SerpapiFacadeOutcome, TokenBillingGuard,
-    TokenRequestKind,
+    BraveFacadeOutcome, ExaFacadeOutcome, ProviderRestFacadeRequest, SerpapiFacadeOutcome,
+    TokenBillingGuard, TokenRequestKind,
     providers::{self, ProviderId},
-    exa_facade_outcome, serpapi_facade_outcome,
+    brave_facade_outcome, exa_facade_outcome, serpapi_facade_outcome,
 };
 
 /// Client-facing surface deciding which native client key slots are accepted
@@ -627,6 +627,7 @@ async fn provider_rest_facade(
             provider: route.provider,
             method,
             path,
+            kind_path: route.kind_path,
             upstream_path: route.upstream_path,
             query: forward_query,
             headers: auth.headers,
@@ -639,10 +640,11 @@ async fn provider_rest_facade(
 
     match result {
         Ok(response) => {
-            // Todos 12-13 (SerpApi, Exa): the deterministic lib-side outcome
-            // projections drive token-log/billing rows and the business-call
-            // finalization. Brave keeps the T11 binary success/error boundary
-            // untouched until todo 14.
+            // Todos 12-14 (SerpApi, Exa, Brave): the deterministic lib-side
+            // outcome projections drive token-log/billing rows and the
+            // business-call finalization. Brave (todo 14) also carries the M11
+            // passive harvest lib-side; only Tavily keeps the untouched
+            // success/error fallback (it never reaches this seam).
             let facade_outcome = match route.provider {
                 ProviderId::Serpapi => Some(ProviderFacadeOutcomeView::from(
                     serpapi_facade_outcome(response.status, &response.body),
@@ -651,7 +653,11 @@ async fn provider_rest_facade(
                     response.status,
                     &response.body,
                 ))),
-                ProviderId::Brave | ProviderId::Tavily => None,
+                ProviderId::Brave => Some(ProviderFacadeOutcomeView::from(brave_facade_outcome(
+                    response.status,
+                    &response.body,
+                ))),
+                ProviderId::Tavily => None,
             };
             let outcome_status = match &facade_outcome {
                 Some(outcome) => outcome.result_status,
@@ -1056,6 +1062,15 @@ impl From<ExaFacadeOutcome> for ProviderFacadeOutcomeView {
     }
 }
 
+impl From<BraveFacadeOutcome> for ProviderFacadeOutcomeView {
+    fn from(outcome: BraveFacadeOutcome) -> Self {
+        Self {
+            result_status: outcome.result_status,
+            failure_kind: outcome.failure_kind,
+        }
+    }
+}
+
 /// Everything the provider REST facade billing/attempt recording needs,
 /// grouped so the facade flow stays readable (mirrors the handlers/tavily.rs
 /// settle block).
@@ -1076,8 +1091,9 @@ struct ProviderFacadeBilling<'a> {
 
 /// Reserve -> settle billing and token-log recording for the settling
 /// provider REST facades (plan todo 12 SerpApi; todo 13 Exa extends the same
-/// recorder with its credit tiers search=1/contents=1/answer=2 from the
-/// committed todo-2 ProviderSpec table — mirrors handlers/tavily.rs:1345-1524).
+/// recorder with its credit tiers search=1/contents=1/answer=2; todo 14 Brave
+/// adds web=1/news=1/llm_context=2 — all from the committed todo-2
+/// ProviderSpec table, mirroring handlers/tavily.rs:1345-1524).
 /// M22: provider responses are NEVER inspected for billing — business success
 /// is 2xx and the credit amount is the registry table value. Local persistence
 /// failures never replace the verbatim upstream response (duplicate-charge

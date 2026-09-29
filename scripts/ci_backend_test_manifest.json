@@ -139,7 +139,8 @@
         "tests::request_kind_and_core::tavily_http_",
         "tavily_proxy::provider_facade_tests::",
         "tavily_proxy::proxy_provider_facade_serpapi::serpapi_facade_translation_tests::",
-        "tavily_proxy::proxy_provider_facade_exa::exa_facade_translation_tests::"
+        "tavily_proxy::proxy_provider_facade_exa::exa_facade_translation_tests::",
+        "tavily_proxy::proxy_provider_facade_brave::brave_facade_translation_tests::"
       ]
     },
     {

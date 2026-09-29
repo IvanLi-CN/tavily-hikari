@@ -15,8 +15,8 @@ use reqwest::header::{AUTHORIZATION, HeaderName};
 // SerpApi REST execution layer (plan todo 12): response classification onto
 // the shared AttemptAnalysis contract, reconcile/backoff/request_logs
 // bookkeeping, and the bin-side outcome projection. Declared here so the
-// provider facade family keeps ONE lib seam; todo 14 extends the same family
-// for Brave.
+// provider facade family keeps ONE lib seam; todos 13 (Exa) and 14 (Brave)
+// extend the same family below.
 mod proxy_provider_facade_serpapi;
 pub use proxy_provider_facade_serpapi::{SerpapiFacadeOutcome, serpapi_facade_outcome};
 pub(crate) use proxy_provider_facade_serpapi::{
@@ -31,6 +31,20 @@ pub(crate) use proxy_provider_facade_serpapi::{
 // gate; the executor below dispatches per provider.
 mod proxy_provider_facade_exa;
 pub use proxy_provider_facade_exa::{ExaFacadeOutcome, exa_facade_outcome};
+
+// Brave REST execution layer (plan todo 14; amendment M11): the same
+// bookkeeping contract over the todo-3 brave classifier — 422
+// SUBSCRIPTION_TOKEN_INVALID (and VALIDATION whose loc is the token header)
+// auth-fails into quarantine, 402 QUOTA_LIMITED exhausts (RateLimitResetWindow
+// recovery owned by T9's reset_monthly), 429 RATE_LIMITED arms the SECOND-scale
+// Brave backoff — PLUS the M11 passive quota harvest that parses the response's
+// X-RateLimit-* month window (positional pairing) and persists it on material
+// change via record_quota_sync_sample with source `brave_passive` (zero extra
+// requests, best-effort, never fails the request). The bin-side outcome
+// projection drives the web=1/news=1/llm_context=2 credit tiers. SerpApi/Exa
+// record paths stay byte-identical behind their own gates.
+mod proxy_provider_facade_brave;
+pub use proxy_provider_facade_brave::{BraveFacadeOutcome, brave_facade_outcome};
 
 /// Client-facing description of one provider REST facade call (the M1
 /// "ProviderId + resolved upstream base on the request path" seam: the
@@ -47,6 +61,14 @@ pub struct ProviderRestFacadeRequest {
     /// Client-facing facade path (audit identity; request_logs wiring is
     /// todos 12-14).
     pub path: String,
+    /// Canonical request-kind path (the exact `classify_token_request_kind`
+    /// input committed in the todo-3 static table). Identical to `path` for
+    /// SerpApi/Exa; for Brave it is the canonical short form of the native
+    /// `/res/v1` mirroring (`/api/brave/web/search`). Provider record paths
+    /// whose store-derived request_kind must match the bin-boundary kind use
+    /// THIS value (todo 14): the store classifies request_logs rows from the
+    /// path column, and the value-bucket/retention bucketing keys off it.
+    pub kind_path: &'static str,
     /// Native upstream path under the provider REST base (SerpApi `/search`,
     /// Brave `/res/v1/web/search`).
     pub upstream_path: &'static str,
@@ -80,8 +102,10 @@ impl TavilyProxy {
     /// Documented boundary: SerpApi (todo 12) records request_logs, applies
     /// key-health reconcile, and exposes its outcome for bin-side billing
     /// settle; Exa (todo 13) books the same set over its own record path
-    /// (`record_exa_rest_facade_attempt`); Brave keeps the T11 boundary (no
-    /// row, no reconcile, no settle) until todo 14 extends the same family.
+    /// (`record_exa_rest_facade_attempt`); Brave (todo 14) books the same set
+    /// over `record_brave_rest_facade_attempt` AND passively harvests its
+    /// month-window quota from the already-buffered response headers (M11 —
+    /// zero extra requests). Tavily REST never reaches this seam.
     pub async fn proxy_provider_rest_facade(
         &self,
         request: ProviderRestFacadeRequest,
@@ -186,11 +210,11 @@ impl TavilyProxy {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
-                // Failure-signal classification (todo 3). SerpApi (todo 12)
-                // and Exa (todo 13) book the full attempt (reconcile +
-                // request_logs + backoff) through their per-provider record
-                // paths; Brave keeps the documented T11 boundary — todo 14
-                // extends the same family.
+                // Failure-signal classification (todo 3). SerpApi (todo 12),
+                // Exa (todo 13), and Brave (todo 14) book the full attempt
+                // (reconcile + request_logs + backoff) through their
+                // per-provider record paths; Brave's additionally harvests the
+                // month window from the live response headers (M11).
                 let signal = classify_provider_failure(
                     request.provider,
                     &ProviderFailureEvidence {
@@ -221,9 +245,15 @@ impl TavilyProxy {
                     providers::ProviderId::Exa => {
                         self.record_exa_rest_facade_attempt(&attempt_ctx).await?
                     }
+                    // Brave (todo 14): books the attempt AND harvests the
+                    // month window from the already-buffered response headers
+                    // (M11 — zero extra outbound requests).
+                    providers::ProviderId::Brave => {
+                        self.record_brave_rest_facade_attempt(&attempt_ctx, &headers)
+                            .await?
+                    }
                     providers::ProviderId::Tavily
-                    | providers::ProviderId::Serpapi
-                    | providers::ProviderId::Brave => {
+                    | providers::ProviderId::Serpapi => {
                         self.record_provider_rest_facade_attempt(&attempt_ctx)
                             .await?
                     }
@@ -250,9 +280,9 @@ impl TavilyProxy {
                     request.query.as_deref(),
                     &err,
                 );
-                // SerpApi (todo 12) and Exa (todo 13) transport failures
-                // persist an audit row (Tavily executor parity); the gates
-                // no-op for Brave (todo 14).
+                // SerpApi (todo 12), Exa (todo 13), and Brave (todo 14)
+                // transport failures persist an audit row (Tavily executor
+                // parity); Tavily keeps its legacy no-op gate here.
                 match request.provider {
                     providers::ProviderId::Exa => {
                         self.log_exa_rest_facade_transport_error(
@@ -263,9 +293,17 @@ impl TavilyProxy {
                         )
                         .await?;
                     }
+                    providers::ProviderId::Brave => {
+                        self.log_brave_rest_facade_transport_error(
+                            &request,
+                            &lease,
+                            &sanitized_headers,
+                            &err,
+                        )
+                        .await?;
+                    }
                     providers::ProviderId::Tavily
-                    | providers::ProviderId::Serpapi
-                    | providers::ProviderId::Brave => {
+                    | providers::ProviderId::Serpapi => {
                         self.log_provider_rest_facade_transport_error(
                             &request,
                             &lease,

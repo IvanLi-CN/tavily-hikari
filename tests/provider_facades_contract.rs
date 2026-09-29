@@ -1665,3 +1665,778 @@ mod exa {
         pool.close().await;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Brave REST facade section (plan todo 14; amendment M11 passive harvest).
+// ---------------------------------------------------------------------------
+
+mod brave {
+    use super::*;
+
+    /// Exact bodies mock_brave emits (mirrors src/bin/mock_brave.rs so the
+    /// verbatim-passthrough assertions compare against the stub's contract).
+    fn mock_web_body() -> Value {
+        json!({
+            "type": "search",
+            "query": { "original": "mock", "more_results_available": false },
+            "web": {
+                "results": [
+                    {
+                        "title": "Mock",
+                        "url": "https://example.com/1",
+                        "description": "mock desc"
+                    }
+                ]
+            }
+        })
+    }
+
+    fn mock_news_body() -> Value {
+        json!({
+            "type": "news",
+            "results": [
+                { "title": "Mock News", "url": "https://example.com/n1", "description": "mock" }
+            ]
+        })
+    }
+
+    fn mock_llm_context_body() -> Value {
+        json!({
+            "grounding": {
+                "generic": [
+                    {
+                        "url": "https://example.com/1",
+                        "title": "Mock",
+                        "snippets": ["mock snippet"]
+                    }
+                ]
+            },
+            "sources": {}
+        })
+    }
+
+    fn mock_invalid_token_body() -> Value {
+        json!({
+            "error": {
+                "code": "SUBSCRIPTION_TOKEN_INVALID",
+                "detail": "The provided subscription token is invalid."
+            }
+        })
+    }
+
+    fn mock_quota_limited_body() -> Value {
+        json!({ "error": { "code": "QUOTA_LIMITED" } })
+    }
+
+    fn mock_rate_limited_body() -> Value {
+        json!({ "error": { "code": "RATE_LIMITED" } })
+    }
+
+    /// mock_brave's success rate-limit header grammar (positional pairing;
+    /// month window = w=2592000 at position 1). Harvest reads exactly these.
+    const WEB_PATH: &str = "/api/brave/res/v1/web/search";
+    const NEWS_PATH: &str = "/api/brave/res/v1/news/search";
+    const LLM_PATH: &str = "/api/brave/res/v1/llm/context";
+
+    struct BraveHarness {
+        base_url: String,
+        mock_base_url: String,
+        token: String,
+        token_id: String,
+        db_path: PathBuf,
+        db_str: String,
+        _server: ChildGuard,
+        _mock: ChildGuard,
+    }
+
+    impl Drop for BraveHarness {
+        fn drop(&mut self) {
+            remove_sqlite_files(&self.db_path);
+        }
+    }
+
+    /// Spawn mock_brave + the real server binary (stub upstreams ONLY; every
+    /// non-Brave provider upstream points at a dead local port so production
+    /// endpoints are unreachable by construction — high-anonymity incident rule).
+    async fn spawn_harness(prefix: &str, pool_keys: &[&str], mock_keys: &[&str]) -> BraveHarness {
+        // Port reservations race across the parallel suite; retry with fresh
+        // ephemeral ports (serpapi/exa section pattern).
+        for attempt in 1..=5usize {
+            if let Some(harness) = try_spawn_harness(prefix, pool_keys, mock_keys).await {
+                return harness;
+            }
+            if attempt < 5 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        panic!("brave harness never became healthy after 5 spawn attempts");
+    }
+
+    async fn try_spawn_harness(
+        prefix: &str,
+        pool_keys: &[&str],
+        mock_keys: &[&str],
+    ) -> Option<BraveHarness> {
+        let mock_port = reserve_local_port();
+        let mock = Command::new(support_binaries::resolve_support_binary(
+            "MOCK_BRAVE_TEST_BIN",
+            env!("CARGO_BIN_EXE_mock_brave"),
+        ))
+        .arg("--bind")
+        .arg(format!("127.0.0.1:{mock_port}"))
+        .arg("--keys")
+        .arg(mock_keys.join(","))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mock_brave");
+
+        let port = reserve_local_port();
+        let db_path = temp_db_path(prefix);
+        let db_str = db_path.to_string_lossy().to_string();
+        // Tavily stays pointed at a dead local port: the facade tests never
+        // exercise Tavily, and production endpoints must never be contacted.
+        let dead_port = reserve_local_port();
+        let server = Command::new(support_binaries::resolve_support_binary(
+            "TAVILY_HIKARI_TEST_BIN",
+            env!("CARGO_BIN_EXE_tavily-hikari"),
+        ))
+        .env("TAVILY_API_KEYS", "tvly-facade-contract-key")
+        .env(
+            "TAVILY_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}/mcp"),
+        )
+        .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
+        .env("BRAVE_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
+        .env("BRAVE_API_KEYS", pool_keys.join(","))
+        .env(
+            "SERPAPI_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}"),
+        )
+        .env(
+            "SERPAPI_MCP_UPSTREAM",
+            format!("http://127.0.0.1:{dead_port}/mcp"),
+        )
+        .env("EXA_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
+        .env("PROXY_BIND", "127.0.0.1")
+        .env("PROXY_PORT", port.to_string())
+        .env("PROXY_DB_PATH", &db_str)
+        .env("DEV_OPEN_ADMIN", "true")
+        .env("RUST_LOG", "warn,tavily_hikari=info,sqlx::query=error")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn tavily-hikari");
+
+        if !health_ready_within(port, 25).await {
+            // Guards below kill both children on drop; the caller retries.
+            drop(ChildGuard { child: server });
+            drop(ChildGuard { child: mock });
+            remove_sqlite_files(&db_path);
+            return None;
+        }
+        wait_for_provider_keys(&db_str, "brave", i64::try_from(pool_keys.len()).unwrap()).await;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let mock_base_url = format!("http://127.0.0.1:{mock_port}");
+        let (token, token_id) = create_test_token(&base_url).await;
+
+        Some(BraveHarness {
+            base_url,
+            mock_base_url,
+            token,
+            token_id,
+            db_path,
+            db_str,
+            _server: ChildGuard { child: server },
+            _mock: ChildGuard { child: mock },
+        })
+    }
+
+    impl BraveHarness {
+        async fn pool(&self) -> sqlx::SqlitePool {
+            connect_sqlite_test_pool(&self.db_str).await
+        }
+
+        /// GET one facade path with the harness Bearer token; returns status +
+        /// CLIENT-visible response headers (X-RateLimit-* passthrough proof) +
+        /// decoded JSON body.
+        async fn get_facade(
+            &self,
+            path: &str,
+            query: &str,
+        ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, Value) {
+            self.get_facade_with_token(path, &self.token, query).await
+        }
+
+        async fn get_facade_with_token(
+            &self,
+            path: &str,
+            token: &str,
+            query: &str,
+        ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, Value) {
+            let url = if query.is_empty() {
+                format!("{}{path}", self.base_url)
+            } else {
+                format!("{}{path}?{query}", self.base_url)
+            };
+            let response = Client::new()
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .expect("brave facade request");
+            let status = response.status();
+            let headers = response.headers().clone();
+            (status, headers, response.json().await.expect("json body"))
+        }
+
+        /// mock_brave per-endpoint call counters (zero-extra-request proof).
+        async fn mock_metrics(&self) -> Value {
+            Client::new()
+                .get(format!("{}/metrics", self.mock_base_url))
+                .send()
+                .await
+                .expect("mock metrics request")
+                .json::<Value>()
+                .await
+                .expect("mock metrics body")
+        }
+
+        /// api_keys quota view for a pooled brave key.
+        async fn key_quota(&self, api_key: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+            let pool = self.pool().await;
+            let row = sqlx::query(
+                "SELECT quota_limit, quota_remaining, quota_synced_at FROM api_keys \
+                 WHERE api_key = ? AND provider = 'brave'",
+            )
+            .bind(api_key)
+            .fetch_one(&pool)
+            .await
+            .expect("brave key row");
+            let out = (
+                row.get::<Option<i64>, _>("quota_limit"),
+                row.get::<Option<i64>, _>("quota_remaining"),
+                row.get::<Option<i64>, _>("quota_synced_at"),
+            );
+            pool.close().await;
+            out
+        }
+
+        async fn brave_passive_sample_count(&self) -> i64 {
+            let pool = self.pool().await;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM api_key_quota_sync_samples s \
+                 JOIN api_keys k ON k.id = s.key_id \
+                 WHERE k.provider = 'brave' AND s.source = 'brave_passive'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("sample count");
+            pool.close().await;
+            count
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Acceptance tests (plan L203 + M11; one named test per criterion).
+    // -----------------------------------------------------------------------
+
+    /// Happy passthrough for all three GET endpoints: field-identical bodies,
+    /// X-RateLimit-* headers VISIBLE to the client (web/search success carries
+    /// them), verbatim query forwarding, provider='brave' rows with the
+    /// api:brave/{web,news,llm-context} kinds, and credit tiers 1/1/2 from the
+    /// committed todo-2 registry charged with settled billing_ledger rows.
+    #[tokio::test]
+    async fn brave_get_happy_passthrough_bills_tiers_and_shows_rate_limit_headers() {
+        let harness = spawn_harness("facades-brave-happy", &["br-pool-1"], &["br-pool-1"]).await;
+
+        // Tuple: (registered route path for the request, canonical log path
+        // recorded in request_logs, query forwarded verbatim, expected body,
+        // request_kind key, upstream_operation, credit tier, emits rate-limit
+        // headers). request_logs keys on the CANONICAL kind path (the store
+        // derives request_kind_key from that column), while the client-facing
+        // full `/res/v1` path lives on auth_token_logs (bin boundary).
+        let expectations = [
+            (
+                WEB_PATH,
+                "/api/brave/web/search",
+                "q=brave%20rust&count=5&freshness=pd&country=US&safesearch=moderate&result_filter=faq",
+                mock_web_body(),
+                "api:brave/web",
+                "brave_http_web_search",
+                1i64,
+                true, // web/search success emits X-RateLimit-*
+            ),
+            (
+                NEWS_PATH,
+                "/api/brave/news/search",
+                "q=news&count=10",
+                mock_news_body(),
+                "api:brave/news",
+                "brave_http_news_search",
+                1,
+                false,
+            ),
+            (
+                LLM_PATH,
+                "/api/brave/llm/context",
+                "q=context&maximum_number_of_tokens=4096",
+                mock_llm_context_body(),
+                "api:brave/llm-context",
+                "brave_http_llm_context",
+                2,
+                false,
+            ),
+        ];
+        for (path, log_path, query, expected, kind_key, operation, credits, has_rate_headers) in
+            expectations
+        {
+            // Fresh token per endpoint so the ledger/quota asserts are exact.
+            let (token, token_id) = create_test_token(&harness.base_url).await;
+            let (status, headers, body) = harness
+                .get_facade_with_token(path, &token, query)
+                .await;
+            assert_eq!(status, reqwest::StatusCode::OK, "{path}");
+            // Field-identical to the mock response (verbatim passthrough, no
+            // transformation; M22 forbids response inspection).
+            assert_eq!(body, expected, "{path} body must pass through verbatim");
+
+            // X-RateLimit-* survive build_response's hop-by-hop-only strip and
+            // are VISIBLE to the client (plan todo 14 passthrough contract).
+            if has_rate_headers {
+                assert_eq!(
+                    headers
+                        .get("x-ratelimit-limit")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("50, 1000"),
+                    "{path} rate-limit header passthrough"
+                );
+                assert_eq!(
+                    headers
+                        .get("x-ratelimit-policy")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("1;w=1, 1000;w=2592000"),
+                    "{path} rate-limit policy passthrough"
+                );
+                assert_eq!(
+                    headers
+                        .get("x-ratelimit-reset")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("1, 2592000"),
+                    "{path} rate-limit reset passthrough"
+                );
+                assert!(
+                    headers.contains_key("x-ratelimit-remaining"),
+                    "{path} remaining header passthrough"
+                );
+            }
+
+            let pool = harness.pool().await;
+            let row = sqlx::query(
+                "SELECT id, api_key_id, method, path, query, status_code, tavily_status_code, \
+                   result_status, request_kind_key, provider, upstream_operation, \
+                   forwarded_headers \
+                   FROM observability.request_logs WHERE auth_token_id = ? \
+                   ORDER BY id DESC LIMIT 1",
+            )
+            .bind(&token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("request log row");
+            assert_eq!(row.get::<String, _>("provider"), "brave", "{path}");
+            assert_eq!(row.get::<String, _>("path"), log_path, "{path}");
+            assert_eq!(row.get::<String, _>("method"), "GET", "{path}");
+            assert_eq!(row.get::<String, _>("request_kind_key"), kind_key, "{path}");
+            assert_eq!(row.get::<i64, _>("status_code"), 200, "{path}");
+            // Legacy column carries the upstream HTTP status verbatim.
+            assert_eq!(row.get::<i64, _>("tavily_status_code"), 200, "{path}");
+            assert_eq!(row.get::<String, _>("result_status"), "success", "{path}");
+            assert_eq!(
+                row.get::<Option<String>, _>("upstream_operation").as_deref(),
+                Some(operation),
+                "{path}"
+            );
+            assert!(row.get::<Option<String>, _>("api_key_id").is_some());
+
+            // Client query forwarded verbatim (the mock ignores params; the
+            // persisted stripped query proves the passthrough text).
+            let persisted_query = row.get::<Option<String>, _>("query").unwrap_or_default();
+            assert!(persisted_query.contains("q="), "{path}: {persisted_query}");
+            assert!(!persisted_query.contains("th-"), "{path}: {persisted_query}");
+            assert!(
+                !persisted_query.contains("X-Subscription-Token"),
+                "{path}: {persisted_query}"
+            );
+            // x-subscription-token is the injected pooled-key slot (forwarded);
+            // no client project-id leaks (M2). The injected slot means the
+            // forwarded set contains it exactly once.
+            let forwarded = row.get::<String, _>("forwarded_headers");
+            assert!(!forwarded.contains("x-project-id"), "{path}: {forwarded}");
+
+            let log_id = row.get::<i64, _>("id");
+            let ledger = sqlx::query(
+                "SELECT billing_state, business_credits, request_log_id, settled_at \
+                   FROM billing_ledger WHERE token_id = ? \
+                   ORDER BY auth_token_log_id DESC LIMIT 1",
+            )
+            .bind(&token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("billing ledger row");
+            assert_eq!(ledger.get::<String, _>("billing_state"), "charged", "{path}");
+            assert_eq!(
+                ledger.get::<Option<i64>, _>("business_credits"),
+                Some(credits),
+                "{path} credit tier"
+            );
+            assert_eq!(
+                ledger.get::<Option<i64>, _>("request_log_id"),
+                Some(log_id),
+                "{path}"
+            );
+            assert!(ledger.get::<Option<i64>, _>("settled_at").is_some());
+            pool.close().await;
+        }
+
+        // One upstream call per endpoint — the counters prove the passive
+        // harvest added ZERO extra outbound requests (M11 hard MUST NOT).
+        assert_eq!(
+            harness.mock_metrics().await,
+            json!({ "web": 1, "news": 1, "llm_context": 1 })
+        );
+    }
+
+    /// Native client slot authentication: a th-token presented in the Brave
+    /// `X-Subscription-Token` header authenticates, the client slot is
+    /// STRIPPED (else the mock would 422 on the th-value) and replaced by the
+    /// pooled key, and neither the th-token nor the pooled key ever persists.
+    #[tokio::test]
+    async fn brave_native_slot_auth_strips_client_key_and_never_persists_secrets() {
+        let harness =
+            spawn_harness("facades-brave-redact", &["br-pool-3"], &["br-pool-3"]).await;
+
+        let url = format!("{}{WEB_PATH}?q=native-slot", harness.base_url);
+        let response = Client::new()
+            .get(&url)
+            // th-token in the Brave native client slot (no Bearer).
+            .header("x-subscription-token", harness.token.clone())
+            .send()
+            .await
+            .expect("native slot request");
+        // 200 is positive proof: the client slot was stripped and the pooled
+        // key was injected into X-Subscription-Token (mock 422s on any other).
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.expect("json body");
+        assert_eq!(body, mock_web_body());
+
+        let pool = harness.pool().await;
+        // Full-surface leak scan: neither the th-token nor the pooled brave key
+        // survives into any persisted text column (M17 strip-before-log).
+        for (label, sql) in [
+            (
+                "request_logs.query",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE query LIKE '%th-%' OR query LIKE ?1 OR query LIKE '%br-pool-3%'",
+            ),
+            (
+                "request_logs.request_body",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE CAST(request_body AS TEXT) LIKE '%th-%' OR CAST(request_body AS TEXT) LIKE ?1 OR CAST(request_body AS TEXT) LIKE '%br-pool-3%'",
+            ),
+            (
+                "request_logs.response_body",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE CAST(response_body AS TEXT) LIKE '%th-%' OR CAST(response_body AS TEXT) LIKE ?1 OR CAST(response_body AS TEXT) LIKE '%br-pool-3%'",
+            ),
+            (
+                "request_logs.error_message",
+                "SELECT COUNT(*) FROM observability.request_logs WHERE error_message LIKE '%th-%' OR error_message LIKE ?1 OR error_message LIKE '%br-pool-3%'",
+            ),
+            (
+                "auth_token_logs.query",
+                "SELECT COUNT(*) FROM auth_token_logs WHERE query LIKE '%th-%' OR query LIKE ?1",
+            ),
+        ] {
+            let leaks: i64 = sqlx::query_scalar(sql)
+                .bind(format!("%{}%", harness.token))
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(1);
+            assert_eq!(leaks, 0, "{label} leaked a client token or pooled key");
+        }
+        pool.close().await;
+    }
+
+    /// M11 passive harvest: after 2 web/search successes the leased key carries
+    /// the month-window Limit (1000), the DECREMENTING month Remaining
+    /// (999 -> 998), quota_synced_at, and two `brave_passive` samples. A
+    /// following news/search success (which emits NO rate-limit headers)
+    /// harvests nothing — the sample count and synced_at do NOT advance
+    /// (bounded-write proof: not every response writes). Zero extra requests.
+    #[tokio::test]
+    async fn brave_passive_harvest_updates_key_quota_and_skips_non_material() {
+        let harness =
+            spawn_harness("facades-brave-harvest", &["br-harvest"], &["br-harvest"]).await;
+
+        // Before any brave call the key has no synced quota state.
+        let (limit0, remaining0, synced0) = harness.key_quota("br-harvest").await;
+        assert_eq!(limit0, None, "fresh key starts with NULL quota_limit");
+        assert_eq!(remaining0, None);
+        assert_eq!(synced0, None);
+        assert_eq!(harness.brave_passive_sample_count().await, 0);
+
+        // Request 1: mock month Remaining = 1000-1 = 999.
+        let (s1, _h1, b1) = harness.get_facade(WEB_PATH, "q=harvest1").await;
+        assert_eq!(s1, reqwest::StatusCode::OK);
+        assert_eq!(b1, mock_web_body());
+        let (limit1, remaining1, synced1) = harness.key_quota("br-harvest").await;
+        assert_eq!(limit1, Some(1000), "month-window Limit harvested");
+        assert_eq!(remaining1, Some(999), "first month Remaining harvested");
+        assert!(synced1.is_some(), "quota_synced_at set on material change");
+        assert_eq!(harness.brave_passive_sample_count().await, 1);
+
+        // Request 2: mock month Remaining = 998 (decrementing — material).
+        let (s2, _h2, b2) = harness.get_facade(WEB_PATH, "q=harvest2").await;
+        assert_eq!(s2, reqwest::StatusCode::OK);
+        assert_eq!(b2, mock_web_body());
+        let (limit2, remaining2, synced2) = harness.key_quota("br-harvest").await;
+        assert_eq!(limit2, Some(1000));
+        assert_eq!(remaining2, Some(998), "second month Remaining decremented");
+        assert_eq!(harness.brave_passive_sample_count().await, 2);
+
+        // Non-material path: news/search success emits NO rate-limit headers,
+        // so the harvest parses nothing and writes nothing (bounded write).
+        let (s3, _h3, _b3) = harness.get_facade(NEWS_PATH, "q=nomaterial").await;
+        assert_eq!(s3, reqwest::StatusCode::OK);
+        assert_eq!(harness.brave_passive_sample_count().await, 2, "no new sample");
+        let (limit3, remaining3, synced3) = harness.key_quota("br-harvest").await;
+        assert_eq!(limit3, Some(1000));
+        assert_eq!(remaining3, Some(998));
+        assert_eq!(synced3, synced2, "synced_at unchanged on non-material");
+
+        // Zero extra outbound requests: exactly the 3 facade calls reached mock.
+        assert_eq!(
+            harness.mock_metrics().await,
+            json!({ "web": 2, "news": 1, "llm_context": 0 })
+        );
+    }
+
+    /// 422 SUBSCRIPTION_TOKEN_INVALID passes through verbatim; the todo-3
+    /// classifier's AuthFailed signal feeds reconcile_key_health (key
+    /// quarantined through the existing machinery), no credit set. mock_brave
+    /// emits no rate-limit header on this error, so harvest is a no-op (the
+    /// error path neither fails nor writes).
+    #[tokio::test]
+    async fn brave_invalid_token_422_passes_through_and_applies_auth_fail() {
+        let harness = spawn_harness(
+            "facades-brave-422",
+            &["br-invalid-at-mock"],
+            &["br-some-other-key"],
+        )
+        .await;
+
+        let (status, _headers, body) = harness.get_facade(WEB_PATH, "q=auth").await;
+        assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body, mock_invalid_token_body(), "422 body verbatim");
+
+        let pool = harness.pool().await;
+        let row = sqlx::query(
+            "SELECT result_status, failure_kind, key_effect_code, status_code, tavily_status_code \
+               FROM observability.request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "error");
+        assert_eq!(
+            row.get::<Option<String>, _>("failure_kind").as_deref(),
+            Some("upstream_account_deactivated_401")
+        );
+        assert_eq!(row.get::<String, _>("key_effect_code"), "quarantined");
+        assert_eq!(row.get::<i64, _>("status_code"), 422);
+        assert_eq!(row.get::<i64, _>("tavily_status_code"), 422);
+
+        let quarantined: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM api_key_quarantines q \
+              JOIN api_keys k ON k.id = q.key_id \
+              WHERE k.api_key = 'br-invalid-at-mock' AND q.cleared_at IS NULL \
+              AND q.reason_code = 'invalid_api_key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("quarantine scan");
+        assert_eq!(quarantined, 1, "422 auth-fail must quarantine the pooled key");
+
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&harness.token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0);
+        // No spurious harvest on the error path (mock emits no rate headers).
+        assert_eq!(harness.brave_passive_sample_count().await, 0);
+        pool.close().await;
+    }
+
+    /// 402 QUOTA_LIMITED passes through verbatim and marks the leased key
+    /// exhausted through the existing machinery; the next request leases the
+    /// OTHER pooled key (200). Exhausted Brave keys recover via T9's
+    /// reset_monthly RateLimitResetWindow — NOT duplicated here (todo-18 depth).
+    #[tokio::test]
+    async fn brave_402_quota_limited_passes_through_and_marks_exhausted() {
+        let harness = spawn_harness(
+            "facades-brave-402",
+            &["key-exhausted", "br-good-2"],
+            &["br-good-2"],
+        )
+        .await;
+
+        // Drive the LRU deterministically (serpapi/exa pattern): fresh tokens
+        // land on the untouched special key within a few leases.
+        let mut quota_token: Option<(String, String)> = None;
+        for _ in 0..3 {
+            let (token, token_id) = create_test_token(&harness.base_url).await;
+            let (status, _headers, body) =
+                harness.get_facade_with_token(WEB_PATH, &token, "q=quota").await;
+            if status == reqwest::StatusCode::PAYMENT_REQUIRED {
+                assert_eq!(body, mock_quota_limited_body(), "402 body verbatim");
+                quota_token = Some((token, token_id));
+                break;
+            }
+            assert_eq!(status, reqwest::StatusCode::OK, "fresh key leases succeed");
+            assert_eq!(body, mock_web_body());
+        }
+        let Some((quota_token, quota_token_id)) = quota_token else {
+            panic!("quota-402 never observed while the special key is pooled");
+        };
+
+        let pool = harness.pool().await;
+        let exhausted_status: String =
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-exhausted'")
+                .fetch_one(&pool)
+                .await
+                .expect("exhausted key row");
+        assert_eq!(
+            exhausted_status, "exhausted",
+            "402 QUOTA_LIMITED must emit the exhausted signal"
+        );
+        let row = sqlx::query(
+            "SELECT result_status, key_effect_code, failure_kind, tavily_status_code \
+               FROM observability.request_logs WHERE auth_token_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&quota_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("402 request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "quota_exhausted");
+        assert_eq!(row.get::<String, _>("key_effect_code"), "marked_exhausted");
+        assert!(row.get::<Option<String>, _>("failure_kind").is_none());
+        assert_eq!(row.get::<i64, _>("tavily_status_code"), 402);
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&quota_token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0, "exhausted attempt bills nothing");
+        pool.close().await;
+
+        // Next request on the SAME token rebinds off the exhausted key.
+        let (status2, _headers2, body2) = harness
+            .get_facade_with_token(WEB_PATH, &quota_token, "q=quota")
+            .await;
+        assert_eq!(status2, reqwest::StatusCode::OK);
+        assert_eq!(body2, mock_web_body());
+    }
+
+    /// 429 RATE_LIMITED passes through verbatim and arms a SHORT second-scale
+    /// transient backoff on the shared HTTP scope (Brave w=1 window: the 2s
+    /// default, distinct from Exa's minute-scale 30s clamp); the key stays
+    /// active and nothing bills.
+    #[tokio::test]
+    async fn brave_429_rate_limited_arms_second_scale_backoff_without_exhaustion() {
+        let harness =
+            spawn_harness("facades-brave-429", &["key-throttled"], &["br-x"]).await;
+
+        let (status, _headers, body) = harness.get_facade(WEB_PATH, "q=throttle").await;
+        assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(body, mock_rate_limited_body(), "429 body verbatim");
+
+        let pool = harness.pool().await;
+        let key_status: String =
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE api_key = 'key-throttled'")
+                .fetch_one(&pool)
+                .await
+                .expect("throttled key row");
+        assert_eq!(key_status, "active", "429 must NOT exhaust the key");
+
+        let row = sqlx::query(
+            "SELECT result_status, failure_kind, key_effect_code, tavily_status_code \
+               FROM observability.request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        assert_eq!(row.get::<String, _>("result_status"), "error");
+        assert_eq!(
+            row.get::<Option<String>, _>("failure_kind").as_deref(),
+            Some("upstream_rate_limited_429")
+        );
+        assert_eq!(
+            row.get::<String, _>("key_effect_code"),
+            "transient_backoff_set"
+        );
+
+        // Second-scale sizing: no Retry-After from the mock, so the Brave
+        // default (2s) arms — NOT the minute-scale 30s used by Exa/SerpApi.
+        let backoff = sqlx::query(
+            "SELECT b.retry_after_secs FROM api_key_transient_backoffs b \
+              JOIN api_keys k ON k.id = b.key_id \
+              WHERE k.api_key = 'key-throttled' AND b.scope = 'http_global' \
+              AND b.reason_code = 'upstream_rate_limited_429'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("backoff row");
+        assert_eq!(backoff.get::<i64, _>("retry_after_secs"), 2, "second-scale");
+
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
+        )
+        .bind(&harness.token_id)
+        .fetch_one(&pool)
+        .await
+        .expect("ledger scan");
+        assert_eq!(charged, 0, "failed attempt bills nothing");
+        pool.close().await;
+    }
+
+    /// Quarantined pool: after a 422 auth-fail quarantines the ONLY key, the
+    /// next request surfaces the Hikari NoAvailableKeys shape (502
+    /// proxy_error), never a provider body (serpapi/exa parity).
+    #[tokio::test]
+    async fn brave_quarantined_pool_returns_502_no_available_keys_shape() {
+        let harness = spawn_harness(
+            "facades-brave-nopool",
+            &["br-invalid-at-mock"],
+            &["br-some-other-key"],
+        )
+        .await;
+
+        let (status, _headers, body) = harness.get_facade(WEB_PATH, "q=solo").await;
+        assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body, mock_invalid_token_body());
+
+        let (status2, _headers2, body2) = harness.get_facade(WEB_PATH, "q=solo2").await;
+        assert_eq!(status2, reqwest::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body2.get("error").and_then(Value::as_str),
+            Some("proxy_error")
+        );
+        assert_eq!(
+            body2.get("message").and_then(Value::as_str),
+            Some("upstream unavailable")
+        );
+    }
+}
+
