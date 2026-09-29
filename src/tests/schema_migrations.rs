@@ -1819,6 +1819,52 @@ async fn warm_schema_migration_adds_the_per_channel_legacy_cursor() {
 }
 
 #[tokio::test]
+async fn warm_schema_compatibility_restores_api_key_membership_intervals() {
+    let db_path = temp_db_path("schema-migration-membership-intervals");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-membership-intervals".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    sqlx::query("DROP TABLE api_key_membership_intervals")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove membership intervals from the pre-feature schema");
+    sqlx::query("DROP TABLE api_key_membership_history_state")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove membership history state from the pre-feature schema");
+    let full_bootstrap = proxy
+        .key_store
+        .prepare_versioned_schema()
+        .await
+        .expect("warm schema verification must accept the pre-feature schema");
+    assert!(!full_bootstrap);
+    proxy
+        .key_store
+        .ensure_warm_schema_compatibility()
+        .await
+        .expect("warm schema compatibility must restore membership interval schema");
+    let restored_objects: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+         ('api_key_membership_history_state', 'api_key_membership_intervals')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("check restored membership interval schema");
+    assert_eq!(restored_objects, 2);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn versioned_schema_migrations_reject_missing_recorded_objects() {
     let db_path = temp_db_path("schema-migration-missing-object");
     let db_str = db_path.to_string_lossy().to_string();
