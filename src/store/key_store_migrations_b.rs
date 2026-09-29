@@ -900,6 +900,7 @@ impl KeyStore {
     pub(crate) async fn ensure_api_key_membership_intervals_schema(
         &self,
     ) -> Result<(), ProxyError> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_key_membership_history_state (
@@ -908,7 +909,7 @@ impl KeyStore {
             )
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"
@@ -921,23 +922,22 @@ impl KeyStore {
             )
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_membership_intervals_key_start
                ON api_key_membership_intervals(key_id, active_from DESC)"#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_membership_intervals_open
                ON api_key_membership_intervals(key_id) WHERE active_until IS NULL"#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         let tracked_from = self.backend_time.now_ts();
-        let mut tx = self.pool.begin().await?;
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
         )
