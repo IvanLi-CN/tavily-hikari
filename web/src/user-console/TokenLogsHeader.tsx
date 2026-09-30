@@ -1,4 +1,5 @@
 import { Icon } from '../lib/icons'
+import { logProviderAllFilterValue } from '../lib/logProvider'
 import SegmentedTabs, { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 
@@ -18,6 +19,10 @@ interface TokenLogsHeaderProps {
   filterOptions: ReadonlyArray<SegmentedTabsOption<UserTokenLogFilter>>
   filterAriaLabel: string
   filterDisabled: boolean
+  providerOptions: ReadonlyArray<SegmentedTabsOption<string>>
+  selectedProvider: string | null
+  providerFilterAriaLabel: string
+  onProviderFilterChange: (value: string | null) => void
   pushIssue: DetailLogsPushIssueCode | null
   pushStatusText: DetailLogsPushStatusText
   onFilterChange: (filter: UserTokenLogFilter) => void
@@ -43,6 +48,10 @@ export default function TokenLogsHeader({
   filterOptions,
   filterAriaLabel,
   filterDisabled,
+  providerOptions,
+  selectedProvider,
+  providerFilterAriaLabel,
+  onProviderFilterChange,
   pushIssue,
   pushStatusText,
   onFilterChange,
@@ -56,6 +65,14 @@ export default function TokenLogsHeader({
           onChange={onFilterChange}
           options={filterOptions}
           ariaLabel={filterAriaLabel}
+          className="user-console-log-filter-tabs"
+          disabled={filterDisabled}
+        />
+        <SegmentedTabs<string>
+          value={selectedProvider ?? logProviderAllFilterValue}
+          onChange={(next) => onProviderFilterChange(next === logProviderAllFilterValue ? null : next)}
+          options={providerOptions}
+          ariaLabel={providerFilterAriaLabel}
           className="user-console-log-filter-tabs"
           disabled={filterDisabled}
         />

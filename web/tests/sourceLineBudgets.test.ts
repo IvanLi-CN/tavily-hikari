@@ -34,9 +34,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/api/runtime.ts',
     {
-      max: 4120,
+      max: 4130,
       reason:
-        'API barrel still carries HA source settings, upstream privacy status contracts, MCP session bindings contracts, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, alert last-good coverage decoding, expanded alert event/group job metadata, user-list contracts, source dialog failure normalization, and user-console overview APIs until the proxy API surface is split out.',
+        'API barrel still carries HA source settings, upstream privacy status contracts, MCP session bindings contracts, planned cutover node-detail contracts, admin settings, passkey/password admin auth contracts, auth-token retention contracts, grouped-alert dashboard summary contracts, alert last-good coverage decoding, expanded alert event/group job metadata, user-list contracts, source dialog failure normalization, the plan-todo-23b user token-log provider field, and user-console overview APIs until the proxy API surface is split out.',
     },
   ],
   [

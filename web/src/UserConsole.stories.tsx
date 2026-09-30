@@ -712,6 +712,7 @@ interface ServerPublicTokenLogMock {
   resultStatus: string
   errorMessage: string | null
   createdAt: number
+  provider?: string | null
 }
 
 const tokenLogTemplates: Array<Omit<ServerPublicTokenLogMock, 'id' | 'createdAt'>> = [
@@ -728,7 +729,7 @@ const tokenLogTemplates: Array<Omit<ServerPublicTokenLogMock, 'id' | 'createdAt'
   },
   {
     method: 'POST',
-    path: '/mcp',
+    path: '/api/exa/search',
     query: null,
     httpStatus: 429,
     mcpStatus: 429,
@@ -736,10 +737,11 @@ const tokenLogTemplates: Array<Omit<ServerPublicTokenLogMock, 'id' | 'createdAt'
     countsBusinessQuota: true,
     resultStatus: 'quota_exhausted',
     errorMessage: 'Account hourly limit reached',
+    provider: 'exa',
   },
   {
     method: 'POST',
-    path: '/mcp',
+    path: '/api/brave/res/v1/web/search',
     query: null,
     httpStatus: 200,
     mcpStatus: 200,
@@ -747,6 +749,7 @@ const tokenLogTemplates: Array<Omit<ServerPublicTokenLogMock, 'id' | 'createdAt'
     countsBusinessQuota: false,
     resultStatus: 'neutral',
     errorMessage: null,
+    provider: 'brave',
   },
   {
     method: 'POST',

@@ -1,5 +1,14 @@
+import { useMemo, useState } from 'react'
+
 import { type PublicTokenLog } from '../api'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
+import {
+  filterLogsByProvider,
+  logProviderAllFilterValue,
+  logProviderDisplayLabel,
+  providerFacetOptionsFromLogs,
+  resolveLogProvider,
+} from '../lib/logProvider'
 import TokenLogsHeader, { type DetailLogsPushIssueCode, type UserTokenLogFilter } from './TokenLogsHeader'
 import { type SegmentedTabsOption } from '../components/ui/SegmentedTabs'
 
@@ -12,6 +21,8 @@ interface TokenLogsPanelText {
   mobileAction: string
   logFilters: {
     ariaLabel: string
+    all: string
+    provider: string
   }
   pushStatus: {
     ariaLabel: string
@@ -56,8 +67,21 @@ export default function TokenLogsPanel({
   formatLogCredits,
   statusTone,
 }: TokenLogsPanelProps): JSX.Element {
+  const [providerFilter, setProviderFilter] = useState<string | null>(null)
+  const providerFilterOptions = useMemo<ReadonlyArray<SegmentedTabsOption<string>>>(
+    () => [
+      { value: logProviderAllFilterValue, label: text.logFilters.all },
+      ...providerFacetOptionsFromLogs(logs).map((option) => ({
+        value: option.value,
+        label: logProviderDisplayLabel(option.value),
+      })),
+    ],
+    [logs, text.logFilters.all],
+  )
+  const visibleLogs = useMemo(() => filterLogsByProvider(logs, providerFilter), [logs, providerFilter])
+
   const renderDesktopRows = (keyPrefix: string) =>
-    logs.map((log, index) => (
+    visibleLogs.map((log, index) => (
       <tr key={`${keyPrefix}-${log.id}-${index}`}>
         <td>
           <div className="user-console-log-stack">
@@ -66,6 +90,13 @@ export default function TokenLogsPanel({
               {log.method} {log.path}
               {log.query ? ` · ${log.query}` : ''}
             </span>
+            <StatusBadge
+              className="user-console-log-provider-badge"
+              tone="neutral"
+              title={`${text.logFilters.provider}: ${logProviderDisplayLabel(resolveLogProvider(log))}`}
+            >
+              {logProviderDisplayLabel(resolveLogProvider(log))}
+            </StatusBadge>
           </div>
         </td>
         <td>
@@ -102,6 +133,10 @@ export default function TokenLogsPanel({
         filterOptions={filterOptions}
         filterAriaLabel={text.logFilters.ariaLabel}
         filterDisabled={filterDisabled}
+        providerOptions={providerFilterOptions}
+        selectedProvider={providerFilter}
+        providerFilterAriaLabel={text.logFilters.provider}
+        onProviderFilterChange={setProviderFilter}
         pushIssue={pushIssue}
         pushStatusText={text.pushStatus}
         onFilterChange={onFilterChange}
@@ -128,7 +163,7 @@ export default function TokenLogsPanel({
           ? (event) => event.currentTarget.style.setProperty('--table-scroll-y', `${event.currentTarget.scrollTop}px`)
           : undefined}
       >
-        {logs.length === 0 ? (
+        {visibleLogs.length === 0 ? (
           <div className="empty-state alert">{text.emptyLogs}</div>
         ) : (
           <>
@@ -173,10 +208,10 @@ export default function TokenLogsPanel({
       </div>
       {mode === 'full' ? (
         <div className="user-console-mobile-list user-console-md-down">
-          {logs.length === 0 ? (
+          {visibleLogs.length === 0 ? (
             <div className="empty-state alert">{text.emptyLogs}</div>
           ) : (
-            logs.map((log) => (
+            visibleLogs.map((log) => (
               <article key={log.id} className="user-console-mobile-card user-console-log-card">
                 <header className="user-console-log-card-head">
                   <div className="user-console-log-card-request">
@@ -192,6 +227,7 @@ export default function TokenLogsPanel({
                   <span>H {log.http_status ?? '—'}</span>
                   <span>T {log.mcp_status ?? '—'}</span>
                   <span>{text.table.credits} {formatLogCredits(log.business_credits)}</span>
+                  <span>{logProviderDisplayLabel(resolveLogProvider(log))}</span>
                 </div>
                 <p className="user-console-log-card-error">
                   {log.error_message ?? text.noError}

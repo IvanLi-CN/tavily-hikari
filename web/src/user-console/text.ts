@@ -398,6 +398,7 @@ export const EN = {
       ariaLabel: 'Recent request billing filter',
       all: 'All',
       billable: 'Quota usage',
+      provider: 'Provider',
     },
     pushStatus: {
       ariaLabel: 'Real-time request log push status',
@@ -836,6 +837,7 @@ export const ZH = {
       ariaLabel: '近期请求额度筛选',
       all: '全部',
       billable: '额度消耗',
+      provider: '提供方',
     },
     pushStatus: {
       ariaLabel: '实时请求日志推送状态',

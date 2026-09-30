@@ -382,6 +382,7 @@ export interface PublicTokenLog {
   result_status: string
   error_message: string | null
   created_at: number
+  provider?: string | null
 }
 interface ServerPublicTokenLog {
   id: number
@@ -395,6 +396,7 @@ interface ServerPublicTokenLog {
   resultStatus: string
   errorMessage: string | null
   createdAt: number
+  provider?: string | null
 }
 
 interface ServerUserTokenEventSnapshot {
@@ -1659,6 +1661,7 @@ export async function fetchPublicLogs(token: string, limit = 20, signal?: AbortS
     result_status: it.resultStatus,
     error_message: it.errorMessage,
     created_at: it.createdAt,
+    provider: it.provider ?? null,
   }))
 }
 
@@ -2739,6 +2742,7 @@ export async function fetchUserTokenLogs(
     result_status: it.resultStatus,
     error_message: it.errorMessage,
     created_at: it.createdAt,
+    provider: it.provider ?? null,
   }))
 }
 
@@ -2758,6 +2762,7 @@ export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot
       result_status: it.resultStatus,
       error_message: it.errorMessage,
       created_at: it.createdAt,
+      provider: it.provider ?? null,
     })),
   }
 }

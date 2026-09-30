@@ -1894,6 +1894,9 @@ function AdminDashboard(): JSX.Element {
   const [requestLogsCatalog, setRequestLogsCatalog] = useState<RequestLogsCatalog | null>(null)
   const [requestLogOutcomeFilter, setRequestLogOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
   const [requestLogKeyFilter, setRequestLogKeyFilter] = useState<string | null>(null)
+  const [requestLogProviderFilter, setRequestLogProviderFilter] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('provider'),
+  )
   const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestsError, setRequestsError] = useState<string | null>(null)
   const [requestEntityDrawer, setRequestEntityDrawer] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
@@ -3889,6 +3892,7 @@ function AdminDashboard(): JSX.Element {
         bindingEffect: requestLogBindingEffectFilter,
         selectionEffect: requestLogSelectionEffectFilter,
         keyId: requestLogKeyFilter ?? undefined,
+        provider: requestLogProviderFilter ?? undefined,
       },
       request.signal,
     )
@@ -3930,6 +3934,7 @@ function AdminDashboard(): JSX.Element {
     requestLogBindingEffectFilter,
     requestLogSelectionEffectFilter,
     requestLogKeyFilter,
+    requestLogProviderFilter,
     requestLogResultFilter,
   ])
 
@@ -5230,7 +5235,10 @@ function AdminDashboard(): JSX.Element {
         request.cleanup()
       } else {
         tasks.push(
-          fetchRequestLogsList(listPlan.query, request.signal)
+          fetchRequestLogsList(
+            { ...listPlan.query, provider: requestLogProviderFilter ?? undefined },
+            request.signal,
+          )
             .then((result) => {
               if (request.signal.aborted) return
               setLogs(result.items)
@@ -11862,6 +11870,9 @@ function AdminDashboard(): JSX.Element {
           keyOptions={requestLogFacets.keys}
           selectedKeyId={requestLogKeyFilter}
           onKeyFilterChange={handleRequestLogKeyFilter}
+          providerOptions={requestLogFacets.providers}
+          selectedProvider={requestLogProviderFilter}
+          onProviderFilterChange={setRequestLogProviderFilter}
           showKeyColumn
           showTokenColumn
           perPage={logsPerPage}
