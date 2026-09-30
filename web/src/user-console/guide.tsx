@@ -15,6 +15,7 @@ import {
   TAVILY_SEARCH_DOC_URL,
   VSCODE_DOC_URL,
 } from './runtime'
+import { buildProviderGuideContent } from './providerGuides'
 
 export type GuideCopyState = 'idle' | 'copied' | 'error'
 
@@ -152,6 +153,7 @@ export function buildGuideContent(language: Language, baseUrl: string, prettyTok
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
   const genericMcpSnippet = buildGenericMcpSnippet(baseUrl, prettyToken)
   const apiSearchSnippet = buildApiSearchSnippet(baseUrl, prettyToken)
+  const providerGuides = buildProviderGuideContent(isEnglish ? 'en' : 'zh', baseUrl, prettyToken)
   return {
     codex: {
       title: 'Codex CLI',
@@ -368,6 +370,7 @@ export function buildGuideContent(language: Language, baseUrl: string, prettyTok
         },
       ],
     },
+    ...providerGuides,
   }
 }
 

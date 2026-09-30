@@ -12,6 +12,9 @@ export const GUIDE_KEY_ORDER: readonly GuideKey[] = [
   'cursor',
   'windsurf',
   'cherryStudio',
+  'serpapi',
+  'exa',
+  'brave',
   'other',
 ]
 

@@ -39,6 +39,9 @@ const publicGuideTabs = [
   { id: 'cursor', label: 'Cursor' },
   { id: 'windsurf', label: 'Windsurf' },
   { id: 'cherryStudio', label: 'Cherry Studio' },
+  { id: 'serpapi', label: 'SerpApi' },
+  { id: 'exa', label: 'Exa' },
+  { id: 'brave', label: 'Brave' },
   { id: 'other', label: 'HTTP API' },
 ] as const
 
@@ -291,6 +294,64 @@ function PublicHomeGuideTokenRevealedProof(): JSX.Element {
   )
 }
 
+const providerGuideProofKeys = ['serpapi', 'exa', 'brave'] as const
+
+function PublicHomeProviderGuidesProof(): JSX.Element {
+  const strings = useTranslate().public
+  const exampleToken = 'th-a1b2-1234567890abcdef'
+  const guides = publicHomeTestables.buildGuideContent('zh', 'https://hikari.example.com', exampleToken)
+  const activeGuide = 'brave'
+
+  return (
+    <main className="app-shell public-home">
+      <section className="surface panel public-home-guide">
+        <h2>{strings.guide.title}</h2>
+        <div className="guide-tabs" role="tablist" aria-label={strings.guide.title}>
+          {publicGuideTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`guide-tab${tab.id === activeGuide ? ' active' : ''}`}
+              aria-pressed={tab.id === activeGuide}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {providerGuideProofKeys.map((key) => {
+          const guide = guides[key]
+          const samples = publicHomeTestables.resolveGuideSamples(guide)
+          return (
+            <section key={key} className="guide-panel" aria-labelledby={`public-home-guide-${key}`}>
+              <div className="guide-panel-header">
+                <h3 id={`public-home-guide-${key}`}>{guide.title}</h3>
+              </div>
+              <ol>
+                {guide.steps.map((step, index) => (
+                  <li key={index}>{step}</li>
+                ))}
+              </ol>
+              {samples.map((sample) => (
+                <div key={sample.title} className="guide-sample">
+                  <p className="guide-sample-title">{sample.title}</p>
+                  <div className="mockup-code relative guide-code-shell">
+                    <span className="guide-lang-badge badge badge-outline badge-sm">
+                      {(sample.language ?? 'code').toUpperCase()}
+                    </span>
+                    <pre>
+                      <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+                    </pre>
+                  </div>
+                </div>
+              ))}
+            </section>
+          )
+        })}
+      </section>
+    </main>
+  )
+}
+
 const meta = {
   title: 'Public/PublicHome',
   parameters: {
@@ -386,6 +447,23 @@ export const GuideTokenRevealedDarkMobile: Story = {
       description: {
         story:
           'Mobile dark-theme public guide proof for the repaired recessed code blocks, guide tabs, and clay surface contrast.',
+      },
+    },
+  },
+}
+
+export const ProviderGuidesProof: Story = {
+  args: {
+    showAdminAction: false,
+  },
+  render: () => <PublicHomeProviderGuidesProof />,
+  parameters: {
+    layout: 'fullscreen',
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story:
+          'Per-provider setup proof (plan todo 24): SerpApi, Exa, and Brave guide tabs with MCP and HTTP facade snippets, auth slots, and boundary copy.',
       },
     },
   },

@@ -156,6 +156,7 @@ export const EN: TranslationShape = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
+          serpapi: 'SerpApi', exa: 'Exa', brave: 'Brave',
           other: 'Other',
         },
       },

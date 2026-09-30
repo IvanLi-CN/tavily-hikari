@@ -26,6 +26,10 @@ describe('PublicHome Storybook proofs', () => {
       layout: 'fullscreen',
       viewport: { defaultViewport: '1440-device-desktop' },
     })
+    expect(publicHomeStories.ProviderGuidesProof.parameters).toMatchObject({
+      layout: 'fullscreen',
+      viewport: { defaultViewport: '1440-device-desktop' },
+    })
   })
 
   it('renders the public metrics hero with an explicit UTC monthly label', () => {
@@ -48,5 +52,22 @@ describe('PublicHome Storybook proofs', () => {
 
     expect(markup).toContain('Monthly Success (UTC)')
     expect(markup).not.toContain('Today Success (UTC)')
+  })
+
+  it('renders every provider setup tab with MCP and HTTP snippets', () => {
+    const renderStory = publicHomeStories.ProviderGuidesProof.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(LanguageProvider, null, createElement(ThemeProvider, null, renderStory?.())),
+    )
+
+    expect(markup).toContain('https://hikari.example.com/serpapi/mcp')
+    expect(markup).toContain('https://hikari.example.com/exa/mcp')
+    expect(markup).toContain('https://hikari.example.com/brave/mcp')
+    expect(markup).toContain('Bearer th-a1b2-1234567890abcdef')
+    expect(markup).toContain('api_key=th-a1b2-1234567890abcdef')
+    expect(markup).toContain('x-api-key: th-a1b2-1234567890abcdef')
+    expect(markup).toContain('X-Subscription-Token: th-a1b2-1234567890abcdef')
   })
 })

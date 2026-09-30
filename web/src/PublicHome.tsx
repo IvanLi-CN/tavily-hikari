@@ -45,10 +45,11 @@ import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, selectAllReadonlyText } from './lib/clipboard'
 import { useResponsiveModes } from './lib/responsive'
 import { useOfflineState } from './pwa/useOfflineState'
+import { buildProviderGuideContent } from './user-console/providerGuides'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
-type GuideKey = 'codex' | 'hikariCli' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
+type GuideKey = 'codex' | 'hikariCli' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'serpapi' | 'exa' | 'brave' | 'other'
 
 interface GuideReference {
   label: string
@@ -95,6 +96,9 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'cursor',
   'windsurf',
   'cherryStudio',
+  'serpapi',
+  'exa',
+  'brave',
   'other',
 ]
 const PRIMARY_GUIDE_KEYS = new Set<GuideKey>(['codex', 'hikariCli', 'claude', 'vscode'])
@@ -1053,6 +1057,7 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
   const genericMcpSnippet = buildGenericMcpSnippet(baseUrl, prettyToken)
   const apiSearchSnippet = buildApiSearchSnippet(baseUrl, prettyToken)
+  const providerGuides = buildProviderGuideContent(isEnglish ? 'en' : 'zh', baseUrl, prettyToken)
   return {
     codex: {
       title: 'Codex CLI',
@@ -1269,6 +1274,7 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
         },
       ],
     },
+    ...providerGuides,
   }
 }
 

@@ -149,7 +149,7 @@ const TAVILY_USAGE_UPSTREAM_ONLY_FIELDS = [
 ] as const
 
 export type GuideLanguage = 'toml' | 'json' | 'bash'
-export type GuideKey = 'codex' | 'hikariCli' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
+export type GuideKey = 'codex' | 'hikariCli' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'serpapi' | 'exa' | 'brave' | 'other'
 
 export interface GuideReference {
   label: string
