@@ -98,9 +98,9 @@ const EXCEPTIONS = new Map<string, { max: number; reason: string }>([
   [
     'src/i18n/types.ts',
     {
-      max: 1950,
+      max: 1960,
       reason:
-        'HA source settings mode-specific failure copy, upstream privacy status strings, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, auth-token retention settings copy, and admin passkey/password security copy remain in the shared catalog contract.',
+        'HA source settings mode-specific failure copy, upstream privacy status strings, planned-cutover and node-detail strings, admin jobs maintenance strings, the expanded admin rankings contract, grouped-alert dashboard summary strings, auth-token retention settings copy, admin passkey/password security copy, and the plan-todo-23 provider facet/table copy remain in the shared catalog contract.',
     },
   ],
   [

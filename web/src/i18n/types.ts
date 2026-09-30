@@ -1735,6 +1735,8 @@ export interface AdminTranslationsShape {
       tokenAll: string
       keyAll: string
       noFacetOptions: string
+      provider: string
+      providerAll: string
     }
     empty: {
       loading: string
@@ -1745,6 +1747,7 @@ export interface AdminTranslationsShape {
       key: string
       token: string
       requestType: string
+      provider: string
       status: string
       chargedCredits: string
       httpStatus: string

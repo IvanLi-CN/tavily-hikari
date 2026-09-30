@@ -58,6 +58,16 @@ const canonicalTokenLogRequestKindOptions: TokenLogRequestKindOption[] = [
   { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
   { key: 'api:unknown-path', label: 'API | unknown path', protocol_group: 'api', billing_group: 'non_billable' },
   { key: 'api:usage', label: 'API | usage', protocol_group: 'api', billing_group: 'non_billable' },
+  // Plan todo 23 / M9: the 16 committed provider kinds (src/analysis.rs
+  // PROVIDER_REQUEST_KINDS :895-912). Facade operations are billable; labels
+  // are language-neutral and identical to the backend canonical labels.
+  { key: 'api:serpapi/search', label: 'API | serpapi/search', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:exa/search', label: 'API | exa/search', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:exa/contents', label: 'API | exa/contents', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:exa/answer', label: 'API | exa/answer', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:brave/web', label: 'API | brave/web', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:brave/news', label: 'API | brave/news', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:brave/llm-context', label: 'API | brave/llm-context', protocol_group: 'api', billing_group: 'billable' },
   { key: 'mcp:batch', label: 'MCP | batch', protocol_group: 'mcp', billing_group: 'billable' },
   { key: 'mcp:crawl', label: 'MCP | crawl', protocol_group: 'mcp', billing_group: 'billable' },
   { key: 'mcp:extract', label: 'MCP | extract', protocol_group: 'mcp', billing_group: 'billable' },
@@ -80,6 +90,15 @@ const canonicalTokenLogRequestKindOptions: TokenLogRequestKindOption[] = [
     billing_group: 'non_billable',
   },
   { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:serpapi/search', label: 'MCP | serpapi/search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:serpapi/search_table', label: 'MCP | serpapi/search_table', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:serpapi/search_dashboard', label: 'MCP | serpapi/search_dashboard', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:brave/web_search', label: 'MCP | brave/web_search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:brave/news_search', label: 'MCP | brave/news_search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:brave/llm_context', label: 'MCP | brave/llm_context', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:exa/web_search', label: 'MCP | exa/web_search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:exa/web_fetch', label: 'MCP | exa/web_fetch', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:exa/answer', label: 'MCP | exa/answer', protocol_group: 'mcp', billing_group: 'billable' },
   {
     key: 'mcp:session-delete-unsupported',
     label: 'MCP | session delete unsupported',

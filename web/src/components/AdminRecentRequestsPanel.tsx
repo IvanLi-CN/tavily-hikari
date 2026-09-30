@@ -3,6 +3,13 @@ import { createPortal } from 'react-dom'
 import type { QueryLoadState } from '../admin/queryLoadState'
 import type { LogFacetOption, RequestLog, RequestLogBodies } from '../api'
 import type { AdminTranslations } from '../i18n'
+import {
+  filterLogsByProvider,
+  logProviderDisplayLabel,
+  mergeProviderFacetOptions,
+  providerFilterQueryValue,
+  resolveLogProvider,
+} from '../lib/logProvider'
 import { cleanedRequestLogBodySummary } from '../requestLogBodySummary'
 import { Icon } from '../lib/icons'
 import {
@@ -83,6 +90,9 @@ export interface AdminRecentRequestsPanelProps {
   keyOptions?: LogFacetOption[]
   selectedKeyId?: string | null
   onKeyFilterChange?: (value: string | null) => void
+  providerOptions?: LogFacetOption[]
+  selectedProvider?: string | null
+  onProviderFilterChange?: (value: string | null) => void
   showKeyColumn: boolean
   showTokenColumn: boolean
   perPage: number
@@ -661,6 +671,10 @@ function RecentRequestDetails({
           </span>
         </div>
         <div>
+          <span className="log-details-label">{strings.logs.table.provider}</span>
+          <span className="log-details-value">{logProviderDisplayLabel(resolveLogProvider(log))}</span>
+        </div>
+        <div>
           <span className="log-details-label">{strings.logDetails.outcome}</span>
           <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
         </div>
@@ -767,6 +781,9 @@ export default function AdminRecentRequestsPanel({
   keyOptions = [],
   selectedKeyId,
   onKeyFilterChange,
+  providerOptions,
+  selectedProvider,
+  onProviderFilterChange,
   showKeyColumn,
   showTokenColumn,
   perPage,
@@ -785,6 +802,7 @@ export default function AdminRecentRequestsPanel({
 }: AdminRecentRequestsPanelProps): JSX.Element {
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [logBodiesById, setLogBodiesById] = useState<Record<number, LogBodiesLoadState>>({})
+  const [internalProviderFilter, setInternalProviderFilter] = useState<string | null>(null)
   const [headerFiltersTarget, setHeaderFiltersTarget] = useState<HTMLElement | null>(null)
   const logBodyControllersRef = useRef<Map<number, AbortController>>(new Map())
   const viewportMode = useViewportMode()
@@ -882,6 +900,43 @@ export default function AdminRecentRequestsPanel({
   const keyFilterSummary = useMemo(
     () => summarizeSingleFacet(selectedKeyId, keyOptions, recentRequestsCompactAllLabel),
     [keyOptions, selectedKeyId],
+  )
+  const effectiveProviderFilter =
+    selectedProvider !== undefined ? selectedProvider : internalProviderFilter
+  const providerFacetOptions = useMemo(
+    () => mergeProviderFacetOptions(providerOptions, logs),
+    [logs, providerOptions],
+  )
+  const visibleLogs = useMemo(
+    () => filterLogsByProvider(logs, effectiveProviderFilter),
+    [effectiveProviderFilter, logs],
+  )
+  const handleProviderFilterChange = useCallback(
+    (next: string | null) => {
+      if (selectedProvider === undefined) {
+        setInternalProviderFilter(next)
+      }
+      // T21 already emits `?provider=` from RequestLogsPageQuery; callers that
+      // own server-side filtering receive the exact query value (null = all).
+      onProviderFilterChange?.(providerFilterQueryValue(next) ?? null)
+    },
+    [onProviderFilterChange, selectedProvider],
+  )
+  const providerFilterSummary = useMemo(
+    () =>
+      effectiveProviderFilter
+        ? logProviderDisplayLabel(effectiveProviderFilter)
+        : strings.logs.filters.providerAll,
+    [effectiveProviderFilter, strings.logs.filters.providerAll],
+  )
+  const providerSelectOptions = useMemo(
+    () =>
+      providerFacetOptions.map((option) => ({
+        value: option.value,
+        label: logProviderDisplayLabel(option.value),
+        count: option.count,
+      })),
+    [providerFacetOptions],
   )
   const summaryColumnCount = 6 + Number(showKeyColumn) + Number(showTokenColumn)
   const desktopClassName = `recent-requests-desktop recent-requests-desktop--${variant}`
@@ -1050,6 +1105,25 @@ export default function AdminRecentRequestsPanel({
           />
         </div>
       ) : null}
+      {providerFacetOptions.length > 0 ? (
+        <div className="recent-requests-filter-field">
+          <span className="recent-requests-filter-label">{strings.logs.filters.provider}</span>
+          <SearchableFacetSelect
+            value={effectiveProviderFilter ?? null}
+            options={providerSelectOptions}
+            summary={providerFilterSummary}
+            allLabel={strings.logs.filters.providerAll}
+            emptyLabel={strings.logs.filters.noFacetOptions}
+            searchPlaceholder={language === 'zh' ? '输入提供方筛选' : 'Filter providers'}
+            searchAriaLabel={strings.logs.filters.provider}
+            triggerAriaLabel={`${strings.logs.filters.provider}: ${providerFilterSummary}`}
+            listAriaLabel={strings.logs.filters.provider}
+            onChange={handleProviderFilterChange}
+            triggerClassName="recent-requests-filter-select-trigger recent-requests-filter-select-trigger--menu"
+            contentClassName="recent-requests-filter-menu"
+          />
+        </div>
+      ) : null}
     </div>
   )
   const headerFiltersPortal = headerFiltersTarget
@@ -1092,14 +1166,14 @@ export default function AdminRecentRequestsPanel({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {logs.length === 0 ? (
+          {visibleLogs.length === 0 ? (
             <TableRow>
               <TableCell colSpan={summaryColumnCount}>
                 <div className="empty-state alert">{emptyLabel}</div>
               </TableCell>
             </TableRow>
           ) : (
-            logs.map((log) => {
+            visibleLogs.map((log) => {
               const expanded = expandedLogs.has(log.id)
               const resolvedLogBodiesState =
                 logBodiesById[log.id]
@@ -1179,7 +1253,16 @@ export default function AdminRecentRequestsPanel({
                       </TableCell>
                     ) : null}
                     <TableCell className="recent-requests-col recent-requests-col--request-type">
-                      <RequestKindBadge requestKindKey={log.request_kind_key ?? null} requestKindLabel={requestKindLabel} size="sm" />
+                      <div className="recent-requests-request-kind-stack">
+                        <RequestKindBadge requestKindKey={log.request_kind_key ?? null} requestKindLabel={requestKindLabel} size="sm" />
+                        <StatusBadge
+                          tone="neutral"
+                          className="recent-requests-provider-badge"
+                          title={`${strings.logs.table.provider}: ${logProviderDisplayLabel(resolveLogProvider(log))}`}
+                        >
+                          {logProviderDisplayLabel(resolveLogProvider(log))}
+                        </StatusBadge>
+                      </div>
                     </TableCell>
                     <TableCell className="recent-requests-col recent-requests-col--status">
                       <Tooltip>
@@ -1255,10 +1338,10 @@ export default function AdminRecentRequestsPanel({
         errorLabel={errorLabel ?? undefined}
         minHeight={240}
       >
-        {logs.length === 0 ? (
+        {visibleLogs.length === 0 ? (
           <div className="empty-state alert">{emptyLabel}</div>
         ) : (
-          logs.map((log) => {
+          visibleLogs.map((log) => {
             const expanded = expandedLogs.has(log.id)
             const resolvedLogBodiesState =
               logBodiesById[log.id]
@@ -1330,6 +1413,10 @@ export default function AdminRecentRequestsPanel({
                     size="sm"
                     className={variant === 'token' ? 'user-console-mobile-request-kind' : undefined}
                   />
+                </div>
+                <div className={mobileKvClassName}>
+                  <span>{strings.logs.table.provider}</span>
+                  <strong>{logProviderDisplayLabel(resolveLogProvider(log))}</strong>
                 </div>
                 <div className={mobileKvClassName}>
                   <span>{strings.logs.table.status}</span>

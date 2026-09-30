@@ -853,6 +853,111 @@ function ErrorStateShowcase(): JSX.Element {
   )
 }
 
+const providerStoryLogs: RequestLog[] = [
+  {
+    ...storyLogs[0],
+    id: 9101,
+    key_id: 'ExaK',
+    provider: 'exa',
+    path: '/api/exa/search',
+    request_kind_key: 'api:exa/search',
+    request_kind_label: 'API | exa/search',
+  },
+  {
+    ...storyLogs[0],
+    id: 9102,
+    key_id: 'BrvK',
+    provider: 'brave',
+    path: '/api/brave/res/v1/web/search',
+    request_kind_key: 'api:brave/web',
+    request_kind_label: 'API | brave/web',
+  },
+  {
+    ...storyLogs[0],
+    id: 9103,
+    key_id: 'LegacyK',
+    path: '/api/tavily/search',
+    request_kind_key: 'api:search',
+    request_kind_label: 'API | search',
+  },
+]
+
+function ProviderDimensionShowcase(): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
+
+  const facets = useMemo(
+    () => ({
+      results: buildFacetOptions(providerStoryLogs.map((log) => log.result_status)),
+      keyEffects: buildFacetOptions(providerStoryLogs.map((log) => log.key_effect_code ?? 'none')),
+      bindingEffects: buildFacetOptions(providerStoryLogs.map((log) => log.binding_effect_code ?? 'none')),
+      selectionEffects: buildFacetOptions(providerStoryLogs.map((log) => log.selection_effect_code ?? 'none')),
+      tokens: buildFacetOptions(providerStoryLogs.map((log) => log.auth_token_id)),
+      keys: buildFacetOptions(providerStoryLogs.map((log) => log.key_id)),
+      providers: [
+        { value: 'tavily', count: 1 },
+        { value: 'exa', count: 1 },
+        { value: 'brave', count: 1 },
+      ],
+    }),
+    [],
+  )
+
+  return (
+    <div style={{ maxWidth: 1480, margin: '0 auto', padding: 24 }}>
+      <AdminRecentRequestsPanel
+        variant="admin"
+        language={language}
+        strings={admin}
+        title="Provider Dimension"
+        description="Provider facet filter (todo-20 facets) with a legacy NULL-provider row coalesced to Tavily."
+        emptyLabel="No logs."
+        loadState="ready"
+        loadingLabel="Loading…"
+        logs={providerStoryLogs}
+        requestKindOptions={[
+          { key: 'api:exa/search', label: 'API | exa/search', protocol_group: 'api', billing_group: 'billable', count: 1 },
+          { key: 'api:brave/web', label: 'API | brave/web', protocol_group: 'api', billing_group: 'billable', count: 1 },
+          { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable', count: 1 },
+        ]}
+        requestKindQuickBilling="all"
+        requestKindQuickProtocol="all"
+        selectedRequestKinds={[]}
+        onRequestKindQuickFiltersChange={() => undefined}
+        onToggleRequestKind={() => undefined}
+        onClearRequestKinds={() => undefined}
+        outcomeFilter={null}
+        resultOptions={facets.results}
+        keyEffectOptions={facets.keyEffects}
+        bindingEffectOptions={facets.bindingEffects}
+        selectionEffectOptions={facets.selectionEffects}
+        onOutcomeFilterChange={() => undefined}
+        keyOptions={facets.keys}
+        selectedKeyId={null}
+        onKeyFilterChange={() => undefined}
+        providerOptions={facets.providers}
+        selectedProvider={selectedProvider}
+        onProviderFilterChange={setSelectedProvider}
+        showKeyColumn
+        showTokenColumn={false}
+        perPage={20}
+        hasOlder={false}
+        hasNewer={false}
+        paginationSummary={admin.logs.pagination.summary}
+        onNewerPage={() => undefined}
+        onOlderPage={() => undefined}
+        onPerPageChange={() => undefined}
+        formatTime={(ts) => new Date((ts ?? 0) * 1000).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US')}
+        formatTimeDetail={(ts) => new Date((ts ?? 0) * 1000).toISOString()}
+        onOpenKey={() => undefined}
+        onOpenToken={() => undefined}
+        loadLogBodies={() => Promise.resolve({ request_body: null, response_body: null })}
+      />
+    </div>
+  )
+}
+
 const meta = {
   title: 'Admin/Components/AdminRecentRequestsPanel',
   component: LazyDetailsStateGallery,
@@ -1047,5 +1152,47 @@ export const ErrorState: Story = {
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const ProviderDimension: Story = {
+  render: () => <ProviderDimensionShowcase />,
+  globals: {
+    language: 'zh',
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story:
+          '提供方维度证明：todo-20 provider facets 驱动筛选，点击 Exa 只保留 Exa 行，legacy NULL-provider 行合并显示为 Tavily。',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    const ownerDocument = canvasElement.ownerDocument
+    const trigger = ownerDocument.querySelector<HTMLButtonElement>('button[aria-label^="提供方"]')
+    if (!trigger) {
+      throw new Error('Expected the provider facet trigger to be present.')
+    }
+    // Radix DropdownMenuTrigger opens on pointerdown, not on click().
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }),
+    )
+    await new Promise((resolve) => window.setTimeout(resolve, 150))
+    const option = Array.from(
+      ownerDocument.querySelectorAll<HTMLButtonElement>('.searchable-facet-select__option'),
+    ).find((candidate) => (candidate.textContent ?? '').trim().startsWith('Exa'))
+    if (!option) {
+      throw new Error('Expected the Exa provider filter option to be present.')
+    }
+    option.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const text = ownerDocument.body.textContent ?? ''
+    if (!text.includes('ExaK') || text.includes('BrvK') || text.includes('LegacyK')) {
+      throw new Error('Expected selecting Exa to leave only Exa rows visible.')
+    }
   },
 }

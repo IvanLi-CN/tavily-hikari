@@ -20,7 +20,14 @@ export const MANUAL_JOB_ACTIONS = [
   'db_compaction',
 ] as const
 
-const QUOTA_JOB_TYPES = new Set(['quota_sync', 'quota_sync/manual', 'quota_sync/hot'])
+const QUOTA_JOB_TYPES = new Set([
+  'quota_sync',
+  'quota_sync/manual',
+  'quota_sync/hot',
+  // Plan todo 23: the todo-19 SerpApi provider quota-sync job type. Backend
+  // landing is the pending todo-19 commit; the label map entry is additive.
+  'quota_sync/serpapi',
+])
 const USAGE_JOB_TYPES = new Set(['token_usage_rollup', 'usage_aggregation'])
 const LOG_JOB_TYPES = new Set([
   'auth_token_logs_gc',

@@ -3,6 +3,54 @@ import type { StatusTone } from '../components/StatusBadge'
 
 export type SupportedLanguage = 'en' | 'zh'
 
+/**
+ * Plan todo 23 / M9: provider request-kind classification shim.
+ *
+ * The 16 static provider kinds are committed in `src/analysis.rs`
+ * (`PROVIDER_REQUEST_KINDS` :895-912) and classified by the backend
+ * `token_request_kind_billing_group` (:1594-1614) as BILLABLE facade
+ * operations — their billing/effect semantics are identical to their Tavily
+ * analogues, so the frontend introduces no new operational class. This map is
+ * the frontend pin used by the classification matrix test; the runtime source
+ * of truth stays `RequestLog.requestKindBillingGroup` from the server DTO.
+ */
+export type ProviderRequestKindProtocolGroup = 'api' | 'mcp'
+
+export interface ProviderRequestKindClassification {
+  protocolGroup: ProviderRequestKindProtocolGroup
+  billingGroup: 'billable' | 'non_billable'
+}
+
+const PROVIDER_REQUEST_KIND_CLASSIFICATION: Readonly<
+  Record<string, ProviderRequestKindClassification>
+> = {
+  'api:serpapi/search': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:exa/search': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:exa/contents': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:exa/answer': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:brave/web': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:brave/news': { protocolGroup: 'api', billingGroup: 'billable' },
+  'api:brave/llm-context': { protocolGroup: 'api', billingGroup: 'billable' },
+  'mcp:serpapi/search': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:serpapi/search_table': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:serpapi/search_dashboard': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:brave/web_search': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:brave/news_search': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:brave/llm_context': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:exa/web_search': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:exa/web_fetch': { protocolGroup: 'mcp', billingGroup: 'billable' },
+  'mcp:exa/answer': { protocolGroup: 'mcp', billingGroup: 'billable' },
+}
+
+/** Classification of a static provider kind; legacy Tavily kinds yield null. */
+export function classifyProviderRequestKind(
+  kindKey: string | null | undefined,
+): ProviderRequestKindClassification | null {
+  const key = (kindKey ?? '').trim()
+  if (!key) return null
+  return PROVIDER_REQUEST_KIND_CLASSIFICATION[key] ?? null
+}
+
 export function normalizeOperationalClass(
   value: string | null | undefined,
 ): LogOperationalClass | null {

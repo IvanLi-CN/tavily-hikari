@@ -18,6 +18,7 @@ describe('AdminRecentRequestsPanel Storybook proofs', () => {
     expect(panelStories.ErrorState).toMatchObject({})
     expect(panelStories.RequestKindDesktopExpanded).toMatchObject({})
     expect(panelStories.RequestKindMobileDrawer).toMatchObject({})
+    expect(panelStories.ProviderDimension).toMatchObject({})
   })
 
   it('renders the catalog loading story with the retention-safe fallback copy', () => {
@@ -80,5 +81,26 @@ describe('AdminRecentRequestsPanel Storybook proofs', () => {
   it('keeps the mobile drawer proof available for button-style quick filters', () => {
     const renderStory = panelStories.RequestKindMobileDrawer.render as (() => JSX.Element) | undefined
     expect(renderStory).toBeDefined()
+  })
+
+  it('renders the provider facet filter proof with the coalesced legacy Tavily row', () => {
+    const renderStory = panelStories.ProviderDimension.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('提供方')
+    expect(markup).toContain('全部提供方')
+    expect(markup).toContain('Exa')
+    expect(markup).toContain('Brave')
+    // The legacy fixture has no provider field; it must render as Tavily.
+    expect(markup).toContain('LegacyK')
+    expect(markup).toContain('Tavily')
   })
 })
