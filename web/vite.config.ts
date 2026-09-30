@@ -71,6 +71,11 @@ export default defineConfig(({ mode }) => {
           target: proxyTarget,
           changeOrigin: true,
         },
+        // Plan todo 21 (M21): provider MCP endpoints mirror the /mcp proxy so
+        // frontend-origin probes work in dev.
+        '/serpapi': { target: proxyTarget, changeOrigin: true },
+        '/exa': { target: proxyTarget, changeOrigin: true },
+        '/brave': { target: proxyTarget, changeOrigin: true },
         '/health': withForwardAuth(proxyTarget, forwardAuthValue),
       },
     },

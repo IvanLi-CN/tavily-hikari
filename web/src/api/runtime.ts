@@ -8,6 +8,7 @@ import type { ClientIpHeaderValue } from './clientIp'
 import type { HaChannelHealth } from './haTypes'
 import { normalizeHaStatus, type HaStatus, type HaStatusWire } from './haStatus'
 import type { RequestLogRetentionSettings } from './requestLogRetention'
+import type { ApiKeyUsageSyncOutcome, ProviderId, ProviderQuotaSource, ProviderQuotaSyncSnapshot, SummaryProviderCount, SyncUsageErrorBody } from './providers'
 import type {
   AdminMcpSessionBindingsPage,
   AdminMcpSessionBindingsQuery,
@@ -49,6 +50,7 @@ export interface Summary {
   last_activity: number | null
   total_quota_limit: number
   total_quota_remaining: number
+  providers?: SummaryProviderCount[]
 }
 
 export interface SummaryQuotaCharge {
@@ -73,6 +75,7 @@ export interface SummaryWindowMetrics {
   new_keys: number
   new_quarantines: number
   quota_charge?: SummaryQuotaCharge
+  providers?: SummaryProviderCount[]
 }
 
 export interface SummaryWindowsResponse {
@@ -414,6 +417,7 @@ export interface ApiKeyQuarantine {
 
 export interface ApiKeyStats {
   id: string
+  provider?: ProviderId
   status: string
   group: string | null
   registration_ip: string | null
@@ -424,6 +428,8 @@ export interface ApiKeyStats {
   quota_limit: number | null
   quota_remaining: number | null
   quota_synced_at: number | null
+  quota_renews_at?: number | null
+  quota_source?: ProviderQuotaSource | null
   total_requests: number
   success_count: number
   error_count: number
@@ -441,6 +447,7 @@ export interface ApiKeyTransientBackoff {
 
 export interface RequestLog {
   id: number
+  provider?: string
   key_id: string | null
   auth_token_id: string | null
   method: string
@@ -517,6 +524,7 @@ export interface RequestLogFacets {
   selectionEffects: LogFacetOption[]
   tokens: LogFacetOption[]
   keys: LogFacetOption[]
+  providers?: LogFacetOption[]
 }
 
 export interface RequestLogsPage {
@@ -740,6 +748,7 @@ interface ServerRequestLogFacets {
   selection_effects?: ServerLogFacetOption[]
   tokens?: ServerLogFacetOption[]
   keys?: ServerLogFacetOption[]
+  providers?: ServerLogFacetOption[]
 }
 
 interface ServerRequestLogsPage {
@@ -788,6 +797,7 @@ export interface RequestLogsPageQuery {
   userId?: string
   tokenId?: string
   keyId?: string
+  provider?: string
   since?: number
   sinceIso?: string
   untilIso?: string
@@ -810,6 +820,7 @@ function normalizeRequestLogFacets(value?: ServerRequestLogFacets): RequestLogFa
     selectionEffects: value?.selectionEffects ?? value?.selection_effects ?? [],
     tokens: value?.tokens ?? [],
     keys: value?.keys ?? [],
+    providers: value?.providers,
   }
 }
 
@@ -1062,6 +1073,7 @@ function appendRequestLogsPageFilters(
     userId,
     tokenId,
     keyId,
+    provider,
     since,
     sinceIso,
     untilIso,
@@ -1077,6 +1089,7 @@ function appendRequestLogsPageFilters(
     | 'userId'
     | 'tokenId'
     | 'keyId'
+    | 'provider'
     | 'since'
     | 'sinceIso'
     | 'untilIso'
@@ -1095,6 +1108,7 @@ function appendRequestLogsPageFilters(
   if (userId?.trim()) params.set('request_user_id', userId.trim())
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
   if (keyId?.trim()) params.set('key_id', keyId.trim())
+  if (provider?.trim()) params.set('provider', provider.trim())
   if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))
   if (sinceIso?.trim()) params.set('since', sinceIso.trim())
   if (untilIso?.trim()) params.set('until', untilIso.trim())
@@ -1772,20 +1786,27 @@ function normalizeTriggerJobResponse(data: ServerTriggerJobResponse): TriggerJob
   }
 }
 
-export async function syncApiKeyUsage(id: string): Promise<void> {
+export async function syncApiKeyUsage(id: string): Promise<ApiKeyUsageSyncOutcome> {
   const encoded = encodeURIComponent(id)
   const res = await fetchOrThrow(`/api/keys/${encoded}/sync-usage`, { method: 'POST' })
   if (!res.ok) {
     let message = ''
+    let body: SyncUsageErrorBody | null = null
     try {
       const data = await res.json()
+      body = data as SyncUsageErrorBody
       message = (data?.detail as string) ?? (data?.error as string) ?? ''
     } catch {
       message = await res.text().catch(() => '')
     }
     const statusPart = ` (HTTP ${res.status})`
-    throw new Error((message ? `${message}` : 'Failed to sync key usage') + statusPart)
+    const err = new Error((message ? `${message}` : 'Failed to sync key usage') + statusPart) as Error & { status?: number; body?: SyncUsageErrorBody | null }
+    err.status = res.status
+    err.body = body
+    throw err
   }
+  if (res.status === 204) return { kind: 'no_content' }
+  return { kind: 'snapshot', snapshot: (await res.json()) as ProviderQuotaSyncSnapshot }
 }
 
 export function triggerJob(jobType: string, keyId?: string | null): Promise<TriggerJobResponse> {
@@ -3036,7 +3057,7 @@ export interface CreateKeyResponse {
   id: string
 }
 
-export async function addApiKey(apiKey: string, group?: string): Promise<CreateKeyResponse> {
+export async function addApiKey(apiKey: string, group?: string, provider?: ProviderId): Promise<CreateKeyResponse> {
   const trimmedGroup = group?.trim()
   return await requestJson('/api/keys', {
     method: 'POST',
@@ -3044,6 +3065,7 @@ export async function addApiKey(apiKey: string, group?: string): Promise<CreateK
     body: JSON.stringify({
       api_key: apiKey,
       group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
+      provider,
     }),
   })
 }
@@ -3208,6 +3230,8 @@ export type ValidateAssignedProxyMatchKind = 'registration_ip' | 'same_region' |
 export interface ValidateKeyResult {
   api_key: string
   status: string
+  provider?: ProviderId
+  reason?: string | null
   registration_ip?: string | null
   registration_region?: string | null
   assigned_proxy_key?: string | null
@@ -3221,6 +3245,7 @@ export interface ValidateKeyResult {
 export interface ValidateKeyInput {
   api_key: string
   registration_ip?: string | null
+  provider?: ProviderId
 }
 
 export interface ValidateKeysResponse {
