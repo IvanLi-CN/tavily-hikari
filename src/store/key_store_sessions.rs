@@ -872,9 +872,13 @@ impl KeyStore {
 
     pub(crate) async fn sync_account_quota_limits_with_defaults(&self) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
-        let rows = sqlx::query_as::<_, (String, i64)>(
+        let rows = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
             r#"
-            SELECT aql.user_id, u.created_at
+            SELECT aql.user_id,
+                   u.created_at,
+                   aql.business_calls_1h_limit,
+                   aql.daily_credits_limit,
+                   aql.monthly_credits_limit
             FROM account_quota_limits aql
             JOIN users u ON u.id = aql.user_id
             WHERE aql.inherits_defaults = 1
@@ -887,13 +891,37 @@ impl KeyStore {
         }
 
         let cutover_at = self.account_quota_zero_base_cutover_at().await?;
-        let affected_user_ids = rows
+        let updates = rows
+            .into_iter()
+            .filter_map(
+                |(user_id, user_created_at, business_calls_1h, daily_credits, monthly_credits)| {
+                    let defaults =
+                        default_account_quota_limits_for_created_at(user_created_at, cutover_at);
+                    (business_calls_1h, daily_credits, monthly_credits)
+                        .ne(&(
+                            defaults.business_calls_1h_limit,
+                            defaults.daily_credits_limit,
+                            defaults.monthly_credits_limit,
+                        ))
+                        .then_some((
+                            user_id,
+                            defaults.business_calls_1h_limit,
+                            defaults.daily_credits_limit,
+                            defaults.monthly_credits_limit,
+                        ))
+                },
+            )
+            .collect::<Vec<_>>();
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let affected_user_ids = updates
             .iter()
-            .map(|(user_id, _)| user_id.clone())
+            .map(|(user_id, _, _, _)| user_id.clone())
             .collect::<Vec<_>>();
         let mut tx = self.pool.begin().await?;
-        for (user_id, user_created_at) in rows {
-            let defaults = default_account_quota_limits_for_created_at(user_created_at, cutover_at);
+        for (user_id, business_calls_1h, daily_credits, monthly_credits) in updates {
             sqlx::query(
                 r#"
                 UPDATE account_quota_limits
@@ -904,9 +932,9 @@ impl KeyStore {
                 WHERE user_id = ? AND inherits_defaults = 1
                 "#,
             )
-            .bind(defaults.business_calls_1h_limit)
-            .bind(defaults.daily_credits_limit)
-            .bind(defaults.monthly_credits_limit)
+            .bind(business_calls_1h)
+            .bind(daily_credits)
+            .bind(monthly_credits)
             .bind(now)
             .bind(user_id)
             .execute(&mut *tx)
@@ -1719,6 +1747,31 @@ impl KeyStore {
     }
 
     pub(crate) async fn seed_linuxdo_system_tags(&self) -> Result<(), ProxyError> {
+        let mut complete = true;
+        for level in 0..=4 {
+            let system_key = linuxdo_system_key_for_level(level);
+            let display_name = format!("L{level}");
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM user_tags \
+                 WHERE system_key = ? AND name = ? AND display_name = ? \
+                   AND icon = ? AND effect_kind = ?)",
+            )
+            .bind(&system_key)
+            .bind(&system_key)
+            .bind(display_name)
+            .bind(USER_TAG_ICON_LINUXDO)
+            .bind(USER_TAG_EFFECT_QUOTA_DELTA)
+            .fetch_one(&self.pool)
+            .await?;
+            if exists == 0 {
+                complete = false;
+                break;
+            }
+        }
+        if complete {
+            return Ok(());
+        }
+
         let now = self.backend_time.now_ts();
         let (business_calls_1h_delta, daily_credits_delta, monthly_credits_delta) =
             linuxdo_system_tag_default_deltas();
@@ -1847,6 +1900,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let current = linuxdo_system_tag_default_deltas();
         let previous = match self.get_linuxdo_system_tag_default_deltas_meta().await? {
+            Some(value) if value == current => return Ok(()),
             Some(value) => value,
             None => self
                 .infer_linuxdo_system_tag_default_deltas_from_rows()

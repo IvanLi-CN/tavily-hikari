@@ -137,9 +137,16 @@ impl KeyStore {
     #[cfg(not(test))]
     async fn run_warm_schema_semantic_maintenance(&self) -> Result<(), ProxyError> {
         self.ensure_warm_schema_compatibility().await?;
-        sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
-            .execute(&self.pool)
-            .await?;
+        let suppression_present = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM ha_outbox_suppression WHERE id = 'local')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if suppression_present != 0 {
+            sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
+                .execute(&self.pool)
+                .await?;
+        }
         self.seed_linuxdo_system_tags().await?;
         self.sync_linuxdo_system_tag_default_deltas_with_env().await?;
         self.backfill_linuxdo_user_tag_bindings().await?;

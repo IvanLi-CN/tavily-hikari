@@ -1906,6 +1906,236 @@ async fn warm_schema_compatibility_skips_complete_schema_write_under_lock() {
 }
 
 #[tokio::test]
+async fn current_month_quota_rebase_skips_complete_state_under_lock() {
+    let db_path = temp_db_path("schema-migration-monthly-rebase-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-monthly-rebase-read-only".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    let current_month_start = start_of_month(Utc::now()).timestamp();
+    sqlx::query(
+        "INSERT INTO meta (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+    .bind(current_month_start.to_string())
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark current month as rebased");
+
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    let mut lock = lock_pool
+        .acquire()
+        .await
+        .expect("acquire writer lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .expect("hold writer lock");
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        maybe_rebase_current_month_business_quota_with_pool(
+            &proxy.key_store.pool,
+            Utc::now,
+            META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+            true,
+        ),
+    )
+    .await
+    .expect("complete monthly rebase must not wait for a writer")
+    .expect("complete monthly rebase state succeeds");
+    assert!(result.is_none());
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock)
+        .await
+        .expect("release writer lock");
+    drop(lock);
+    lock_pool.close().await;
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn linuxdo_system_tag_seed_skips_complete_state_under_lock() {
+    let db_path = temp_db_path("schema-migration-linuxdo-tag-seed-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-linuxdo-tag-seed-read-only".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    let mut lock = lock_pool
+        .acquire()
+        .await
+        .expect("acquire writer lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .expect("hold writer lock");
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy.key_store.seed_linuxdo_system_tags(),
+    )
+    .await
+    .expect("complete LinuxDo tags must not wait for a writer")
+    .expect("complete LinuxDo tags succeed");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock)
+        .await
+        .expect("release writer lock");
+    drop(lock);
+    lock_pool.close().await;
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn linuxdo_system_tag_delta_sync_skips_unchanged_state_under_lock() {
+    let db_path = temp_db_path("schema-migration-linuxdo-tag-delta-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-linuxdo-tag-delta-read-only".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    sqlx::query(
+        "INSERT INTO meta (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1)
+    .bind(format_linuxdo_system_tag_default_deltas(
+        linuxdo_system_tag_default_deltas(),
+    ))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark LinuxDo tag defaults as current");
+
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    let mut lock = lock_pool
+        .acquire()
+        .await
+        .expect("acquire writer lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .expect("hold writer lock");
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy
+            .key_store
+            .sync_linuxdo_system_tag_default_deltas_with_env(),
+    )
+    .await
+    .expect("unchanged LinuxDo defaults must not wait for a writer")
+    .expect("unchanged LinuxDo defaults succeed");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock)
+        .await
+        .expect("release writer lock");
+    drop(lock);
+    lock_pool.close().await;
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn account_quota_default_sync_skips_unchanged_state_under_lock() {
+    let db_path = temp_db_path("schema-migration-account-quota-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-account-quota-read-only".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "schema-migration-account-quota".to_string(),
+            username: Some("schema_migration_account_quota".to_string()),
+            name: Some("Schema Migration Account Quota".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("create account");
+    proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("create account quota row");
+    let defaults = proxy
+        .key_store
+        .default_account_quota_limits_for_user(&user.user_id)
+        .await
+        .expect("read account quota defaults");
+    sqlx::query(
+        "UPDATE account_quota_limits \
+         SET business_calls_1h_limit = ?, daily_credits_limit = ?, \
+             monthly_credits_limit = ?, inherits_defaults = 1 \
+         WHERE user_id = ?",
+    )
+    .bind(defaults.business_calls_1h_limit)
+    .bind(defaults.daily_credits_limit)
+    .bind(defaults.monthly_credits_limit)
+    .bind(&user.user_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark account quota row as unchanged defaults");
+
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    let mut lock = lock_pool
+        .acquire()
+        .await
+        .expect("acquire writer lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock)
+        .await
+        .expect("hold writer lock");
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        proxy.key_store.sync_account_quota_limits_with_defaults(),
+    )
+    .await
+    .expect("unchanged account defaults must not wait for a writer")
+    .expect("unchanged account defaults succeed");
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock)
+        .await
+        .expect("release writer lock");
+    drop(lock);
+    lock_pool.close().await;
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn versioned_schema_migrations_reject_missing_recorded_objects() {
     let db_path = temp_db_path("schema-migration-missing-object");
     let db_str = db_path.to_string_lossy().to_string();
