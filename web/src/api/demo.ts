@@ -7,6 +7,7 @@ import {
 import { demoUserEntitlements } from './demoAccountEntitlements'
 import { createDemoRechargeOrders, demoAdminUserRechargeAudit, handleDemoAdminRechargeAction, handleDemoAdminRecharges, type DemoRechargeOrder } from './demoAdminRecharge'
 import { createDemoHaStatus, handleDemoHaRoute } from './demoHa'
+import { createDemoProviderKeys, createDemoProviderLogs, createDemoProviderRequestKindOptions, handleProviderDemoRoute, isProviderMcpPath } from './demoProviders'
 import { createDemoUpstreamPrivacyStatus } from './upstreamPrivacyStatusFixtures'
 import { rankingsStorySnapshot } from '../admin/rankingsStoryData'
 import { buildDemoAnalysisPressureSnapshot } from './demoAnalysisPressure'
@@ -87,6 +88,7 @@ function createRequestKindOptions() {
     { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable', count: 26 },
     { key: 'mcp:tools/list', label: 'MCP | tools/list', protocol_group: 'mcp', billing_group: 'non_billable', count: 12 },
     { key: 'mcp:ping', label: 'MCP | ping', protocol_group: 'mcp', billing_group: 'non_billable', count: 8 },
+    ...createDemoProviderRequestKindOptions(),
   ]
 }
 
@@ -101,6 +103,7 @@ function createDemoLog(index: number) {
   const option = requestKindOptions.find((item) => item.key === kind) ?? requestKindOptions[0]
   return {
     id: 9000 + index,
+    provider: 'tavily',
     key_id: rebalance || index % 5 === 0 ? DEMO_BACKUP_KEY_ID : DEMO_KEY_ID,
     auth_token_id: index % 4 === 0 ? 'ops2' : DEMO_TOKEN_ID,
     method: mcp ? 'POST' : (kind === 'api:extract' ? 'POST' : 'GET'),
@@ -147,7 +150,7 @@ function createDemoLog(index: number) {
 
 function createDemoState() {
   const browserOrigin = typeof window === 'undefined' ? 'http://127.0.0.1:58087' : window.location.origin
-  const logs = range(64).map(createDemoLog)
+  const logs = [...range(64).map(createDemoLog), ...createDemoProviderLogs()]
   const tokens = [
     {
       id: DEMO_TOKEN_ID,
@@ -207,6 +210,7 @@ function createDemoState() {
       reasonDetail: 'This is mock data used by the standalone web demo.',
       createdAt: nowSeconds(-3600 * 9),
     }),
+    ...createDemoProviderKeys(),
   ]
   return {
     profile: {
@@ -1961,7 +1965,7 @@ async function demoFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   const url = parseUrl(input)
   if (!url) return null
   const path = url.pathname
-  if (!(path === '/health' || path === '/mcp' || path.startsWith('/api/'))) return null
+  if (!(path === '/health' || path === '/mcp' || isProviderMcpPath(path) || path.startsWith('/api/'))) return null
   if (init?.signal?.aborted) {
     throw new DOMException('The operation was aborted.', 'AbortError')
   }
@@ -1973,6 +1977,8 @@ async function handleDemoRoute(url: URL, method: string, init?: RequestInit): Pr
   const path = url.pathname
   if (path === '/health') return jsonResponse({ ok: true, mode: 'demo' })
   if (path === '/mcp') return handleMcpDemo(init)
+  const providerRoute = await handleProviderDemoRoute(path, method, init)
+  if (providerRoute) return providerRoute
 
   if (path === '/api/version') return jsonResponse(demoState.version)
   if (path === '/api/profile') return jsonResponse(demoState.profile)

@@ -499,3 +499,198 @@ describe('AdminDashboard route switches', () => {
     }
   }, 20_000)
 })
+
+/**
+ * Plan todo 25 demo parity: every provider REST route and every provider MCP
+ * endpoint must answer locally from browser fixtures (ground truth:
+ * src/bin/mock_serpapi.rs, src/bin/mock_exa.rs, src/bin/mock_brave.rs; catalogs:
+ * src/server/provider_mcp_{serpapi,exa,brave}.rs). The whitelist is extended
+ * for the three explicit provider MCP paths (M22) while unknown `/api/*` paths
+ * keep the pre-existing demo fall-through shape.
+ */
+function installProviderDemoFetch(): typeof fetch {
+  window.localStorage.setItem(DEMO_STORAGE_KEY, 'true')
+  installDemoRuntime()
+  return window.fetch
+}
+
+async function demoJson(response: Response): Promise<Record<string, unknown>> {
+  return (await response.json()) as Record<string, unknown>
+}
+
+function demoPost(path: string, payload: unknown): [string, RequestInit] {
+  return [path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }]
+}
+
+const SERPAPI_SEARCH_FIXTURE = {
+  search_metadata: { id: 'mock', status: 'Success' },
+  search_parameters: {},
+  organic_results: [
+    { position: 1, title: 'Mock Result', link: 'https://example.com/1', snippet: 'mock snippet' },
+  ],
+}
+
+interface DemoMcpTool {
+  name: string
+  description?: string
+  inputSchema?: { type?: string; required?: string[]; properties?: Record<string, unknown> }
+}
+
+async function demoToolsList(fetchImpl: typeof fetch, path: string): Promise<DemoMcpTool[]> {
+  const response = await fetchImpl(...demoPost(path, { jsonrpc: '2.0', id: 1, method: 'tools/list' }))
+  expect(response.status).toBe(200)
+  const body = await demoJson(response)
+  expect(body.jsonrpc).toBe('2.0')
+  const result = body.result as { tools?: DemoMcpTool[] } | undefined
+  expect(Array.isArray(result?.tools)).toBe(true)
+  return result?.tools ?? []
+}
+
+async function demoToolCall(
+  fetchImpl: typeof fetch,
+  path: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetchImpl(...demoPost(path, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } }))
+  expect(response.status).toBe(200)
+  const body = await demoJson(response)
+  expect(body.jsonrpc).toBe('2.0')
+  return (body.result ?? {}) as Record<string, unknown>
+}
+
+describe('AdminDashboard demo provider parity', () => {
+  it('serves every provider REST route with the committed mock shapes', async () => {
+    const demoFetch = installProviderDemoFetch()
+
+    const serpapi = await demoFetch('/api/serpapi/search?q=coffee')
+    expect(serpapi.status).toBe(200)
+    expect(await demoJson(serpapi)).toEqual(SERPAPI_SEARCH_FIXTURE)
+
+    const serpapiPost = await demoFetch(...demoPost('/api/serpapi/search', { q: 'coffee' }))
+    expect(serpapiPost.status).toBe(200)
+    expect(await demoJson(serpapiPost)).toEqual(SERPAPI_SEARCH_FIXTURE)
+
+    const exaSearch = await demoFetch(...demoPost('/api/exa/search', { query: 'demo' }))
+    expect(exaSearch.status).toBe(200)
+    expect(await demoJson(exaSearch)).toEqual({
+      requestId: 'mock',
+      results: [
+        { title: 'Mock', url: 'https://example.com/1', text: 'mock text', publishedDate: '2026-01-01T00:00:00.000Z' },
+      ],
+      costDollars: { total: 0.007 },
+      searchTime: 123.4,
+    })
+
+    const exaContents = await demoFetch(...demoPost('/api/exa/contents', { urls: ['https://example.com/1'] }))
+    expect(exaContents.status).toBe(200)
+    expect(await demoJson(exaContents)).toEqual({
+      results: [{ title: 'Mock', url: 'https://example.com/1', text: 'mock text' }],
+      statuses: [{ id: 'https://example.com/1', status: 'success', source: 'cached' }],
+    })
+
+    const exaAnswer = await demoFetch(...demoPost('/api/exa/answer', { query: 'demo' }))
+    expect(exaAnswer.status).toBe(200)
+    expect(await demoJson(exaAnswer)).toEqual({
+      requestId: 'mock',
+      answer: 'mock answer',
+      citations: [{ url: 'https://example.com/1' }],
+      costDollars: { total: 0.005 },
+    })
+
+    const exaStream = await demoFetch(...demoPost('/api/exa/search', { query: 'demo', stream: true }))
+    expect(exaStream.status).toBe(400)
+    expect(await demoJson(exaStream)).toEqual({
+      error: 'invalid_request',
+      message: 'streaming not supported; omit stream or set false',
+    })
+
+    const braveWeb = await demoFetch('/api/brave/res/v1/web/search?q=x')
+    expect(braveWeb.status).toBe(200)
+    expect(braveWeb.headers.get('x-ratelimit-limit')).toBe('50, 1000')
+    expect(braveWeb.headers.get('x-ratelimit-policy')).toBe('1;w=1, 1000;w=2592000')
+    expect(braveWeb.headers.get('x-ratelimit-remaining')).toBe('1, 999')
+    expect(braveWeb.headers.get('x-ratelimit-reset')).toBe('1, 2592000')
+    expect(await demoJson(braveWeb)).toEqual({
+      type: 'search',
+      query: { original: 'mock', more_results_available: false },
+      web: { results: [{ title: 'Mock', url: 'https://example.com/1', description: 'mock desc' }] },
+    })
+
+    const braveNews = await demoFetch('/api/brave/res/v1/news/search?q=x')
+    expect(braveNews.status).toBe(200)
+    expect(await demoJson(braveNews)).toEqual({
+      type: 'news',
+      results: [{ title: 'Mock News', url: 'https://example.com/n1', description: 'mock' }],
+    })
+
+    const braveContext = await demoFetch('/api/brave/res/v1/llm/context?q=x')
+    expect(braveContext.status).toBe(200)
+    expect(await demoJson(braveContext)).toEqual({
+      grounding: { generic: [{ url: 'https://example.com/1', title: 'Mock', snippets: ['mock snippet'] }] },
+      sources: {},
+    })
+  })
+
+  it('serves the per-provider MCP catalogs and tool-call fixtures', async () => {
+    const demoFetch = installProviderDemoFetch()
+
+    const serpapiTools = await demoToolsList(demoFetch, '/serpapi/mcp')
+    expect(serpapiTools.map((tool) => tool.name)).toEqual(['search', 'search_table', 'search_dashboard'])
+    for (const tool of serpapiTools) {
+      expect(tool.inputSchema?.type).toBe('object')
+      expect(tool.inputSchema?.required).toEqual(['q'])
+    }
+    const serpapiCall = await demoToolCall(demoFetch, '/serpapi/mcp', 'search', { q: 'hello' })
+    const serpapiStructured = serpapiCall.structuredContent as { result?: string } | undefined
+    expect(JSON.parse(serpapiStructured?.result ?? 'null')).toEqual(SERPAPI_SEARCH_FIXTURE)
+
+    const exaTools = await demoToolsList(demoFetch, '/exa/mcp')
+    expect(exaTools.map((tool) => tool.name)).toEqual(['web_search_exa', 'web_fetch_exa', 'exa_answer'])
+    const exaFetchSchema = exaTools.find((tool) => tool.name === 'web_fetch_exa')?.inputSchema
+    expect(exaFetchSchema?.properties?.urls).toBeDefined()
+    expect(exaFetchSchema?.properties?.ids).toBeDefined()
+    const exaCall = await demoToolCall(demoFetch, '/exa/mcp', 'web_search_exa', { query: 'demo' })
+    expect(exaCall.structuredContent).toEqual({
+      requestId: 'mock',
+      results: [
+        { title: 'Mock', url: 'https://example.com/1', text: 'mock text', publishedDate: '2026-01-01T00:00:00.000Z' },
+      ],
+      costDollars: { total: 0.007 },
+      searchTime: 123.4,
+      status: 200,
+    })
+    const exaContent = (exaCall.content as Array<{ type: string; text: string }> | undefined)?.[0]
+    expect(exaContent?.type).toBe('text')
+    expect(JSON.parse(exaContent?.text ?? 'null')).toEqual({
+      requestId: 'mock',
+      results: [
+        { title: 'Mock', url: 'https://example.com/1', text: 'mock text', publishedDate: '2026-01-01T00:00:00.000Z' },
+      ],
+      costDollars: { total: 0.007 },
+      searchTime: 123.4,
+    })
+    const exaAnswerCall = await demoToolCall(demoFetch, '/exa/mcp', 'exa_answer', { query: 'demo' })
+    expect((exaAnswerCall.structuredContent as { answer?: string } | undefined)?.answer).toBe('mock answer')
+
+    const braveTools = await demoToolsList(demoFetch, '/brave/mcp')
+    expect(braveTools.map((tool) => tool.name)).toEqual(['brave_web_search', 'brave_news_search', 'brave_llm_context'])
+    for (const tool of braveTools) {
+      expect(tool.inputSchema?.type).toBe('object')
+      expect(tool.inputSchema?.required).toEqual(['query'])
+    }
+    const braveCall = await demoToolCall(demoFetch, '/brave/mcp', 'brave_web_search', { query: 'demo' })
+    const braveStructured = braveCall.structuredContent as { status?: number; web?: { results: Array<{ title: string }> } } | undefined
+    expect(braveStructured?.status).toBe(200)
+    expect(braveStructured?.web?.results[0]?.title).toBe('Mock')
+    const braveNewsCall = await demoToolCall(demoFetch, '/brave/mcp', 'brave_news_search', { query: 'demo' })
+    expect((braveNewsCall.structuredContent as { type?: string } | undefined)?.type).toBe('news')
+  })
+
+  it('keeps unknown /api paths on the existing demo fall-through shape', async () => {
+    const demoFetch = installProviderDemoFetch()
+    const unknown = await demoFetch('/api/openai/v1/search?q=x')
+    expect(unknown.status).toBe(200)
+    expect(await demoJson(unknown)).toEqual({ demo: true, path: '/api/openai/v1/search' })
+  })
+})
