@@ -76,6 +76,14 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('"sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals', COMPARISON)
         self.assertIn('"sqliteFinalLockErrors": sqlite_final_lock_errors', COMPARISON)
         self.assertIn('candidate["sqliteFinalLockErrors"]', COMPARISON)
+        self.assertIn('load_started_at = load.get("startedAt")', COMPARISON)
+        self.assertIn("def line_is_in_load_window(line):", COMPARISON)
+        self.assertIn("datetime.fromisoformat", COMPARISON)
+        self.assertIn(
+            "measured_log_lines = [line for line in logs.splitlines() if line_is_in_load_window(line)]",
+            COMPARISON,
+        )
+        self.assertIn("for line in measured_log_lines", COMPARISON)
         self.assertIn('("dashboard", "dashboardHttp5xx")', COMPARISON)
         self.assertIn('("maintenance", "maintenanceHttp5xx")', COMPARISON)
         self.assertIn("candidate {lane} HTTP 5xx rate exceeded", COMPARISON)

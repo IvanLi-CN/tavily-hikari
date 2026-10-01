@@ -626,6 +626,7 @@ import pathlib
 import re
 import statistics
 import sys
+from datetime import datetime, timezone
 
 name = sys.argv[1]
 artifact_dir = pathlib.Path(sys.argv[2])
@@ -689,6 +690,29 @@ sqlite_lock_markers = (
     "database is busy",
 )
 
+load_started_at = load.get("startedAt")
+
+def line_is_in_load_window(line):
+    if not isinstance(load_started_at, (int, float)):
+        return True
+    timestamp_match = re.search(r'"timestamp":"([^"]+)"', line)
+    if timestamp_match is None:
+        return True
+    try:
+        event_at = datetime.fromisoformat(
+            timestamp_match.group(1).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return True
+    if event_at.tzinfo is None:
+        event_at = event_at.replace(tzinfo=timezone.utc)
+    return event_at.timestamp() >= load_started_at
+
+# Credential creation happens before load.startedAt and has its own bounded
+# bootstrap retry. Keep startup contention out of the measured request-path
+# SQLite gates while retaining timestamped lines from the actual load window.
+measured_log_lines = [line for line in logs.splitlines() if line_is_in_load_window(line)]
+
 # A retry or typed admission deferral is evidence of recoverable contention,
 # not a foreground request failure. Count each structured log line once so the
 # message/err duplication in tracing fields cannot inflate the rate. Keep
@@ -697,7 +721,7 @@ sqlite_lock_markers = (
 # concurrent writer workload.
 sqlite_lock_lines = [
     line
-    for line in logs.splitlines()
+    for line in measured_log_lines
     if any(marker in line for marker in sqlite_lock_markers)
 ]
 
@@ -882,7 +906,7 @@ sqlite_pool_timeout_errors = sum(
         or "PoolTimedOut" in line
         or "pool timed out" in line.lower()
     )
-    for line in logs.splitlines()
+    for line in measured_log_lines
 )
 
 def lane_5xx(lane):
