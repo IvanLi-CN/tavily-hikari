@@ -451,6 +451,32 @@ SQL
   }
 }
 
+normalize_baseline_schema_ledger() {
+  local database_path="$1"
+  local repo="$2"
+  local baseline_schema_max_version
+  baseline_schema_max_version="$(awk '
+    $1 == "const" && $2 ~ /_VERSION:$/ && $3 == "i64" && $4 == "=" {
+      version = $5
+      sub(/;$/, "", version)
+      if (version ~ /^[0-9]+$/ && version + 0 > max_version + 0) {
+        max_version = version
+      }
+    }
+    END { print max_version }
+  ' "$repo/src/store/key_store_schema_migrations.rs")"
+  [[ "$baseline_schema_max_version" =~ ^[0-9]+$ ]] || {
+    echo "baseline schema migration version could not be determined" >&2
+    exit 3
+  }
+
+  # The live snapshot may contain ledger records newer than an historical
+  # baseline can validate. Keep the physical schema and business data intact,
+  # but remove clone-only future ledger records so the baseline can adopt it.
+  sqlite3 "$database_path" \
+    "DELETE FROM schema_migrations WHERE version > $baseline_schema_max_version;"
+}
+
 trap 'cleanup_compose; cleanup_app_image' EXIT
 mkdir -p "$ARTIFACTS_DIR" "$WORK_DIR"
 
@@ -552,6 +578,23 @@ wait_for_dashboard_readiness() {
   return 1
 }
 
+wait_for_http_listener() {
+  local artifact_dir="$1"
+  local health_status
+  local deadline=$((SECONDS + 300))
+  while (( SECONDS < deadline )); do
+    health_status="$(compose exec -T app sh -c 'curl -sS --max-time 1 -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/health' 2>/dev/null || true)"
+    if [[ "$health_status" =~ ^[1-5][0-9][0-9]$ ]]; then
+      printf '%s\n' "$health_status" > "$artifact_dir/startup_health_status.txt"
+      return 0
+    fi
+    sleep 1
+  done
+  compose logs --no-color > "$artifact_dir/startup_failure.log" 2>&1 || true
+  echo "application HTTP listener did not become reachable" >&2
+  return 1
+}
+
 sample_memory() {
   local target="$1"
   while compose ps -q app >/dev/null 2>&1 && [[ -n "$(compose ps -q app)" ]]; do
@@ -587,13 +630,23 @@ run_variant() {
   # the isolated copy, so both variants exercise identical durable work while
   # the copied production billing truth remains unchanged.
   prepare_reconciliation_fixture "$variant_dir/tavily_proxy.db"
+  if [[ "$name" == "baseline" ]]; then
+    normalize_baseline_schema_ledger "$variant_dir/tavily_proxy.db" "$repo"
+  fi
   write_compose "$repo" "$variant_dir" "$artifact_dir"
   # The testbox is deliberately isolated from production services. Reusing its
   # locked base-image cache keeps a transient registry failure out of the
   # baseline/candidate comparison.
   compose build app
   compose up -d app upstream
-  wait_for_dashboard_readiness "$artifact_dir"
+  if [[ "$name" == "baseline" ]]; then
+    # Historical baselines may be below the dashboard cold-build coverage
+    # contract. Let the comparator classify that red baseline instead of
+    # discarding the entire comparison before its measured load starts.
+    wait_for_http_listener "$artifact_dir"
+  else
+    wait_for_dashboard_readiness "$artifact_dir"
+  fi
   capture_ha_gc_state "$variant_dir/tavily_proxy.db" "$artifact_dir/ha_gc_before.tsv"
   capture_reconciliation_state "$variant_dir/tavily_proxy.db" "$artifact_dir/reconciliation_before.tsv"
   sample_memory "$artifact_dir/memory_samples.txt" &
