@@ -1,5 +1,6 @@
 import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
 import { adminPressureTranslations } from '../adminPressureTranslations'
+import { adminProviderTranslations } from '../adminProviderTranslations'
 import type { TranslationShape } from '../types'
 
 export const EN: TranslationShape = {
@@ -257,6 +258,7 @@ export const EN: TranslationShape = {
         systemSettings: 'System Settings',
         proxySettings: 'Proxy Settings',
       },
+      providers: adminProviderTranslations.en,
       dashboard: {
         loading: 'Loading dashboard data…',
         summaryUnavailable: 'Unable to load the summary windows right now.',

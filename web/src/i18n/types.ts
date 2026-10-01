@@ -2,6 +2,7 @@ export type Language = 'en' | 'zh'
 
 import type { AdminRechargeTranslations, SystemSettingsTotpTranslationKey, SystemSettingsTrustedClientIpTranslationKey } from './adminRechargeTranslationTypes'
 import type { AdminPressureTranslations } from './adminPressureTranslationTypes'
+import type { AdminProvidersTranslations } from './adminProviderTranslationTypes'
 
 export interface LanguageContextValue {
   language: Language
@@ -242,6 +243,7 @@ export interface AdminTranslationsShape {
     recharges: string
     alerts: string; systemSettings: string; proxySettings: string
   }
+  providers: AdminProvidersTranslations
   dashboard: {
     loading: string
     summaryUnavailable: string

@@ -202,7 +202,6 @@ import {
   type RecentAlertsSummary,
   type PaginatedApiKeys,
   fetchApiKeySecret,
-  addApiKeysBatch,
   type AddApiKeysBatchItem,
   type AddApiKeysBatchResponse,
   validateApiKeys,
@@ -260,7 +259,7 @@ import {
   type JobLogView,
   type TriggerJobResponse,
   fetchApiKeyDetail,
-  syncApiKeyUsage,
+  type ProviderId,
   fetchJobs,
   triggerJob,
   fetchTokenGroups,
@@ -355,6 +354,16 @@ import {
   type TokenLogRequestKindQuickProtocol,
 } from '../tokenLogRequestKinds'
 import { finalizeForwardProxyRevalidate } from './forwardProxyRevalidate'
+import {
+  PROVIDER_FILTER_ALL,
+  KeyProviderBadge,
+  KeyProviderFilter,
+  KeyProviderSelect,
+  fetchAdminKeysPage,
+  type ProviderFilterValue,
+} from './keyProviderColumn'
+import { KeyQuotaPanel, KeyUsageSyncButton, performKeyUsageSync, usageSyncErrorCopy } from './keyProviderQuota'
+import { addProviderAwareApiKeysBatch } from './keyProviderBatch'
 
 const LazyAdminRecentRequestsPanel = lazy(() => import('../components/AdminRecentRequestsPanel'))
 const LazyApiKeysValidationDialog = lazy(async () =>
@@ -2077,6 +2086,8 @@ function AdminDashboard(): JSX.Element {
 
   const [newKeysText, setNewKeysText] = useState('')
   const [newKeysGroup, setNewKeysGroup] = useState('')
+  const [newKeysProvider, setNewKeysProvider] = useState<ProviderId>('tavily')
+  const [selectedKeyProvider, setSelectedKeyProvider] = useState<ProviderFilterValue>(PROVIDER_FILTER_ALL)
   const [selectedKeyGroups, setSelectedKeyGroups] = useState<string[]>(() => getAdminKeysValuesFromLocation('group'))
   const [selectedKeyStatuses, setSelectedKeyStatuses] = useState<string[]>(() => getAdminKeysValuesFromLocation('status'))
   const [selectedKeyRegistrationIp, setSelectedKeyRegistrationIp] = useState(getAdminKeysRegistrationIpFromLocation)
@@ -2116,6 +2127,8 @@ function AdminDashboard(): JSX.Element {
   type KeyValidationRow = {
     api_key: string
     status: KeyValidationStatus
+    provider?: ProviderId
+    reason?: string | null
     registration_ip?: string | null
     registration_region?: string | null
     assigned_proxy_key?: string | null
@@ -2129,6 +2142,7 @@ function AdminDashboard(): JSX.Element {
 
   type KeysValidationState = {
     group: string
+    provider?: ProviderId
     input_lines: number
     valid_lines: number
     unique_in_input: number
@@ -4077,6 +4091,7 @@ function AdminDashboard(): JSX.Element {
       selectedKeyStatuses.join('\u0000'),
       selectedKeyRegistrationIp,
       selectedKeyRegions.join('\u0000'),
+      selectedKeyProvider,
     ].join(':')
     const sameQueryRefresh = keysLoadedRef.current && keysQueryKeyRef.current === nextQueryKey
     setKeysLoadState(
@@ -4088,7 +4103,7 @@ function AdminDashboard(): JSX.Element {
       setKeysTotal(0)
     }
 
-    fetchApiKeys(
+    fetchAdminKeysPage(
       keysPage,
       keysPerPage,
       {
@@ -4096,6 +4111,7 @@ function AdminDashboard(): JSX.Element {
         statuses: selectedKeyStatuses,
         registrationIp: selectedKeyRegistrationIp,
         regions: selectedKeyRegions,
+        provider: selectedKeyProvider,
       },
       request.signal,
     )
@@ -4152,6 +4168,7 @@ function AdminDashboard(): JSX.Element {
     selectedKeyGroups,
     selectedKeyRegistrationIp,
     selectedKeyRegions,
+    selectedKeyProvider,
     selectedKeyStatuses,
   ])
 
@@ -5352,7 +5369,7 @@ function AdminDashboard(): JSX.Element {
       setKeysLoadState(getRefreshingLoadState(keysLoadedRef.current))
       setKeysError(null)
       tasks.push(
-        fetchApiKeys(
+        fetchAdminKeysPage(
           keysPage,
           keysPerPage,
           {
@@ -5360,6 +5377,7 @@ function AdminDashboard(): JSX.Element {
             statuses: selectedKeyStatuses,
             registrationIp: selectedKeyRegistrationIp,
             regions: selectedKeyRegions,
+            provider: selectedKeyProvider,
           },
           request.signal,
         )
@@ -6176,6 +6194,8 @@ function AdminDashboard(): JSX.Element {
         if (row.status === 'duplicate_in_input') {
           return {
             ...row,
+            provider: res?.provider ?? row.provider,
+            reason: res?.reason ?? row.reason,
             registration_ip: res?.registration_ip ?? row.registration_ip,
             registration_region: res?.registration_region ?? row.registration_region,
             assigned_proxy_key: res ? res.assigned_proxy_key : row.assigned_proxy_key,
@@ -6190,6 +6210,8 @@ function AdminDashboard(): JSX.Element {
         return {
           ...row,
           status,
+          provider: res.provider ?? row.provider,
+          reason: res.reason,
           registration_ip: res.registration_ip ?? row.registration_ip,
           registration_region: res.registration_region ?? row.registration_region,
           assigned_proxy_key: res.assigned_proxy_key,
@@ -6219,6 +6241,7 @@ function AdminDashboard(): JSX.Element {
           assigned_proxy_label: undefined,
           assigned_proxy_match_kind: undefined,
           detail: undefined,
+          reason: undefined,
           quota_limit: undefined,
           quota_remaining: undefined,
           attempts: row.attempts + 1,
@@ -6228,7 +6251,7 @@ function AdminDashboard(): JSX.Element {
     })
   }, [])
 
-  const runValidateKeys = useCallback(async (items: { api_key: string; registration_ip?: string | null }[], runId: number) => {
+  const runValidateKeys = useCallback(async (items: { api_key: string; registration_ip?: string | null; provider?: ProviderId }[], runId: number) => {
     const controller = new AbortController()
     keysValidateAbortRef.current?.abort()
     keysValidateAbortRef.current = controller
@@ -6245,6 +6268,7 @@ function AdminDashboard(): JSX.Element {
         applyValidationResults(
           chunk.map((item) => ({
             api_key: item.api_key,
+            provider: item.provider,
             registration_ip: item.registration_ip,
             status: 'error',
             detail: message,
@@ -6275,7 +6299,7 @@ function AdminDashboard(): JSX.Element {
 
     const seen = new Set<string>()
     const rows: KeyValidationRow[] = []
-    const uniqueEntries: { api_key: string; registration_ip?: string | null }[] = []
+    const uniqueEntries: { api_key: string; registration_ip?: string | null; provider?: ProviderId }[] = []
     const registrationIpByKey: Record<string, string> = {}
     let duplicateCount = 0
     for (const entry of parsedEntries) {
@@ -6284,6 +6308,7 @@ function AdminDashboard(): JSX.Element {
         duplicateCount += 1
         rows.push({
           api_key,
+          provider: newKeysProvider,
           registration_ip: entry.registration_ip,
           status: 'duplicate_in_input',
           attempts: 0,
@@ -6293,6 +6318,7 @@ function AdminDashboard(): JSX.Element {
       seen.add(api_key)
       uniqueEntries.push({
         api_key,
+        provider: newKeysProvider,
         registration_ip: entry.registration_ip,
       })
       if (entry.registration_ip) {
@@ -6300,6 +6326,7 @@ function AdminDashboard(): JSX.Element {
       }
       rows.push({
         api_key,
+        provider: newKeysProvider,
         registration_ip: entry.registration_ip,
         status: 'pending',
         attempts: 0,
@@ -6310,6 +6337,7 @@ function AdminDashboard(): JSX.Element {
     const runId = keysValidateRunIdRef.current
     setKeysValidation({
       group,
+      provider: newKeysProvider,
       input_lines: rawLines.length,
       valid_lines: parsedEntries.length,
       unique_in_input: uniqueEntries.length,
@@ -6343,6 +6371,7 @@ function AdminDashboard(): JSX.Element {
     if (failedKeys.length === 0) return
     const failedItems = failedKeys.map((api_key) => ({
       api_key,
+      provider: keysValidation.provider,
       registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
     }))
 
@@ -6373,6 +6402,7 @@ function AdminDashboard(): JSX.Element {
     await runValidateKeys([
       {
         api_key,
+        provider: keysValidation.provider,
         registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
       },
     ], runId)
@@ -6431,7 +6461,7 @@ function AdminDashboard(): JSX.Element {
           registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
           assigned_proxy_key: validationRowByKey.get(api_key)?.assigned_proxy_key ?? undefined,
         }))
-        const chunkResponse = await addApiKeysBatch(chunkItems, normalizedGroup, exhaustedInChunk)
+        const chunkResponse = await addProviderAwareApiKeysBatch(keysValidation.provider, chunkItems, normalizedGroup, exhaustedInChunk)
         response.summary.input_lines += chunkResponse.summary.input_lines
         response.summary.valid_lines += chunkResponse.summary.valid_lines
         response.summary.unique_in_input += chunkResponse.summary.unique_in_input
@@ -6530,6 +6560,7 @@ function AdminDashboard(): JSX.Element {
     || selectedKeyStatuses.length > 0
     || selectedKeyRegions.length > 0
     || selectedKeyRegistrationIp.length > 0
+    || selectedKeyProvider !== PROVIDER_FILTER_ALL
   )
   const keysBlocking = isBlockingLoadState(keysLoadState)
   const keysRefreshing = isRefreshingLoadState(keysLoadState)
@@ -10548,6 +10579,7 @@ function AdminDashboard(): JSX.Element {
   list="api-key-group-datalist"
   style={{ flex: '1 1 220px', minWidth: 160, maxWidth: '100%' }}
 />
+<KeyProviderSelect value={newKeysProvider} onChange={setNewKeysProvider} />
 <Button
   type="button"
   onClick={() => void handleAddKey()}
@@ -11295,6 +11327,13 @@ function AdminDashboard(): JSX.Element {
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
+              <KeyProviderFilter
+                value={selectedKeyProvider}
+                onChange={(value) => {
+                  setSelectedKeyProvider(value)
+                  setKeysPage(1)
+                }}
+              />
             </div>
           </div>
           {isAdmin && visibleKeys.length > 0 ? (
@@ -11410,7 +11449,7 @@ function AdminDashboard(): JSX.Element {
           {visibleKeys.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={isAdmin ? 8 : 6}>
+                <td colSpan={isAdmin ? 9 : 7}>
                   <div className="empty-state alert">
                     {keysHasFilters ? keyStrings.empty.filtered : keyStrings.empty.none}
                   </div>
@@ -11445,6 +11484,12 @@ function AdminDashboard(): JSX.Element {
                     <div style={adminTableHeaderStackStyle}>
                       <span style={adminTableFieldStyle}>{keyStrings.table.registration}</span>
                       <span style={adminTableSecondaryFieldStyle}>{keyStrings.table.registrationRegion}</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{adminStrings.providers.shared.tableHeader}</span>
+                      <span style={adminTableSecondaryFieldStyle} aria-hidden="true">&nbsp;</span>
                     </div>
                   </th>
                   <th>
@@ -11545,6 +11590,9 @@ function AdminDashboard(): JSX.Element {
                             {formatRegistrationValue(item.registration_region)}
                           </span>
                         </div>
+                      </td>
+                      <td>
+                        <KeyProviderBadge provider={item.provider} />
                       </td>
                       <td>
                         <div style={adminTableStackStyle}>
@@ -11704,6 +11752,10 @@ function AdminDashboard(): JSX.Element {
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.registrationRegion}</span>
                     <strong>{formatRegistrationValue(item.registration_region)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{adminStrings.providers.shared.tableHeader}</span>
+                    <KeyProviderBadge provider={item.provider} />
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.status}</span>
@@ -12958,6 +13010,7 @@ export function KeyDetails({
   const [stickyUsersError, setStickyUsersError] = useState<string | null>(null)
   const [stickyNodesError, setStickyNodesError] = useState<string | null>(null)
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'success'>('idle')
+  const [syncNotice, setSyncNotice] = useState<string | null>(null)
   const [quarantineState, setQuarantineState] = useState<'idle' | 'clearing'>('idle')
   const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
   const syncInFlightRef = useRef(false)
@@ -13288,9 +13341,18 @@ export function KeyDetails({
     try {
       setSyncState('syncing')
       setError(null)
-      await syncApiKeyUsage(id)
+      setSyncNotice(null)
+      const outcome = await performKeyUsageSync(id)
       await Promise.all([load('refresh'), loadStickyUsers('refresh'), loadStickyNodes('refresh')])
       setLogsNonce((value) => value + 1)
+      if (outcome.kind === 'unsupported') {
+        setError(adminStrings.providers.shared.syncErrorUnsupported)
+        setSyncState('idle')
+        return
+      }
+      if (outcome.kind === 'snapshot' && outcome.source === 'passive') {
+        setSyncNotice(adminStrings.providers.shared.syncPassiveNotice)
+      }
       setSyncState('success')
       if (syncFeedbackTimerRef.current != null) {
         window.clearTimeout(syncFeedbackTimerRef.current)
@@ -13301,12 +13363,12 @@ export function KeyDetails({
       }, 2500)
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : adminStrings.errors.syncUsage)
+      setError(usageSyncErrorCopy(err, adminStrings.errors.syncUsage, adminStrings.providers.shared.syncErrorUnsupported))
       setSyncState('idle')
     } finally {
       syncInFlightRef.current = false
     }
-  }, [adminStrings.errors.syncUsage, id, load, loadStickyNodes, loadStickyUsers])
+  }, [adminStrings, id, load, loadStickyNodes, loadStickyUsers])
 
   const clearQuarantine = useCallback(async () => {
     if (quarantineState === 'clearing') return
@@ -13450,26 +13512,12 @@ export function KeyDetails({
 
         <AdminSidebarUtilityCard>
           <div className="admin-sidebar-utility-actions">
-            <Button
-              type="button"
-              variant={syncState === 'success' ? 'success' : 'default'}
+            <KeyUsageSyncButton
+              provider={detail?.provider}
+              syncState={syncState}
+              onSync={() => void syncUsage()}
               className="admin-sidebar-utility-action"
-              onClick={() => void syncUsage()}
-              disabled={syncState === 'syncing'}
-              aria-busy={syncState === 'syncing'}
-            >
-              <Icon
-                icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
-                width={18}
-                height={18}
-                className={syncState === 'syncing' ? 'icon-spin' : undefined}
-              />
-              {syncState === 'syncing'
-                ? keyDetailsStrings.syncing
-                : syncState === 'success'
-                  ? keyDetailsStrings.syncSuccess
-                  : keyDetailsStrings.syncAction}
-            </Button>
+            />
           </div>
         </AdminSidebarUtilityCard>
       </AdminSidebarUtilityStack>
@@ -13496,25 +13544,11 @@ export function KeyDetails({
               href={ADMIN_USER_CONSOLE_HREF}
               className="admin-return-link--detail"
             />
-            <Button
-              type="button"
-              variant={syncState === 'success' ? 'success' : 'default'}
-              onClick={() => void syncUsage()}
-              disabled={syncState === 'syncing'}
-              aria-busy={syncState === 'syncing'}
-            >
-              <Icon
-                icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
-                width={18}
-                height={18}
-                className={syncState === 'syncing' ? 'icon-spin' : undefined}
-              />
-              {syncState === 'syncing'
-                ? keyDetailsStrings.syncing
-                : syncState === 'success'
-                  ? keyDetailsStrings.syncSuccess
-                  : keyDetailsStrings.syncAction}
-            </Button>
+            <KeyUsageSyncButton
+              provider={detail?.provider}
+              syncState={syncState}
+              onSync={() => void syncUsage()}
+            />
             <Button type="button" variant="ghost" onClick={onBack}>
               <Icon icon="mdi:arrow-left" width={18} height={18} />
               {keyDetailsStrings.back}
@@ -13635,43 +13669,15 @@ export function KeyDetails({
         </section>
       )}
 
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>Quota</h2>
-            <p className="panel-description">Tavily Usage for this key</p>
-          </div>
-        </div>
-        <AdminLoadingRegion
-          loadState={detailLoadState}
-          loadingLabel={detailLoadingLabel}
-          minHeight={180}
-        >
-          <section className="metrics-grid">
-            {!detail ? (
-              <div className="empty-state alert" style={{ gridColumn: '1 / -1' }}>{keyDetailsStrings.loading}</div>
-            ) : (
-              (() => {
-                const limit = detail?.quota_limit ?? null
-                const remaining = detail?.quota_remaining ?? null
-                const used = (limit != null && remaining != null) ? Math.max(limit - remaining, 0) : null
-                const percent = (limit && remaining != null && limit > 0) ? formatPercent(remaining, limit) : '—'
-                return [
-                  { id: 'used', label: 'Used', value: used != null ? formatNumber(used) : '—', subtitle: limit != null ? `of ${formatNumber(limit)}` : '—' },
-                  { id: 'remaining', label: 'Remaining', value: remaining != null ? formatNumber(remaining) : '—', subtitle: percent },
-                  { id: 'synced', label: 'Synced', value: detail?.quota_synced_at ? formatTimestamp(detail.quota_synced_at) : '—', subtitle: '' },
-                ].map((m) => (
-                  <div key={m.id} className="metric-card">
-                    <h3>{m.label}</h3>
-                    <div className="metric-value">{m.value}</div>
-                    <div className="metric-subtitle">{m.subtitle}</div>
-                  </div>
-                ))
-              })()
-            )}
-          </section>
-        </AdminLoadingRegion>
-      </section>
+      <KeyQuotaPanel
+        detail={detail}
+        loadState={detailLoadState}
+        loadingLabel={detailLoadingLabel}
+        syncNotice={syncNotice}
+        formatNumber={formatNumber}
+        formatTimestamp={formatTimestamp}
+        formatPercent={formatPercent}
+      />
 
       <section className="surface panel">
         <div className="panel-header">

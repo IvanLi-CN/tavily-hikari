@@ -55,6 +55,36 @@ const quarantinedKeyDetailMock: ApiKeyStats = {
   transient_backoff: null,
 }
 
+const PROVIDER_REVIEW_AT = Math.floor((REVIEW_AT + 13 * 24 * 60 * 60 * 1000) / 1000)
+
+const serpapiKeyDetailMock: ApiKeyStats = {
+  ...keyDetailMock,
+  provider: 'serpapi',
+  group: 'serpapi',
+  quota_limit: 30_000,
+  quota_remaining: 28_740,
+  quota_renews_at: PROVIDER_REVIEW_AT,
+  quota_source: 'live',
+}
+
+const braveKeyDetailMock: ApiKeyStats = {
+  ...keyDetailMock,
+  provider: 'brave',
+  group: 'brave',
+  quota_limit: 2_000,
+  quota_remaining: 1_750,
+  quota_source: 'passive',
+}
+
+const exaKeyDetailMock: ApiKeyStats = {
+  ...keyDetailMock,
+  provider: 'exa',
+  group: 'exa',
+  quota_limit: null,
+  quota_remaining: null,
+  quota_source: undefined,
+}
+
 const keyMetricsMock: KeySummary = {
   total_requests: 20_112,
   success_count: 16_994,
@@ -420,5 +450,42 @@ export const CBoXQuarantinedSyncReady: Story = {
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+async function assertProviderQuotaStory(canvasElement: HTMLElement, expected: string[]): Promise<void> {
+  await new Promise((resolve) => window.setTimeout(resolve, 200))
+  const text = canvasElement.ownerDocument.body.textContent ?? ''
+  for (const value of expected) {
+    if (!text.includes(value)) {
+      throw new Error(`Expected provider key detail story to contain: ${value}`)
+    }
+  }
+}
+
+export const SerpApiLiveQuota: Story = {
+  render: () => <KeyDetailRouteStoryCanvas detailMock={serpapiKeyDetailMock} />,
+  globals: { language: 'en', themeMode: 'light' },
+  parameters: { viewport: { defaultViewport: '1440-device-desktop' } },
+  play: async ({ canvasElement }) => {
+    await assertProviderQuotaStory(canvasElement, ['SerpApi plan quota synced from /account', 'Renews'])
+  },
+}
+
+export const BravePassiveQuota: Story = {
+  render: () => <KeyDetailRouteStoryCanvas detailMock={braveKeyDetailMock} />,
+  globals: { language: 'en', themeMode: 'light' },
+  parameters: { viewport: { defaultViewport: '1440-device-desktop' } },
+  play: async ({ canvasElement }) => {
+    await assertProviderQuotaStory(canvasElement, ['harvested from upstream response headers', 'Brave'])
+  },
+}
+
+export const ExaNoBalanceApi: Story = {
+  render: () => <KeyDetailRouteStoryCanvas detailMock={exaKeyDetailMock} />,
+  globals: { language: 'en', themeMode: 'light' },
+  parameters: { viewport: { defaultViewport: '1440-device-desktop' } },
+  play: async ({ canvasElement }) => {
+    await assertProviderQuotaStory(canvasElement, ['no upstream balance API', 'Exa'])
   },
 }

@@ -1,5 +1,6 @@
 import { adminRechargeTranslations, adminTotpTranslations, adminTrustedClientIpTranslations } from '../adminRechargeTranslations'
 import { adminPressureTranslations } from '../adminPressureTranslations'
+import { adminProviderTranslations } from '../adminProviderTranslations'
 import type { TranslationShape } from '../types'
 
 export const ZH: TranslationShape = {
@@ -256,6 +257,7 @@ export const ZH: TranslationShape = {
         systemSettings: '系统设置',
         proxySettings: '代理设置',
       },
+      providers: adminProviderTranslations.zh,
       dashboard: {
         loading: '正在加载仪表盘数据…',
         summaryUnavailable: '暂时无法加载期间摘要。',

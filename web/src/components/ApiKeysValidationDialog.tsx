@@ -22,7 +22,13 @@ import {
   TableHeader,
   TableRow,
 } from "./ui/table";
-import type { AddApiKeysBatchResponse, ValidateAssignedProxyMatchKind } from "../api";
+import type { AddApiKeysBatchResponse, ProviderId, ValidateAssignedProxyMatchKind } from "../api";
+import {
+  exaProbeVerdict,
+  providerProbeCopy,
+  reasonCodeLabel,
+  serpApiPlanEntries,
+} from "../admin/keyProviderValidation";
 
 export type KeyValidationStatus =
   | "pending"
@@ -38,6 +44,8 @@ export type KeyValidationStatus =
 export type KeyValidationRow = {
   api_key: string;
   status: KeyValidationStatus;
+  provider?: ProviderId;
+  reason?: string | null;
   registration_ip?: string | null;
   registration_region?: string | null;
   assigned_proxy_key?: string | null;
@@ -51,6 +59,7 @@ export type KeyValidationRow = {
 
 export type KeysValidationState = {
   group: string;
+  provider?: ProviderId;
   input_lines: number;
   valid_lines: number;
   unique_in_input: number;
@@ -295,6 +304,60 @@ function RegistrationIpIndicator(props: {
   );
 }
 
+/**
+ * Per-provider validation result detail (plan todo 22). SerpApi rows render
+ * the five `/account` plan fields parsed from the probe detail; Brave rows
+ * render the machine reason code as a text chip; Exa rows render the
+ * authenticated-vs-rejected verdict wording.
+ */
+export function ProviderResultExtras({ row }: { row: KeyValidationRow }): JSX.Element | null {
+  const providers = useTranslate().admin.providers;
+  const shared = providers.shared;
+  const provider = row.provider;
+
+  if (provider === "serpapi") {
+    const plan = serpApiPlanEntries(row.detail, providers.serpapi.planFields);
+    if (plan.length === 0) return null;
+    return (
+      <div className="key-validation-plan-grid" data-provider="serpapi">
+        {plan.map((entry) => (
+          <span key={entry.id} className="key-validation-plan-item">
+            <span className="key-validation-plan-label">{entry.label}</span>
+            <span className="key-validation-plan-value font-mono tabular-nums">{entry.value}</span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  const reasonLabel = reasonCodeLabel(shared, row.reason);
+
+  if (provider === "exa") {
+    const verdict = exaProbeVerdict(shared, row.reason, row.status);
+    if (!verdict && !row.reason) return null;
+    return (
+      <span className="key-validation-provider-note" data-provider="exa">
+        {verdict ?? reasonLabel ?? row.reason}
+      </span>
+    );
+  }
+
+  if (row.reason) {
+    return (
+      <span
+        className="key-validation-reason-chip"
+        data-reason={String(row.reason)}
+        title={reasonLabel ?? undefined}
+      >
+        <span className="font-mono">{row.reason}</span>
+        {reasonLabel ? <span className="key-validation-reason-label">{reasonLabel}</span> : null}
+      </span>
+    );
+  }
+
+  return null;
+}
+
 export interface ApiKeysValidationDialogProps {
   open: boolean;
   state: KeysValidationState | null;
@@ -428,6 +491,15 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 </>
               ) : null}
             </div>
+            {props.state?.provider ? (
+              <div
+                className="mt-1 text-xs opacity-70 key-validation-probe-method"
+                data-provider={props.state.provider}
+              >
+                {adminStrings.providers.shared.probeMethodLabel}:{" "}
+                {providerProbeCopy(adminStrings.providers, props.state.provider)}
+              </div>
+            ) : null}
           </div>
           {!isSmallViewport ? (
             <Button
@@ -640,6 +712,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                             />
                           ) : null}
                           <span className="text-xs font-mono tabular-nums opacity-70 whitespace-nowrap">{quotaLabel}</span>
+                          <ProviderResultExtras row={row} />
                         </div>
 
                         {row.detail && (
@@ -733,8 +806,11 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                       <Icon icon="mdi:information-outline" width={16} height={16} />
                                     </span>
                                   </summary>
-                                  <div className="mt-2 text-sm whitespace-pre-wrap break-all opacity-80 max-w-full">
-                                    {row.detail}
+                                  <div className="mt-2 flex max-w-full flex-col gap-1">
+                                    <ProviderResultExtras row={row} />
+                                    <div className="text-sm whitespace-pre-wrap break-all opacity-80">
+                                      {row.detail}
+                                    </div>
                                   </div>
                                 </details>
                               ) : (
@@ -758,6 +834,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                       proxyLabelText={assignedProxyLabel}
                                     />
                                   ) : null}
+                                  <ProviderResultExtras row={row} />
                                 </div>
                               )}
                             </TableCell>
