@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import threading
 import unittest
+from unittest import mock
 
 
 LOAD_PATH = pathlib.Path(__file__).with_name("load.py")
@@ -32,6 +34,15 @@ class PeriodicScheduleTests(unittest.TestCase):
         )
 
         self.assertEqual(deadline, 110.0)
+
+    def test_ha_gc_lane_uses_a_restart_safe_phase_offset(self) -> None:
+        with mock.patch.object(LOAD, "periodic") as periodic:
+            LOAD.trigger_ha_gc(threading.Event(), LOAD.Recorder(), "app", 8787)
+
+        periodic.assert_called_once()
+        args, _ = periodic.call_args
+        self.assertEqual(args[1], LOAD.HA_GC_INTERVAL_SECS)
+        self.assertEqual(args[3], LOAD.HA_GC_INITIAL_DELAY_SECS)
 
 
 class RecoveryTailTests(unittest.TestCase):

@@ -16,6 +16,11 @@ DASHBOARD_CLIENTS = 20
 DASHBOARD_INTERVAL_SECS = 60.0
 BUSINESS_CLIENTS = 5
 BUSINESS_INTERVAL_SECS = 1.0
+HA_GC_INTERVAL_SECS = 60.0
+# Keep the maintenance lane out of phase with the fixed midpoint restart. The
+# lane still exercises maintenance before and after recovery without making a
+# single low-sample request coincide with the restart boundary on every run.
+HA_GC_INITIAL_DELAY_SECS = 17.0
 # A production-shaped snapshot may have bounded startup maintenance reclaiming
 # the three SQLite connections. Bootstrap traffic is outside the measured load
 # lane, so give both variants the same finite window to become ready.
@@ -273,7 +278,7 @@ def trigger_ha_gc(stop: threading.Event, recorder: Recorder, host: str, port: in
     def trigger() -> None:
         trigger_ha_gc_once(recorder, host, port)
 
-    periodic(stop, 60.0, trigger)
+    periodic(stop, HA_GC_INTERVAL_SECS, trigger, HA_GC_INITIAL_DELAY_SECS)
 
 
 def trigger_ha_gc_once(recorder: Recorder, host: str, port: int) -> None:
