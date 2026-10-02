@@ -58,6 +58,11 @@ class SnapshotComparisonTests(unittest.TestCase):
         )
         self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
         self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
+        self.assertIn("def dashboard_coverage_is_complete(load_summary):", COMPARISON)
+        self.assertIn('dashboardExpectedAttemptsByClient', COMPARISON)
+        self.assertIn('dashboardSuccessesByClient', COMPARISON)
+        self.assertIn('insufficient per-client dashboard response coverage', COMPARISON)
+        self.assertIn('Dashboard p95 comparison is non-comparable', COMPARISON)
         self.assertIn(
             "candidate emitted no maintenance admission freshness telemetry", COMPARISON
         )
@@ -83,6 +88,7 @@ class SnapshotComparisonTests(unittest.TestCase):
             "measured_log_lines = [line for line in logs.splitlines() if line_is_in_load_window(line)]",
             COMPARISON,
         )
+        self.assertIn('load did not reach its measured traffic window', COMPARISON)
         self.assertIn("for line in measured_log_lines", COMPARISON)
         self.assertIn('("dashboard", "dashboardHttp5xx")', COMPARISON)
         self.assertIn('("maintenance", "maintenanceHttp5xx")', COMPARISON)

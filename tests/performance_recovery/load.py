@@ -32,16 +32,26 @@ class Recorder:
         self._lock = threading.Lock()
         self.dashboard_ms: list[float] = []
         self.dashboard_attempts = 0
+        self.dashboard_attempts_by_client: Counter[str] = Counter()
+        self.dashboard_successes_by_client: Counter[str] = Counter()
         self.business_attempts = 0
         self.statuses: Counter[str] = Counter()
         self.errors: Counter[str] = Counter()
         self.events: Counter[str] = Counter()
 
-    def status(self, lane: str, status: int, elapsed_ms: float) -> None:
+    def status(
+        self,
+        lane: str,
+        status: int,
+        elapsed_ms: float,
+        dashboard_client_index: int | None = None,
+    ) -> None:
         with self._lock:
             self.statuses[f"{lane}:{status}"] += 1
             if lane == "dashboard":
                 self.dashboard_ms.append(elapsed_ms)
+                if status == 200 and dashboard_client_index is not None:
+                    self.dashboard_successes_by_client[str(dashboard_client_index)] += 1
 
     def error(self, lane: str, error: BaseException) -> None:
         with self._lock:
@@ -61,6 +71,8 @@ class Recorder:
             )
             return {
                 "dashboardAttempts": self.dashboard_attempts,
+                "dashboardAttemptsByClient": dict(sorted(self.dashboard_attempts_by_client.items())),
+                "dashboardSuccessesByClient": dict(sorted(self.dashboard_successes_by_client.items())),
                 "businessAttempts": self.business_attempts,
                 "businessClients": BUSINESS_CLIENTS,
                 "businessIntervalSecs": BUSINESS_INTERVAL_SECS,
@@ -82,11 +94,15 @@ def request(
     path: str,
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
+    *,
+    dashboard_client_index: int | None = None,
 ) -> None:
     started = time.monotonic()
     if lane == "dashboard":
         with recorder._lock:
             recorder.dashboard_attempts += 1
+            if dashboard_client_index is not None:
+                recorder.dashboard_attempts_by_client[str(dashboard_client_index)] += 1
     elif lane == "business":
         with recorder._lock:
             recorder.business_attempts += 1
@@ -95,7 +111,12 @@ def request(
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         response.read()
-        recorder.status(lane, response.status, (time.monotonic() - started) * 1000)
+        recorder.status(
+            lane,
+            response.status,
+            (time.monotonic() - started) * 1000,
+            dashboard_client_index=dashboard_client_index,
+        )
     except (OSError, http.client.HTTPException, TimeoutError) as error:
         recorder.error(lane, error)
     finally:
@@ -197,6 +218,17 @@ def recovery_tail_secs_for_duration(duration_secs: int, requested_secs: int | No
     return recovery_tail_secs
 
 
+def expected_periodic_attempts(
+    duration_secs: float,
+    interval_secs: float,
+    initial_delay_secs: float = 0.0,
+) -> int:
+    """Count the requests a periodic lane can schedule before its stop deadline."""
+    if initial_delay_secs >= duration_secs:
+        return 0
+    return int((duration_secs - initial_delay_secs - 1e-9) // interval_secs) + 1
+
+
 def dashboard_lane(
     stop: threading.Event,
     recorder: Recorder,
@@ -207,7 +239,15 @@ def dashboard_lane(
     periodic(
         stop,
         DASHBOARD_INTERVAL_SECS,
-        lambda: request(recorder, "dashboard", "GET", host, port, "/api/dashboard/overview"),
+        lambda: request(
+            recorder,
+            "dashboard",
+            "GET",
+            host,
+            port,
+            "/api/dashboard/overview",
+            dashboard_client_index=client_index,
+        ),
         client_index * DASHBOARD_INTERVAL_SECS / DASHBOARD_CLIENTS,
     )
 
@@ -303,6 +343,14 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
     traffic_duration_secs = args.duration_secs - recovery_tail_secs
+    dashboard_expected_attempts_by_client = {
+        str(client_index): expected_periodic_attempts(
+            traffic_duration_secs,
+            DASHBOARD_INTERVAL_SECS,
+            client_index * DASHBOARD_INTERVAL_SECS / DASHBOARD_CLIENTS,
+        )
+        for client_index in range(DASHBOARD_CLIENTS)
+    }
 
     recorder = Recorder()
     stop = threading.Event()
@@ -333,6 +381,8 @@ def main() -> None:
         threading.Thread(target=trigger_ha_gc, args=(stop, recorder, args.host, args.port), daemon=True),
     ]
     started = time.time()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    (args.output.parent / "load_started_at").write_text(f"{started:.6f}\n", encoding="utf-8")
     for thread in threads:
         thread.start()
     try:
@@ -352,8 +402,9 @@ def main() -> None:
     summary["recoveryTailSecs"] = recovery_tail_secs
     summary["dashboardClients"] = DASHBOARD_CLIENTS
     summary["dashboardIntervalSecs"] = DASHBOARD_INTERVAL_SECS
-    summary["startedAt"] = int(started)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    summary["dashboardExpectedAttempts"] = sum(dashboard_expected_attempts_by_client.values())
+    summary["dashboardExpectedAttemptsByClient"] = dashboard_expected_attempts_by_client
+    summary["startedAt"] = started
     args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, sort_keys=True))
 

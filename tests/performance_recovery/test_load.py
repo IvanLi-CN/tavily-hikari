@@ -17,6 +17,11 @@ SPEC.loader.exec_module(LOAD)
 
 
 class PeriodicScheduleTests(unittest.TestCase):
+    def test_expected_periodic_attempts_accounts_for_staggered_clients(self) -> None:
+        self.assertEqual(LOAD.expected_periodic_attempts(540, 60, 0), 9)
+        self.assertEqual(LOAD.expected_periodic_attempts(540, 60, 57), 9)
+        self.assertEqual(LOAD.expected_periodic_attempts(60, 60, 57), 1)
+
     def test_slow_action_skips_missed_intervals(self) -> None:
         deadline = LOAD.next_periodic_deadline(
             previous_deadline=100.0,

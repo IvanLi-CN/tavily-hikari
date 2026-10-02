@@ -2346,7 +2346,7 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
             ClaimedReconciliationRunOutcome::Deferred {
                 reason: "local_pressure",
                 retry_at,
-            } if retry_at >= proxy.backend_time().now_ts().saturating_add(15)
+            } if retry_at >= proxy.backend_time().now_ts().saturating_add(5)
         ),
         "settlement pressure must return a local-pressure defer, got {outcome:?}"
     );

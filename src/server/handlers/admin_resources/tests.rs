@@ -184,7 +184,7 @@ mod admin_resources_tests {
             .expect("hold SQLite writer lock");
 
         let started = std::time::Instant::now();
-        let status = create_token(
+        let response = create_token(
             State(state.clone()),
             admin_headers(),
             Json(CreateTokenRequest {
@@ -192,8 +192,12 @@ mod admin_resources_tests {
             }),
         )
         .await
-        .expect_err("SQLite contention must be a retryable handler status");
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        .expect("SQLite contention must be a retryable HTTP response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get("retry-after").and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
         assert!(
             started.elapsed() < Duration::from_millis(350),
             "admin access-token create must not inherit SQLite's default five-second wait"
@@ -213,7 +217,7 @@ mod admin_resources_tests {
         )
         .await
         .expect("access-token create recovers after the writer lock releases");
-        assert_eq!(created.0, StatusCode::CREATED);
+        assert_eq!(created.status(), StatusCode::CREATED);
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(db_path.with_extension("db-shm"));

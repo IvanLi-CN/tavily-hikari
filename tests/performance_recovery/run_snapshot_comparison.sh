@@ -620,7 +620,7 @@ run_variant() {
   local repo="$2"
   local variant_dir="$WORK_DIR/$name"
   local artifact_dir="$ARTIFACTS_DIR/$name"
-  local load_pid restart_pid rss_pid
+  local load_pid restart_pid rss_pid load_start_deadline
   remove_variant_data "$variant_dir"
   rm -rf -- "$artifact_dir"
   mkdir -p "$variant_dir" "$artifact_dir"
@@ -652,11 +652,6 @@ run_variant() {
   sample_memory "$artifact_dir/memory_samples.txt" &
   rss_pid=$!
   (
-    sleep $((DURATION_SECS / 2))
-    compose restart app
-  ) &
-  restart_pid=$!
-  (
     if ! compose run --rm load python /work/load.py \
       --duration-secs "$DURATION_SECS" \
       --output "/artifacts/load.json"; then
@@ -665,6 +660,31 @@ run_variant() {
     fi
   ) &
   load_pid=$!
+  load_start_deadline=$((SECONDS + 240))
+  while [[ ! -f "$artifact_dir/load_started_at" ]]; do
+    if ! kill -0 "$load_pid" 2>/dev/null; then
+      if ! wait "$load_pid"; then
+        compose logs --no-color >&2 || true
+        return 1
+      fi
+      echo "load exited before measured traffic started" >&2
+      compose logs --no-color >&2 || true
+      return 1
+    fi
+    if (( SECONDS >= load_start_deadline )); then
+      kill "$load_pid" 2>/dev/null || true
+      wait "$load_pid" 2>/dev/null || true
+      compose logs --no-color >&2 || true
+      echo "load did not reach its measured traffic window" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  (
+    sleep $((DURATION_SECS / 2))
+    compose restart app
+  ) &
+  restart_pid=$!
   wait "$load_pid"
   wait "$restart_pid"
   kill "$rss_pid" 2>/dev/null || true
@@ -674,6 +694,7 @@ run_variant() {
   compose logs --no-color > "$artifact_dir/compose.log" 2>&1 || true
   python3 - "$name" "$artifact_dir" <<'PY'
 import json
+import math
 import os
 import pathlib
 import re
@@ -830,7 +851,7 @@ def parse_maintenance_snapshot(raw):
 maintenance_snapshots = []
 maintenance_admission_events = []
 foreground_hold_p95_samples = []
-for line in logs.splitlines():
+for line in measured_log_lines:
     snapshot = parse_maintenance_snapshot(structured_value(line, "maintenance_admission"))
     if snapshot:
         maintenance_snapshots.append(snapshot)
@@ -992,11 +1013,14 @@ summary = {
     "sqliteFinalLockErrors": sqlite_final_lock_errors,
     "sqlitePoolTimeoutErrors": sqlite_pool_timeout_errors,
     "maintenanceAdmission": maintenance_admission,
-    "nestedTransactionErrors": logs.count("cannot start a transaction within a transaction"),
+    "nestedTransactionErrors": sum(
+        "cannot start a transaction within a transaction" in line
+        for line in measured_log_lines
+    ),
     "reconciliationProjectionDiscarded": sum(
         structured_field(line, "event", "sqlite_transaction_connection_discarded")
         and structured_field(line, "operation", "reconciliation_projection")
-        for line in logs.splitlines()
+        for line in measured_log_lines
     ),
     "foregroundHttp5xx": lane_5xx("business"),
     "dashboardHttp5xx": lane_5xx("dashboard"),
@@ -1075,8 +1099,6 @@ def assert_not_worse(metric, base, cand, absolute_floor=None, additive_tolerance
             f"candidate {metric} regressed: baseline={base}, candidate={cand}, threshold={threshold}"
         )
 
-baseline_dashboard_successes = baseline["load"]["statuses"].get("dashboard:200", 0)
-baseline_dashboard_clients = baseline["load"].get("dashboardClients", 0)
 baseline_business_attempts = baseline["load"].get("businessAttempts", 0)
 baseline_business_responses = (
     baseline["load"]["statuses"].get("business:200", 0)
@@ -1093,9 +1115,25 @@ baseline_business_minimum = (
     * (0.10 if diagnostic else 0.30)
 )
 baseline_application_business_minimum = max(20, baseline_business_minimum / 2)
-baseline_dashboard_red = (
-    not diagnostic and baseline_dashboard_successes < baseline_dashboard_clients
-)
+def dashboard_coverage_is_complete(load_summary):
+    expected = load_summary.get("dashboardExpectedAttempts", 0)
+    minimum = math.ceil(expected * 0.95)
+    attempts = load_summary.get("dashboardAttempts", 0)
+    successes = load_summary["statuses"].get("dashboard:200", 0)
+    expected_by_client = load_summary.get("dashboardExpectedAttemptsByClient", {})
+    successes_by_client = load_summary.get("dashboardSuccessesByClient", {})
+    return (
+        expected > 0
+        and attempts >= minimum
+        and successes >= minimum
+        and all(
+            successes_by_client.get(client, 0) >= max(2, expected_count - 1)
+            for client, expected_count in expected_by_client.items()
+        )
+    )
+
+
+baseline_dashboard_red = not diagnostic and not dashboard_coverage_is_complete(baseline["load"])
 baseline_business_red = not diagnostic and (
     baseline_business_attempts < baseline_business_minimum
     or baseline_business_responses < baseline_application_business_minimum
@@ -1123,23 +1161,32 @@ for summary in (baseline, candidate):
     business_interval_secs = summary["load"].get("businessIntervalSecs")
     if business_clients != 5 or business_interval_secs != 1.0:
         raise SystemExit(f"unexpected business load shape for {summary['variant']}")
+    dashboard_expected_attempts = summary["load"].get("dashboardExpectedAttempts", 0)
     dashboard_minimum = (
-        summary["load"]["durationSecs"] * dashboard_clients / dashboard_interval_secs * dashboard_coverage
+        dashboard_expected_attempts * 0.95
+        if not diagnostic
+        else summary["load"]["durationSecs"]
+        * dashboard_clients
+        / dashboard_interval_secs
+        * dashboard_coverage
     )
     business_minimum = traffic_duration_secs * business_clients * (0.10 if diagnostic else 0.30)
     if dashboard_attempts is None or dashboard_attempts < dashboard_minimum:
         raise SystemExit(f"insufficient dashboard coverage for {summary['variant']}")
-    # The 60-second diagnosis contains a halfway restart and production-shaped
-    # cold aggregation, so require one successful sample from each tenure. The
-    # Ten-minute comparisons tolerate the bounded controlled-restart race
-    # below five percent while retaining enough coverage to compare p95 and
-    # error rates. The load driver schedules 200 dashboard attempts at this
-    # duration, so this still requires at least 190 successful snapshots.
+    # A diagnostic only proves startup/recovery wiring. A production-shaped run
+    # must keep 95% of its scheduled Dashboard traffic and at least all but one
+    # sample from each staggered client, independent of baseline quality.
     required_dashboard_successes = (
         2
         if diagnostic or summary["variant"] == "baseline"
-        else max(2, (baseline_dashboard_successes * 95 + 99) // 100)
+        else math.ceil(dashboard_expected_attempts * 0.95)
     )
+    if not diagnostic and summary["variant"] == "candidate":
+        if not dashboard_coverage_is_complete(summary["load"]):
+            raise SystemExit(f"insufficient per-client dashboard response coverage for {summary['variant']}")
+    elif not diagnostic and summary["variant"] == "baseline" and not baseline_dashboard_red:
+        if not dashboard_coverage_is_complete(summary["load"]):
+            raise SystemExit(f"insufficient per-client dashboard response coverage for {summary['variant']}")
     if statuses.get("dashboard:200", 0) < required_dashboard_successes:
         raise SystemExit(f"insufficient dashboard response coverage for {summary['variant']}")
     if statuses.get("sse:200", 0) < 20:
@@ -1200,12 +1247,19 @@ if baseline_red:
         file=sys.stderr,
     )
 if not diagnostic:
-    assert_not_worse(
-        "dashboard p95",
-        p95(baseline),
-        p95(candidate),
-        absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS,
-    )
+    if baseline_dashboard_red:
+        print(
+            "Dashboard p95 comparison is non-comparable because the baseline did not "
+            "meet per-client measured-window coverage; retaining both raw values",
+            file=sys.stderr,
+        )
+    else:
+        assert_not_worse(
+            "dashboard p95",
+            p95(baseline),
+            p95(candidate),
+            absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS,
+        )
     if baseline_business_red:
         print(
             "RSS P95 comparison is non-comparable because the baseline did not "
