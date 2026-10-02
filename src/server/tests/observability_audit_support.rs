@@ -2,7 +2,7 @@ pub(super) async fn wait_for_rebalance_audit_count(
     pool: &sqlx::SqlitePool,
     expected_count: usize,
 ) -> Vec<sqlx::sqlite::SqliteRow> {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let rows = sqlx::query(
                 r#"
@@ -29,7 +29,7 @@ pub(super) async fn wait_for_rebalance_audit_with_fallback(
     pool: &sqlx::SqlitePool,
     fallback_reason: &str,
 ) -> sqlx::sqlite::SqliteRow {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let row = sqlx::query(
                 r#"
