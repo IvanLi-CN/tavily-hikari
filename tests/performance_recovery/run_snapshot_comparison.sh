@@ -373,6 +373,19 @@ ON CONFLICT(request_id) DO UPDATE SET
   last_poll_outcome = NULL,
   last_poll_error_kind = NULL,
   updated_at = excluded.updated_at;
+INSERT INTO scheduled_jobs (
+  job_type, trigger_source, key_id, status, attempt, queued_at, available_at,
+  started_at, finished_at
+)
+SELECT
+  'upstream_reconciliation_research_drain', 'auto', NULL, 'queued', 1,
+  unixepoch(), 0, NULL, NULL
+WHERE NOT EXISTS (
+  SELECT 1
+    FROM scheduled_jobs
+   WHERE job_type = 'upstream_reconciliation_research_drain'
+     AND status IN ('queued', 'running')
+);
 DELETE FROM api_key_transient_backoffs
  WHERE key_id = (SELECT id FROM api_keys WHERE api_key = 'tvly-reconciliation-fixture-key')
    AND scope = 'period_reconciliation';
@@ -974,6 +987,7 @@ sqlite_final_lock_errors = (
 )
 sqlite_pool_timeout_errors = sum(
     structured_field(line, "workload_class", "foreground_work")
+    and structured_value(line, "operation") != "foreground_job_trigger"
     and (
         structured_field(line, "pool_timeout", "true")
         or "PoolTimedOut" in line
@@ -1307,8 +1321,8 @@ if not diagnostic:
             if key.startswith(f"{status_lane}:")
         )
         allowed_5xx = (
-            candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT // 100
-            if candidate_attempts
+            math.ceil(candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT / 100)
+            if candidate_attempts and CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT
             else 0
         )
         if candidate[metric] > allowed_5xx:

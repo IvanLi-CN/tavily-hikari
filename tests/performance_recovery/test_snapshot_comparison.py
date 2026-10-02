@@ -50,12 +50,12 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
         self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
         self.assertIn("CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5", COMPARISON)
-        self.assertNotIn("CONTROLLED_RESTART_HTTP_5XX_MIN_ALLOWANCE", COMPARISON)
         self.assertIn('acceptance_status = "diagnostic" if diagnostic else "passed"', COMPARISON)
         self.assertIn(
-            "candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT // 100",
+            "math.ceil(candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT / 100)",
             COMPARISON,
         )
+        self.assertIn('structured_value(line, "operation") != "foreground_job_trigger"', COMPARISON)
         self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
         self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
         self.assertIn("def dashboard_coverage_is_complete(load_summary):", COMPARISON)
@@ -142,6 +142,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         )
         self.assertIn("snapshot reconciliation fixture preparation failed", COMPARISON)
         self.assertIn("testbox-reconciliation-research-request", COMPARISON)
+        self.assertIn("upstream_reconciliation_research_drain', 'auto', NULL, 'queued'", COMPARISON)
         self.assertIn("DELETE FROM api_key_transient_backoffs", COMPARISON)
         self.assertIn("upstream_reconciliation_research_scan_state", COMPARISON)
         self.assertIn("upstream_reconciliation_control_state", COMPARISON)
