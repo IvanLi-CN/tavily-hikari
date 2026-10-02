@@ -540,6 +540,7 @@ services:
       HA_MODE: single
       NODE_ID: snapshot-comparison
       XRAY_BINARY: /bin/true
+      RUST_LOG: "warn,tavily_hikari=info,tavily_hikari::store::sqlite_runtime=debug,tavily_hikari::server::schedulers=debug"
     volumes:
       - $data_dir:/srv/app/data
     user: "$runner_uid:$runner_gid"

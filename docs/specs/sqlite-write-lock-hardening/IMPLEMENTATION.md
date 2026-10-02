@@ -30,9 +30,24 @@
   including reconciliation, and the coordinator's aged-turn exception uses the same five-second
   boundary. Completed request-log GC keeps its five-minute continuation, while HA GC keeps its
   separate 30-second post-admission contention continuation.
+- A transient scheduled-job dequeue or claim conflict retries on that same five-second cadence.
+  The worker does not impose a global 30-second sleep on pending maintenance classes after a
+  bounded control write fails. A real-worker regression holds a competing SQLite writer across
+  claim admission, releases it without a notification, and verifies timely HA recovery.
 - Reconciliation preflight uses a drop guard so stale claims and controlled retries cancel a ticket
   that never reached bulk admission; the actual preparation path explicitly transfers the ticket
   before entering the bulk admission retry loop.
+- The snapshot comparison measures Dashboard, business, and maintenance traffic after credential
+  bootstrap, then performs its controlled restart halfway through that measured window. Both
+  variants use the same isolated mock upstream and immutable core/observability snapshot set.
+  Dashboard coverage is checked for each staggered client; a baseline without that coverage is
+  explicitly non-comparable for latency.
+- Recovery fixtures include deterministic shadow settlement and Research polling work. A queued
+  Research drain representative makes the intended work explicit in the cloned database. Manual
+  trigger admission failures stay visible in maintenance HTTP outcomes, while the business
+  request-path pool-timeout count excludes `ForegroundJobTrigger`. The finite-sample controlled-
+  restart allowance rounds five percent upward to a whole response; foreground HTTP failures
+  remain a strict zero-error gate.
 - HA GC rechecks admission between SQL statements and records a typed 30-second defer only for
   its selected channel. Request-stats flushes use adaptive `25..250` logical-key chunks; a
   background admission commits at most four chunks within one 50ms transaction-start/next-chunk

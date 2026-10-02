@@ -1,6 +1,6 @@
 # SQLite write-lock hardening（#2wdrp）
 
-## Background
+## Context and Scope
 
 Production `tavily-hikari` `0.46.2` showed transient SQLite `database is locked` errors after API
 rebalance was enabled. The service remained healthy, but logs included request-path failures such as
@@ -61,7 +61,8 @@ source when a usable persisted runtime already exists.
 
 ## Requirements
 
-- `quota_subject_locks` acquire/refresh/release writes must retry transient SQLite write errors with
+- `REQ-BOUNDED-WRITE-RETRY`: `quota_subject_locks` acquire/refresh/release writes must retry
+  transient SQLite write errors with
   bounded backoff and must remain inside the existing lock timeout/lease budget.
 - Token billing and MCP session lock callers must retain the current fail-closed semantics if the
   bounded retry window is exhausted.
@@ -96,7 +97,8 @@ source when a usable persisted runtime already exists.
   first healthy image status. Once the process is already serving business traffic, it may run once
   as a best-effort background rebuild whose failure is isolated to logs/observability and does not
   turn serving `/health` red.
-- Request-path pressure observations and rebalance audits must not synchronously wait for SQLite's
+- `REQ-DEFERRED-OBSERVABILITY`: Request-path pressure observations and rebalance audits must not
+  synchronously wait for SQLite's
   writer. They enter instance-owned bounded deferred queues; pressure deltas are replayable from
   request logs, while a rejected rebalance audit records explicit stale coverage without changing
   MCP success or billing truth. Every deferred flush uses `SqliteRuntime` operation budgets.
@@ -169,7 +171,8 @@ source when a usable persisted runtime already exists.
   phases outside the DB execution window, but only one maintenance job may hold the SQLite-writing
   execution gate at a time, and the worker must not fan out multiple remote-I/O maintenance jobs at
   once just because those phases are outside SQLite.
-- Every instance-local derived maintenance writer that uses a SQLite bulk slice must pass through
+- `REQ-MAINTENANCE-FAIRNESS`: Every instance-local derived maintenance writer that uses a SQLite
+  bulk slice must pass through
   one runtime admission coordinator in front of the physical bulk permit. The coordinator has one
   pending ticket per maintenance class, serves the oldest pending class first, and expires a class
   after 120 seconds without a retry. Admission remains non-blocking and returns a typed defer; it
@@ -230,12 +233,15 @@ source when a usable persisted runtime already exists.
   foreground work. Bulk maintenance takes one instance-local permit only when foreground arrival
   rate is at most `5 rps` and the preceding five seconds contain no pool-timeout or SQLite busy
   outcome. Admission rejection occurs before pool acquisition and records a typed deferred reason.
-- Scheduled-job metadata writes are `maintenance_control`: they use a `100ms` connection/writer
+- `REQ-MAINTENANCE-CONTROL`: Scheduled-job metadata writes are `maintenance_control`: they use a
+  `100ms` connection/writer
   budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
   representative row or claim-fenced stale recovery owns later retry.
 - Scheduler dequeue and next-wake reads are also `maintenance_control`: they acquire through the
   same bounded operation path. If an actual remote-attempt lease makes the first candidate page
   ineligible, the scheduler must perform one bounded local-only fallback lookup before yielding.
+  A transient dequeue or claim conflict retries on the five-second maintenance admission cadence;
+  it must not add a global 30-second sleep in front of pending classes.
 - The same bounded in-memory buffering model may also cover other request-derived observability
   counters such as auth-token activity and account request-rate buckets, provided billing truth
   stays synchronous and owner-facing reads use durable fallback instead of inheriting any write-side
@@ -290,7 +296,18 @@ source when a usable persisted runtime already exists.
   the offline migration on the target host itself, restart and validate, and if anything fails
   restore the pre-cutover core DB and delete the sibling sidecar before bringing the service back.
 
-## Acceptance
+## Verification
+
+- `VER-MAINTENANCE-FAIRNESS` (covers: REQ-MAINTENANCE-FAIRNESS): SQLite runtime tests verify
+  oldest-first ordering, retained tickets, aged turns, ticket expiry, and permit cleanup. The
+  isolated snapshot comparison records each exercised class's admission and pending-age telemetry.
+- `VER-DEFERRED-OBSERVABILITY` (covers: REQ-DEFERRED-OBSERVABILITY): Observability audit tests verify
+  that foreground completion does not wait for the deferred writer and that later admitted flushes
+  persist queued observations. The snapshot comparison records foreground transaction duration
+  separately from maintenance admission.
+- `VER-MAINTENANCE-CONTROL` (covers: REQ-MAINTENANCE-CONTROL): Maintenance control tests verify
+  bounded admission, durable representative reuse, and claim-fenced recovery. Manual trigger
+  admission failure must retain its explicit unavailable response.
 
 ### Cancellation-safe maintenance transactions
 
@@ -347,7 +364,8 @@ source when a usable persisted runtime already exists.
   1–25 hour window. Startup backfill reads 500-row pages and merges a captured request-log tail, so
   it never materializes the complete history or copies live events while holding the cache lock.
 
-- Under a competing SQLite writer, acquiring a quota subject lock eventually succeeds after the
+- `VER-BOUNDED-WRITE-RETRY` (covers: REQ-BOUNDED-WRITE-RETRY): Under a competing SQLite writer,
+  acquiring a quota subject lock eventually succeeds after the
   writer releases within the existing wait budget.
 - Under a competing SQLite writer that outlives SQLite's builtin busy timeout but releases before
   the bounded application retry budget, one billable `/mcp` tools/call request still returns `200`,

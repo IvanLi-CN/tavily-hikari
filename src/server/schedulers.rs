@@ -618,12 +618,17 @@ fn spawn_maintenance_worker(state: Arc<AppState>) {
                             component = "scheduler",
                             event = "maintenance_dequeue_deferred",
                             defer_reason = "sqlite_contention",
-                            retry_delay_secs = 30_u64,
+                            retry_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
                             err = %err,
                         );
+                        // A short claim conflict must not put every pending
+                        // maintenance class behind a global 30-second backoff.
+                        // Revisit durable jobs on the bulk admission cadence.
                         tokio::select! {
                             _ = wake.notified() => {}
-                            _ = state.proxy.backend_time().sleep(Duration::from_secs(30)) => {}
+                            _ = state.proxy.backend_time().sleep(Duration::from_secs(
+                                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS as u64,
+                            )) => {}
                         }
                     } else {
                         tracing::error!(
