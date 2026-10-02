@@ -1377,12 +1377,11 @@ async fn ha_gc_productive_continuation_retries_a_short_writer_conflict() {
         .await
         .expect("release SQLite writer lock");
     lock_conn.close().await.expect("close writer lock holder");
-    assert_eq!(
+    assert!(
         tokio::time::timeout(Duration::from_secs(1), handoff)
             .await
             .expect("GC worker returns promptly")
-            .expect("GC worker task completes"),
-        true
+            .expect("GC worker task completes")
     );
     let mut queued = false;
     for _ in 0..20 {
