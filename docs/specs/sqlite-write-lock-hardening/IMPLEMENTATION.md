@@ -624,8 +624,10 @@
   the earliest eligible wake, so a five-minute legacy scan or a 30-second busy defer cannot freeze
   the other two channels.
 - `scheduled_jobs.claim_generation` fences stale finish/error/continuation writes. HA continuation
-  enqueue is atomic with finish; failed persistence is left for stale reaper recovery instead of an
-  unbounded retry task.
+  enqueue is atomic with finish; a transient persistence conflict receives five fixed
+  same-generation retries at `100/200/400/800/1600ms`, then leaves the matching running claim for
+  stale-reaper recovery. The retry task stops on success, a stale claim, or a permanent error and
+  never becomes an unbounded background loop.
 - Reconciliation candidate selection is an indexed bounded page. Local pressure has its own short
   backoff; an observed upstream 429 applies the `5/10/20/30` minute cooldown only to the triggering
   `period_reconciliation` key and honors the maximum `Retry-After`. Legacy global-backoff metadata

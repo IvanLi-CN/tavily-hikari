@@ -64,6 +64,8 @@ const TRIGGER_SOURCE_AUTO: &str = "auto";
 const REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS: i64 = 5 * 60;
 const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
+const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
+    [100, 200, 400, 800, 1_600];
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -1166,92 +1168,7 @@ async fn finish_request_logs_gc_with_continuation_after(
     }
 }
 
-async fn finish_ha_gc_with_continuation(
-    state: &Arc<AppState>,
-    job_id: i64,
-    claim_generation: i64,
-    message: String,
-    continuation_delay_secs: i64,
-) -> bool {
-    let available_at = state
-        .proxy
-        .backend_time()
-        .now_ts()
-        .saturating_add(continuation_delay_secs);
-    let result = state
-        .proxy
-        .scheduled_job_finish_and_enqueue_auto_at(
-            job_id,
-            claim_generation,
-            "ha_outbox_gc",
-            None,
-            1,
-            Some(&message),
-            available_at,
-        )
-        .await;
-    match result {
-        Ok(result) => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "continuation_queued",
-                job_id,
-                continuation_job_id = result.job_id,
-                continuation_created = result.created,
-                continuation_delay_secs,
-                available_at,
-            );
-        }
-        Err(err) if err.is_stale_claim() => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "stale_claim_ignored",
-                job_id,
-                claim_generation,
-                "stale GC claim cannot finish or enqueue a continuation"
-            );
-            return true;
-        }
-        Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => {
-            tracing::warn!(
-                component = "ha_outbox_gc",
-                event = "continuation_persist_deferred",
-                job_id,
-                claim_generation,
-                continuation_delay_secs,
-                stale_reaper_after_secs = 120_u64,
-                err = %err,
-                "HA outbox GC continuation hit a transient SQLite conflict; retaining the running claim for stale recovery"
-            );
-            return true;
-        }
-        Err(err) => {
-            tracing::error!(
-                component = "ha_outbox_gc",
-                event = "continuation_transaction_failed",
-                job_id,
-                continuation_delay_secs,
-                err = %err,
-                "HA outbox GC could not persist its deferred continuation"
-            );
-            if let Err(finish_err) = state
-                .proxy
-                .scheduled_job_finish_claimed(job_id, claim_generation, "error", Some(&message))
-                .await
-            {
-                tracing::error!(
-                    component = "ha_outbox_gc",
-                    event = "deferred_job_finish_failed",
-                    job_id,
-                    err = %finish_err,
-                    "HA outbox GC deferred job remains running for stale-reaper recovery"
-                );
-            }
-            return false;
-        }
-    }
-    true
-}
+include!("schedulers_ha_gc_continuation.rs");
 
 async fn run_ha_outbox_gc_claimed_job(
     state: Arc<AppState>,
