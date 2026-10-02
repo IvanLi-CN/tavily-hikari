@@ -694,7 +694,6 @@ run_variant() {
   compose logs --no-color > "$artifact_dir/compose.log" 2>&1 || true
   python3 - "$name" "$artifact_dir" <<'PY'
 import json
-import math
 import os
 import pathlib
 import re
@@ -1071,6 +1070,7 @@ done
 
 python3 - "$ARTIFACTS_DIR" <<'PY'
 import json
+import math
 import pathlib
 import sys
 
