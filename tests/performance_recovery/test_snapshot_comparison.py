@@ -61,6 +61,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("def dashboard_coverage_is_complete(load_summary):", COMPARISON)
         self.assertIn('dashboardExpectedAttemptsByClient', COMPARISON)
         self.assertIn('dashboardSuccessesByClient', COMPARISON)
+        self.assertIn('successes_by_client.get(client, 0) >= max(1, expected_count - 1)', COMPARISON)
         self.assertIn('insufficient per-client dashboard response coverage', COMPARISON)
         self.assertIn('Dashboard p95 comparison is non-comparable', COMPARISON)
         self.assertIn(

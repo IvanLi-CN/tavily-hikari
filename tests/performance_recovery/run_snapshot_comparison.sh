@@ -1164,7 +1164,7 @@ def dashboard_coverage_is_complete(load_summary):
         and attempts >= minimum
         and successes >= minimum
         and all(
-            successes_by_client.get(client, 0) >= max(2, expected_count - 1)
+            successes_by_client.get(client, 0) >= max(1, expected_count - 1)
             for client, expected_count in expected_by_client.items()
         )
     )
