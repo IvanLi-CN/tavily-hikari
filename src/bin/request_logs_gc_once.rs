@@ -167,6 +167,10 @@ fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<
         has_more: report.has_more,
         elapsed_ms: report.elapsed_ms,
         scanned_body_candidates: report.scanned_body_candidates,
+        body_scan_cursor_advanced: report
+            .pass_reports
+            .iter()
+            .any(|pass| pass.body_scan_cursor_advanced),
         unique_retention_users: report.unique_retention_users,
         retention_context_cache_hits: report.retention_context_cache_hits,
         body_candidate_query_elapsed_ms: report.body_candidate_query_elapsed_ms,
@@ -243,6 +247,7 @@ mod tests {
                     has_more: true,
                     elapsed_ms: 12,
                     scanned_body_candidates: 10,
+                    body_scan_cursor_advanced: false,
                     unique_retention_users: 2,
                     retention_context_cache_hits: 8,
                     body_candidate_query_elapsed_ms: 1,
@@ -265,6 +270,7 @@ mod tests {
                     has_more: false,
                     elapsed_ms: 8,
                     scanned_body_candidates: 4,
+                    body_scan_cursor_advanced: false,
                     unique_retention_users: 1,
                     retention_context_cache_hits: 3,
                     body_candidate_query_elapsed_ms: 1,

@@ -3,6 +3,8 @@
 - Request-log GC blocking-day registration uses the existing scoped write budget. In the legacy
   same-file attachment layout it uses a single atomic UPSERT, preserving the fail-closed source
   guard without requesting two immediate locks on the same SQLite file.
+- Continuation uses the cursor retained at the end of a bounded pass; a terminal scan that clears
+  the cursor does not create a one-second no-progress loop during a seal or source-recovery block.
 
 ## Current Coverage
 

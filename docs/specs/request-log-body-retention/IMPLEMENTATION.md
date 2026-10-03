@@ -6,6 +6,9 @@
   recovery prevents deletion until minute/daily rollups and the seal have been finalized.
 - Productive bounded passes continue after one second; no-progress, pressure and error passes
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
+- Scan progress compares the retained cursor before and after the entire pass. A terminal page
+  that clears the cursor, including repeated bodyless scans during an integrity block, does not
+  qualify for one-second continuation. The internal progress flag is omitted from serialized reports.
 - Optional blocked-day diagnostics preserve the existing API and CLI fields. Offline legacy
   single-database GC initializes the small recovery queue without moving production source data.
 

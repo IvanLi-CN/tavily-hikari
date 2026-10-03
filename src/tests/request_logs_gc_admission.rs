@@ -98,6 +98,7 @@ async fn request_logs_gc_does_not_hydrate_bodyless_cursor_windows() {
         .expect("bounded body scan completes without user retention reads");
 
     assert_eq!(report.scanned_body_candidates, 64);
+    assert!(report.body_scan_cursor_advanced);
     assert_eq!(report.unique_retention_users, 0);
     assert_eq!(report.retention_context_cache_hits, 0);
     assert_eq!(report.cleaned_request_log_bodies, 0);
@@ -116,11 +117,66 @@ async fn request_logs_gc_does_not_hydrate_bodyless_cursor_windows() {
         .await
         .expect("cursor resumes after the bounded bodyless window");
     assert_eq!(resumed.scanned_body_candidates, 0);
+    assert!(!resumed.body_scan_cursor_advanced);
     assert!(resumed.completed);
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn request_logs_gc_completed_bodyless_scan_is_not_durable_progress_when_blocked() {
+    let lock = env_lock();
+    let _env_lock = lock.lock().await;
+    let _retention_guard = RequestLogsRetentionEnvGuard::set_32_days();
+    let db_path = temp_db_path("request-logs-gc-blocked-bodyless-scan");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let now = Utc::now().timestamp();
+    seed_request_log_for_gc(
+        &proxy.key_store.pool,
+        now - 40 * SECS_PER_DAY,
+        "/api/tavily/search",
+    )
+    .await;
+    sqlx::query("INSERT INTO request_logs (method, path, result_status, visibility, created_at) VALUES ('POST', '/api/tavily/search', 'success', 'visible', ?)")
+        .bind(now).execute(&proxy.key_store.pool).await.expect("seed retained bodyless log");
+    for _ in 0..2 {
+        let report = proxy
+            .gc_request_logs_with_options(RequestLogsGcOptions {
+                batch_size: 100,
+                max_batches: 5,
+                max_runtime_secs: 20,
+                inter_batch_sleep_ms: 0,
+            })
+            .await
+            .expect("scan blocked GC pass");
+        assert_eq!(report.scanned_body_candidates, 1);
+        assert!(
+            !report.body_scan_cursor_advanced,
+            "a repeated terminal scan does not advance a retained cursor"
+        );
+        assert_eq!(
+            report.cleaned_request_log_bodies
+                + report.deleted_request_logs
+                + report.deleted_rollups,
+            0
+        );
+        assert_eq!(report.progress_status, "incomplete_blocked_integrity");
+        let cursor: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM meta WHERE key = 'request_log_body_gc_cursor_v1'",
+        )
+        .fetch_optional(&proxy.key_store.pool)
+        .await
+        .expect("read retained cursor");
+        assert!(cursor.is_none());
+    }
 }
 
 #[tokio::test]

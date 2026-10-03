@@ -2194,6 +2194,7 @@ fn request_logs_gc_continuation_tracks_durable_progress() {
         has_more: true,
         elapsed_ms: 0,
         scanned_body_candidates: 0,
+        body_scan_cursor_advanced: false,
         unique_retention_users: 0,
         retention_context_cache_hits: 0,
         body_candidate_query_elapsed_ms: 0,
@@ -2205,12 +2206,15 @@ fn request_logs_gc_continuation_tracks_durable_progress() {
     };
     assert_eq!(request_logs_gc_continuation_delay(&report), 300);
     report.scanned_body_candidates = 64;
+    assert_eq!(request_logs_gc_continuation_delay(&report), 300);
+    report.body_scan_cursor_advanced = true;
     assert_eq!(
         request_logs_gc_continuation_delay(&report),
         1,
         "a persisted bodyless scan window is productive"
     );
     report.scanned_body_candidates = 0;
+    report.body_scan_cursor_advanced = false;
     report.cleaned_request_log_bodies = 1;
     assert_eq!(
         request_logs_gc_continuation_delay(&report),

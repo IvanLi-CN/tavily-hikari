@@ -70,7 +70,7 @@ const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
 
 fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
     if report.cleaned_request_log_bodies + report.deleted_request_logs + report.deleted_rollups > 0
-        || report.scanned_body_candidates > 0
+        || report.body_scan_cursor_advanced
     {
         REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS
     } else {

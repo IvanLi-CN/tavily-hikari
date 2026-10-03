@@ -494,6 +494,9 @@ pub struct RequestLogsGcReport {
     pub has_more: bool,
     pub elapsed_ms: u128,
     pub scanned_body_candidates: i64,
+    /// Internal scheduling evidence; clearing or revisiting a cursor is not progress.
+    #[serde(skip)]
+    pub body_scan_cursor_advanced: bool,
     pub unique_retention_users: i64,
     pub retention_context_cache_hits: i64,
     pub body_candidate_query_elapsed_ms: u128,

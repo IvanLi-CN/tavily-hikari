@@ -781,36 +781,18 @@ impl KeyStore {
                 break;
             }
         }
-        if has_more {
-            self.set_request_log_body_gc_cursor(after.map(|(created_at, id)| {
-                RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at,
-                }
-            }))
-            .await?;
-        } else if self.backend_time.instant_now() >= deadline && after.is_some() {
+        if self.backend_time.instant_now() >= deadline && after.is_some() {
             has_more = true;
-            self.set_request_log_body_gc_cursor(after.map(|(created_at, id)| {
-                RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at,
-                }
-            }))
-            .await?;
-        } else if let Some((created_at, id)) = after {
-            if let Some(restart_at) = restart_at {
-                self.set_request_log_body_gc_cursor(Some(RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at: Some(restart_at),
-                }))
-                .await?;
-            } else {
-                self.set_request_log_body_gc_cursor(None).await?;
-            }
+        }
+        let persisted_cursor = after
+            .filter(|_| has_more || restart_at.is_some())
+            .map(|(created_at, id)| RequestLogBodyGcCursor {
+                created_at,
+                id,
+                restart_at,
+            });
+        if after.is_some() {
+            self.set_request_log_body_gc_cursor(persisted_cursor).await?;
         }
 
         Ok(RequestLogBodyGcBatch {
@@ -837,6 +819,8 @@ impl KeyStore {
         let mut deleted_request_logs = 0_i64;
         let mut deleted_rollups = 0_i64;
         let mut body_batch_has_more = false;
+        let initial_body_cursor = self.get_request_log_body_gc_cursor().await?
+            .map(|cursor| (cursor.created_at, cursor.id));
         let mut blocked_by_integrity = false;
         let mut blocked_day_start = None;
         let mut blocked_reason = None;
@@ -921,6 +905,9 @@ impl KeyStore {
             || self.has_old_request_log_rollup_rows(threshold).await?
             || body_batch_has_more;
         self.invalidate_request_logs_catalog_cache().await;
+        let body_scan_cursor_advanced = self.get_request_log_body_gc_cursor().await?
+            .is_some_and(|cursor| initial_body_cursor
+                .is_none_or(|initial| (cursor.created_at, cursor.id) > initial));
         Ok(RequestLogsGcReport {
             retention_days,
             threshold,
@@ -934,6 +921,7 @@ impl KeyStore {
             has_more,
             elapsed_ms: started.elapsed().as_millis(),
             scanned_body_candidates: body_gc_diagnostics.scanned_body_candidates,
+            body_scan_cursor_advanced,
             unique_retention_users: body_gc_diagnostics.unique_retention_users,
             retention_context_cache_hits: body_gc_diagnostics.retention_context_cache_hits,
             body_candidate_query_elapsed_ms: body_gc_diagnostics.body_candidate_query_elapsed_ms,

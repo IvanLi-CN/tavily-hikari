@@ -254,16 +254,13 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         self.ensure_dashboard_rollup_integrity_state(now).await?;
         self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
-        // Resume any current hot page before creating another. Historical pages yield
-        // at their durable checkpoint when a newly closed hot slice becomes due.
+        // Materialize newly due priority work before selecting the next durable page.
+        // Existing hot and GC pages keep their checkpoints and outrank ordinary work.
         if self.dashboard_rollup_integrity_hot_work_due(now).await?
-            && let Some(item) = self
-                .create_next_dashboard_rollup_integrity_work_item(now)
-                .await?
+            || self.dashboard_rollup_integrity_gc_work_due().await?
         {
-            return self
-                .process_dashboard_rollup_integrity_work_item(item, now)
-                .await;
+            self.create_next_dashboard_rollup_integrity_work_item(now)
+                .await?;
         }
         if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
             return self.process_dashboard_rollup_integrity_work_item(item, now).await;
@@ -302,11 +299,32 @@ impl KeyStore {
             r#"SELECT (hot_cursor < hot_fence OR hot_fence < ?) AND NOT EXISTS (
                 SELECT 1 FROM dashboard_rollup_integrity_work_items
                 WHERE status = 'pending' AND recovery = 0 AND range_start >= ? AND range_end <= ?
+                  AND priority IN (0, 3, 4)
             ) FROM dashboard_rollup_integrity_state WHERE id = 1"#,
         )
         .bind(latest_closed)
         .bind(hot_start)
         .bind(latest_closed)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn dashboard_rollup_integrity_gc_work_due(&self) -> Result<bool, ProxyError> {
+        sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                SELECT 1 FROM (
+                    SELECT bucket_start, bucket_end
+                    FROM dashboard_rollup_integrity_day_reaudits
+                    WHERE gc_blocking = 1 AND status = 'pending'
+                    ORDER BY updated_at ASC, bucket_start ASC LIMIT 1
+                ) d WHERE NOT EXISTS (
+                    SELECT 1 FROM dashboard_rollup_integrity_work_items w
+                    WHERE w.status = 'pending'
+                      AND w.range_start < d.bucket_end AND w.range_end > d.bucket_start
+                )
+            )"#,
+        )
         .fetch_one(&self.pool)
         .await
         .map_err(Into::into)
@@ -597,7 +615,7 @@ impl KeyStore {
                   )
               )
             ORDER BY CASE
-                WHEN range_start >= ? AND recovery = 0 THEN 4
+                WHEN range_start >= ? AND recovery = 0 AND priority IN (0, 3, 4) THEN 4
                 WHEN EXISTS (SELECT 1 FROM dashboard_rollup_integrity_day_reaudits d
                     WHERE d.gc_blocking = 1 AND d.status = 'pending'
                       AND range_start >= d.bucket_start AND range_end <= d.bucket_end) THEN 3
@@ -1934,6 +1952,39 @@ impl KeyStore {
                     day_start,
                     reason: "rollup_mismatch",
                 });
+            }
+            // Existing source recovery must finish before its raw truth is deleted.
+            let recovery_tables: Vec<String> = sqlx::query_scalar(
+                r#"SELECT name FROM main.sqlite_master WHERE type = 'table'
+                     AND name IN ('dashboard_rollup_integrity_work_items', 'dashboard_rollup_rebalance_recovery')
+                   UNION SELECT name FROM observability.sqlite_master WHERE type = 'table'
+                     AND name IN ('dashboard_rollup_integrity_work_items', 'dashboard_rollup_rebalance_recovery')"#,
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            for (table, pending_query) in [
+                (
+                    "dashboard_rollup_integrity_work_items",
+                    "SELECT EXISTS(SELECT 1 FROM dashboard_rollup_integrity_work_items WHERE status = 'pending' AND range_start < ? AND range_end > ?)",
+                ),
+                (
+                    "dashboard_rollup_rebalance_recovery",
+                    "SELECT EXISTS(SELECT 1 FROM dashboard_rollup_rebalance_recovery WHERE status = 'pending' AND cursor < ? AND range_end > ?)",
+                ),
+            ] {
+                if recovery_tables.iter().any(|name| name == table) {
+                    let pending: bool = sqlx::query_scalar(pending_query)
+                        .bind(day_end)
+                        .bind(day_start)
+                        .fetch_one(&mut *conn)
+                        .await?;
+                    if pending {
+                        return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                            day_start,
+                            reason: "source_recovery_pending",
+                        });
+                    }
+                }
             }
             Ok(DashboardRollupRequestLogGcDecision::Allowed(day_end))
         }

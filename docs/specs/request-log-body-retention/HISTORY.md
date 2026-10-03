@@ -14,3 +14,5 @@
   catch-up scheduling without changing retention or billing truth.
 - 2026-10-04: Make the private probe's quiet-phase rate configurable within the accepted foreground
   limit and preserve the completed high-load evidence independently of recovery duration.
+- 2026-10-04: Cover new GC-blocker page preemption, unfinished source-recovery deletion protection,
+  and terminal bodyless scans that make no durable cursor progress.
