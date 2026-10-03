@@ -36,6 +36,9 @@
 
 ## 验证状态
 
+- 完整性回归覆盖过期热窗口、新热段抢先、源数据重建缺失/差异封存、账本保持不变、旧队列迁移及日末重启收尾。
+- 旧版单库离线登记使用带运行时短 busy budget 的单条原子 UPSERT，避免同文件双别名的立即事务互锁。
+
 - Rust：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`。
 - Web：`bun test`、`bun run build`、`bun run build-storybook`。
 - 视觉：Storybook mock-only 的积分并排柱状图与重叠面积图已完成非空像素检查；owner 已授权提交 PR 图片证据。

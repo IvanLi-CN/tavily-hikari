@@ -30,6 +30,12 @@
 
 ## Validation
 
+- GC regression coverage includes legacy single-database initialization and source preservation;
+  atomic blocking-day registration avoids `BEGIN IMMEDIATE` self-contention between two aliases
+  of the same file. Scheduled continuation tests cover progress, no progress and claim-fenced restart.
+- `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream testbox probe: 30 minutes
+  at ten business requests per second, then one per second until at least 5,000 expired rows are deleted.
+
 - `cargo clippy -- -D warnings`
 - `cargo test request_log_retention -- --nocapture`
 - `cargo test request_logs_gc -- --nocapture`
