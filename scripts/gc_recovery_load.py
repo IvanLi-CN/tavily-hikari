@@ -98,6 +98,8 @@ def load(origin, token, seconds, rps, on_tick=None, stop_when=None):
             futures.append(executor.submit(request, origin, "/api/tavily/search", {"query": "synthetic recovery load", "max_results": 1}, token))
             now = time.monotonic()
             if on_tick and now >= next_tick:
+                failed = [future.result()[0] for future in futures if future.done() and future.result()[0] != 200]
+                assert not failed, failed[:3]
                 on_tick(round(now - start))
                 next_tick = now + 60
             if stop_when and stop_when():
@@ -167,7 +169,10 @@ def main():
             bad.update(total_requests=50000, success_count=50000, valuable_success_count=50000, api_billable=50000, local_estimated_credits=49999)
             conn.execute("INSERT INTO dashboard_rollup_daily_seals VALUES (?,?,?)", (day, json.dumps(bad), now))
         process = start_service(False)
+        status, _, body = request(origin, "/api/tavily/search", {"query": "synthetic preflight", "max_results": 1}, token)
+        assert status == 200, (status, body)
         baseline = load(origin, token, args.baseline_seconds, 10)
+        assert baseline["non_200"] == 0, baseline
         stop(process)
         process = start_service(True)
         triggered = False

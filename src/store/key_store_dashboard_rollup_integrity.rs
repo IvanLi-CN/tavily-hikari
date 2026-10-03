@@ -1465,8 +1465,7 @@ impl KeyStore {
         gc_blocking: bool,
     ) -> Result<(), ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
-        let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
+        let registration = sqlx::query(
             r#"
             INSERT INTO dashboard_rollup_integrity_day_reaudits (
                 bucket_start, bucket_end, cursor, status, updated_at, gc_blocking
@@ -1482,7 +1481,20 @@ impl KeyStore {
         .bind(day_end)
         .bind(day_start)
         .bind(now)
-        .bind(i64::from(gc_blocking))
+        .bind(i64::from(gc_blocking));
+        if self.uses_legacy_single_db_observability_compatibility() {
+            // The compatibility layout attaches the same file twice. BEGIN IMMEDIATE
+            // would lock those aliases against each other; this single UPSERT is
+            // already atomic and keeps the operation's short busy budget.
+            let mut conn = self.sqlite_runtime
+                .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
+                .await?;
+            let result = registration.execute(&mut *conn).await.map(|_| ()).map_err(Into::into);
+            conn.close().await?;
+            return result;
+        }
+        let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
+        let write_result = registration
         .execute(&mut *conn)
         .await
         .map(|_| ())
