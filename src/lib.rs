@@ -1520,6 +1520,7 @@ const ACCOUNT_USAGE_ROLLUP_DAY_RETENTION_SECS: i64 = 400 * SECS_PER_DAY;
 const ACCOUNT_USAGE_ROLLUP_MONTH_RETENTION_MONTHS: i32 = 24;
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
 const API_KEY_UPSERT_RETRY_BUDGET: Duration = Duration::from_millis(250);
+const ACCESS_TOKEN_CREATE_RETRY_BUDGET: Duration = Duration::from_millis(250);
 const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
 
 pub async fn run_request_kind_canonical_backfill(

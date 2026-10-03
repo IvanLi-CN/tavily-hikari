@@ -165,6 +165,65 @@ mod admin_resources_tests {
         let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     }
 
+    #[tokio::test]
+    async fn create_access_token_returns_retryable_response_under_sqlite_contention() {
+        let (state, db_path) = totp_test_state("admin-access-token-mutation-contention").await;
+        use sqlx::Connection;
+
+        let lock_options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let mut lock_conn = sqlx::SqliteConnection::connect_with(&lock_options)
+            .await
+            .expect("open writer lock connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_conn)
+            .await
+            .expect("hold SQLite writer lock");
+
+        let started = std::time::Instant::now();
+        let response = create_token(
+            State(state.clone()),
+            admin_headers(),
+            Json(CreateTokenRequest {
+                note: Some("admin-access-token-contention".to_string()),
+            }),
+        )
+        .await
+        .expect("SQLite contention must be a retryable HTTP response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get("retry-after").and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(350),
+            "admin access-token create must not inherit SQLite's default five-second wait"
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release SQLite writer lock");
+        drop(lock_conn);
+        let created = create_token(
+            State(state),
+            admin_headers(),
+            Json(CreateTokenRequest {
+                note: Some("admin-access-token-contention".to_string()),
+            }),
+        )
+        .await
+        .expect("access-token create recovers after the writer lock releases");
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    }
+
     async fn totp_test_state_with_builtin_admin(
         prefix: &str,
         builtin_admin: BuiltinAdminAuth,

@@ -994,6 +994,102 @@ async fn reconciliation_scheduler_persists_typed_defer_without_a_terminal_error(
 }
 
 #[tokio::test]
+async fn maintenance_worker_retries_a_locked_claim_within_the_fairness_cadence() {
+    let db_path = temp_db_path("maintenance-claim-lock-fairness");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+    let job = state
+        .proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "test", None, 1)
+        .await
+        .expect("enqueue HA maintenance before the conflict");
+    let mut writer = sqlx::SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&db_str)
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await
+    .expect("open conflicting writer");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut writer)
+        .await
+        .expect("hold the writer across claim admission");
+    let error = dequeue_next_scheduled_job(state.as_ref())
+        .await
+        .expect_err("the real claim path must encounter the held writer");
+    assert!(tavily_hikari::is_transient_sqlite_write_error(&error));
+
+    struct ClaimDeferWriter(Arc<tokio::sync::Notify>);
+    impl std::io::Write for ClaimDeferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if String::from_utf8_lossy(bytes).contains("maintenance_dequeue_deferred") {
+                self.0.notify_one();
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let claim_deferred = Arc::new(tokio::sync::Notify::new());
+    let writer_notify = claim_deferred.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || ClaimDeferWriter(writer_notify.clone()))
+        .finish();
+    // This test uses Tokio's current-thread runtime; the dispatch also covers
+    // the real worker task on this thread without changing process-wide logs.
+    let _dispatch = tracing::dispatcher::set_default(&tracing::Dispatch::new(subscriber));
+    spawn_maintenance_worker(state.clone());
+    tokio::time::timeout(Duration::from_secs(2), claim_deferred.notified())
+        .await
+        .expect("the real worker reached its transient dequeue retry");
+    // No notification follows the release: recovery must come from the
+    // worker's own retry timer, rather than a fresh manual job trigger.
+    sqlx::query("ROLLBACK")
+        .execute(&mut writer)
+        .await
+        .expect("release the writer");
+    tokio::time::timeout(Duration::from_secs(7), async {
+        loop {
+            let status: String = sqlx::query_scalar(
+                "SELECT status FROM scheduled_jobs WHERE id = ?",
+            )
+            .bind(job.job_id)
+            .fetch_one(&mut writer)
+            .await
+            .expect("read the original job status");
+            if status == "success" {
+                break;
+            }
+            assert_ne!(status, "error", "the transient claim must remain recoverable");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("HA work must resume on the five-second fairness retry cadence");
+}
+
+#[tokio::test]
 async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
     let db_path = temp_db_path("ha-gc-worker-fair-wake");
     let db_str = db_path.to_string_lossy().to_string();
@@ -1184,7 +1280,7 @@ async fn ha_gc_real_worker_wakes_an_eligible_channel_before_a_legacy_defer() {
 }
 
 #[tokio::test]
-async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
+async fn ha_gc_productive_continuation_retries_a_short_writer_conflict() {
     let db_path = temp_db_path("ha-gc-writer-lock-continuation-retry");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -1253,28 +1349,20 @@ async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
         dashboard_overview_cache: new_dashboard_overview_cache(),
         remote_attempt_admission: new_remote_attempt_admission(),
     });
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            finish_ha_gc_with_continuation(
-                &state,
-                initial_claim.id,
-                initial_claim.claim_generation,
-                "controller_wake_delay_secs=1 productive_slice".to_string(),
-                continuation_delay_secs,
-            )
+    let job_id = initial_claim.id;
+    let claim_generation = initial_claim.claim_generation;
+    let state_for_handoff = state.clone();
+    let handoff = tokio::spawn(async move {
+        finish_ha_gc_with_continuation(
+            &state_for_handoff,
+            job_id,
+            claim_generation,
+            "controller_wake_delay_secs=1 productive_slice".to_string(),
+            continuation_delay_secs,
         )
         .await
-        .expect("GC worker must yield when continuation persistence is busy")
-    );
-    let running_claim: (String, i64) = sqlx::query_as(
-        "SELECT status, claim_generation FROM scheduled_jobs WHERE id = ?",
-    )
-    .bind(initial_claim.id)
-    .fetch_one(&pool)
-    .await
-    .expect("read unresolved HA GC claim");
-    assert_eq!(running_claim, ("running".to_string(), initial_claim.claim_generation));
+    });
+    tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ha_outbox")
             .fetch_one(&pool)
@@ -1289,53 +1377,37 @@ async fn ha_gc_productive_continuation_lock_defers_to_stale_reaper() {
         .await
         .expect("release SQLite writer lock");
     lock_conn.close().await.expect("close writer lock holder");
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT status FROM scheduled_jobs WHERE id = ?")
-            .bind(initial_claim.id)
-            .fetch_one(&pool)
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), handoff)
             .await
-            .expect("continuation persistence must not retry in the background"),
-        "running"
+            .expect("GC worker returns promptly")
+            .expect("GC worker task completes")
     );
-
-    let recovery_now = Utc::now().timestamp();
-    sqlx::query("UPDATE scheduled_jobs SET started_at = ? WHERE id = ?")
-        .bind(recovery_now - 120)
-        .bind(initial_claim.id)
-        .execute(&pool)
+    let mut queued = false;
+    for _ in 0..20 {
+        queued = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM scheduled_jobs WHERE job_type = 'ha_outbox_gc' AND status = 'queued')",
+        )
+        .fetch_one(&pool)
         .await
-        .expect("age unresolved HA GC claim for stale reaper");
-    assert_eq!(
-        state
-            .proxy
-            .recover_stale_scheduled_jobs()
-            .await
-            .expect("recover stale HA GC claim"),
-        1,
-        "the stale reaper is the sole recovery path after persistence conflict"
+        .expect("read deferred HA GC job state");
+        if queued {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        queued,
+        "a short writer conflict must finish the productive claim before stale reaping"
     );
-    assert_eq!(
-        state
-            .proxy
-            .recover_stale_scheduled_jobs()
-            .await
-            .expect("a recovered HA GC claim cannot be recovered twice"),
-        0
-    );
-    let recovered: (String, i64, i64, Option<String>) = sqlx::query_as(
-        "SELECT status, claim_generation, available_at, message FROM scheduled_jobs WHERE id = ?",
+    let completed: (String, i64) = sqlx::query_as(
+        "SELECT status, claim_generation FROM scheduled_jobs WHERE id = ?",
     )
-    .bind(initial_claim.id)
+    .bind(job_id)
     .fetch_one(&pool)
     .await
-    .expect("read stale-reaper continuation");
-    assert_eq!(recovered.0, "queued");
-    assert_eq!(recovered.1, initial_claim.claim_generation + 1);
-    assert!(
-        (recovery_now + 30..=recovery_now + 31).contains(&recovered.2),
-        "stale recovery must preserve the 30-second continuation delay"
-    );
-    assert_eq!(recovered.3.as_deref(), Some("deferred=stale_recovery"));
+    .expect("read completed HA GC claim");
+    assert_eq!(completed, ("success".to_string(), claim_generation));
 
     drop(state);
     pool.close().await;

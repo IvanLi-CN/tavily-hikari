@@ -204,6 +204,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "remote_attempt_admission::tests::",
                 "tests::maintenance_queue_performance::",
                 "tests::schema_migrations::",
+                "tests::schema_migration_compatibility::",
                 "tests::reconciliation_controller::",
                 "tests::upstream_reconciliation_continuation::",
                 "tests::upstream_reconciliation_engine::",

@@ -1508,12 +1508,12 @@ async fn create_token(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<CreateTokenRequest>,
-) -> Result<(StatusCode, Json<AuthTokenSecretView>), StatusCode> {
+) -> Result<Response<Body>, StatusCode> {
     if !is_admin_request(state.as_ref(), &headers).await {
         return Err(StatusCode::FORBIDDEN);
     }
     if require_full_master_write(state.as_ref()).await.is_err() {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
+        return Ok((StatusCode::SERVICE_UNAVAILABLE, [("retry-after", "1")]).into_response());
     }
     state
         .proxy
@@ -1526,10 +1526,21 @@ async fn create_token(
                     token: secret.token,
                 }),
             )
+                .into_response()
         })
         .map_err(|err| {
+            if err.is_deferred() || tavily_hikari::is_transient_sqlite_write_error(&err) {
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
             eprintln!("create token error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .or_else(|status| {
+            if status == StatusCode::SERVICE_UNAVAILABLE {
+                Ok((status, [("retry-after", "1")]).into_response())
+            } else {
+                Err(status)
+            }
         })
 }
 

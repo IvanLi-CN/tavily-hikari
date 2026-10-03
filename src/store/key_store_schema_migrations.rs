@@ -130,11 +130,23 @@ const RECONCILIATION_CURRENT_SOURCE_IDENTITY_DELETE_CHECKSUM: &str =
 const NEW_DATABASE_BOOTSTRAP_MARKER: &str = "tavily-hikari-schema-bootstrap-v1";
 
 impl KeyStore {
+    pub(crate) async fn ensure_warm_schema_compatibility(&self) -> Result<(), ProxyError> {
+        self.ensure_api_key_membership_intervals_schema().await
+    }
+
     #[cfg(not(test))]
     async fn run_warm_schema_semantic_maintenance(&self) -> Result<(), ProxyError> {
-        sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
-            .execute(&self.pool)
-            .await?;
+        self.ensure_warm_schema_compatibility().await?;
+        let suppression_present = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM ha_outbox_suppression WHERE id = 'local')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if suppression_present != 0 {
+            sqlx::query("DELETE FROM ha_outbox_suppression WHERE id = 'local'")
+                .execute(&self.pool)
+                .await?;
+        }
         self.seed_linuxdo_system_tags().await?;
         self.sync_linuxdo_system_tag_default_deltas_with_env().await?;
         self.backfill_linuxdo_user_tag_bindings().await?;

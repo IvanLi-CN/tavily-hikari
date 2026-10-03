@@ -36,8 +36,13 @@ where
     F: FnOnce() -> chrono::DateTime<Utc>,
 {
     let now = now();
-    let mut conn = begin_immediate_sqlite_connection_for_monthly_quota_rebase(pool).await?;
     let windows = monthly_quota_rebase_windows(now);
+    let previous_rebase_month_start = get_meta_i64_executor(pool, meta_key).await?;
+    if previous_rebase_month_start == Some(windows.month_window_start) {
+        return Ok(None);
+    }
+
+    let mut conn = begin_immediate_sqlite_connection_for_monthly_quota_rebase(pool).await?;
     let previous_rebase_month_start = get_meta_i64_executor(&mut *conn, meta_key).await?;
     if previous_rebase_month_start == Some(windows.month_window_start) {
         conn.commit().await?;

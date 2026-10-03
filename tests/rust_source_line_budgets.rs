@@ -40,6 +40,11 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "The bootstrap schema module now also carries upstream reconciliation polling and persisted HA GC state migrations while the broader store-schema split remains pending.",
     ),
     (
+        "src/store/key_store_sessions.rs",
+        3150,
+        "Account quota defaults, LinuxDo tag bootstrap, and session lifecycle persistence remain together while the broader session-store extraction remains a separate behavior-preserving change.",
+    ),
+    (
         "src/store/key_store_ha.rs",
         3400,
         "HA outbox retention, peer health, cursor-gap markers, and bounded online cleanup remain together in the channel store module while the HA store extraction pass is pending.",
@@ -61,8 +66,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/sqlite_runtime.rs",
-        3550,
-        "The runtime owns the shared pool, operation budgeting, transaction guards, admission state, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
+        4200,
+        "The runtime owns the shared pool, operation budgeting, transaction guards, fair maintenance admission coordinator, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
     ),
 ];
 

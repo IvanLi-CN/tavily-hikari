@@ -14,6 +14,8 @@ Optional environment:
   BASELINE_REF    Baseline Git revision, defaults to the initiative baseline
   DURATION_SECS   Per-variant duration, defaults to 600
   RUN_ID          Explicit unique testbox run id
+  REMOTE_SPACE_MARGIN_BYTES
+                  Testbox free-space margin, defaults to the exporter 10GiB default
 EOF
 }
 
@@ -27,10 +29,25 @@ BASELINE_REF="${BASELINE_REF:-1d6d93cbf4de6e673d75811fadd21f45b9a40482}"
 DURATION_SECS="${DURATION_SECS:-600}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_$(git -C "$ROOT_DIR" rev-parse --short HEAD)_recovery_compare}"
+if [[ -n "$(git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "candidate worktree must be clean before exporting source" >&2
+  exit 2
+fi
+CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse "${BASELINE_REF}^{commit}")"
+if [[ "$BASELINE_SHA" == "$CANDIDATE_SHA" ]]; then
+  echo "baseline and candidate must resolve to different Git commits" >&2
+  exit 2
+fi
+REMOTE_SPACE_MARGIN_BYTES="${REMOTE_SPACE_MARGIN_BYTES:-10737418240}"
 
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || { echo "invalid RUN_ID" >&2; exit 2; }
 [[ "$DURATION_SECS" =~ ^[0-9]+$ ]] && (( DURATION_SECS >= 60 )) || {
   echo "DURATION_SECS must be at least 60" >&2
+  exit 2
+}
+[[ "$REMOTE_SPACE_MARGIN_BYTES" =~ ^[0-9]+$ ]] || {
+  echo "REMOTE_SPACE_MARGIN_BYTES must be a non-negative integer" >&2
   exit 2
 }
 git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}" >/dev/null
@@ -63,7 +80,11 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Exporting the read-only 101 dual-database snapshot..."
-snapshot_output="$(RUN_ID="$RUN_ID" "$ROOT_DIR/scripts/export-live-db-snapshot-to-testbox.sh")"
+snapshot_output="$(
+  RUN_ID="$RUN_ID" \
+  REMOTE_SPACE_MARGIN_BYTES="$REMOTE_SPACE_MARGIN_BYTES" \
+  "$ROOT_DIR/scripts/export-live-db-snapshot-to-testbox.sh"
+)"
 printf '%s\n' "$snapshot_output"
 REMOTE_RUN="$(printf '%s\n' "$snapshot_output" | awk -F= '/^REMOTE_RUN=/{print $2; exit}')"
 [[ "$REMOTE_RUN" =~ ^/srv/codex/workspaces/.+/runs/[A-Za-z0-9_.-]+$ ]] || {
@@ -71,9 +92,9 @@ REMOTE_RUN="$(printf '%s\n' "$snapshot_output" | awk -F= '/^REMOTE_RUN=/{print $
   exit 2
 }
 
-echo "Preparing baseline source at ${BASELINE_REF}..."
+echo "Preparing baseline source at ${BASELINE_REF} (resolved ${BASELINE_SHA})..."
 BASELINE_ARCHIVE="$TMP_DIR/baseline-source.tar"
-git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_REF"
+git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_SHA"
 tar -xf "$BASELINE_ARCHIVE" -C "$TMP_DIR"
 rm -f "$BASELINE_ARCHIVE"
 ssh -o BatchMode=yes "$TESTBOX_HOST" "mkdir -p '$REMOTE_RUN/baseline-repo' && chmod 700 '$REMOTE_RUN/baseline-repo'"
@@ -95,6 +116,8 @@ BASELINE_REPO='$REMOTE_RUN/baseline-repo' \\
 SNAPSHOT_DIR='$REMOTE_RUN/live-db' \\
 COMPOSE_PROJECT='$COMPOSE_PROJECT' \\
 DURATION_SECS='$DURATION_SECS' \\
+CANDIDATE_SHA='$CANDIDATE_SHA' \\
+BASELINE_SHA='$BASELINE_SHA' \\
 bash '$REMOTE_RUN/repo/tests/performance_recovery/run_snapshot_comparison.sh'
 " >"$TESTBOX_OUTPUT" 2>&1; then
   :
@@ -110,6 +133,26 @@ echo "Collecting sanitized comparison summary..."
 mkdir -p "$TMP_DIR/result"
 rsync -az "$TESTBOX_HOST:$REMOTE_RUN/artifacts/performance-recovery/comparison.json" "$TMP_DIR/result/comparison.json"
 cat "$TMP_DIR/result/comparison.json"
+if ! python3 - "$TMP_DIR/result/comparison.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    comparison = json.load(handle)
+acceptance = comparison.get("empiricalAcceptance", {})
+status = acceptance.get("status")
+result = comparison.get("result")
+if status != "passed" or result not in {"passed", "passed_with_baseline_red"}:
+    print(
+        f"non-accepting comparison result: empiricalAcceptance.status={status!r} result={result!r}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
+then
+  echo "comparison did not produce an acceptance result" >&2
+  exit 2
+fi
 echo "Cleaning isolated codex-testbox run..."
 ssh -o BatchMode=yes "$TESTBOX_HOST" "rm -rf '$REMOTE_RUN' && test ! -e '$REMOTE_RUN'"
 completed=true

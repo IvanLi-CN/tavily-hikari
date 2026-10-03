@@ -39,6 +39,8 @@ const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
 const MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS: u32 = 2;
 const MAINTENANCE_BULK_HEAP_TRIM_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE: Duration = Duration::from_secs(15);
+const MAINTENANCE_BULK_TURN_BYPASS_AGE: Duration = Duration::from_secs(5);
 const MAINTENANCE_RUN_SLOTS: u32 = 1_024;
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
 const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
@@ -110,9 +112,409 @@ impl SqliteAdmissionDeferReason {
     }
 }
 
+const MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum SqliteMaintenanceClass {
+    AdminRead,
+    AlertProjection,
+    CapacityWarm,
+    DashboardIntegrity,
+    HaOutboxGc,
+    ObservabilityWrite,
+    ReconciliationProjection,
+    RequestLogsGc,
+    RequestStatsFlush,
+    ServerPressureRebuild,
+}
+
+impl SqliteMaintenanceClass {
+    const ALL: [Self; 10] = [
+        Self::AdminRead,
+        Self::AlertProjection,
+        Self::CapacityWarm,
+        Self::DashboardIntegrity,
+        Self::HaOutboxGc,
+        Self::ObservabilityWrite,
+        Self::ReconciliationProjection,
+        Self::RequestLogsGc,
+        Self::RequestStatsFlush,
+        Self::ServerPressureRebuild,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AdminRead => "admin_read",
+            Self::AlertProjection => "alert_projection",
+            Self::CapacityWarm => "capacity_warm",
+            Self::DashboardIntegrity => "dashboard_integrity",
+            Self::HaOutboxGc => "ha_outbox_gc",
+            Self::ObservabilityWrite => "observability_write",
+            Self::ReconciliationProjection => "reconciliation_projection",
+            Self::RequestLogsGc => "request_logs_gc",
+            Self::RequestStatsFlush => "request_stats_flush",
+            Self::ServerPressureRebuild => "server_pressure_rebuild",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingMaintenanceRequest {
+    ticket: u64,
+    first_requested_at: Instant,
+    last_requested_at: Instant,
+    preflight_holders: u32,
+    ordinary_request: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MaintenanceClassStats {
+    admissions: u64,
+    completed: u64,
+    stale_requests: u64,
+    max_wait_ms: u64,
+}
+
+#[derive(Debug, Default)]
+struct SqliteMaintenanceCoordinatorState {
+    active: Option<SqliteMaintenanceClass>,
+    next_ticket: u64,
+    pending: BTreeMap<SqliteMaintenanceClass, PendingMaintenanceRequest>,
+    stats: BTreeMap<SqliteMaintenanceClass, MaintenanceClassStats>,
+}
+
+// The physical semaphore prevents overlapping bulk slices. This fixed-size
+// coordinator adds admission fairness without creating an unbounded async
+// waiter queue: each maintenance class owns at most one pending request, and
+// an inactive request expires after its bounded retry window.
+#[derive(Debug, Default)]
+struct SqliteMaintenanceCoordinator {
+    state: Mutex<SqliteMaintenanceCoordinatorState>,
+}
+
+#[derive(Debug)]
+struct SqliteMaintenanceAdmissionLease {
+    coordinator: Arc<SqliteMaintenanceCoordinator>,
+    class: SqliteMaintenanceClass,
+}
+
 #[derive(Debug)]
 pub(crate) struct SqliteMaintenanceBulkPermit {
+    _lease: SqliteMaintenanceAdmissionLease,
     _permit: OwnedSemaphorePermit,
+}
+
+#[derive(Debug)]
+pub(crate) struct SqliteMaintenancePreflightLease {
+    coordinator: Arc<SqliteMaintenanceCoordinator>,
+    class: SqliteMaintenanceClass,
+    ticket: u64,
+    cancel_on_drop: bool,
+}
+
+impl SqliteMaintenancePreflightLease {
+    /// Keep the fair ticket for the actual bulk admission attempt. Before this
+    /// point, dropping the guard cancels a preflight that never reached the
+    /// operation's admission boundary.
+    pub(crate) fn preserve_ticket(mut self) {
+        self.cancel_on_drop = false;
+        self.coordinator
+            .promote_preflight_request(self.class, self.ticket);
+    }
+}
+
+impl Drop for SqliteMaintenancePreflightLease {
+    fn drop(&mut self) {
+        if self.cancel_on_drop {
+            self.coordinator
+                .release_preflight_request(self.class, self.ticket, true);
+        }
+    }
+}
+
+impl Drop for SqliteMaintenanceAdmissionLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .coordinator
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert_eq!(state.active, Some(self.class));
+        if state.active == Some(self.class) {
+            state.active = None;
+            let stats = state.stats.entry(self.class).or_default();
+            stats.completed = stats.completed.saturating_add(1);
+        }
+    }
+}
+
+impl SqliteMaintenanceCoordinator {
+    fn retain_request_for_defer(reason: SqliteAdmissionDeferReason) -> bool {
+        !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+    }
+
+    fn cancel_request(&self, class: SqliteMaintenanceClass) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.remove(&class);
+    }
+
+    fn release_preflight_request(
+        &self,
+        class: SqliteMaintenanceClass,
+        ticket: u64,
+        cancel_if_unused: bool,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cancel = state.pending.get_mut(&class).is_some_and(|pending| {
+            if pending.ticket != ticket {
+                return false;
+            }
+            pending.preflight_holders = pending.preflight_holders.saturating_sub(1);
+            cancel_if_unused && pending.preflight_holders == 0 && !pending.ordinary_request
+        });
+        if cancel {
+            state.pending.remove(&class);
+        }
+    }
+
+    fn promote_preflight_request(&self, class: SqliteMaintenanceClass, ticket: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pending) = state.pending.get_mut(&class)
+            && pending.ticket == ticket
+        {
+            pending.preflight_holders = pending.preflight_holders.saturating_sub(1);
+            pending.ordinary_request = true;
+        }
+    }
+
+    fn register_request(&self, class: SqliteMaintenanceClass) -> u64 {
+        self.register_request_with_kind(class, false)
+    }
+
+    fn register_preflight_request(&self, class: SqliteMaintenanceClass) -> u64 {
+        self.register_request_with_kind(class, true)
+    }
+
+    fn register_request_with_kind(&self, class: SqliteMaintenanceClass, preflight: bool) -> u64 {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_idle_requests(&mut state, now);
+        let ticket = state.next_ticket;
+        state.next_ticket = state.next_ticket.saturating_add(1);
+        let pending = state
+            .pending
+            .entry(class)
+            .or_insert(PendingMaintenanceRequest {
+                ticket,
+                first_requested_at: now,
+                last_requested_at: now,
+                preflight_holders: 0,
+                ordinary_request: false,
+            });
+        pending.last_requested_at = now;
+        if preflight {
+            pending.preflight_holders = pending.preflight_holders.saturating_add(1);
+        } else {
+            pending.ordinary_request = true;
+        }
+        pending.ticket
+    }
+
+    fn is_turn(&self, class: SqliteMaintenanceClass, allow_aged_turn: bool) -> bool {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_idle_requests(&mut state, now);
+        Self::eligible_pending(&state, class, now, allow_aged_turn)
+    }
+
+    fn foreground_bypass_due(&self, class: SqliteMaintenanceClass) -> bool {
+        let now = Instant::now();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.get(&class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.first_requested_at)
+                >= MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE
+        })
+    }
+
+    fn turn_bypass_due(&self, class: SqliteMaintenanceClass) -> bool {
+        let now = Instant::now();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.get(&class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.first_requested_at)
+                >= MAINTENANCE_BULK_TURN_BYPASS_AGE
+        })
+    }
+
+    fn try_start_shared(
+        coordinator: &Arc<Self>,
+        class: SqliteMaintenanceClass,
+        allow_aged_turn: bool,
+    ) -> Option<SqliteMaintenanceAdmissionLease> {
+        let now = Instant::now();
+        let mut state = coordinator
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_idle_requests(&mut state, now);
+        if state.active.is_some() || !Self::eligible_pending(&state, class, now, allow_aged_turn) {
+            return None;
+        }
+        let pending = state
+            .pending
+            .remove(&class)
+            .expect("the selected maintenance class has a pending request");
+        let wait_ms = now
+            .saturating_duration_since(pending.first_requested_at)
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        state.active = Some(class);
+        let stats = state.stats.entry(class).or_default();
+        stats.admissions = stats.admissions.saturating_add(1);
+        stats.max_wait_ms = stats.max_wait_ms.max(wait_ms);
+        debug!(
+            component = "db",
+            event = "sqlite_maintenance_admitted",
+            maintenance_class = class.as_str(),
+            pending_age_ms = wait_ms,
+            "SQLite maintenance slice admitted"
+        );
+        Some(SqliteMaintenanceAdmissionLease {
+            coordinator: coordinator.clone(),
+            class,
+        })
+    }
+
+    fn snapshot(&self) -> String {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::prune_idle_requests(&mut state, now);
+        let active = state
+            .active
+            .map(SqliteMaintenanceClass::as_str)
+            .unwrap_or("none");
+        let classes = SqliteMaintenanceClass::ALL
+            .into_iter()
+            .map(|class| {
+                let pending_age_ms = state.pending.get(&class).map(|pending| {
+                    now.saturating_duration_since(pending.first_requested_at)
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64
+                });
+                let stats = state.stats.get(&class).copied().unwrap_or_default();
+                format!(
+                    "{}:pending_age_ms={},admissions={},completed={},max_wait_ms={},stale={}",
+                    class.as_str(),
+                    pending_age_ms
+                        .map(|age| age.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    stats.admissions,
+                    stats.completed,
+                    stats.max_wait_ms,
+                    stats.stale_requests,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        format!("active={active},classes={classes}")
+    }
+
+    #[cfg(test)]
+    fn pending_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .len()
+    }
+
+    #[cfg(test)]
+    fn active_class(&self) -> Option<SqliteMaintenanceClass> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
+    }
+
+    fn oldest_pending(state: &SqliteMaintenanceCoordinatorState) -> Option<SqliteMaintenanceClass> {
+        state
+            .pending
+            .iter()
+            .min_by_key(|(class, pending)| (pending.first_requested_at, pending.ticket, **class))
+            .map(|(class, _)| *class)
+    }
+
+    fn eligible_pending(
+        state: &SqliteMaintenanceCoordinatorState,
+        class: SqliteMaintenanceClass,
+        now: Instant,
+        allow_aged_turn: bool,
+    ) -> bool {
+        let Some(oldest_class) = Self::oldest_pending(state) else {
+            return false;
+        };
+        if oldest_class == class {
+            return true;
+        }
+        if !allow_aged_turn {
+            return false;
+        }
+        // The oldest class remains preferred, but its worker may be asleep
+        // after registering the ticket. Let a caller take its own bounded-age
+        // turn only when that oldest worker is no longer actively retrying.
+        let oldest_is_idle = state.pending.get(&oldest_class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.last_requested_at)
+                >= MAINTENANCE_BULK_TURN_BYPASS_AGE
+        });
+        if !oldest_is_idle {
+            return false;
+        }
+        state.pending.get(&class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.first_requested_at)
+                >= MAINTENANCE_BULK_TURN_BYPASS_AGE
+        })
+    }
+
+    fn prune_idle_requests(state: &mut SqliteMaintenanceCoordinatorState, now: Instant) {
+        // Expire abandoned tickets by retry activity, not by their original queue age.
+        let stale = state
+            .pending
+            .iter()
+            .filter_map(|(class, pending)| {
+                (now.saturating_duration_since(pending.last_requested_at)
+                    >= MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT)
+                    .then_some(*class)
+            })
+            .collect::<Vec<_>>();
+        for class in stale {
+            state.pending.remove(&class);
+            let stats = state.stats.entry(class).or_default();
+            stats.stale_requests = stats.stale_requests.saturating_add(1);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -313,6 +715,24 @@ impl SqliteOperation {
         )
     }
 
+    fn maintenance_class(self) -> Option<SqliteMaintenanceClass> {
+        match self {
+            Self::AdminRead => Some(SqliteMaintenanceClass::AdminRead),
+            Self::AlertProjection => Some(SqliteMaintenanceClass::AlertProjection),
+            Self::MaintenanceCapacityWarm => Some(SqliteMaintenanceClass::CapacityWarm),
+            Self::DashboardIntegrityWrite => Some(SqliteMaintenanceClass::DashboardIntegrity),
+            Self::HaOutboxGc => Some(SqliteMaintenanceClass::HaOutboxGc),
+            Self::ObservabilityDeferredWrite => Some(SqliteMaintenanceClass::ObservabilityWrite),
+            Self::ReconciliationProjection => {
+                Some(SqliteMaintenanceClass::ReconciliationProjection)
+            }
+            Self::RequestLogsGc => Some(SqliteMaintenanceClass::RequestLogsGc),
+            Self::RequestStatsFlush => Some(SqliteMaintenanceClass::RequestStatsFlush),
+            Self::ServerPressureRebuild => Some(SqliteMaintenanceClass::ServerPressureRebuild),
+            _ => None,
+        }
+    }
+
     fn probes_recent_contention(self) -> bool {
         // The coalescer can atomically restore an uncommitted batch. Let it
         // make one bounded attempt on its nominal wake instead of extending a
@@ -320,7 +740,10 @@ impl SqliteOperation {
         // the same bounded probe; other bulk work keeps the full cooldown.
         matches!(
             self,
-            Self::AdminRead | Self::RequestStatsFlush | Self::ReconciliationProjection
+            Self::AdminRead
+                | Self::ObservabilityDeferredWrite
+                | Self::RequestStatsFlush
+                | Self::ReconciliationProjection
         )
     }
 }
@@ -457,6 +880,7 @@ struct SqliteRuntimeInner {
     pool: SqlitePool,
     maximum_connections: u32,
     maintenance_bulk: Arc<Semaphore>,
+    maintenance_coordinator: Arc<SqliteMaintenanceCoordinator>,
     maintenance_shutdown: AtomicBool,
     maintenance_runs: Arc<Semaphore>,
     maintenance_run_shutdown: AtomicBool,
@@ -477,6 +901,8 @@ struct SqliteRuntimeInner {
     file_state_paths: Mutex<SqliteFileStatePaths>,
     #[cfg(test)]
     fail_next_reconciliation_research_read: AtomicBool,
+    #[cfg(test)]
+    fail_next_owned_finish_restore: AtomicBool,
     #[cfg(any(test, debug_assertions))]
     force_next_cooperative_query_deadline: AtomicBool,
     #[cfg(any(test, debug_assertions))]
@@ -626,6 +1052,7 @@ impl SqliteRuntime {
                 pool,
                 maximum_connections: maximum_connections.max(1),
                 maintenance_bulk: Arc::new(Semaphore::new(1)),
+                maintenance_coordinator: Arc::new(SqliteMaintenanceCoordinator::default()),
                 maintenance_shutdown: AtomicBool::new(false),
                 maintenance_runs: Arc::new(Semaphore::new(MAINTENANCE_RUN_SLOTS as usize)),
                 maintenance_run_shutdown: AtomicBool::new(false),
@@ -643,6 +1070,8 @@ impl SqliteRuntime {
                 file_state_paths: Mutex::new(SqliteFileStatePaths::default()),
                 #[cfg(test)]
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
+                #[cfg(test)]
+                fail_next_owned_finish_restore: AtomicBool::new(false),
                 #[cfg(any(test, debug_assertions))]
                 force_next_cooperative_query_deadline: AtomicBool::new(false),
                 #[cfg(any(test, debug_assertions))]
@@ -656,6 +1085,22 @@ impl SqliteRuntime {
         self.inner
             .fail_next_reconciliation_research_read
             .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_owned_finish_restore_for_test(&self) {
+        self.inner
+            .fail_next_owned_finish_restore
+            .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    fn take_fail_next_owned_finish_restore_for_test(&self, operation: SqliteOperation) -> bool {
+        operation == SqliteOperation::AdminMutation
+            && self
+                .inner
+                .fail_next_owned_finish_restore
+                .swap(false, AtomicOrdering::AcqRel)
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -790,7 +1235,7 @@ impl SqliteRuntime {
         &self,
         operation: SqliteOperation,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        self.try_admit_maintenance_bulk_with_foreground_policy(operation)
+        self.try_admit_maintenance_bulk_with_policy(operation, false, false)
     }
 
     /// Research drain has an aged-turn exception for the foreground-RPS
@@ -800,30 +1245,11 @@ impl SqliteRuntime {
     pub(crate) fn try_admit_research_drain_bulk(
         &self,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
-        let operation = SqliteOperation::ReconciliationProjection;
-        if self
-            .inner
-            .maintenance_shutdown
-            .load(AtomicOrdering::Acquire)
-        {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
-            return Err(SqliteAdmissionDeferReason::BulkBusy);
-        }
-        if self.recent_contention_active() {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::RecentContention);
-            return Err(SqliteAdmissionDeferReason::RecentContention);
-        }
-        if !self.has_foreground_pool_capacity() {
-            self.record_deferred(operation, SqliteAdmissionDeferReason::PoolPressure);
-            return Err(SqliteAdmissionDeferReason::PoolPressure);
-        }
-        match self.inner.maintenance_bulk.clone().try_acquire_owned() {
-            Ok(permit) => Ok(SqliteMaintenanceBulkPermit { _permit: permit }),
-            Err(_) => {
-                self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
-                Err(SqliteAdmissionDeferReason::BulkBusy)
-            }
-        }
+        self.try_admit_maintenance_bulk_with_policy(
+            SqliteOperation::ReconciliationProjection,
+            true,
+            true,
+        )
     }
 
     /// Reject a reconciliation run before it reaches a control read that
@@ -832,7 +1258,7 @@ impl SqliteRuntime {
     /// foreground capacity or creates a second admission owner.
     pub(crate) fn preflight_reconciliation_projection_admission(
         &self,
-    ) -> Result<(), SqliteAdmissionDeferReason> {
+    ) -> Result<SqliteMaintenancePreflightLease, SqliteAdmissionDeferReason> {
         let operation = SqliteOperation::ReconciliationProjection;
         if self
             .inner
@@ -842,16 +1268,73 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        if let Some(reason) = self.maintenance_bulk_defer_reason_for(operation) {
+        let class = operation
+            .maintenance_class()
+            .expect("reconciliation projection is a maintenance bulk operation");
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let aged_foreground_bypass = self
+            .inner
+            .maintenance_coordinator
+            .foreground_bypass_due(class);
+        if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            aged_foreground_bypass,
+            false,
+            false,
+            aged_turn_bypass,
+        ) && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+        {
+            if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.register_request(class);
+            } else {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        Ok(())
+        let ticket = self
+            .inner
+            .maintenance_coordinator
+            .register_preflight_request(class);
+        let aged_foreground_bypass = self
+            .inner
+            .maintenance_coordinator
+            .foreground_bypass_due(class);
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            aged_foreground_bypass,
+            false,
+            true,
+            aged_turn_bypass,
+        ) {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
+            }
+            let cancel_if_unused = !matches!(reason, SqliteAdmissionDeferReason::BulkBusy);
+            self.inner
+                .maintenance_coordinator
+                .release_preflight_request(class, ticket, cancel_if_unused);
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+        Ok(SqliteMaintenancePreflightLease {
+            coordinator: self.inner.maintenance_coordinator.clone(),
+            class,
+            ticket,
+            cancel_on_drop: true,
+        })
     }
 
-    fn try_admit_maintenance_bulk_with_foreground_policy(
+    fn try_admit_maintenance_bulk_with_policy(
         &self,
         operation: SqliteOperation,
+        bypass_foreground_pressure: bool,
+        force_recent_contention_defer: bool,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
         if self
@@ -862,18 +1345,75 @@ impl SqliteRuntime {
             self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
             return Err(SqliteAdmissionDeferReason::BulkBusy);
         }
-        let reason = self.maintenance_bulk_defer_reason_for(operation);
-        if let Some(reason) = reason {
+        let class = operation
+            .maintenance_class()
+            .expect("maintenance bulk operations must have a coordinator class");
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            false,
+            aged_turn_bypass,
+        );
+        if reason.is_some_and(|reason| !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)) {
+            self.inner.maintenance_coordinator.register_request(class);
+        }
+        let aged_foreground_bypass =
+            matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) && {
+                self.inner
+                    .maintenance_coordinator
+                    .foreground_bypass_due(class)
+            };
+        if let Some(reason) = reason
+            && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+            && !aged_foreground_bypass
+        {
+            if !SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        match self.inner.maintenance_bulk.clone().try_acquire_owned() {
-            Ok(permit) => Ok(SqliteMaintenanceBulkPermit { _permit: permit }),
-            Err(_) => {
-                self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
-                Err(SqliteAdmissionDeferReason::BulkBusy)
-            }
+        if !matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) {
+            self.inner.maintenance_coordinator.register_request(class);
         }
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure || aged_foreground_bypass,
+            force_recent_contention_defer,
+            true,
+            aged_turn_bypass,
+        );
+        if let Some(reason) = reason {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
+            }
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+        let Ok(permit) = self.inner.maintenance_bulk.clone().try_acquire_owned() else {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        let Some(lease) = SqliteMaintenanceCoordinator::try_start_shared(
+            &self.inner.maintenance_coordinator,
+            class,
+            aged_turn_bypass,
+        ) else {
+            drop(permit);
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        Ok(SqliteMaintenanceBulkPermit {
+            _permit: permit,
+            _lease: lease,
+        })
     }
 
     pub(crate) async fn shutdown_maintenance_bulk(&self, timeout: Duration) -> bool {
@@ -1158,18 +1698,32 @@ impl SqliteRuntime {
             .load(AtomicOrdering::Acquire)
     }
 
-    fn maintenance_bulk_defer_reason_for(
+    fn maintenance_bulk_defer_reason_for_with_policy(
         &self,
         operation: SqliteOperation,
+        bypass_foreground_pressure: bool,
+        force_recent_contention_defer: bool,
+        check_coordinator: bool,
+        allow_aged_coordinator_turn: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
         let foreground_rps = self.foreground_activity_rps();
-        if foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
+        if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
-        } else if self.recent_contention_active() && !operation.probes_recent_contention() {
+        } else if self.recent_contention_active()
+            && (force_recent_contention_defer || !operation.probes_recent_contention())
+        {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if !self.has_foreground_pool_capacity() {
+        } else if !self.has_maintenance_pool_capacity(allow_aged_coordinator_turn) {
             Some(SqliteAdmissionDeferReason::PoolPressure)
-        } else if self.inner.maintenance_bulk.available_permits() == 0 {
+        } else if self.inner.maintenance_bulk.available_permits() == 0
+            || (check_coordinator
+                && operation.maintenance_class().is_some_and(|class| {
+                    !self
+                        .inner
+                        .maintenance_coordinator
+                        .is_turn(class, allow_aged_coordinator_turn)
+                }))
+        {
             Some(SqliteAdmissionDeferReason::BulkBusy)
         } else {
             None
@@ -1204,6 +1758,27 @@ impl SqliteRuntime {
         idle >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS
             || idle.saturating_add(unopened)
                 >= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS.saturating_add(1)
+    }
+
+    fn has_maintenance_pool_capacity(&self, allow_aged_coordinator_turn: bool) -> bool {
+        if allow_aged_coordinator_turn {
+            self.allows_aged_maintenance_pool_probe()
+        } else {
+            self.has_foreground_pool_capacity()
+        }
+    }
+
+    fn allows_aged_maintenance_pool_probe(&self) -> bool {
+        // An aged turn may reach the operation's bounded pool acquire even
+        // when all currently-open connections are checked out. The 100ms
+        // acquire budget is the safety boundary; rejecting a full pool here
+        // would let sustained foreground traffic starve the aged ticket.
+        // Pools at or below the two-slot foreground reserve remain
+        // foreground-only even after a ticket ages.
+        if self.inner.maximum_connections <= MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS {
+            return false;
+        }
+        true
     }
 
     fn recent_contention_active(&self) -> bool {
@@ -1857,6 +2432,7 @@ impl SqliteRuntime {
         err: &ProxyError,
     ) {
         let transient = is_transient_sqlite_write_error(err);
+        let pool_timeout = matches!(err, ProxyError::Database(sqlx::Error::PoolTimedOut));
         let contention_entered = if transient {
             *self
                 .inner
@@ -1883,6 +2459,7 @@ impl SqliteRuntime {
                     pool_wait_ms = pool_wait.as_millis() as u64,
                     begin_wait_ms = begin_wait.as_millis() as u64,
                     error_category,
+                    pool_timeout,
                     process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
                     cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
                     "SQLite workload contention entered"
@@ -1896,6 +2473,7 @@ impl SqliteRuntime {
                     pool_wait_ms = pool_wait.as_millis() as u64,
                     begin_wait_ms = begin_wait.as_millis() as u64,
                     error_category,
+                    pool_timeout,
                     process_write_bytes_aggregate = process_write_bytes.unwrap_or_default(),
                     cgroup_write_bytes_aggregate = cgroup_write_bytes.unwrap_or_default(),
                     "sqlite runtime operation failed"
@@ -1910,6 +2488,7 @@ impl SqliteRuntime {
                 pool_wait_ms = pool_wait.as_millis() as u64,
                 begin_wait_ms = begin_wait.as_millis() as u64,
                 error_category,
+                pool_timeout,
                 "SQLite workload contention remains active"
             );
         }
@@ -2033,6 +2612,7 @@ impl SqliteRuntime {
         let top_operations =
             format_operation_window(&window.operations, &window.reconciliation_reads);
         let admin_alerts_warm = format_admin_alerts_warm_window(window.admin_alerts_warm);
+        let maintenance_admission = self.inner.maintenance_coordinator.snapshot();
         let sqlite_file_state = self.sqlite_file_state();
         info!(
             component = "db",
@@ -2048,6 +2628,7 @@ impl SqliteRuntime {
             sqlite_file_state = %sqlite_file_state,
             top_operations,
             admin_alerts_warm,
+            maintenance_admission,
             "SQLite workload summary"
         );
         window.started_at = now;
@@ -2415,6 +2996,41 @@ impl SqliteOperationConnection {
             0,
         );
         Ok(())
+    }
+
+    pub(crate) async fn close_and_discard(mut self) -> Result<(), ProxyError> {
+        let Some(mut conn) = self.conn.take() else {
+            return Ok(());
+        };
+        if self.cooperative_run_deadline.is_some() {
+            let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
+            handle.remove_progress_handler();
+        }
+        record_connection_cache_write_delta(
+            &self.runtime,
+            self.operation,
+            self.cache_write_pages_start,
+            &mut conn,
+        )
+        .await;
+        match conn.detach().close().await {
+            Ok(()) => {
+                self.runtime.record_success(
+                    self.operation,
+                    self.pool_wait,
+                    Duration::ZERO,
+                    self.started_at.elapsed(),
+                    0,
+                );
+                Ok(())
+            }
+            Err(err) => {
+                let err = ProxyError::Database(err);
+                self.runtime
+                    .record_error(self.operation, self.pool_wait, Duration::ZERO, &err);
+                Err(err)
+            }
+        }
     }
 }
 
@@ -3226,10 +3842,21 @@ async fn complete_immediate_transaction_commit(
     };
     record_connection_cache_write_delta(&runtime, operation, cache_write_pages_start, &mut conn)
         .await;
-    if let Err(error) = restore_operation_connection(conn, restore_busy_timeout).await {
+    #[cfg(test)]
+    let restore_result = if runtime.take_fail_next_owned_finish_restore_for_test(operation) {
+        let _ = conn.detach().close().await;
+        Err(sqlx::Error::PoolTimedOut)
+    } else {
+        restore_operation_connection(conn, restore_busy_timeout).await
+    };
+    #[cfg(not(test))]
+    let restore_result = restore_operation_connection(conn, restore_busy_timeout).await;
+    if let Err(error) = restore_result {
         let error = ProxyError::Database(error);
         runtime.record_error(operation, pool_wait, begin_wait, &error);
-        return Err(error);
+        // COMMIT already succeeded; cleanup failure must not make callers retry
+        // a non-idempotent write whose durable result is already visible.
+        return Ok(());
     }
     runtime.record_success(
         operation,

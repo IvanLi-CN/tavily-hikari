@@ -9,12 +9,8 @@ impl TavilyProxy {
     const SERVER_PRESSURE_REBUILD_CONTENTION_DEFER_DELAY: Duration = Duration::from_secs(5);
     const OBSERVABILITY_WRITER_DEBOUNCE: Duration = Duration::from_secs(1);
 
-    fn observability_defer_delay(consecutive_defers: u8) -> Duration {
-        if consecutive_defers >= 3 {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_secs(5)
-        }
+    fn observability_defer_delay(_consecutive_defers: u8) -> Duration {
+        Duration::from_secs(5)
     }
 
     #[cfg(test)]

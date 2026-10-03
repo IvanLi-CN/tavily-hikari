@@ -900,6 +900,61 @@ impl KeyStore {
     pub(crate) async fn ensure_api_key_membership_intervals_schema(
         &self,
     ) -> Result<(), ProxyError> {
+        // Normal restarts already have the complete compatibility schema. Keep this
+        // path read-only so warm startup does not compete with foreground writers.
+        let schema_objects = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE (type = 'table' AND name IN (
+                'api_key_membership_history_state',
+                'api_key_membership_intervals'
+            ))
+               OR (type = 'index' AND name IN (
+                'idx_api_key_membership_intervals_key_start',
+                'idx_api_key_membership_intervals_open'
+            ))
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let intervals_table_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_key_membership_intervals')",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        let history_state_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_key_membership_history_state')",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        let history_initialized = if history_state_exists {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM api_key_membership_history_state WHERE singleton = 1)",
+            )
+            .fetch_one(&self.pool)
+            .await?
+                != 0
+        } else {
+            false
+        };
+        let active_membership_gap = if intervals_table_exists && history_initialized {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM api_keys AS keys WHERE keys.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM api_key_membership_intervals AS membership WHERE membership.key_id = keys.id AND membership.active_until IS NULL))",
+            )
+            .fetch_one(&self.pool)
+            .await?
+                != 0
+        } else {
+            false
+        };
+        if schema_objects == 4 && history_initialized && !active_membership_gap {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_key_membership_history_state (
@@ -908,7 +963,7 @@ impl KeyStore {
             )
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"
@@ -921,34 +976,60 @@ impl KeyStore {
             )
             "#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_membership_intervals_key_start
                ON api_key_membership_intervals(key_id, active_from DESC)"#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_membership_intervals_open
                ON api_key_membership_intervals(key_id) WHERE active_until IS NULL"#,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         let tracked_from = self.backend_time.now_ts();
-        let mut tx = self.pool.begin().await?;
-        let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
+        let reset_history_boundary =
+            !history_initialized || !intervals_table_exists || active_membership_gap;
+        if history_initialized && reset_history_boundary {
+            // Missing lifecycle evidence can include a lost interval table or an active key
+            // without an open interval. Advance the trust boundary instead of fabricating
+            // continuous membership from api_keys.created_at.
+            sqlx::query(
+                "UPDATE api_key_membership_history_state SET tracked_from = MAX(tracked_from, ?) WHERE singleton = 1",
+            )
+            .bind(tracked_from)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
+            )
+            .bind(tracked_from)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let tracked_from = sqlx::query_scalar::<_, i64>(
+            "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
         )
-        .bind(tracked_from)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
-        if inserted.rows_affected() == 1 {
+        if reset_history_boundary {
             sqlx::query(
                 r#"
                 INSERT INTO api_key_membership_intervals (key_id, active_from)
-                SELECT id, ? FROM api_keys WHERE deleted_at IS NULL
+                SELECT keys.id, ?
+                FROM api_keys AS keys
+                WHERE keys.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_membership_intervals AS membership
+                      WHERE membership.key_id = keys.id
+                        AND membership.active_until IS NULL
+                  )
                 "#,
             )
             .bind(tracked_from)

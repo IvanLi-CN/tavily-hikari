@@ -841,7 +841,7 @@ const DASHBOARD_OVERVIEW_SAFETY_PROBE_INTERVAL: Duration = Duration::from_secs(6
 const DASHBOARD_OVERVIEW_COLD_BUILD_BUDGET: Duration = Duration::from_secs(1);
 // Startup happens before the listener accepts traffic, so it can safely wait longer
 // for the same singleflight than an externally visible cold request may wait.
-const DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET: Duration = Duration::from_secs(5);
+const DASHBOARD_OVERVIEW_STARTUP_PREWARM_BUDGET: Duration = Duration::from_secs(15);
 const DASHBOARD_SSE_SNAPSHOT_MIN_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize)]

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import unittest
@@ -33,6 +34,28 @@ def comparison_resources(variable: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", match.group("items")))
 
 
+def comparator_helpers(*names: str) -> dict[str, object]:
+    marker = 'python3 - "$ARTIFACTS_DIR" <<\'PY\'\n'
+    embedded = COMPARISON.split(marker, 1)[1].split("\nPY\n", 1)[0]
+    tree = ast.parse(embedded)
+    selected = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in names)
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS"
+                for target in node.targets
+            )
+        )
+    ]
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "comparator", "exec"), namespace)
+    return namespace
+
+
 class SnapshotComparisonTests(unittest.TestCase):
     def test_gc_debt_gate_matches_runtime_allowed_resources(self) -> None:
         expected = {
@@ -48,6 +71,35 @@ class SnapshotComparisonTests(unittest.TestCase):
     def test_comparison_keeps_calibrated_noise_bounds_and_raw_metrics(self) -> None:
         self.assertIn("DASHBOARD_P95_NOISE_FLOOR_MS = 15.0", COMPARISON)
         self.assertIn("RSS_P95_NOISE_BAND_KIB = 40 * 1024", COMPARISON)
+        self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
+        self.assertIn("CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5", COMPARISON)
+        self.assertIn("PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS = 600", COMPARISON)
+        self.assertIn(
+            "acceptance_status = acceptance_status_for_duration(baseline[\"load\"][\"durationSecs\"])",
+            COMPARISON,
+        )
+        self.assertIn(
+            "diagnostic = is_diagnostic_duration(baseline[\"load\"][\"durationSecs\"])",
+            COMPARISON,
+        )
+        self.assertIn('baseline and candidate duration windows must match', COMPARISON)
+        self.assertIn("candidate_failures * 100", COMPARISON)
+        self.assertIn('structured_value(line, "operation") != "foreground_job_trigger"', COMPARISON)
+        self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
+        self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
+        self.assertIn("def dashboard_coverage_is_complete(load_summary):", COMPARISON)
+        self.assertIn('dashboardExpectedAttemptsByClient', COMPARISON)
+        self.assertIn('dashboardSuccessesByClient', COMPARISON)
+        self.assertIn('successes_by_client.get(client, 0) >= max(1, expected_count - 1)', COMPARISON)
+        self.assertIn('insufficient per-client dashboard response coverage', COMPARISON)
+        self.assertIn('Dashboard p95 comparison is non-comparable', COMPARISON)
+        self.assertIn(
+            "candidate emitted no maintenance admission freshness telemetry", COMPARISON
+        )
+        self.assertIn(
+            'candidate_admission["finalPendingAgeMaxMs"] >= MAINTENANCE_FRESHNESS_BOUND_MS',
+            COMPARISON,
+        )
         self.assertIn("absolute_floor=DASHBOARD_P95_NOISE_FLOOR_MS", COMPARISON)
         self.assertIn("additive_tolerance=RSS_P95_NOISE_BAND_KIB", COMPARISON)
         self.assertIn('return summary["load"]["dashboardP95Ms"]', COMPARISON)
@@ -55,10 +107,35 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('"foregroundHttp5xx": lane_5xx("business")', COMPARISON)
         self.assertIn('"dashboardHttp5xx": lane_5xx("dashboard")', COMPARISON)
         self.assertIn('"maintenanceHttp5xx": lane_5xx("ha_gc_trigger")', COMPARISON)
+        self.assertIn("def lane_transport_errors(load_summary, lane):", COMPARISON)
+        self.assertIn('"dashboardTransportErrors": lane_transport_errors(load, "dashboard")', COMPARISON)
+        self.assertIn(
+            '"maintenanceTransportErrors": lane_transport_errors(load, "ha_gc_trigger")',
+            COMPARISON,
+        )
+        self.assertIn("def lane_http_rejections(load_summary, lane, accepted_status):", COMPARISON)
+        self.assertIn('"maintenanceHttpRejections": lane_http_rejections(load, "ha_gc_trigger", 202)', COMPARISON)
+        self.assertIn("def expected_maintenance_attempts(load_summary):", COMPARISON)
+        self.assertIn("candidate maintenance lane did not complete its scheduled attempts", COMPARISON)
+        self.assertIn("accepted_status = 202 if lane == \"maintenance\" else 200", COMPARISON)
         self.assertIn('"sqliteTransientLockRetries": sqlite_transient_lock_retries', COMPARISON)
         self.assertIn('"sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals', COMPARISON)
         self.assertIn('"sqliteFinalLockErrors": sqlite_final_lock_errors', COMPARISON)
         self.assertIn('candidate["sqliteFinalLockErrors"]', COMPARISON)
+        self.assertIn('load_started_at = load.get("startedAt")', COMPARISON)
+        self.assertIn("def line_is_in_load_window(line):", COMPARISON)
+        self.assertIn("datetime.fromisoformat", COMPARISON)
+        self.assertIn(
+            "measured_log_lines = [line for line in logs.splitlines() if line_is_in_load_window(line)]",
+            COMPARISON,
+        )
+        self.assertIn('load did not reach its measured traffic window', COMPARISON)
+        self.assertIn("for line in measured_log_lines", COMPARISON)
+        self.assertIn('("dashboard", "dashboardHttp5xx")', COMPARISON)
+        self.assertIn('("maintenance", "maintenanceHttp5xx")', COMPARISON)
+        self.assertIn("candidate {lane} HTTP/transport failure rate exceeded", COMPARISON)
+        self.assertIn("candidate {lane} lane produced no HTTP responses", COMPARISON)
+        self.assertIn("candidate_http_responses + candidate_transport_errors", COMPARISON)
         self.assertIn('structured_field(line, "defer_reason", reason)', COMPARISON)
         self.assertIn('("sqlite_contention", "sqlite_busy")', COMPARISON)
         self.assertIn('structured_field(line, "event", "research_sweep_deferred")', COMPARISON)
@@ -83,6 +160,15 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('projection transaction p95 is not proven below 100ms', COMPARISON)
         self.assertIn('candidate billing truth differs', COMPARISON)
         self.assertIn("prepare_reconciliation_fixture", COMPARISON)
+        self.assertIn("wait_for_http_listener", COMPARISON)
+        self.assertIn("capture_final_workload_snapshot", COMPARISON)
+        self.assertIn("local deadline=$((SECONDS + 75))", COMPARISON)
+        self.assertIn("final SQLite workload snapshot did not arrive", COMPARISON)
+        self.assertIn('if [[ "$name" == "baseline" ]]', COMPARISON)
+        self.assertIn("Historical baselines may be below the dashboard cold-build", COMPARISON)
+        self.assertIn("# contract. Let the comparator classify that red baseline", COMPARISON)
+        self.assertIn("normalize_baseline_schema_ledger", COMPARISON)
+        self.assertIn("DELETE FROM schema_migrations WHERE version > $baseline_schema_max_version", COMPARISON)
         self.assertIn("Historical baselines predate this Dockerfile input allowlist", COMPARISON)
         self.assertIn("grep -qx '!rust-toolchain.toml'", COMPARISON)
         self.assertIn("completed_generation < work_generation", COMPARISON)
@@ -102,10 +188,40 @@ class SnapshotComparisonTests(unittest.TestCase):
         )
         self.assertIn("snapshot reconciliation fixture preparation failed", COMPARISON)
         self.assertIn("testbox-reconciliation-research-request", COMPARISON)
+        self.assertIn("upstream_reconciliation_research_drain', 'auto', NULL, 'queued'", COMPARISON)
         self.assertIn("DELETE FROM api_key_transient_backoffs", COMPARISON)
         self.assertIn("upstream_reconciliation_research_scan_state", COMPARISON)
         self.assertIn("upstream_reconciliation_control_state", COMPARISON)
         self.assertIn("the persisted legacy switch above produces compare mode", COMPARISON)
+
+    def test_comparator_helpers_cover_schedule_and_acceptance_boundaries(self) -> None:
+        helpers = comparator_helpers(
+            "expected_periodic_attempts",
+            "expected_maintenance_attempts",
+            "is_diagnostic_duration",
+            "acceptance_status_for_duration",
+        )
+        expected_periodic_attempts = helpers["expected_periodic_attempts"]
+        expected_maintenance_attempts = helpers["expected_maintenance_attempts"]
+        is_diagnostic_duration = helpers["is_diagnostic_duration"]
+        acceptance_status_for_duration = helpers["acceptance_status_for_duration"]
+        self.assertEqual(expected_periodic_attempts(540, 60.0, 17.0), 9)
+        self.assertEqual(
+            expected_maintenance_attempts(
+                {"trafficDurationSecs": 540, "recoveryTailSecs": 60}
+            ),
+            10,
+        )
+        self.assertEqual(
+            expected_maintenance_attempts(
+                {"trafficDurationSecs": 599, "recoveryTailSecs": 0}
+            ),
+            10,
+        )
+        self.assertTrue(is_diagnostic_duration(599))
+        self.assertFalse(is_diagnostic_duration(600))
+        self.assertEqual(acceptance_status_for_duration(599), "diagnostic")
+        self.assertEqual(acceptance_status_for_duration(600), "passed")
 
     def test_shadow_reconciliation_fixture_uses_the_newest_eligible_window(self) -> None:
         self.assertIn(

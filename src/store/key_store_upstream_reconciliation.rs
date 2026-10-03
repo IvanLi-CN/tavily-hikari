@@ -151,7 +151,7 @@ impl KeyStore {
 
     pub(crate) fn preflight_upstream_reconciliation_projection(
         &self,
-    ) -> Result<(), SqliteAdmissionDeferReason> {
+    ) -> Result<SqliteMaintenancePreflightLease, SqliteAdmissionDeferReason> {
         self.sqlite_runtime.preflight_reconciliation_projection_admission()
     }
 

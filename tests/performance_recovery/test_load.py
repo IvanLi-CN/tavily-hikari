@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import threading
 import unittest
+from unittest import mock
 
 
 LOAD_PATH = pathlib.Path(__file__).with_name("load.py")
@@ -15,6 +17,11 @@ SPEC.loader.exec_module(LOAD)
 
 
 class PeriodicScheduleTests(unittest.TestCase):
+    def test_expected_periodic_attempts_accounts_for_staggered_clients(self) -> None:
+        self.assertEqual(LOAD.expected_periodic_attempts(540, 60, 0), 9)
+        self.assertEqual(LOAD.expected_periodic_attempts(540, 60, 57), 9)
+        self.assertEqual(LOAD.expected_periodic_attempts(60, 60, 57), 1)
+
     def test_slow_action_skips_missed_intervals(self) -> None:
         deadline = LOAD.next_periodic_deadline(
             previous_deadline=100.0,
@@ -33,6 +40,15 @@ class PeriodicScheduleTests(unittest.TestCase):
 
         self.assertEqual(deadline, 110.0)
 
+    def test_ha_gc_lane_uses_a_restart_safe_phase_offset(self) -> None:
+        with mock.patch.object(LOAD, "periodic") as periodic:
+            LOAD.trigger_ha_gc(threading.Event(), LOAD.Recorder(), "app", 8787)
+
+        periodic.assert_called_once()
+        args, _ = periodic.call_args
+        self.assertEqual(args[1], LOAD.HA_GC_INTERVAL_SECS)
+        self.assertEqual(args[3], LOAD.HA_GC_INITIAL_DELAY_SECS)
+
 
 class RecoveryTailTests(unittest.TestCase):
     def test_full_production_shape_reserves_a_quiet_gc_tail(self) -> None:
@@ -40,6 +56,7 @@ class RecoveryTailTests(unittest.TestCase):
 
     def test_short_diagnostic_keeps_its_entire_traffic_window(self) -> None:
         self.assertEqual(LOAD.recovery_tail_secs_for_duration(60, None), 0)
+        self.assertEqual(LOAD.recovery_tail_secs_for_duration(599, None), 0)
 
     def test_recovery_tail_must_fit_inside_the_total_duration(self) -> None:
         with self.assertRaises(ValueError):

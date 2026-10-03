@@ -1254,7 +1254,38 @@ impl KeyStore {
         note: Option<&str>,
     ) -> Result<AuthTokenSecret, ProxyError> {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let deadline = self.backend_time.instant_now() + ACCESS_TOKEN_CREATE_RETRY_BUDGET;
+        let sqlite_deadline = deadline.into_std();
+        let mut retry_attempt = 0usize;
+        let deferred = || ProxyError::Deferred {
+            operation: "admin_access_token_mutation",
+            reason: "sqlite_contention".to_string(),
+        };
+
         loop {
+            let mut tx = match self
+                .sqlite_runtime
+                .begin_immediate_before(SqliteOperation::AdminMutation, sqlite_deadline)
+                .await
+            {
+                Ok(tx) => tx,
+                Err(err) if is_transient_sqlite_write_error(&err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
+                        "create access token",
+                        retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(deferred());
+                }
+                Err(err) => return Err(err),
+            };
             let id = random_string(ALPHABET, 4);
             // Increase secret length to strengthen token entropy while keeping id short.
             let secret = random_string(ALPHABET, 24);
@@ -1266,11 +1297,30 @@ impl KeyStore {
             .bind(&secret)
             .bind(note.unwrap_or(""))
             .bind(self.backend_time.now_ts())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await;
 
             match res {
                 Ok(_) => {
+                    match tx.finish(Ok(())).await {
+                        Ok(()) => {}
+                        Err(err) if is_transient_sqlite_write_error(&err) => {
+                            if sleep_before_sqlite_transient_write_retry(
+                                &self.backend_time,
+                                "create access token",
+                                retry_attempt,
+                                deadline,
+                                &err,
+                            )
+                            .await
+                            {
+                                retry_attempt += 1;
+                                continue;
+                            }
+                            return Err(deferred());
+                        }
+                        Err(err) => return Err(err),
+                    }
                     let token_str = Self::compose_full_token(&id, &secret);
                     return Ok(AuthTokenSecret {
                         id,
@@ -1279,9 +1329,32 @@ impl KeyStore {
                 }
                 Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
                     // Retry on rare id collision
+                    tx.rollback().await?;
                     continue;
                 }
-                Err(e) => return Err(ProxyError::Database(e)),
+                Err(e) => {
+                    let err = ProxyError::Database(e);
+                    let err = match tx.finish(Err(err)).await {
+                        Err(err) => err,
+                        Ok(()) => unreachable!("failed access-token creation must roll back"),
+                    };
+                    if is_transient_sqlite_write_error(&err) {
+                        if sleep_before_sqlite_transient_write_retry(
+                            &self.backend_time,
+                            "create access token",
+                            retry_attempt,
+                            deadline,
+                            &err,
+                        )
+                        .await
+                        {
+                            retry_attempt += 1;
+                            continue;
+                        }
+                        return Err(deferred());
+                    }
+                    return Err(err);
+                }
             }
         }
     }

@@ -381,6 +381,7 @@
         "tests::proxy_affinity_and_summary::token_",
         "tests::request_kind_and_core::token_",
         "tests::user_tokens_and_pending_billing::token_",
+        "tests::user_tokens_and_pending_billing::create_access_token_returns_secret_when_post_commit_cleanup_fails",
         "tests::jobs_and_request_log_retention::user_",
         "tests::proxy_affinity_and_summary::user_",
         "tests::request_kind_and_core::user_",
@@ -519,6 +520,7 @@
       "include_prefixes": [
         "tests::maintenance_queue_performance::",
         "tests::schema_migrations::",
+        "tests::schema_migration_compatibility::",
         "tests::reconciliation_controller::"
       ]
     },
@@ -939,6 +941,7 @@
         "server::tests::alerts_and_ha_node_detail::admin_",
         "server::tests::alerts_and_ha::dual_active_",
         "server::tests::alerts_and_ha_source_and_recovery::ha_",
+        "server::tests::alerts_and_ha_source_and_recovery::maintenance_worker_retries_a_locked_claim_",
         "server::tests::alerts_and_ha_source_and_recovery::request_logs_gc_",
         "server::tests::alerts_and_ha_source_and_recovery::aged_",
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_reconciliation_",

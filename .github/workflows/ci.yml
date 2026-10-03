@@ -236,6 +236,9 @@ jobs:
       - name: Test backend shard runner contract
         run: python3 scripts/test_ci_backend_tests.py
 
+      - name: Test performance recovery harness contracts
+        run: python3 -m unittest discover -s tests/performance_recovery -p 'test_*.py'
+
       - name: Upload backend test artifacts
         uses: actions/upload-artifact@v7
         with:
