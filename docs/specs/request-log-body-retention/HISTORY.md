@@ -12,3 +12,5 @@
 
 - 2026-10-03: Define resumable GC-blocking day recovery, stale hot-window repair, and productive
   catch-up scheduling without changing retention or billing truth.
+- 2026-10-04: Make the private probe's quiet-phase rate configurable within the accepted foreground
+  limit and preserve the completed high-load evidence independently of recovery duration.

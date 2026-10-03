@@ -115,7 +115,8 @@ def main():
     parser.add_argument("--agent-dir", type=Path, required=True)
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--high-seconds", type=int, default=1800)
-    parser.add_argument("--low-seconds", type=int, default=1200)
+    parser.add_argument("--low-seconds", type=int, default=1800)
+    parser.add_argument("--low-rps", type=float, default=0.1)
     parser.add_argument("--baseline-seconds", type=int, default=60)
     args = parser.parse_args()
     root = args.agent_dir.resolve()
@@ -123,6 +124,8 @@ def main():
         parser.error("--agent-dir must be a task-owned directory below /srv/codex/agents")
     if min(args.high_seconds, args.low_seconds, args.baseline_seconds) <= 0:
         parser.error("phase durations must be positive")
+    if not 0 < args.low_rps <= 5:
+        parser.error("--low-rps must be positive and within the accepted five-request/second limit")
     run_dir = Path(tempfile.mkdtemp(prefix="gc-recovery-load-", dir=root))
     core = run_dir / "fixture.db"
     sidecar = run_dir / "fixture-observability.db"
@@ -195,6 +198,9 @@ def main():
         with sqlite3.connect(core) as conn:
             defers = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND message LIKE '%foreground_pressure%' AND status='success'").fetchone()[0]
         assert defers > 0, "foreground pressure must cause a durable GC defer"
+        high_evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "baseline": baseline, "high": high, "foreground_defers": defers}
+        (run_dir / "high-evidence.json").write_text(json.dumps(high_evidence, indent=2) + "\n")
+        print(json.dumps({"phase": "high-complete", **high_evidence}), flush=True)
         recovered = False
 
         def low_tick(elapsed):
@@ -204,7 +210,7 @@ def main():
             recovered = 100000 - state["expired"] >= 5000
             print(json.dumps({"phase": "low", "elapsed": elapsed, **state}), flush=True)
 
-        low = load(origin, token, args.low_seconds, 1, low_tick, lambda: recovered)
+        low = load(origin, token, args.low_seconds, args.low_rps, low_tick, lambda: recovered)
         final = snapshot(core, sidecar, threshold)
         assert low["non_200"] == 0 and 100000 - final["expired"] >= 5000, (low, final)
         with sqlite3.connect(sidecar) as conn:

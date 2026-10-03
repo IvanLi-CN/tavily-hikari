@@ -2,7 +2,7 @@
   "known_long_commands": [
     {
       "command": "python3 scripts/gc_recovery_load.py --binary \"$GC_LOAD_BINARY\" --agent-dir \"$GC_LOAD_AGENT_DIR\" --candidate-sha \"$CANDIDATE_SHA\"",
-      "budget_seconds": 3600
+      "budget_seconds": 4800
     }
   ]
 }

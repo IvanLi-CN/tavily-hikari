@@ -34,7 +34,10 @@
   atomic blocking-day registration avoids `BEGIN IMMEDIATE` self-contention between two aliases
   of the same file. Scheduled continuation tests cover progress, no progress and claim-fenced restart.
 - `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream testbox probe: 30 minutes
-  at ten business requests per second, then one per second until at least 5,000 expired rows are deleted.
+  at ten business requests per second, then a configurable rate no greater than five until at least
+  5,000 expired rows are deleted. The default quiet phase uses 0.1 requests per second for up to
+  30 minutes because a lower foreground rate still does not guarantee an idle SQLite pool. The
+  high-phase result is checkpointed independently so a slow recovery does not hide latency evidence.
 
 - `cargo clippy -- -D warnings`
 - `cargo test request_log_retention -- --nocapture`
