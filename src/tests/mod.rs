@@ -44,6 +44,7 @@ mod request_kind_and_core;
 mod request_logs_gc_admission;
 mod request_rollup;
 mod request_rollup_public_metrics;
+mod schema_migration_compatibility;
 mod schema_migrations;
 mod support;
 mod upstream_reconciliation;
