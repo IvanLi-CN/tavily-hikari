@@ -930,6 +930,19 @@ async fn request_log_gc_requires_a_daily_seal_before_deleting_source_rows() {
             .key_store
             .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
             .await
+            .expect("pending recovery remains fenced"),
+        None
+    );
+    sqlx::query("DELETE FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?")
+        .bind(day_start)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("finish the source-day recovery checkpoint");
+    assert_eq!(
+        proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
             .expect("inspect sealed source day"),
         Some(next_local_day_start_utc_ts(day_start))
     );
@@ -1230,4 +1243,319 @@ async fn integrity_seal_restores_a_corrupted_daily_rollup() {
     .await
     .expect("read restored day rollup");
     assert_eq!(restored, 2);
+}
+
+#[tokio::test]
+async fn integrity_recovers_a_hot_fence_older_than_the_current_window() {
+    let db_path = temp_db_path("integrity-stale-hot-fence");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let old_fence = closed - 60 * SECS_PER_DAY;
+    pin_integrity_hot_work(&proxy, old_fence, old_fence).await;
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("recover stale hot cursor");
+    let (cursor, fence, history): (i64, i64, i64) = sqlx::query_as(
+        "SELECT hot_cursor, hot_fence, history_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
+    ).fetch_one(&proxy.key_store.pool).await.expect("read recovered state");
+    assert_eq!(cursor, closed - SECS_PER_DAY + SECS_PER_FIVE_MINUTES);
+    assert_eq!(fence, closed);
+    assert_eq!(
+        history, old_fence,
+        "historical recovery must retain its checkpoint"
+    );
+    let invalid: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dashboard_rollup_integrity_work_items WHERE range_start >= range_end",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("inspect work ranges");
+    assert_eq!(invalid, 0);
+}
+
+#[tokio::test]
+async fn integrity_new_hot_work_preempts_a_pending_gc_reaudit_page() {
+    let db_path = temp_db_path("integrity-gc-page-hot-preemption");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
+    insert_visible_dashboard_log(&proxy, day + 60).await;
+    pin_integrity_hot_work(&proxy, closed - SECS_PER_FIVE_MINUTES, closed).await;
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_day_reaudits (bucket_start, bucket_end, cursor, status, updated_at, gc_blocking) VALUES (?, ?, ?, 'pending', ?, 1)")
+        .bind(day).bind(next_local_day_start_utc_ts(day)).bind(day + SECS_PER_FIVE_MINUTES).bind(now)
+        .execute(&proxy.key_store.pool).await.expect("seed GC recovery");
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_work_items (range_start, range_end, source_fence, source_version, counts_json, status, priority, updated_at) VALUES (?, ?, 1, 0, '{}', 'pending', 3, ?)")
+        .bind(day).bind(day + SECS_PER_FIVE_MINUTES).bind(now)
+        .execute(&proxy.key_store.pool).await.expect("seed historical page");
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("service new hot work first");
+    let hot_cursor: i64 =
+        sqlx::query_scalar("SELECT hot_cursor FROM dashboard_rollup_integrity_state WHERE id = 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read hot cursor");
+    assert_eq!(hot_cursor, closed);
+    let (cursor, counts): (Option<i64>, String) = sqlx::query_as("SELECT cursor_id, counts_json FROM dashboard_rollup_integrity_work_items WHERE range_start = ?")
+        .bind(day).fetch_one(&proxy.key_store.pool).await.expect("read retained historical page");
+    assert_eq!(cursor, None);
+    assert_eq!(counts, "{}");
+}
+
+#[tokio::test]
+async fn integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing() {
+    let db_path = temp_db_path("integrity-gc-source-backed-recovery");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
+    let threshold = local_day_bucket_start_utc_ts(now - 7 * SECS_PER_DAY);
+    pin_integrity_hot_work(&proxy, closed, closed).await;
+    insert_visible_dashboard_log(&proxy, day + 60).await;
+    insert_visible_dashboard_log(&proxy, day + 360).await;
+    sqlx::query("INSERT INTO billing_ledger (auth_token_log_id, token_id, billing_state, business_credits, result_status, created_at, updated_at) VALUES (9001, 'recovery-fixture-token', 'charged', 11, 'success', ?, ?)")
+        .bind(day).bind(day).execute(&proxy.key_store.pool).await.expect("seed independent billing truth");
+    assert_eq!(
+        proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
+            .expect("missing seal blocks"),
+        None
+    );
+    for _ in 0..300 {
+        if proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
+            .expect("check recovery")
+            .is_some()
+        {
+            break;
+        }
+        proxy
+            .run_dashboard_rollup_integrity_slice()
+            .await
+            .expect("advance missing-day recovery");
+    }
+    assert_eq!(
+        proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
+            .expect("day recovered"),
+        Some(next_local_day_start_utc_ts(day))
+    );
+    let original: String = sqlx::query_scalar(
+        "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read source-derived seal");
+    let mut damaged: DashboardRequestRollupCounts =
+        serde_json::from_str(&original).expect("parse seal");
+    assert_eq!(damaged.total_requests, 2);
+    assert_eq!(damaged.local_estimated_credits, 6);
+    damaged.local_estimated_credits -= 1;
+    sqlx::query("UPDATE dashboard_rollup_daily_seals SET counts_json = ? WHERE bucket_start = ?")
+        .bind(serde_json::to_string(&damaged).unwrap())
+        .bind(day)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("reproduce one-credit divergence");
+    let options = RequestLogsGcOptions {
+        batch_size: 100,
+        max_batches: 5,
+        max_runtime_secs: 20,
+        inter_batch_sleep_ms: 0,
+    };
+    let blocked = proxy
+        .gc_request_logs_with_options(options)
+        .await
+        .expect("run blocked GC");
+    assert_eq!(blocked.deleted_request_logs, 0);
+    assert_eq!(blocked.blocked_day_start, Some(day));
+    assert_eq!(blocked.blocked_reason.as_deref(), Some("rollup_mismatch"));
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("advance one recovery slice");
+    let before: i64 = sqlx::query_scalar(
+        "SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recovery checkpoint");
+    assert_eq!(
+        proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
+            .expect("repeat registration"),
+        None
+    );
+    let after: i64 = sqlx::query_scalar(
+        "SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read preserved checkpoint");
+    assert_eq!(before, after);
+    for _ in 0..300 {
+        if proxy
+            .key_store
+            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .await
+            .expect("check seal fence")
+            .is_some()
+        {
+            break;
+        }
+        proxy
+            .run_dashboard_rollup_integrity_slice()
+            .await
+            .expect("finish source-backed re-audit");
+    }
+    let recovered: String = sqlx::query_scalar(
+        "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read recovered seal");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&recovered).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&original).unwrap()
+    );
+    let collected = proxy
+        .gc_request_logs_with_options(options)
+        .await
+        .expect("run recovered GC");
+    assert_eq!(collected.deleted_request_logs, 2);
+    let billed: (String, i64) = sqlx::query_as(
+        "SELECT billing_state, business_credits FROM billing_ledger WHERE auth_token_log_id = 9001",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read preserved billing truth");
+    assert_eq!(billed, ("charged".into(), 11));
+    let daily: i64 = sqlx::query_scalar("SELECT local_estimated_credits FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?")
+        .bind(SECS_PER_DAY).bind(day).fetch_one(&proxy.key_store.pool).await.expect("read retained daily summary");
+    assert_eq!(daily, 6);
+}
+
+#[tokio::test]
+async fn integrity_gc_finalizes_an_interrupted_day_end_after_reopen() {
+    let db_path = temp_db_path("integrity-gc-interrupted-finalization");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
+    let end = next_local_day_start_utc_ts(day);
+    pin_integrity_hot_work(&proxy, closed, closed).await;
+    sqlx::query("INSERT INTO dashboard_request_rollup_buckets (bucket_start, bucket_secs, total_requests, success_count, error_count, quota_exhausted_count, local_estimated_credits, updated_at) VALUES (?, 60, 2, 2, 0, 0, 6, ?)")
+        .bind(day).bind(now).execute(&proxy.key_store.pool).await.expect("seed completed source-backed minute");
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_day_reaudits (bucket_start, bucket_end, cursor, status, updated_at, gc_blocking) VALUES (?, ?, ?, 'pending', ?, 1)")
+        .bind(day).bind(end).bind(end).bind(now).execute(&proxy.key_store.pool).await.expect("seed interrupted finalization");
+    proxy.key_store.pool.close().await;
+    drop(proxy);
+    let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("reopen persisted recovery");
+    reopened
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("finalize resumed day");
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read finalized queue");
+    assert_eq!(pending, 0);
+    let counts: String = sqlx::query_scalar(
+        "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read recovered seal");
+    assert_eq!(
+        serde_json::from_str::<DashboardRequestRollupCounts>(&counts)
+            .unwrap()
+            .local_estimated_credits,
+        6
+    );
+}
+
+#[tokio::test]
+async fn integrity_gc_migrates_legacy_reaudit_without_resetting_its_cursor() {
+    let db_path = temp_db_path("integrity-gc-legacy-reaudit");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create legacy fixture");
+    let now = proxy.backend_time().now_ts();
+    let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
+    let cursor = day + SECS_PER_FIVE_MINUTES;
+    insert_visible_dashboard_log(&proxy, day + 60).await;
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_day_reaudits (bucket_start, bucket_end, cursor, status, updated_at) VALUES (?, ?, ?, 'pending', ?)")
+        .bind(day).bind(next_local_day_start_utc_ts(day)).bind(cursor).bind(now)
+        .execute(&proxy.key_store.pool).await.expect("seed legacy progress");
+    sqlx::query(
+        "ALTER TABLE observability.dashboard_rollup_integrity_day_reaudits DROP COLUMN gc_blocking",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("model the old schema");
+    proxy.key_store.pool.close().await;
+    drop(proxy);
+    let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("upgrade legacy schema");
+    let upgraded: (i64, i64) = sqlx::query_as("SELECT cursor, gc_blocking FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?")
+        .bind(day).fetch_one(&reopened.key_store.pool).await.expect("read upgraded queue");
+    assert_eq!(upgraded, (cursor, 0));
+    for _ in 0..2 {
+        assert!(
+            reopened
+                .key_store
+                .dashboard_rollup_integrity_request_log_gc_cutoff(next_local_day_start_utc_ts(day))
+                .await
+                .expect("register GC blocker")
+                .is_none()
+        );
+    }
+    let marked: (i64, i64) = sqlx::query_as("SELECT cursor, gc_blocking FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?")
+        .bind(day).fetch_one(&reopened.key_store.pool).await.expect("read idempotent registration");
+    assert_eq!(marked, (cursor, 1));
 }

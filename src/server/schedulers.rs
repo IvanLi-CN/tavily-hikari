@@ -66,6 +66,17 @@ const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
     [100, 200, 400, 800, 1_600];
+const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
+
+fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
+    if report.cleaned_request_log_bodies + report.deleted_request_logs + report.deleted_rollups > 0
+        || report.scanned_body_candidates > 0
+    {
+        REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS
+    } else {
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    }
+}
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -1019,7 +1030,15 @@ async fn run_request_logs_gc_catchup_claimed_job(
 
     match result {
         Ok(report) => {
-            let msg = format_request_logs_gc_report_message(&report, 1);
+            let continuation_delay_secs = if report.completed {
+                0
+            } else {
+                request_logs_gc_continuation_delay(&report)
+            };
+            let msg = format!(
+                "{} next_retry_secs={continuation_delay_secs}",
+                format_request_logs_gc_report_message(&report, 1)
+            );
             let zero_progress = report.progress_status == "incomplete_zero_progress";
             let zero_progress_streak = if zero_progress {
                 REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK.fetch_add(1, Ordering::Relaxed) + 1
@@ -1071,12 +1090,13 @@ async fn run_request_logs_gc_catchup_claimed_job(
                     }
                 }
             } else {
-                finish_request_logs_gc_with_continuation(
+                finish_request_logs_gc_with_continuation_after(
                     &state,
                     job_id,
                     claim_generation,
                     "success",
                     msg,
+                    continuation_delay_secs,
                 )
                 .await
             }
@@ -1106,7 +1126,9 @@ async fn finish_request_logs_gc_with_continuation(
         job_id,
         claim_generation,
         status,
-        message,
+        format!(
+            "{message} next_retry_secs={REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS}"
+        ),
         REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
     )
     .await

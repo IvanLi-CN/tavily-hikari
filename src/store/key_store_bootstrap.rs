@@ -874,6 +874,7 @@ impl KeyStore {
                 )
                 .execute(&store.pool)
                 .await?;
+                Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&store.pool).await?;
                 Ok(())
             },
         )

@@ -838,6 +838,8 @@ impl KeyStore {
         let mut deleted_rollups = 0_i64;
         let mut body_batch_has_more = false;
         let mut blocked_by_integrity = false;
+        let mut blocked_day_start = None;
+        let mut blocked_reason = None;
         let mut batches = 0_i64;
         let mut retention_contexts = std::collections::HashMap::new();
         let mut body_gc_diagnostics = RequestLogBodyGcDiagnostics::default();
@@ -851,9 +853,12 @@ impl KeyStore {
                 )
                 .await?;
             let raw_delete_cutoff = self
-                .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+                .dashboard_rollup_integrity_request_log_gc_decision(threshold)
                 .await?;
-            let request_deleted = if let Some(raw_delete_cutoff) = raw_delete_cutoff {
+            let request_deleted = if let DashboardRollupRequestLogGcDecision::Allowed(
+                raw_delete_cutoff,
+            ) = raw_delete_cutoff
+            {
                 // Delete only the earliest sealed local day. This prevents one large
                 // batch from crossing into a later day that has not been sealed yet.
                 self.unlink_old_request_log_references_batch(raw_delete_cutoff, batch_size)
@@ -867,6 +872,12 @@ impl KeyStore {
                     threshold,
                     "request log deletion and reference unlinking delayed until its local-day recovery seal exists"
                 );
+                if let DashboardRollupRequestLogGcDecision::Blocked { day_start, reason } =
+                    raw_delete_cutoff
+                {
+                    blocked_day_start = Some(day_start);
+                    blocked_reason = Some(reason.to_string());
+                }
                 blocked_by_integrity = true;
                 0
             };
@@ -929,6 +940,8 @@ impl KeyStore {
             body_retention_decision_elapsed_ms: body_gc_diagnostics
                 .body_retention_decision_elapsed_ms,
             body_write_elapsed_ms: body_gc_diagnostics.body_write_elapsed_ms,
+            blocked_day_start,
+            blocked_reason,
             progress_status: if !has_more {
                 "completed"
             } else if blocked_by_integrity {

@@ -173,6 +173,14 @@ fn write_plain_report(mut writer: impl Write, report: &CliReport) -> io::Result<
         body_retention_decision_elapsed_ms: report.body_retention_decision_elapsed_ms,
         body_write_elapsed_ms: report.body_write_elapsed_ms,
         progress_status: report.progress_status.clone(),
+        blocked_day_start: report
+            .pass_reports
+            .last()
+            .and_then(|pass| pass.blocked_day_start),
+        blocked_reason: report
+            .pass_reports
+            .last()
+            .and_then(|pass| pass.blocked_reason.clone()),
     };
     writeln!(
         writer,
@@ -241,6 +249,8 @@ mod tests {
                     body_retention_decision_elapsed_ms: 2,
                     body_write_elapsed_ms: 3,
                     progress_status: "incomplete_progress".to_string(),
+                    blocked_day_start: None,
+                    blocked_reason: None,
                 },
                 RequestLogsGcReport {
                     retention_days: 32,
@@ -261,6 +271,8 @@ mod tests {
                     body_retention_decision_elapsed_ms: 1,
                     body_write_elapsed_ms: 1,
                     progress_status: "completed".to_string(),
+                    blocked_day_start: None,
+                    blocked_reason: None,
                 },
             ],
         );

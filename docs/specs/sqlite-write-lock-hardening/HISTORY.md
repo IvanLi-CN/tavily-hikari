@@ -1,5 +1,8 @@
 # History
 
+- 2026-10-03: Align request-log GC continuation with durable progress while preserving five-minute
+  pressure/error defers, fenced handoff, and foreground admission.
+
 ## 2026-08-02
 
 - Added low-pressure HA GC recovery with persisted debt/SLO state, foreground-aware continuation

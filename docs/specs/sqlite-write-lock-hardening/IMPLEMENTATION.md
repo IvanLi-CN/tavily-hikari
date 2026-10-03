@@ -214,7 +214,8 @@
   updates covered by the trigger set.
 - The daily `request_logs_gc` scheduler now runs one bounded cleanup pass per
   `scheduled_jobs` row. If backlog remains, it persists an automatic continuation with a
-  five-minute `available_at` delay instead of keeping one long-running `running` row open.
+  one-second `available_at` delay after durable progress, or five minutes after no progress,
+  pressure or an error, instead of keeping one long-running `running` row open.
 - Scheduled jobs now distinguish `trigger_source` from `job_type`, use an atomic claim path to avoid
   duplicate active work, and expose manual trigger entrypoints for maintenance/admin jobs.
 - `quota_sync` now uses a hard `/usage` timeout, a bounded job runtime budget, and claim-time stale

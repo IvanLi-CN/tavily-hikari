@@ -2,6 +2,13 @@
 
 ## Current Coverage
 
+- GC records the earliest unsealed or divergent day for source-backed reauditing. Pending day
+  recovery prevents deletion until minute/daily rollups and the seal have been finalized.
+- Productive bounded passes continue after one second; no-progress, pressure and error passes
+  retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
+- Optional blocked-day diagnostics preserve the existing API and CLI fields. Offline legacy
+  single-database GC initializes the small recovery queue without moving production source data.
+
 - Backend settings now expose `requestLogRetention` with defaults, range validation, and save-time
   clamp to `maxLogRetentionDays`.
 - `request_logs` stores body byte counts, SHA-256 hashes, cleanup reason, and cleanup timestamp;

@@ -9,3 +9,6 @@
 ## Legacy Identity
 
 - Legacy compatibility identity: `#owl2v`.
+
+- 2026-10-03: Define resumable GC-blocking day recovery, stale hot-window repair, and productive
+  catch-up scheduling without changing retention or billing truth.

@@ -2178,3 +2178,46 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[test]
+fn request_logs_gc_continuation_tracks_durable_progress() {
+    let mut report = RequestLogsGcReport {
+        retention_days: 7,
+        threshold: 0,
+        batch_size: 100,
+        max_batches: 5,
+        cleaned_request_log_bodies: 0,
+        deleted_request_logs: 0,
+        deleted_rollups: 0,
+        batches: 1,
+        completed: false,
+        has_more: true,
+        elapsed_ms: 0,
+        scanned_body_candidates: 0,
+        unique_retention_users: 0,
+        retention_context_cache_hits: 0,
+        body_candidate_query_elapsed_ms: 0,
+        body_retention_decision_elapsed_ms: 0,
+        body_write_elapsed_ms: 0,
+        progress_status: "incomplete_blocked_integrity".into(),
+        blocked_day_start: Some(0),
+        blocked_reason: Some("missing_seal".into()),
+    };
+    assert_eq!(request_logs_gc_continuation_delay(&report), 300);
+    report.scanned_body_candidates = 64;
+    assert_eq!(
+        request_logs_gc_continuation_delay(&report),
+        1,
+        "a persisted bodyless scan window is productive"
+    );
+    report.scanned_body_candidates = 0;
+    report.cleaned_request_log_bodies = 1;
+    assert_eq!(
+        request_logs_gc_continuation_delay(&report),
+        1,
+        "body cleanup can progress while row deletion is blocked"
+    );
+    report.cleaned_request_log_bodies = 0;
+    report.deleted_request_logs = 100;
+    assert_eq!(request_logs_gc_continuation_delay(&report), 1);
+}

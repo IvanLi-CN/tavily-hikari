@@ -6,6 +6,10 @@
 `request_body` / `response_body`，尤其 `mcp:tools/list`。现有 `request_logs_gc` 已按行做
 有界保留清理，但不能在保留摘要行的同时清掉过期完整 body。
 
+## Context and Scope
+
+调用日志采用独立的行与正文保留窗口，后台清理必须保留计费分类和长期摘要。
+
 ## Goals
 
 - 在 Admin 设置中配置日志行最大保留天数，以及全局 / 高频用户 / 共享调试用户三类完整
@@ -16,6 +20,10 @@
 - 历史 body 自动通过既有 `request_logs_gc` 有界追赶机制分批清理。
 
 ## Requirements
+
+- REQ-RETENTION: The service MUST apply the following retention policies without changing billing truth.
+- REQ-GC-RECOVERY: Automatic catch-up MUST obey the bounded progress, seal-recovery, and admission
+  rules below; ordinary HTTP/MCP interfaces and CLI arguments remain compatible.
 
 - `request_logs` 新增 body 元数据：request/response 原始字节数、SHA-256、清理原因、清理时间；
   同时保存 `counts_business_quota`，避免 `mcp:batch` 在 body 清理后丢失业务/非业务分类。
@@ -57,7 +65,24 @@
 - 用户控制台新增“共享调试信息”开关；关闭后不立即同步清理，下一轮自动清理按非共享策略处理。
 - 请求详情 body 已清理时展示长度、SHA-256、清理原因与清理时间。
 
-## Acceptance Criteria
+## Automatic Catch-up
+
+- Scheduled GC keeps its bounded 100-row batches, at most five batches and 20 seconds per pass.
+- Productive passes, including durable body-scan cursor advancement, continue after one second.
+  Zero progress, an integrity block without other progress, admission pressure, or an error retries
+  after 300 seconds; continuations retain the existing single-active-job claim fence.
+- Missing or inconsistent dashboard day seals enqueue source-backed day recovery before row
+  deletion. Expired bodies outside the row-retention window are reclaimed with their source rows
+  after recovery; daily summaries and the billing ledger remain intact.
+- GC reports expose optional blocking-day and blocking-reason diagnostics. Existing HTTP/MCP
+  interfaces, CLI arguments, and report fields retain their meanings.
+
+## Verification
+
+- VER-RETENTION: covers=REQ-RETENTION; the following classification and metadata scenarios validate
+  row/body expiration and independent summary retention.
+- VER-GC-RECOVERY: covers=REQ-GC-RECOVERY; tests MUST cover source-backed seal recovery, one-second
+  productive continuations, 300-second defers, duplicate claims, and unchanged billing history.
 
 - Given 新写入 `mcp:tools/list` 成功日志
   Then `request_body` / `response_body` 默认不保存完整 BLOB，但 body 长度与 SHA-256 已保存。
@@ -95,3 +120,7 @@
 - `docs/specs/admin-recent-requests-performance-copy/SPEC.md`
 - `docs/solutions/operations/sqlite-write-lock-contention.md`
 - `docs/solutions/operations/sqlite-admin-read-containment.md`
+
+## Related ADRs
+
+None
