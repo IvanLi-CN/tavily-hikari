@@ -499,6 +499,7 @@ impl SqliteMaintenanceCoordinator {
     }
 
     fn prune_idle_requests(state: &mut SqliteMaintenanceCoordinatorState, now: Instant) {
+        // Expire abandoned tickets by retry activity, not by their original queue age.
         let stale = state
             .pending
             .iter()
