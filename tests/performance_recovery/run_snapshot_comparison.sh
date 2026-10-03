@@ -611,7 +611,9 @@ wait_for_http_listener() {
 
 capture_final_workload_snapshot() {
   local artifact_dir="$1"
-  local deadline=$((SECONDS + 35))
+  # Runtime workload windows emit at most once per 60 seconds. Give the final
+  # capture one full interval plus a bounded scheduler cushion.
+  local deadline=$((SECONDS + 75))
   local initial_snapshot_count
   local current_snapshot_count
   initial_snapshot_count="$(compose logs --no-color app 2>/dev/null | grep -c "sqlite_workload_window" || true)"
@@ -1033,6 +1035,14 @@ def lane_transport_errors(load_summary, lane):
         if key.startswith(f"{lane}:")
     )
 
+def lane_http_rejections(load_summary, lane, accepted_status):
+    return sum(
+        count
+        for key, count in load_summary["statuses"].items()
+        if key.startswith(f"{lane}:")
+        and int(key.split(":", 1)[1]) != accepted_status
+    )
+
 summary = {
     "variant": name,
     "sourceSha": CANDIDATE_SHA if name == "candidate" else BASELINE_SHA,
@@ -1070,6 +1080,8 @@ summary = {
     "maintenanceHttp5xx": lane_5xx("ha_gc_trigger"),
     "dashboardTransportErrors": lane_transport_errors(load, "dashboard"),
     "maintenanceTransportErrors": lane_transport_errors(load, "ha_gc_trigger"),
+    "dashboardHttpRejections": lane_http_rejections(load, "dashboard", 200),
+    "maintenanceHttpRejections": lane_http_rejections(load, "ha_gc_trigger", 202),
     "haGc": {
         "before": ha_gc_before,
         "after": ha_gc_after,
@@ -1142,6 +1154,35 @@ def lane_transport_errors(load_summary, lane):
         for key, count in load_summary.get("errors", {}).items()
         if key.startswith(f"{lane}:")
     )
+
+def lane_http_responses(load_summary, lane):
+    return sum(
+        count
+        for key, count in load_summary["statuses"].items()
+        if key.startswith(f"{lane}:")
+    )
+
+def lane_http_rejections(load_summary, lane, accepted_status):
+    return sum(
+        count
+        for key, count in load_summary["statuses"].items()
+        if key.startswith(f"{lane}:")
+        and int(key.split(":", 1)[1]) != accepted_status
+    )
+
+def expected_periodic_attempts(duration_secs, interval_secs, initial_delay_secs=0.0):
+    if initial_delay_secs >= duration_secs:
+        return 0
+    return int((duration_secs - initial_delay_secs - 1e-9) // interval_secs) + 1
+
+def expected_maintenance_attempts(load_summary):
+    scheduled = expected_periodic_attempts(
+        load_summary["trafficDurationSecs"],
+        60.0,
+        17.0,
+    )
+    recovery_tail_attempt = int(load_summary.get("recoveryTailSecs", 0) > 0)
+    return scheduled + recovery_tail_attempt
 
 def assert_not_worse(metric, base, cand, absolute_floor=None, additive_tolerance=0):
     if base is None or cand is None:
@@ -1354,31 +1395,37 @@ if not diagnostic:
         ("maintenance", "maintenanceHttp5xx"),
     ):
         status_lane = "ha_gc_trigger" if lane == "maintenance" else lane
-        candidate_http_responses = sum(
-            count
-            for key, count in candidate["load"]["statuses"].items()
-            if key.startswith(f"{status_lane}:")
+        accepted_status = 202 if lane == "maintenance" else 200
+        candidate_http_responses = lane_http_responses(candidate["load"], status_lane)
+        candidate_http_rejections = lane_http_rejections(
+            candidate["load"], status_lane, accepted_status
         )
         candidate_transport_errors = lane_transport_errors(candidate["load"], status_lane)
         candidate_attempts = candidate_http_responses + candidate_transport_errors
-        allowed_5xx = (
-            math.ceil(candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT / 100)
-            if candidate_attempts and CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT
-            else 0
-        )
         if candidate_http_responses <= 0:
             raise SystemExit(
                 f"candidate {lane} lane produced no HTTP responses: "
                 f"transport_errors={candidate_transport_errors}"
             )
-        candidate_failures = candidate[metric] + candidate_transport_errors
-        if candidate_failures > allowed_5xx:
+        if lane == "maintenance":
+            expected_attempts = expected_maintenance_attempts(candidate["load"])
+            if candidate_attempts < expected_attempts:
+                raise SystemExit(
+                    "candidate maintenance lane did not complete its scheduled attempts: "
+                    f"attempts={candidate_attempts}, expected={expected_attempts}"
+                )
+        candidate_failures = candidate_http_rejections + candidate_transport_errors
+        if (
+            candidate_failures * 100
+            > candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT
+        ):
             raise SystemExit(
                 f"candidate {lane} HTTP/transport failure rate exceeded the "
                 f"{CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT}% controlled-restart allowance: "
-                f"baseline={baseline[metric]}, candidate_5xx={candidate[metric]}, "
+                f"accepted_status={accepted_status}, baseline_5xx={baseline[metric]}, "
+                f"candidate_5xx={candidate[metric]}, candidate_http_rejections={candidate_http_rejections}, "
                 f"candidate_transport_errors={candidate_transport_errors}, "
-                f"attempts={candidate_attempts}, allowed={allowed_5xx}"
+                f"attempts={candidate_attempts}, failures={candidate_failures}"
             )
 
 baseline_request_path_errors = (

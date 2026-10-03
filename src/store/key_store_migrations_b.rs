@@ -981,7 +981,7 @@ impl KeyStore {
         sqlx::query(
             r#"
             INSERT INTO api_key_membership_intervals (key_id, active_from)
-            SELECT keys.id, ?
+            SELECT keys.id, MAX(keys.created_at, ?)
             FROM api_keys AS keys
             WHERE keys.deleted_at IS NULL
               AND NOT EXISTS (

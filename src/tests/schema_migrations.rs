@@ -1876,13 +1876,23 @@ async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_mark
     .await
     .expect("create migrated database");
     let tracked_from = 1_700_000_000_i64;
-    let key_id = "schema-migration-existing-marker-key";
+    let before_marker_key_id = "schema-migration-existing-marker-before-key";
+    let after_marker_key_id = "schema-migration-existing-marker-after-key";
+    let after_marker_created_at = tracked_from + 3_600;
     sqlx::query(
-        "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+        r#"
+        INSERT INTO api_keys (id, api_key, status, created_at)
+        VALUES
+            (?, ?, 'active', ?),
+            (?, ?, 'active', ?)
+        "#,
     )
-    .bind(key_id)
-    .bind("tvly-schema-migration-existing-marker-key")
-    .bind(tracked_from)
+    .bind(before_marker_key_id)
+    .bind("tvly-schema-migration-existing-marker-before-key")
+    .bind(tracked_from - 3_600)
+    .bind(after_marker_key_id)
+    .bind("tvly-schema-migration-existing-marker-after-key")
+    .bind(after_marker_created_at)
     .execute(&proxy.key_store.pool)
     .await
     .expect("create active API key");
@@ -1901,14 +1911,22 @@ async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_mark
         .ensure_warm_schema_compatibility()
         .await
         .expect("warm schema compatibility must rebuild missing intervals");
-    let active_from: i64 = sqlx::query_scalar(
+    let before_marker_active_from: i64 = sqlx::query_scalar(
         "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
     )
-    .bind(key_id)
+    .bind(before_marker_key_id)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read rebuilt active membership interval");
-    assert_eq!(active_from, tracked_from);
+    .expect("read rebuilt pre-marker active membership interval");
+    assert_eq!(before_marker_active_from, tracked_from);
+    let after_marker_active_from: i64 = sqlx::query_scalar(
+        "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
+    )
+    .bind(after_marker_key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rebuilt post-marker active membership interval");
+    assert_eq!(after_marker_active_from, after_marker_created_at);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);

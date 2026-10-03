@@ -51,10 +51,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
         self.assertIn("CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5", COMPARISON)
         self.assertIn('acceptance_status = "diagnostic" if diagnostic else "passed"', COMPARISON)
-        self.assertIn(
-            "math.ceil(candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT / 100)",
-            COMPARISON,
-        )
+        self.assertIn("candidate_failures * 100", COMPARISON)
         self.assertIn('structured_value(line, "operation") != "foreground_job_trigger"', COMPARISON)
         self.assertIn('candidate_admission["snapshotCount"] <= 0', COMPARISON)
         self.assertIn('candidate_admission["pendingAgeSampleCount"] <= 0', COMPARISON)
@@ -84,6 +81,11 @@ class SnapshotComparisonTests(unittest.TestCase):
             '"maintenanceTransportErrors": lane_transport_errors(load, "ha_gc_trigger")',
             COMPARISON,
         )
+        self.assertIn("def lane_http_rejections(load_summary, lane, accepted_status):", COMPARISON)
+        self.assertIn('"maintenanceHttpRejections": lane_http_rejections(load, "ha_gc_trigger", 202)', COMPARISON)
+        self.assertIn("def expected_maintenance_attempts(load_summary):", COMPARISON)
+        self.assertIn("candidate maintenance lane did not complete its scheduled attempts", COMPARISON)
+        self.assertIn("accepted_status = 202 if lane == \"maintenance\" else 200", COMPARISON)
         self.assertIn('"sqliteTransientLockRetries": sqlite_transient_lock_retries', COMPARISON)
         self.assertIn('"sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals', COMPARISON)
         self.assertIn('"sqliteFinalLockErrors": sqlite_final_lock_errors', COMPARISON)
@@ -128,6 +130,7 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("prepare_reconciliation_fixture", COMPARISON)
         self.assertIn("wait_for_http_listener", COMPARISON)
         self.assertIn("capture_final_workload_snapshot", COMPARISON)
+        self.assertIn("local deadline=$((SECONDS + 75))", COMPARISON)
         self.assertIn("final SQLite workload snapshot did not arrive", COMPARISON)
         self.assertIn('if [[ "$name" == "baseline" ]]', COMPARISON)
         self.assertIn("Historical baselines may be below the dashboard cold-build", COMPARISON)
