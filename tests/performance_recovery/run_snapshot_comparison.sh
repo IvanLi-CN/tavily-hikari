@@ -609,6 +609,27 @@ wait_for_http_listener() {
   return 1
 }
 
+capture_final_workload_snapshot() {
+  local artifact_dir="$1"
+  local deadline=$((SECONDS + 35))
+  local initial_snapshot_count
+  local current_snapshot_count
+  initial_snapshot_count="$(compose logs --no-color app 2>/dev/null | grep -c "sqlite_workload_window" || true)"
+  while (( SECONDS < deadline )); do
+    compose exec -T app sh -c \
+      'curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8787/api/dashboard/overview' \
+      >/dev/null 2>&1 || true
+    current_snapshot_count="$(compose logs --no-color app 2>/dev/null | grep -c "sqlite_workload_window" || true)"
+    if (( current_snapshot_count > initial_snapshot_count )); then
+      return 0
+    fi
+    sleep 1
+  done
+  compose logs --no-color > "$artifact_dir/final_snapshot_failure.log" 2>&1 || true
+  echo "final SQLite workload snapshot did not arrive" >&2
+  return 1
+}
+
 sample_memory() {
   local target="$1"
   while compose ps -q app >/dev/null 2>&1 && [[ -n "$(compose ps -q app)" ]]; do
@@ -701,6 +722,7 @@ run_variant() {
   restart_pid=$!
   wait "$load_pid"
   wait "$restart_pid"
+  capture_final_workload_snapshot "$artifact_dir"
   kill "$rss_pid" 2>/dev/null || true
   wait "$rss_pid" 2>/dev/null || true
   capture_ha_gc_state "$variant_dir/tavily_proxy.db" "$artifact_dir/ha_gc_after.tsv"

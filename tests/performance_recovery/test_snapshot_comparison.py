@@ -118,6 +118,8 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('candidate billing truth differs', COMPARISON)
         self.assertIn("prepare_reconciliation_fixture", COMPARISON)
         self.assertIn("wait_for_http_listener", COMPARISON)
+        self.assertIn("capture_final_workload_snapshot", COMPARISON)
+        self.assertIn("final SQLite workload snapshot did not arrive", COMPARISON)
         self.assertIn('if [[ "$name" == "baseline" ]]', COMPARISON)
         self.assertIn("Historical baselines may be below the dashboard cold-build", COMPARISON)
         self.assertIn("# contract. Let the comparator classify that red baseline", COMPARISON)
