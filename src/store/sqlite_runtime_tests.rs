@@ -947,7 +947,7 @@ async fn reconciliation_preflight_guard_cancels_without_a_bulk_attempt() {
 }
 
 #[tokio::test]
-async fn reconciliation_preflight_bulk_busy_does_not_leave_an_orphan_ticket() {
+async fn reconciliation_preflight_bulk_busy_retains_ticket_for_retry() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
@@ -959,11 +959,16 @@ async fn reconciliation_preflight_bulk_busy_does_not_leave_an_orphan_ticket() {
     ));
     assert_eq!(
         runtime.inner.maintenance_coordinator.pending_count(),
-        0,
-        "a preflight rejected by the shared bulk permit must not leave a stale ticket"
+        1,
+        "a bulk-busy preflight must retain its fair ticket for the next retry"
     );
 
     drop(holder);
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
+        .expect("the retained ticket should be admitted after the bulk permit is released");
+    drop(permit);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 0);
 }
 
 #[tokio::test]

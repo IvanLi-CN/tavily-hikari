@@ -1315,8 +1315,7 @@ impl SqliteRuntime {
                     self.inner.maintenance_coordinator.cancel_request(class);
                 }
             }
-            let cancel_if_unused = !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
-                || self.inner.maintenance_bulk.available_permits() == 0;
+            let cancel_if_unused = !matches!(reason, SqliteAdmissionDeferReason::BulkBusy);
             self.inner
                 .maintenance_coordinator
                 .release_preflight_request(class, ticket, cancel_if_unused);

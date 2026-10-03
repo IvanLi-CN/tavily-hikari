@@ -967,23 +967,34 @@ impl KeyStore {
         .await?;
 
         let tracked_from = self.backend_time.now_ts();
-        let inserted = sqlx::query(
+        sqlx::query(
             "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
         )
         .bind(tracked_from)
         .execute(&mut *tx)
         .await?;
-        if inserted.rows_affected() == 1 {
-            sqlx::query(
-                r#"
-                INSERT INTO api_key_membership_intervals (key_id, active_from)
-                SELECT id, ? FROM api_keys WHERE deleted_at IS NULL
-                "#,
-            )
-            .bind(tracked_from)
-            .execute(&mut *tx)
-            .await?;
-        }
+        let tracked_from = sqlx::query_scalar::<_, i64>(
+            "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_membership_intervals (key_id, active_from)
+            SELECT keys.id, ?
+            FROM api_keys AS keys
+            WHERE keys.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_membership_intervals AS membership
+                  WHERE membership.key_id = keys.id
+                    AND membership.active_until IS NULL
+              )
+            "#,
+        )
+        .bind(tracked_from)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         Ok(())

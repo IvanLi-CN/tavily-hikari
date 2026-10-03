@@ -1865,6 +1865,58 @@ async fn warm_schema_compatibility_restores_api_key_membership_intervals() {
 }
 
 #[tokio::test]
+async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_marker() {
+    let db_path = temp_db_path("schema-migration-membership-intervals-existing-marker");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-membership-intervals-existing-marker".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    let tracked_from = 1_700_000_000_i64;
+    let key_id = "schema-migration-existing-marker-key";
+    sqlx::query(
+        "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+    )
+    .bind(key_id)
+    .bind("tvly-schema-migration-existing-marker-key")
+    .bind(tracked_from)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("create active API key");
+    sqlx::query("UPDATE api_key_membership_history_state SET tracked_from = ? WHERE singleton = 1")
+        .bind(tracked_from)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("preserve the existing history marker");
+    sqlx::query("DROP TABLE api_key_membership_intervals")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove only the interval table");
+
+    proxy
+        .key_store
+        .ensure_warm_schema_compatibility()
+        .await
+        .expect("warm schema compatibility must rebuild missing intervals");
+    let active_from: i64 = sqlx::query_scalar(
+        "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
+    )
+    .bind(key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read rebuilt active membership interval");
+    assert_eq!(active_from, tracked_from);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn warm_schema_compatibility_skips_complete_schema_write_under_lock() {
     let db_path = temp_db_path("schema-migration-membership-intervals-read-only");
     let db_str = db_path.to_string_lossy().to_string();

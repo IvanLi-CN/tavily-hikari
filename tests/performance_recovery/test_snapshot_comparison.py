@@ -78,6 +78,12 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn('"foregroundHttp5xx": lane_5xx("business")', COMPARISON)
         self.assertIn('"dashboardHttp5xx": lane_5xx("dashboard")', COMPARISON)
         self.assertIn('"maintenanceHttp5xx": lane_5xx("ha_gc_trigger")', COMPARISON)
+        self.assertIn("def lane_transport_errors(load_summary, lane):", COMPARISON)
+        self.assertIn('"dashboardTransportErrors": lane_transport_errors(load, "dashboard")', COMPARISON)
+        self.assertIn(
+            '"maintenanceTransportErrors": lane_transport_errors(load, "ha_gc_trigger")',
+            COMPARISON,
+        )
         self.assertIn('"sqliteTransientLockRetries": sqlite_transient_lock_retries', COMPARISON)
         self.assertIn('"sqliteTypedLockDeferrals": sqlite_typed_lock_deferrals', COMPARISON)
         self.assertIn('"sqliteFinalLockErrors": sqlite_final_lock_errors', COMPARISON)
@@ -93,7 +99,9 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("for line in measured_log_lines", COMPARISON)
         self.assertIn('("dashboard", "dashboardHttp5xx")', COMPARISON)
         self.assertIn('("maintenance", "maintenanceHttp5xx")', COMPARISON)
-        self.assertIn("candidate {lane} HTTP 5xx rate exceeded", COMPARISON)
+        self.assertIn("candidate {lane} HTTP/transport failure rate exceeded", COMPARISON)
+        self.assertIn("candidate {lane} lane produced no HTTP responses", COMPARISON)
+        self.assertIn("candidate_http_responses + candidate_transport_errors", COMPARISON)
         self.assertIn('structured_field(line, "defer_reason", reason)', COMPARISON)
         self.assertIn('("sqlite_contention", "sqlite_busy")', COMPARISON)
         self.assertIn('structured_field(line, "event", "research_sweep_deferred")', COMPARISON)

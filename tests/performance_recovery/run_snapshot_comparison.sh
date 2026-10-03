@@ -1026,6 +1026,13 @@ def lane_5xx(lane):
         if key.startswith(f"{lane}:") and int(key.split(":", 1)[1]) >= 500
     )
 
+def lane_transport_errors(load_summary, lane):
+    return sum(
+        count
+        for key, count in load_summary.get("errors", {}).items()
+        if key.startswith(f"{lane}:")
+    )
+
 summary = {
     "variant": name,
     "sourceSha": CANDIDATE_SHA if name == "candidate" else BASELINE_SHA,
@@ -1061,6 +1068,8 @@ summary = {
     "foregroundHttp5xx": lane_5xx("business"),
     "dashboardHttp5xx": lane_5xx("dashboard"),
     "maintenanceHttp5xx": lane_5xx("ha_gc_trigger"),
+    "dashboardTransportErrors": lane_transport_errors(load, "dashboard"),
+    "maintenanceTransportErrors": lane_transport_errors(load, "ha_gc_trigger"),
     "haGc": {
         "before": ha_gc_before,
         "after": ha_gc_after,
@@ -1126,6 +1135,13 @@ CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5
 
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
+
+def lane_transport_errors(load_summary, lane):
+    return sum(
+        count
+        for key, count in load_summary.get("errors", {}).items()
+        if key.startswith(f"{lane}:")
+    )
 
 def assert_not_worse(metric, base, cand, absolute_floor=None, additive_tolerance=0):
     if base is None or cand is None:
@@ -1338,21 +1354,30 @@ if not diagnostic:
         ("maintenance", "maintenanceHttp5xx"),
     ):
         status_lane = "ha_gc_trigger" if lane == "maintenance" else lane
-        candidate_attempts = sum(
+        candidate_http_responses = sum(
             count
             for key, count in candidate["load"]["statuses"].items()
             if key.startswith(f"{status_lane}:")
         )
+        candidate_transport_errors = lane_transport_errors(candidate["load"], status_lane)
+        candidate_attempts = candidate_http_responses + candidate_transport_errors
         allowed_5xx = (
             math.ceil(candidate_attempts * CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT / 100)
             if candidate_attempts and CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT
             else 0
         )
-        if candidate[metric] > allowed_5xx:
+        if candidate_http_responses <= 0:
             raise SystemExit(
-                f"candidate {lane} HTTP 5xx rate exceeded the "
+                f"candidate {lane} lane produced no HTTP responses: "
+                f"transport_errors={candidate_transport_errors}"
+            )
+        candidate_failures = candidate[metric] + candidate_transport_errors
+        if candidate_failures > allowed_5xx:
+            raise SystemExit(
+                f"candidate {lane} HTTP/transport failure rate exceeded the "
                 f"{CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT}% controlled-restart allowance: "
-                f"baseline={baseline[metric]}, candidate={candidate[metric]}, "
+                f"baseline={baseline[metric]}, candidate_5xx={candidate[metric]}, "
+                f"candidate_transport_errors={candidate_transport_errors}, "
                 f"attempts={candidate_attempts}, allowed={allowed_5xx}"
             )
 
