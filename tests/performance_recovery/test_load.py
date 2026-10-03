@@ -56,6 +56,7 @@ class RecoveryTailTests(unittest.TestCase):
 
     def test_short_diagnostic_keeps_its_entire_traffic_window(self) -> None:
         self.assertEqual(LOAD.recovery_tail_secs_for_duration(60, None), 0)
+        self.assertEqual(LOAD.recovery_tail_secs_for_duration(599, None), 0)
 
     def test_recovery_tail_must_fit_inside_the_total_duration(self) -> None:
         with self.assertRaises(ValueError):

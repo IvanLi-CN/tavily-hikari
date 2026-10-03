@@ -1144,6 +1144,7 @@ DASHBOARD_P95_NOISE_FLOOR_MS = 15.0
 RSS_P95_NOISE_BAND_KIB = 40 * 1024
 MAINTENANCE_FRESHNESS_BOUND_MS = 60_000
 CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5
+PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS = 600
 
 def p95(summary):
     return summary["load"]["dashboardP95Ms"]
@@ -1202,7 +1203,9 @@ candidate_business_responses = (
     candidate["load"]["statuses"].get("business:200", 0)
     + candidate["load"]["statuses"].get("business:429", 0)
 )
-diagnostic = baseline["load"]["durationSecs"] <= 120
+if baseline["load"]["durationSecs"] != candidate["load"]["durationSecs"]:
+    raise SystemExit("baseline and candidate duration windows must match")
+diagnostic = baseline["load"]["durationSecs"] < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS
 baseline_business_minimum = (
     baseline["load"]["trafficDurationSecs"]
     * baseline["load"].get("businessClients", 0)
@@ -1241,7 +1244,7 @@ for summary in (baseline, candidate):
     dashboard_attempts = summary["load"].get("dashboardAttempts")
     traffic_duration_secs = summary["load"].get("trafficDurationSecs")
     recovery_tail_secs = summary["load"].get("recoveryTailSecs")
-    diagnostic = summary["load"]["durationSecs"] <= 120
+    diagnostic = summary["load"]["durationSecs"] < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS
     if dashboard_clients != 20 or dashboard_interval_secs != 60.0:
         raise SystemExit(f"unexpected dashboard load shape for {summary['variant']}")
     expected_recovery_tail_secs = 0 if diagnostic else 60

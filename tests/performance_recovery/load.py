@@ -21,6 +21,8 @@ HA_GC_INTERVAL_SECS = 60.0
 # lane still exercises maintenance before and after recovery without making a
 # single low-sample request coincide with the restart boundary on every run.
 HA_GC_INITIAL_DELAY_SECS = 17.0
+# Runs shorter than ten minutes only exercise startup and recovery wiring.
+PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS = 600
 # A production-shaped snapshot may have bounded startup maintenance reclaiming
 # the three SQLite connections. Bootstrap traffic is outside the measured load
 # lane, so give both variants the same finite window to become ready.
@@ -212,7 +214,9 @@ def next_periodic_deadline(
 def recovery_tail_secs_for_duration(duration_secs: int, requested_secs: int | None) -> int:
     recovery_tail_secs = requested_secs
     if recovery_tail_secs is None:
-        recovery_tail_secs = 60 if duration_secs > 120 else 0
+        recovery_tail_secs = (
+            60 if duration_secs >= PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS else 0
+        )
     if recovery_tail_secs < 0 or recovery_tail_secs >= duration_secs:
         raise ValueError("recovery tail must be non-negative and shorter than the total duration")
     return recovery_tail_secs
