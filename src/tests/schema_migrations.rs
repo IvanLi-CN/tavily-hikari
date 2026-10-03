@@ -1865,20 +1865,23 @@ async fn warm_schema_compatibility_restores_api_key_membership_intervals() {
 }
 
 #[tokio::test]
-async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_marker() {
+async fn warm_schema_compatibility_resets_history_after_lost_intervals() {
     let db_path = temp_db_path("schema-migration-membership-intervals-existing-marker");
     let db_str = db_path.to_string_lossy().to_string();
-    let proxy = TavilyProxy::with_endpoint(
+    let tracked_from = 1_700_000_000_i64;
+    let rebuild_boundary = tracked_from + 7_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(rebuild_boundary);
+    let proxy = TavilyProxy::with_options_and_time(
         vec!["tvly-schema-migration-membership-intervals-existing-marker".to_string()],
         DEFAULT_UPSTREAM,
         &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
     )
     .await
     .expect("create migrated database");
-    let tracked_from = 1_700_000_000_i64;
     let before_marker_key_id = "schema-migration-existing-marker-before-key";
-    let after_marker_key_id = "schema-migration-existing-marker-after-key";
-    let after_marker_created_at = tracked_from + 3_600;
+    let reimported_key_id = "schema-migration-existing-marker-reimported-key";
     sqlx::query(
         r#"
         INSERT INTO api_keys (id, api_key, status, created_at)
@@ -1890,12 +1893,12 @@ async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_mark
     .bind(before_marker_key_id)
     .bind("tvly-schema-migration-existing-marker-before-key")
     .bind(tracked_from - 3_600)
-    .bind(after_marker_key_id)
-    .bind("tvly-schema-migration-existing-marker-after-key")
-    .bind(after_marker_created_at)
+    .bind(reimported_key_id)
+    .bind("tvly-schema-migration-existing-marker-reimported-key")
+    .bind(tracked_from - 1_800)
     .execute(&proxy.key_store.pool)
     .await
-    .expect("create active API key");
+    .expect("create active API keys with old creation timestamps");
     sqlx::query("UPDATE api_key_membership_history_state SET tracked_from = ? WHERE singleton = 1")
         .bind(tracked_from)
         .execute(&proxy.key_store.pool)
@@ -1910,23 +1913,83 @@ async fn warm_schema_compatibility_rebuilds_intervals_with_existing_history_mark
         .key_store
         .ensure_warm_schema_compatibility()
         .await
-        .expect("warm schema compatibility must rebuild missing intervals");
-    let before_marker_active_from: i64 = sqlx::query_scalar(
-        "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
+        .expect("warm schema compatibility must reset the lost history boundary");
+    let restored_tracked_from: i64 = sqlx::query_scalar(
+        "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reset history boundary");
+    assert_eq!(restored_tracked_from, rebuild_boundary);
+    let active_from: Vec<i64> = sqlx::query_scalar(
+        "SELECT active_from FROM api_key_membership_intervals WHERE key_id IN (?, ?) AND active_until IS NULL ORDER BY key_id",
     )
     .bind(before_marker_key_id)
+    .bind(reimported_key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read rebuilt current membership intervals");
+    assert_eq!(active_from, vec![rebuild_boundary, rebuild_boundary]);
+    let old_history_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM api_key_membership_intervals WHERE active_from < ?",
+    )
+    .bind(rebuild_boundary)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read rebuilt pre-marker active membership interval");
-    assert_eq!(before_marker_active_from, tracked_from);
-    let after_marker_active_from: i64 = sqlx::query_scalar(
+    .expect("check that no pre-reset interval was fabricated");
+    assert_eq!(old_history_rows, 0);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn warm_schema_compatibility_seeds_current_keys_when_history_marker_is_missing() {
+    let db_path = temp_db_path("schema-migration-membership-intervals-missing-marker");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-membership-intervals-missing-marker".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    let key_id = "schema-migration-missing-marker-key";
+    sqlx::query(
+        "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+    )
+    .bind(key_id)
+    .bind("tvly-schema-migration-missing-marker-key")
+    .bind(1_600_000_000_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("create active API key");
+    sqlx::query("DELETE FROM api_key_membership_history_state")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove history marker");
+
+    proxy
+        .key_store
+        .ensure_warm_schema_compatibility()
+        .await
+        .expect("warm schema compatibility must restore the missing marker");
+    let tracked_from: i64 = sqlx::query_scalar(
+        "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read restored history marker");
+    let active_from: i64 = sqlx::query_scalar(
         "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
     )
-    .bind(after_marker_key_id)
+    .bind(key_id)
     .fetch_one(&proxy.key_store.pool)
     .await
-    .expect("read rebuilt post-marker active membership interval");
-    assert_eq!(after_marker_active_from, after_marker_created_at);
+    .expect("read current membership interval");
+    assert_eq!(active_from, tracked_from);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);

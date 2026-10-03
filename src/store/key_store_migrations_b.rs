@@ -929,6 +929,29 @@ impl KeyStore {
             }
         }
 
+        let intervals_table_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_key_membership_intervals')",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        let history_state_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_key_membership_history_state')",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            != 0;
+        let history_initialized = if history_state_exists {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM api_key_membership_history_state WHERE singleton = 1)",
+            )
+            .fetch_one(&self.pool)
+            .await?
+                != 0
+        } else {
+            false
+        };
+
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -967,34 +990,47 @@ impl KeyStore {
         .await?;
 
         let tracked_from = self.backend_time.now_ts();
-        sqlx::query(
-            "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
-        )
-        .bind(tracked_from)
-        .execute(&mut *tx)
-        .await?;
+        if history_initialized && !intervals_table_exists {
+            // Losing the interval table also loses deletion and re-import events. Advance the
+            // trust boundary instead of fabricating continuous membership from api_keys.created_at.
+            sqlx::query(
+                "UPDATE api_key_membership_history_state SET tracked_from = ? WHERE singleton = 1",
+            )
+            .bind(tracked_from)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT OR IGNORE INTO api_key_membership_history_state (singleton, tracked_from) VALUES (1, ?)",
+            )
+            .bind(tracked_from)
+            .execute(&mut *tx)
+            .await?;
+        }
         let tracked_from = sqlx::query_scalar::<_, i64>(
             "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
         )
         .fetch_one(&mut *tx)
         .await?;
-        sqlx::query(
-            r#"
-            INSERT INTO api_key_membership_intervals (key_id, active_from)
-            SELECT keys.id, MAX(keys.created_at, ?)
-            FROM api_keys AS keys
-            WHERE keys.deleted_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_membership_intervals AS membership
-                  WHERE membership.key_id = keys.id
-                    AND membership.active_until IS NULL
-              )
-            "#,
-        )
-        .bind(tracked_from)
-        .execute(&mut *tx)
-        .await?;
+        if !history_initialized || !intervals_table_exists {
+            sqlx::query(
+                r#"
+                INSERT INTO api_key_membership_intervals (key_id, active_from)
+                SELECT keys.id, ?
+                FROM api_keys AS keys
+                WHERE keys.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_membership_intervals AS membership
+                      WHERE membership.key_id = keys.id
+                        AND membership.active_until IS NULL
+                  )
+                "#,
+            )
+            .bind(tracked_from)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
 
         Ok(())
