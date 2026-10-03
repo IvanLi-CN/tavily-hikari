@@ -891,6 +891,10 @@ impl KeyStore {
         }
 
         let cutover_at = self.account_quota_zero_base_cutover_at().await?;
+        let affected_user_ids = rows
+            .iter()
+            .map(|(user_id, _, _, _, _)| user_id.clone())
+            .collect::<Vec<_>>();
         let updates = rows
             .into_iter()
             .filter_map(
@@ -913,13 +917,12 @@ impl KeyStore {
             )
             .collect::<Vec<_>>();
         if updates.is_empty() {
+            self.invalidate_all_account_quota_resolutions().await;
+            self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+                .await?;
             return Ok(());
         }
 
-        let affected_user_ids = updates
-            .iter()
-            .map(|(user_id, _, _, _)| user_id.clone())
-            .collect::<Vec<_>>();
         let mut tx = self.pool.begin().await?;
         for (user_id, business_calls_1h, daily_credits, monthly_credits) in updates {
             sqlx::query(

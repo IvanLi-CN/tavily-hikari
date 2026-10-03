@@ -880,6 +880,35 @@ async fn reconciliation_preflight_bulk_busy_does_not_leave_an_orphan_ticket() {
 }
 
 #[tokio::test]
+async fn reconciliation_preflight_retains_ticket_when_coordinator_orders_an_older_class() {
+    let runtime = three_connection_runtime().await;
+    runtime
+        .inner
+        .maintenance_coordinator
+        .register_request(SqliteMaintenanceClass::RequestStatsFlush);
+
+    assert!(matches!(
+        runtime.preflight_reconciliation_projection_admission(),
+        Err(SqliteAdmissionDeferReason::BulkBusy)
+    ));
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.pending_count(),
+        2,
+        "coordinator ordering must retain the reconciliation preflight ticket"
+    );
+
+    runtime
+        .inner
+        .maintenance_coordinator
+        .cancel_request(SqliteMaintenanceClass::RequestStatsFlush);
+    let preflight = runtime
+        .preflight_reconciliation_projection_admission()
+        .expect("reconciliation should proceed after the older class is removed");
+    drop(preflight);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 0);
+}
+
+#[tokio::test]
 async fn reconciliation_preflight_guard_does_not_cancel_a_replacement_ticket() {
     let runtime = three_connection_runtime().await;
     let preflight = runtime

@@ -890,6 +890,8 @@ struct SqliteRuntimeInner {
     file_state_paths: Mutex<SqliteFileStatePaths>,
     #[cfg(test)]
     fail_next_reconciliation_research_read: AtomicBool,
+    #[cfg(test)]
+    fail_next_owned_finish_restore: AtomicBool,
     #[cfg(any(test, debug_assertions))]
     force_next_cooperative_query_deadline: AtomicBool,
     #[cfg(any(test, debug_assertions))]
@@ -1057,6 +1059,8 @@ impl SqliteRuntime {
                 file_state_paths: Mutex::new(SqliteFileStatePaths::default()),
                 #[cfg(test)]
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
+                #[cfg(test)]
+                fail_next_owned_finish_restore: AtomicBool::new(false),
                 #[cfg(any(test, debug_assertions))]
                 force_next_cooperative_query_deadline: AtomicBool::new(false),
                 #[cfg(any(test, debug_assertions))]
@@ -1070,6 +1074,22 @@ impl SqliteRuntime {
         self.inner
             .fail_next_reconciliation_research_read
             .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_owned_finish_restore_for_test(&self) {
+        self.inner
+            .fail_next_owned_finish_restore
+            .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    fn take_fail_next_owned_finish_restore_for_test(&self, operation: SqliteOperation) -> bool {
+        operation == SqliteOperation::AdminMutation
+            && self
+                .inner
+                .fail_next_owned_finish_restore
+                .swap(false, AtomicOrdering::AcqRel)
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -1284,9 +1304,11 @@ impl SqliteRuntime {
                     self.inner.maintenance_coordinator.cancel_request(class);
                 }
             }
+            let cancel_if_unused = !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+                || self.inner.maintenance_bulk.available_permits() == 0;
             self.inner
                 .maintenance_coordinator
-                .release_preflight_request(class, ticket, true);
+                .release_preflight_request(class, ticket, cancel_if_unused);
             self.record_deferred(operation, reason);
             return Err(reason);
         }
@@ -3810,10 +3832,21 @@ async fn complete_immediate_transaction_commit(
     };
     record_connection_cache_write_delta(&runtime, operation, cache_write_pages_start, &mut conn)
         .await;
-    if let Err(error) = restore_operation_connection(conn, restore_busy_timeout).await {
+    #[cfg(test)]
+    let restore_result = if runtime.take_fail_next_owned_finish_restore_for_test(operation) {
+        let _ = conn.detach().close().await;
+        Err(sqlx::Error::PoolTimedOut)
+    } else {
+        restore_operation_connection(conn, restore_busy_timeout).await
+    };
+    #[cfg(not(test))]
+    let restore_result = restore_operation_connection(conn, restore_busy_timeout).await;
+    if let Err(error) = restore_result {
         let error = ProxyError::Database(error);
         runtime.record_error(operation, pool_wait, begin_wait, &error);
-        return Err(error);
+        // COMMIT already succeeded; cleanup failure must not make callers retry
+        // a non-idempotent write whose durable result is already visible.
+        return Ok(());
     }
     runtime.record_success(
         operation,

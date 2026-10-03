@@ -2,6 +2,37 @@ use super::jobs_and_request_log_retention::RequestLogsRetentionEnvGuard;
 use super::*;
 
 #[tokio::test]
+async fn create_access_token_returns_secret_when_post_commit_cleanup_fails() {
+    let db_path = temp_db_path("access-token-post-commit-cleanup");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    proxy
+        .key_store
+        .sqlite_runtime
+        .fail_next_owned_finish_restore_for_test();
+    let token = proxy
+        .create_access_token(Some("post-commit-cleanup"))
+        .await
+        .expect("committed token must not be retried after cleanup failure");
+    let stored = proxy
+        .key_store
+        .get_access_token_secret(&token.id)
+        .await
+        .expect("read committed token")
+        .expect("token remains durable");
+    assert_eq!(stored.id, token.id);
+    assert_eq!(stored.token, token.token);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn ensure_user_token_binding_reuses_existing_binding() {
     let db_path = temp_db_path("user-token-binding-reuse");
     let db_str = db_path.to_string_lossy().to_string();

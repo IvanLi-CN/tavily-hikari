@@ -381,6 +381,7 @@
         "tests::proxy_affinity_and_summary::token_",
         "tests::request_kind_and_core::token_",
         "tests::user_tokens_and_pending_billing::token_",
+        "tests::user_tokens_and_pending_billing::create_access_token_returns_secret_when_post_commit_cleanup_fails",
         "tests::jobs_and_request_log_retention::user_",
         "tests::proxy_affinity_and_summary::user_",
         "tests::request_kind_and_core::user_",

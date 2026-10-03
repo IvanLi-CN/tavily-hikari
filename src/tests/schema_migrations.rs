@@ -2136,6 +2136,89 @@ async fn account_quota_default_sync_skips_unchanged_state_under_lock() {
 }
 
 #[tokio::test]
+async fn account_quota_default_sync_replays_missing_snapshot_when_limits_are_unchanged() {
+    let db_path = temp_db_path("schema-migration-account-quota-snapshot-replay");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-account-quota-snapshot-replay".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(),
+            provider_user_id: "schema-migration-account-quota-snapshot-replay".to_string(),
+            username: Some("schema_migration_account_quota_snapshot_replay".to_string()),
+            name: Some("Schema Migration Account Quota Snapshot Replay".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("create account");
+    proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("create account quota row and initial snapshot");
+    let defaults = proxy
+        .key_store
+        .default_account_quota_limits_for_user(&user.user_id)
+        .await
+        .expect("read account quota defaults");
+    sqlx::query(
+        "UPDATE account_quota_limits \
+         SET business_calls_1h_limit = ?, daily_credits_limit = ?, \
+             monthly_credits_limit = ?, inherits_defaults = 1 \
+         WHERE user_id = ?",
+    )
+    .bind(defaults.business_calls_1h_limit)
+    .bind(defaults.daily_credits_limit)
+    .bind(defaults.monthly_credits_limit)
+    .bind(&user.user_id)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark account quota row as unchanged defaults");
+    sqlx::query("DELETE FROM account_quota_limit_snapshots WHERE user_id = ?")
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("remove snapshot to simulate an interrupted prior sync");
+
+    proxy
+        .key_store
+        .sync_account_quota_limits_with_defaults()
+        .await
+        .expect("unchanged defaults must replay the missing snapshot");
+
+    let snapshot = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT business_calls_1h_limit, daily_credits_limit, monthly_credits_limit \
+         FROM account_quota_limit_snapshots WHERE user_id = ? \
+         ORDER BY changed_at DESC, id DESC LIMIT 1",
+    )
+    .bind(&user.user_id)
+    .fetch_optional(&proxy.key_store.pool)
+    .await
+    .expect("read replayed snapshot")
+    .expect("replayed snapshot exists");
+    assert_eq!(
+        snapshot,
+        (
+            defaults.business_calls_1h_limit,
+            defaults.daily_credits_limit,
+            defaults.monthly_credits_limit,
+        )
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn versioned_schema_migrations_reject_missing_recorded_objects() {
     let db_path = temp_db_path("schema-migration-missing-object");
     let db_str = db_path.to_string_lossy().to_string();

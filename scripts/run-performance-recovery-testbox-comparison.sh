@@ -29,6 +29,10 @@ BASELINE_REF="${BASELINE_REF:-1d6d93cbf4de6e673d75811fadd21f45b9a40482}"
 DURATION_SECS="${DURATION_SECS:-600}"
 TESTBOX_HOST="${TESTBOX_HOST:-codex-testbox}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d_%H%M%S)_$(git -C "$ROOT_DIR" rev-parse --short HEAD)_recovery_compare}"
+if [[ -n "$(git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "candidate worktree must be clean before exporting source" >&2
+  exit 2
+fi
 CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse "${BASELINE_REF}^{commit}")"
 REMOTE_SPACE_MARGIN_BYTES="${REMOTE_SPACE_MARGIN_BYTES:-10737418240}"
