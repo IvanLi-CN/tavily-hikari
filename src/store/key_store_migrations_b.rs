@@ -918,17 +918,6 @@ impl KeyStore {
         )
         .fetch_one(&self.pool)
         .await?;
-        if schema_objects == 4 {
-            let history_initialized = sqlx::query_scalar::<_, i64>(
-                "SELECT EXISTS(SELECT 1 FROM api_key_membership_history_state WHERE singleton = 1)",
-            )
-            .fetch_one(&self.pool)
-            .await?;
-            if history_initialized != 0 {
-                return Ok(());
-            }
-        }
-
         let intervals_table_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_key_membership_intervals')",
         )
@@ -951,6 +940,19 @@ impl KeyStore {
         } else {
             false
         };
+        let active_membership_gap = if intervals_table_exists && history_initialized {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM api_keys AS keys WHERE keys.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM api_key_membership_intervals AS membership WHERE membership.key_id = keys.id AND membership.active_until IS NULL))",
+            )
+            .fetch_one(&self.pool)
+            .await?
+                != 0
+        } else {
+            false
+        };
+        if schema_objects == 4 && history_initialized && !active_membership_gap {
+            return Ok(());
+        }
 
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -990,11 +992,14 @@ impl KeyStore {
         .await?;
 
         let tracked_from = self.backend_time.now_ts();
-        if history_initialized && !intervals_table_exists {
-            // Losing the interval table also loses deletion and re-import events. Advance the
-            // trust boundary instead of fabricating continuous membership from api_keys.created_at.
+        let reset_history_boundary =
+            !history_initialized || !intervals_table_exists || active_membership_gap;
+        if history_initialized && reset_history_boundary {
+            // Missing lifecycle evidence can include a lost interval table or an active key
+            // without an open interval. Advance the trust boundary instead of fabricating
+            // continuous membership from api_keys.created_at.
             sqlx::query(
-                "UPDATE api_key_membership_history_state SET tracked_from = ? WHERE singleton = 1",
+                "UPDATE api_key_membership_history_state SET tracked_from = MAX(tracked_from, ?) WHERE singleton = 1",
             )
             .bind(tracked_from)
             .execute(&mut *tx)
@@ -1012,7 +1017,7 @@ impl KeyStore {
         )
         .fetch_one(&mut *tx)
         .await?;
-        if !history_initialized || !intervals_table_exists {
+        if reset_history_boundary {
             sqlx::query(
                 r#"
                 INSERT INTO api_key_membership_intervals (key_id, active_from)

@@ -1185,6 +1185,12 @@ def expected_maintenance_attempts(load_summary):
     recovery_tail_attempt = int(load_summary.get("recoveryTailSecs", 0) > 0)
     return scheduled + recovery_tail_attempt
 
+def is_diagnostic_duration(duration_secs):
+    return duration_secs < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS
+
+def acceptance_status_for_duration(duration_secs):
+    return "diagnostic" if is_diagnostic_duration(duration_secs) else "passed"
+
 def assert_not_worse(metric, base, cand, absolute_floor=None, additive_tolerance=0):
     if base is None or cand is None:
         raise SystemExit(f"missing {metric} sample")
@@ -1205,7 +1211,7 @@ candidate_business_responses = (
 )
 if baseline["load"]["durationSecs"] != candidate["load"]["durationSecs"]:
     raise SystemExit("baseline and candidate duration windows must match")
-diagnostic = baseline["load"]["durationSecs"] < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS
+diagnostic = is_diagnostic_duration(baseline["load"]["durationSecs"])
 baseline_business_minimum = (
     baseline["load"]["trafficDurationSecs"]
     * baseline["load"].get("businessClients", 0)
@@ -1244,7 +1250,7 @@ for summary in (baseline, candidate):
     dashboard_attempts = summary["load"].get("dashboardAttempts")
     traffic_duration_secs = summary["load"].get("trafficDurationSecs")
     recovery_tail_secs = summary["load"].get("recoveryTailSecs")
-    diagnostic = summary["load"]["durationSecs"] < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS
+    diagnostic = is_diagnostic_duration(summary["load"]["durationSecs"])
     if dashboard_clients != 20 or dashboard_interval_secs != 60.0:
         raise SystemExit(f"unexpected dashboard load shape for {summary['variant']}")
     expected_recovery_tail_secs = 0 if diagnostic else 60
@@ -1530,7 +1536,7 @@ for billing_field in ("billingAdjustmentCount", "billingAdjustmentSum"):
 
 # Short runs exercise startup/recovery wiring only; keep their receipt
 # explicitly non-accepting because the production-shape comparison gates are skipped.
-acceptance_status = "diagnostic" if diagnostic else "passed"
+acceptance_status = acceptance_status_for_duration(baseline["load"]["durationSecs"])
 result = {
     "baseline": baseline,
     "candidate": candidate,

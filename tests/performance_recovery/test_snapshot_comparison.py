@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import unittest
@@ -33,6 +34,28 @@ def comparison_resources(variable: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", match.group("items")))
 
 
+def comparator_helpers(*names: str) -> dict[str, object]:
+    marker = 'python3 - "$ARTIFACTS_DIR" <<\'PY\'\n'
+    embedded = COMPARISON.split(marker, 1)[1].split("\nPY\n", 1)[0]
+    tree = ast.parse(embedded)
+    selected = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in names)
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS"
+                for target in node.targets
+            )
+        )
+    ]
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "comparator", "exec"), namespace)
+    return namespace
+
+
 class SnapshotComparisonTests(unittest.TestCase):
     def test_gc_debt_gate_matches_runtime_allowed_resources(self) -> None:
         expected = {
@@ -51,8 +74,14 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("MAINTENANCE_FRESHNESS_BOUND_MS = 60_000", COMPARISON)
         self.assertIn("CONTROLLED_RESTART_HTTP_5XX_RATE_PERCENT = 5", COMPARISON)
         self.assertIn("PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS = 600", COMPARISON)
-        self.assertIn('acceptance_status = "diagnostic" if diagnostic else "passed"', COMPARISON)
-        self.assertIn('diagnostic = baseline["load"]["durationSecs"] < PRODUCTION_ACCEPTANCE_MIN_DURATION_SECS', COMPARISON)
+        self.assertIn(
+            "acceptance_status = acceptance_status_for_duration(baseline[\"load\"][\"durationSecs\"])",
+            COMPARISON,
+        )
+        self.assertIn(
+            "diagnostic = is_diagnostic_duration(baseline[\"load\"][\"durationSecs\"])",
+            COMPARISON,
+        )
         self.assertIn('baseline and candidate duration windows must match', COMPARISON)
         self.assertIn("candidate_failures * 100", COMPARISON)
         self.assertIn('structured_value(line, "operation") != "foreground_job_trigger"', COMPARISON)
@@ -164,6 +193,35 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("upstream_reconciliation_research_scan_state", COMPARISON)
         self.assertIn("upstream_reconciliation_control_state", COMPARISON)
         self.assertIn("the persisted legacy switch above produces compare mode", COMPARISON)
+
+    def test_comparator_helpers_cover_schedule_and_acceptance_boundaries(self) -> None:
+        helpers = comparator_helpers(
+            "expected_periodic_attempts",
+            "expected_maintenance_attempts",
+            "is_diagnostic_duration",
+            "acceptance_status_for_duration",
+        )
+        expected_periodic_attempts = helpers["expected_periodic_attempts"]
+        expected_maintenance_attempts = helpers["expected_maintenance_attempts"]
+        is_diagnostic_duration = helpers["is_diagnostic_duration"]
+        acceptance_status_for_duration = helpers["acceptance_status_for_duration"]
+        self.assertEqual(expected_periodic_attempts(540, 60.0, 17.0), 9)
+        self.assertEqual(
+            expected_maintenance_attempts(
+                {"trafficDurationSecs": 540, "recoveryTailSecs": 60}
+            ),
+            10,
+        )
+        self.assertEqual(
+            expected_maintenance_attempts(
+                {"trafficDurationSecs": 599, "recoveryTailSecs": 0}
+            ),
+            10,
+        )
+        self.assertTrue(is_diagnostic_duration(599))
+        self.assertFalse(is_diagnostic_duration(600))
+        self.assertEqual(acceptance_status_for_duration(599), "diagnostic")
+        self.assertEqual(acceptance_status_for_duration(600), "passed")
 
     def test_shadow_reconciliation_fixture_uses_the_newest_eligible_window(self) -> None:
         self.assertIn(

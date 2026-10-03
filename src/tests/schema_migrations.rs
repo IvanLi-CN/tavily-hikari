@@ -1940,6 +1940,24 @@ async fn warm_schema_compatibility_resets_history_after_lost_intervals() {
     assert_eq!(old_history_rows, 0);
 
     drop(proxy);
+    let lock_pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DROP TABLE api_key_membership_intervals")
+        .execute(&lock_pool)
+        .await
+        .expect("remove intervals for the backward-clock restart");
+    lock_pool.close().await;
+    let (earlier_backend_time, _) = BackendTime::manual_from_ts(rebuild_boundary - 3_600);
+    let restarted = KeyStore::new_with_time(&db_str, earlier_backend_time)
+        .await
+        .expect("restart schema migration with a backward wall clock");
+    let retained_tracked_from: i64 = sqlx::query_scalar(
+        "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
+    )
+    .fetch_one(&restarted.pool)
+    .await
+    .expect("read retained history boundary");
+    assert_eq!(retained_tracked_from, rebuild_boundary);
+    drop(restarted);
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
@@ -1990,6 +2008,65 @@ async fn warm_schema_compatibility_seeds_current_keys_when_history_marker_is_mis
     .await
     .expect("read current membership interval");
     assert_eq!(active_from, tracked_from);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn warm_schema_compatibility_resets_history_for_active_key_without_interval() {
+    let db_path = temp_db_path("schema-migration-membership-intervals-active-gap");
+    let db_str = db_path.to_string_lossy().to_string();
+    let tracked_from = 1_700_000_000_i64;
+    let rebuild_boundary = tracked_from + 7_200;
+    let (backend_time, _) = BackendTime::manual_from_ts(rebuild_boundary);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-schema-migration-membership-intervals-active-gap".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("create migrated database");
+    let key_id = "schema-migration-active-gap-key";
+    sqlx::query(
+        "INSERT INTO api_keys (id, api_key, status, created_at) VALUES (?, ?, 'active', ?)",
+    )
+    .bind(key_id)
+    .bind("tvly-schema-migration-active-gap-key")
+    .bind(tracked_from - 3_600)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("create active API key without interval evidence");
+    sqlx::query("UPDATE api_key_membership_history_state SET tracked_from = ? WHERE singleton = 1")
+        .bind(tracked_from)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("preserve the existing history marker");
+
+    proxy
+        .key_store
+        .ensure_warm_schema_compatibility()
+        .await
+        .expect("warm schema compatibility must repair the active membership gap");
+    let restored_tracked_from: i64 = sqlx::query_scalar(
+        "SELECT tracked_from FROM api_key_membership_history_state WHERE singleton = 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reset history boundary");
+    let active_from: i64 = sqlx::query_scalar(
+        "SELECT active_from FROM api_key_membership_intervals WHERE key_id = ? AND active_until IS NULL",
+    )
+    .bind(key_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read repaired current membership interval");
+    assert_eq!(restored_tracked_from, rebuild_boundary);
+    assert_eq!(active_from, rebuild_boundary);
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);
