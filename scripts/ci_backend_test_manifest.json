@@ -520,6 +520,7 @@
       "include_prefixes": [
         "tests::maintenance_queue_performance::",
         "tests::schema_migrations::",
+        "tests::schema_migration_compatibility::",
         "tests::reconciliation_controller::"
       ]
     },
