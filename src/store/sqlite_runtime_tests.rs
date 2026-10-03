@@ -687,6 +687,38 @@ async fn maintenance_bulk_does_not_bypass_an_actively_retrying_oldest_class() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_expires_an_idle_pending_class() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats registers a pending ticket");
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats remains pending")
+            .last_requested_at = Instant::now() - MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT;
+    }
+
+    let snapshot = runtime.inner.maintenance_coordinator.snapshot();
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 0);
+    assert!(snapshot.contains("request_stats_flush:pending_age_ms=none"));
+    assert!(snapshot.contains(
+        "request_stats_flush:pending_age_ms=none,admissions=0,completed=0,max_wait_ms=0,stale=1"
+    ));
+    drop(holder);
+}
+
+#[tokio::test]
 async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
