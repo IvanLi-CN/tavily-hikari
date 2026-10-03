@@ -460,8 +460,30 @@ REMOTE_AVAILABLE_BYTES="$(ssh -o BatchMode=yes "$TESTBOX_HOST" "df -B1 --output=
 # The testbox retains compressed immutable inputs and expands exactly one writable variant at a
 # time. The explicit margin covers the application build/image, WAL growth, artifacts, and ordinary
 # filesystem metadata without touching unrelated host images or caches.
-REMOTE_REQUIRED_BYTES="$((CORE_COMPRESSED_SNAPSHOT_BYTES + SIDECAR_COMPRESSED_SNAPSHOT_BYTES + CORE_SNAPSHOT_BYTES + SIDECAR_SNAPSHOT_BYTES + REMOTE_SPACE_MARGIN_BYTES))"
-if (( REMOTE_AVAILABLE_BYTES < REMOTE_REQUIRED_BYTES )); then
+REMOTE_SPACE_CHECK="$(
+  python3 - \
+    "$REMOTE_AVAILABLE_BYTES" \
+    "$CORE_COMPRESSED_SNAPSHOT_BYTES" \
+    "$SIDECAR_COMPRESSED_SNAPSHOT_BYTES" \
+    "$CORE_SNAPSHOT_BYTES" \
+    "$SIDECAR_SNAPSHOT_BYTES" \
+    "$REMOTE_SPACE_MARGIN_BYTES" <<'PY'
+import sys
+
+try:
+    values = [int(value) for value in sys.argv[1:]]
+except ValueError as error:
+    raise SystemExit(f"snapshot space value is not a decimal integer: {error}")
+if any(value < 0 for value in values):
+    raise SystemExit("snapshot space values must be non-negative")
+
+available, *required_parts = values
+required = sum(required_parts)
+print(f"{required}\t{int(available >= required)}")
+PY
+)"
+IFS=$'\t' read -r REMOTE_REQUIRED_BYTES REMOTE_SPACE_SUFFICIENT <<<"$REMOTE_SPACE_CHECK"
+if [[ "$REMOTE_SPACE_SUFFICIENT" != 1 ]]; then
   echo "insufficient testbox free space: available=${REMOTE_AVAILABLE_BYTES} required=${REMOTE_REQUIRED_BYTES}" >&2
   exit 2
 fi

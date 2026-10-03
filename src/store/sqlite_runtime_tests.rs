@@ -611,6 +611,11 @@ async fn maintenance_bulk_ages_a_pending_class_into_a_bounded_turn() {
             .first_requested_at = aged_at;
         state
             .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats remains pending")
+            .last_requested_at = aged_at;
+        state
+            .pending
             .get_mut(&SqliteMaintenanceClass::AlertProjection)
             .expect("alert projection registers a fair ticket")
             .first_requested_at = aged_at;
@@ -628,6 +633,56 @@ async fn maintenance_bulk_ages_a_pending_class_into_a_bounded_turn() {
     let request_stats = runtime
         .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
         .expect("the older class remains available after the aged turn");
+    drop(request_stats);
+}
+
+#[tokio::test]
+async fn maintenance_bulk_does_not_bypass_an_actively_retrying_oldest_class() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats becomes the oldest pending class");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+        .expect_err("alert projection waits behind request stats");
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        let aged_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats registers a fair ticket")
+            .first_requested_at = aged_at;
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::AlertProjection)
+            .expect("alert projection registers a fair ticket")
+            .first_requested_at = aged_at;
+        state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("request stats remains pending")
+            .last_requested_at = Instant::now();
+    }
+    drop(holder);
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+            .expect_err("an actively retrying oldest class cannot be bypassed"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    let request_stats = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("the oldest class is admitted first");
     drop(request_stats);
 }
 

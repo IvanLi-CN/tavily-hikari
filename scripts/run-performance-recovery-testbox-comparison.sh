@@ -133,6 +133,26 @@ echo "Collecting sanitized comparison summary..."
 mkdir -p "$TMP_DIR/result"
 rsync -az "$TESTBOX_HOST:$REMOTE_RUN/artifacts/performance-recovery/comparison.json" "$TMP_DIR/result/comparison.json"
 cat "$TMP_DIR/result/comparison.json"
+if ! python3 - "$TMP_DIR/result/comparison.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    comparison = json.load(handle)
+acceptance = comparison.get("empiricalAcceptance", {})
+status = acceptance.get("status")
+result = comparison.get("result")
+if status != "passed" or result not in {"passed", "passed_with_baseline_red"}:
+    print(
+        f"non-accepting comparison result: empiricalAcceptance.status={status!r} result={result!r}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
+then
+  echo "comparison did not produce an acceptance result" >&2
+  exit 2
+fi
 echo "Cleaning isolated codex-testbox run..."
 ssh -o BatchMode=yes "$TESTBOX_HOST" "rm -rf '$REMOTE_RUN' && test ! -e '$REMOTE_RUN'"
 completed=true

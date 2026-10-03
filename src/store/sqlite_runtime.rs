@@ -473,7 +473,10 @@ impl SqliteMaintenanceCoordinator {
         now: Instant,
         allow_aged_turn: bool,
     ) -> bool {
-        if Self::oldest_pending(state) == Some(class) {
+        let Some(oldest_class) = Self::oldest_pending(state) else {
+            return false;
+        };
+        if oldest_class == class {
             return true;
         }
         if !allow_aged_turn {
@@ -481,7 +484,14 @@ impl SqliteMaintenanceCoordinator {
         }
         // The oldest class remains preferred, but its worker may be asleep
         // after registering the ticket. Let a caller take its own bounded-age
-        // turn instead of leaving the physical slot idle behind that ticket.
+        // turn only when that oldest worker is no longer actively retrying.
+        let oldest_is_idle = state.pending.get(&oldest_class).is_some_and(|pending| {
+            now.saturating_duration_since(pending.last_requested_at)
+                >= MAINTENANCE_BULK_TURN_BYPASS_AGE
+        });
+        if !oldest_is_idle {
+            return false;
+        }
         state.pending.get(&class).is_some_and(|pending| {
             now.saturating_duration_since(pending.first_requested_at)
                 >= MAINTENANCE_BULK_TURN_BYPASS_AGE
