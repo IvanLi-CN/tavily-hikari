@@ -88,7 +88,7 @@ REMOTE_RUN="$(printf '%s\n' "$snapshot_output" | awk -F= '/^REMOTE_RUN=/{print $
   exit 2
 }
 
-echo "Preparing baseline source at ${BASELINE_REF}..."
+echo "Preparing baseline source at ${BASELINE_REF} (resolved ${BASELINE_SHA})..."
 BASELINE_ARCHIVE="$TMP_DIR/baseline-source.tar"
 git -C "$ROOT_DIR" archive --output="$BASELINE_ARCHIVE" "$BASELINE_SHA"
 tar -xf "$BASELINE_ARCHIVE" -C "$TMP_DIR"
