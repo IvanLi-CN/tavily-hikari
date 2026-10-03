@@ -35,6 +35,10 @@ if [[ -n "$(git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all)" ]];
 fi
 CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
 BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse "${BASELINE_REF}^{commit}")"
+if [[ "$BASELINE_SHA" == "$CANDIDATE_SHA" ]]; then
+  echo "baseline and candidate must resolve to different Git commits" >&2
+  exit 2
+fi
 REMOTE_SPACE_MARGIN_BYTES="${REMOTE_SPACE_MARGIN_BYTES:-10737418240}"
 
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || { echo "invalid RUN_ID" >&2; exit 2; }
