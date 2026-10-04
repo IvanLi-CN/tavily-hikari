@@ -624,6 +624,16 @@ async fn aged_research_bypasses_foreground_heuristic_once() {
     let turn = controller
         .reserve_aged_research_drain_turn()
         .expect("aged Research receives a turn");
+    for _ in 0..6 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        for _ in 0..6 {
+            state.proxy.record_foreground_activity();
+        }
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS,
+        "fixture keeps foreground-rate pressure while setup contention cools"
+    );
 
     assert!(
         run_manual_claimed_job(
