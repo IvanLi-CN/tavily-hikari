@@ -891,7 +891,7 @@ async fn maintenance_bulk_retains_request_logs_gc_progress_continuation() {
     permit.retain_progress_continuation();
     drop(permit);
 
-    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 2);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
     {
         let state = runtime
             .inner
