@@ -13,6 +13,7 @@ VERSION_A="${VERSION_A:-0.0.0-ci.1}"
 VERSION_B="${VERSION_B:-0.0.0-ci.2}"
 IMAGE_PREFIX="${IMAGE_PREFIX:-tavily-hikari-version-layer-${GITHUB_RUN_ID:-$$}}"
 REPORT_PATH="${LAYER_ACCEPTANCE_REPORT:-$RUN_ROOT/acceptance.md}"
+IMAGE_B_TAG_FILE="${IMAGE_B_TAG_FILE:-}"
 SOURCE_DATE_EPOCH=0
 INPUT_EPOCH_A=1700000000
 INPUT_EPOCH_B=1800000000
@@ -25,13 +26,15 @@ if [[ -n "${BUILDX_BUILDER:-}" ]]; then
   BUILDX_BUILDER_ARGS=(--builder "$BUILDX_BUILDER")
 fi
 
-declare -a IMAGES=()
+declare -a IMAGE_TAGS=()
+declare -a IMAGE_IDS=()
 declare -a PLATFORM_RESULTS=()
 
 mkdir -p "$RUN_ROOT"
 
 cleanup() {
   local container_id
+  local image_index image_tag expected_image_id current_image_id
   if command -v docker >/dev/null 2>&1; then
     if [[ -n "$INVOCATION_ID" ]]; then
       while IFS= read -r container_id; do
@@ -39,9 +42,14 @@ cleanup() {
         docker rm -f "$container_id" >/dev/null 2>&1 || true
       done < <(docker ps -aq --filter "label=codex.testbox.run=$INVOCATION_ID" 2>/dev/null || true)
     fi
-    if ((${#IMAGES[@]})); then
-      docker image rm "${IMAGES[@]}" >/dev/null 2>&1 || true
-    fi
+    for image_index in "${!IMAGE_TAGS[@]}"; do
+      image_tag="${IMAGE_TAGS[$image_index]}"
+      expected_image_id="${IMAGE_IDS[$image_index]}"
+      current_image_id="$(docker image inspect --format '{{.Id}}' "$image_tag" 2>/dev/null || true)"
+      if [[ "$current_image_id" == "$expected_image_id" ]]; then
+        docker image rm "$image_tag" >/dev/null 2>&1 || true
+      fi
+    done
   fi
   if [[ "${KEEP_RUN_ROOT:-0}" != "1" ]]; then
     rm -rf "$RUN_ROOT"
@@ -60,12 +68,13 @@ if [[ -n "$CODEX_THREAD_ID" && ! "$CODEX_THREAD_ID" =~ ^[a-z0-9][a-z0-9_-]*$ ]];
   exit 2
 fi
 
-if [[ -n "$CODEX_THREAD_ID" ]]; then
-  CONTAINER_PREFIX="testbox-${CODEX_THREAD_ID}-${IMAGE_PREFIX}"
-else
-  CONTAINER_PREFIX="$IMAGE_PREFIX"
-fi
 INVOCATION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+IMAGE_TAG_PREFIX="${IMAGE_PREFIX}-${INVOCATION_ID}"
+if [[ -n "$CODEX_THREAD_ID" ]]; then
+  CONTAINER_PREFIX="testbox-${CODEX_THREAD_ID}-${IMAGE_PREFIX}-${INVOCATION_ID}"
+else
+  CONTAINER_PREFIX="${IMAGE_PREFIX}-${INVOCATION_ID}"
+fi
 DOCKER_LABEL_ARGS=(--label "codex.testbox.run=$INVOCATION_ID")
 if [[ -n "$CODEX_THREAD_ID" ]]; then
   DOCKER_LABEL_ARGS+=(--label "codex.testbox.agent=$CODEX_THREAD_ID")
@@ -160,6 +169,14 @@ buildx_build() {
   docker buildx build "${BUILDX_BUILDER_ARGS[@]}" "$@"
 }
 
+track_image() {
+  local image_tag="$1"
+  local image_id
+  image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
+  IMAGE_TAGS+=("$image_tag")
+  IMAGE_IDS+=("$image_id")
+}
+
 build_image() {
   local platform="$1"
   local tag="$2"
@@ -177,7 +194,7 @@ build_image() {
     build_args+=(--no-cache-filter=payload-normalizer)
   fi
   buildx_build "${build_args[@]}" "$context"
-  IMAGES+=("$tag")
+  track_image "$tag"
 }
 
 check_image_contract() {
@@ -343,17 +360,17 @@ cat > "$REPORT_PATH" <<EOF
 EOF
 
 first_platform="${PLATFORM_LIST[0]}"
-audit_tag="${IMAGE_PREFIX}-context-audit"
+audit_tag="${IMAGE_TAG_PREFIX}-context-audit"
 buildx_build --platform "$first_platform" --load --target context-audit --tag "$audit_tag" "$CONTEXT_A"
-IMAGES+=("$audit_tag")
+track_image "$audit_tag"
 
 for platform in "${PLATFORM_LIST[@]}"; do
   arch="${platform##*/}"
-  image_a="${IMAGE_PREFIX}-a-${arch}"
-  image_a_mtime="${IMAGE_PREFIX}-a-mtime-${arch}"
-  image_b="${IMAGE_PREFIX}-b-${arch}"
+  image_a="${IMAGE_TAG_PREFIX}-a-${arch}"
+  image_a_mtime="${IMAGE_TAG_PREFIX}-a-mtime-${arch}"
+  image_b="${IMAGE_TAG_PREFIX}-b-${arch}"
   if [[ "$arch" == "amd64" ]]; then
-    image_b="$IMAGE_PREFIX-b"
+    image_b="${IMAGE_TAG_PREFIX}-b"
   fi
 
   build_image "$platform" "$image_a" "$VERSION_A" "$CONTEXT_A"
@@ -381,6 +398,10 @@ for platform in "${PLATFORM_LIST[@]}"; do
   if [[ -n "${IMAGE_B_ARCHIVE:-}" && "$arch" == "amd64" ]]; then
     mkdir -p "$(dirname -- "$IMAGE_B_ARCHIVE")"
     docker save "$image_b" | gzip -1 > "$IMAGE_B_ARCHIVE"
+    if [[ -n "$IMAGE_B_TAG_FILE" ]]; then
+      mkdir -p "$(dirname -- "$IMAGE_B_TAG_FILE")"
+      printf '%s\n' "$image_b" > "$IMAGE_B_TAG_FILE"
+    fi
   fi
 done
 

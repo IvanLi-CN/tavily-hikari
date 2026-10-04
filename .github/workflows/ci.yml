@@ -85,6 +85,7 @@ jobs:
       - name: Build and verify version layers
         env:
           IMAGE_B_ARCHIVE: ${{ runner.temp }}/version-layer-image-b.tar.gz
+          IMAGE_B_TAG_FILE: ${{ runner.temp }}/version-layer-image-b.tag
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
@@ -97,7 +98,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: version-layer-image-b
-          path: ${{ runner.temp }}/version-layer-image-b.tar.gz
+          path: |
+            ${{ runner.temp }}/version-layer-image-b.tar.gz
+            ${{ runner.temp }}/version-layer-image-b.tag
           if-no-files-found: error
 
   brand-assets:
@@ -334,7 +337,6 @@ jobs:
       COMPOSE_FILE: examples/forwardauth-caddy/docker-compose.yml
       BASIC_AUTH_USER: admin
       BASIC_AUTH_PASS: password
-      IMAGE_TAG: tavily-hikari-version-layer-${{ github.run_id }}-b
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -359,7 +361,9 @@ jobs:
         run: |
           set -euo pipefail
           gzip -dc "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tar.gz" | docker load
+          IMAGE_TAG="$(cat "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tag")"
           docker image inspect "${IMAGE_TAG}" >/dev/null
+          printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$GITHUB_ENV"
 
       - name: Start compose stack
         shell: bash
