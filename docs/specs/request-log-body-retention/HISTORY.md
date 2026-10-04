@@ -16,3 +16,5 @@
   limit and preserve the completed high-load evidence independently of recovery duration.
 - 2026-10-04: Cover new GC-blocker page preemption, unfinished source-recovery deletion protection,
   and terminal bodyless scans that make no durable cursor progress.
+- 2026-10-04: Keep foreground HTTP primary-affinity cooldown selection out of maintenance admission
+  while preserving global cooldown and fallback behavior during GC catch-up.

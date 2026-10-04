@@ -1,5 +1,8 @@
 # Implementation
 
+- HTTP user/token primary-affinity selection now embeds its optional transient-cooldown predicate
+  in the existing Key eligibility query, avoiding the bounded maintenance-read admission path while
+  preserving `http_global` cooldown behavior and the original affinity rebind fallback.
 - Request-log GC blocking-day registration uses the existing scoped write budget. In the legacy
   same-file attachment layout it uses a single atomic UPSERT, preserving the fail-closed source
   guard without requesting two immediate locks on the same SQLite file.
@@ -533,6 +536,9 @@
 - `cargo clippy -- -D warnings`
 - Full `cargo test --locked --all-features`
 - `cargo clippy -- -D warnings`
+- `cargo test --lib http_key_selection_ -- --nocapture`
+- `cargo test --lib http_affinity_cooldown_selector_waits_for_saturated_pool -- --nocapture`
+- `cargo test --lib token_primary_rebind -- --nocapture`
 - Shared testbox isolated run:
   - remote workspace `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb`
   - remote run `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb/runs/20260617_035715_7dfaaa12_sidecar`
@@ -673,4 +679,4 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-07-05
+- Last: 2026-10-04

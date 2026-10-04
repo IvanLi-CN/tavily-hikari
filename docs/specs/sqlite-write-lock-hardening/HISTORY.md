@@ -1,5 +1,7 @@
 # History
 
+- 2026-10-04: Move foreground HTTP primary-affinity cooldown evaluation into the Key eligibility
+  query so maintenance-read admission pressure cannot turn a transient pool wait into HTTP 500.
 - 2026-10-03: Align request-log GC continuation with durable progress while preserving five-minute
   pressure/error defers, fenced handoff, and foreground admission.
 

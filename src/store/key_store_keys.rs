@@ -1,3 +1,9 @@
+enum SpecificKeySelection {
+    Lease(ApiKeyLease),
+    Unavailable,
+    CooledDown,
+}
+
 impl KeyStore {
     fn admin_active_user_day_bucket_start(&self) -> i64 {
         let current_local_day_start = local_day_bucket_start_utc_ts(self.backend_time.now_ts());
@@ -678,47 +684,95 @@ impl KeyStore {
         key_id: &str,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
         self.reset_monthly().await?;
-        if let Some(lease) = self
-            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false)
+        match self
+            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false, None)
             .await?
         {
-            return Ok(Some(lease));
+            SpecificKeySelection::Lease(lease) => return Ok(Some(lease)),
+            SpecificKeySelection::Unavailable | SpecificKeySelection::CooledDown => {}
         }
 
-        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true)
-            .await
+        match self
+            .try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true, None)
+            .await?
+        {
+            SpecificKeySelection::Lease(lease) => Ok(Some(lease)),
+            SpecificKeySelection::Unavailable | SpecificKeySelection::CooledDown => Ok(None),
+        }
     }
 
     pub(crate) async fn try_acquire_affinity_specific_key(
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.try_acquire_affinity_specific_key_with_transient_backoff(key_id, None)
+            .await
+    }
+
+    pub(crate) async fn try_acquire_affinity_specific_key_avoiding_transient_backoff(
+        &self,
+        key_id: &str,
+        scope: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.try_acquire_affinity_specific_key_with_transient_backoff(key_id, Some(scope))
+            .await
+    }
+
+    async fn try_acquire_affinity_specific_key_with_transient_backoff(
+        &self,
+        key_id: &str,
+        transient_backoff_scope: Option<&str>,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
         self.reset_monthly().await?;
 
-        if let Some(lease) = self
-            .try_acquire_specific_key_with_status(key_id, STATUS_ACTIVE, false)
+        match self
+            .try_acquire_specific_key_with_status(
+                key_id,
+                STATUS_ACTIVE,
+                false,
+                transient_backoff_scope,
+            )
             .await?
         {
-            return Ok(Some(lease));
+            SpecificKeySelection::Lease(lease) => return Ok(Some(lease)),
+            SpecificKeySelection::CooledDown => return Ok(None),
+            SpecificKeySelection::Unavailable => {}
         }
 
         if self.has_available_active_key_excluding(None).await? {
             return Ok(None);
         }
 
-        if let Some(lease) = self
-            .try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, false)
+        match self
+            .try_acquire_specific_key_with_status(
+                key_id,
+                STATUS_EXHAUSTED,
+                false,
+                transient_backoff_scope,
+            )
             .await?
         {
-            return Ok(Some(lease));
+            SpecificKeySelection::Lease(lease) => return Ok(Some(lease)),
+            SpecificKeySelection::CooledDown => return Ok(None),
+            SpecificKeySelection::Unavailable => {}
         }
 
         if self.has_available_regular_exhausted_key_excluding(Some(key_id)).await? {
             return Ok(None);
         }
 
-        self.try_acquire_specific_key_with_status(key_id, STATUS_EXHAUSTED, true)
-            .await
+        match self
+            .try_acquire_specific_key_with_status(
+                key_id,
+                STATUS_EXHAUSTED,
+                true,
+                transient_backoff_scope,
+            )
+            .await?
+        {
+            SpecificKeySelection::Lease(lease) => Ok(Some(lease)),
+            SpecificKeySelection::Unavailable | SpecificKeySelection::CooledDown => Ok(None),
+        }
     }
 
     async fn try_acquire_specific_key_with_status(
@@ -726,44 +780,85 @@ impl KeyStore {
         key_id: &str,
         status: &str,
         allow_low_quota_depleted: bool,
-    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        transient_backoff_scope: Option<&str>,
+    ) -> Result<SpecificKeySelection, ProxyError> {
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
-        let lease = sqlx::query_as::<_, (String, String)>(
-            r#"
-            SELECT id, api_key
-            FROM api_keys
-            WHERE id = ? AND status = ? AND deleted_at IS NULL
-              AND (
-                  ? = 1
-                  OR NOT EXISTS (
-                      SELECT 1
-                      FROM api_key_low_quota_depletions d
-                      WHERE d.key_id = api_keys.id AND d.month_start = ?
+        let lease_with_cooldown = if let Some(scope) = transient_backoff_scope {
+            sqlx::query_as::<_, (String, String, bool)>(
+                r#"
+                SELECT id, api_key, EXISTS (
+                    SELECT 1
+                    FROM api_key_transient_backoffs b
+                    WHERE b.key_id = api_keys.id AND b.scope = ? AND b.cooldown_until > ?
+                ) AS is_cooled_down
+                FROM api_keys
+                WHERE id = ? AND status = ? AND deleted_at IS NULL
+                  AND (
+                      ? = 1
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM api_key_low_quota_depletions d
+                          WHERE d.key_id = api_keys.id AND d.month_start = ?
+                      )
                   )
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM api_key_quarantines q
-                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
-              )
-            LIMIT 1
-            "#,
-        )
-        .bind(key_id)
-        .bind(status)
-        .bind(if allow_low_quota_depleted { 1 } else { 0 })
-        .bind(month_start)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        let Some((id, api_key)) = lease else {
-            return Ok(None);
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                LIMIT 1
+                "#,
+            )
+            .bind(scope)
+            .bind(now)
+            .bind(key_id)
+            .bind(status)
+            .bind(if allow_low_quota_depleted { 1 } else { 0 })
+            .bind(month_start)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            let lease = sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE id = ? AND status = ? AND deleted_at IS NULL
+                  AND (
+                      ? = 1
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM api_key_low_quota_depletions d
+                          WHERE d.key_id = api_keys.id AND d.month_start = ?
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                LIMIT 1
+                "#,
+            )
+            .bind(key_id)
+            .bind(status)
+            .bind(if allow_low_quota_depleted { 1 } else { 0 })
+            .bind(month_start)
+            .fetch_optional(&self.pool)
+            .await?;
+            lease.map(|(id, api_key)| (id, api_key, false))
         };
 
+        let Some((id, api_key, is_cooled_down)) = lease_with_cooldown else {
+            return Ok(SpecificKeySelection::Unavailable);
+        };
+
+        if is_cooled_down {
+            return Ok(SpecificKeySelection::CooledDown);
+        }
         self.touch_key(&api_key, now).await?;
-        Ok(Some(ApiKeyLease {
+        Ok(SpecificKeySelection::Lease(ApiKeyLease {
             id,
             secret: api_key,
         }))

@@ -626,18 +626,6 @@ impl TavilyProxy {
             .is_some())
     }
 
-    async fn has_http_global_backoff(&self, key_id: &str) -> Result<bool, ProxyError> {
-        Ok(self
-            .key_store
-            .list_active_api_key_transient_backoffs(
-                &[key_id.to_string()],
-                HTTP_GLOBAL_BACKOFF_SCOPE,
-                self.backend_time.now_ts(),
-            )
-            .await?
-            .contains_key(key_id))
-    }
-
     #[allow(dead_code)]
     pub(crate) async fn acquire_key_for_http_project(
         &self,
@@ -1080,12 +1068,12 @@ impl TavilyProxy {
             }
 
             for (key_id, sync_on_acquire) in candidates {
-                if self.has_http_global_backoff(&key_id).await? {
-                    continue;
-                }
                 if let Some(lease) = self
                     .key_store
-                    .try_acquire_affinity_specific_key(&key_id)
+                    .try_acquire_affinity_specific_key_avoiding_transient_backoff(
+                        &key_id,
+                        HTTP_GLOBAL_BACKOFF_SCOPE,
+                    )
                     .await?
                 {
                     if sync_on_acquire {
@@ -1118,13 +1106,13 @@ impl TavilyProxy {
             .get_token_primary_api_key_affinity(token_id)
             .await?
         {
-            if !self
-                .has_http_global_backoff(&token_primary.api_key_id)
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_affinity_specific_key_avoiding_transient_backoff(
+                    &token_primary.api_key_id,
+                    HTTP_GLOBAL_BACKOFF_SCOPE,
+                )
                 .await?
-                && let Some(lease) = self
-                    .key_store
-                    .try_acquire_affinity_specific_key(&token_primary.api_key_id)
-                    .await?
             {
                 return Ok(lease);
             }

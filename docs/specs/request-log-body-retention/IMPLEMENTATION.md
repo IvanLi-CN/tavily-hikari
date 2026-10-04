@@ -11,6 +11,9 @@
   qualify for one-second continuation. The internal progress flag is omitted from serialized reports.
 - Optional blocked-day diagnostics preserve the existing API and CLI fields. Offline legacy
   single-database GC initializes the small recovery queue without moving production source data.
+- HTTP user/token primary-affinity selection now evaluates `http_global` cooldown in the existing
+  specific-key eligibility query, preserving cooldown boundaries and fallback behavior without a
+  separate `ScheduledJobControl` read.
 
 - Backend settings now expose `requestLogRetention` with defaults, range validation, and save-time
   clamp to `maxLogRetentionDays`.
@@ -36,6 +39,8 @@
 - GC regression coverage includes legacy single-database initialization and source preservation;
   atomic blocking-day registration avoids `BEGIN IMMEDIATE` self-contention between two aliases
   of the same file. Scheduled continuation tests cover progress, no progress and claim-fenced restart.
+- Affinity regressions cover global-cooldown rebinding, unrelated-scope isolation, and successful
+  cooldown selection after all pooled connections remain occupied beyond 100ms.
 - `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream testbox probe: 30 minutes
   at ten business requests per second, then a configurable rate no greater than five until at least
   5,000 expired rows are deleted. The default quiet phase uses 0.1 requests per second for up to
@@ -51,6 +56,6 @@
 
 ## Status
 
-- Status: 已实现（快车道）
+- Status: 进行中（快车道）
 - Created: 2026-06-02
-- Last: 2026-06-02
+- Last: 2026-10-04

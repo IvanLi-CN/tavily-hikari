@@ -76,6 +76,9 @@
   after recovery; daily summaries and the billing ledger remain intact.
 - GC reports expose optional blocking-day and blocking-reason diagnostics. Existing HTTP/MCP
   interfaces, CLI arguments, and report fields retain their meanings.
+- During GC catch-up, foreground HTTP primary-affinity selection applies active `http_global`
+  cooldown in the existing key-eligibility query. It must not spend maintenance admission on a
+  separate cooldown precheck; the cooldown boundary and existing rebind/fallback order stay intact.
 
 ## Verification
 
@@ -83,6 +86,9 @@
   row/body expiration and independent summary retention.
 - VER-GC-RECOVERY: covers=REQ-GC-RECOVERY; tests MUST cover source-backed seal recovery, one-second
   productive continuations, 300-second defers, duplicate claims, and unchanged billing history.
+- VER-GC-FOREGROUND-KEY: under a saturated SQLite pool, authenticated HTTP primary-affinity
+  selection MUST survive contention beyond the 100ms maintenance-read admission budget, avoid an
+  active global cooldown, ignore unrelated cooldown scopes, and retain its established fallback.
 
 - Given 新写入 `mcp:tools/list` 成功日志
   Then `request_body` / `response_body` 默认不保存完整 BLOB，但 body 长度与 SHA-256 已保存。
@@ -100,6 +106,10 @@
   Then 自动 GC 删除该 `request_logs` 行并维持现有外键 unlink 行为。
 - Given `auth_token_logs`
   Then 仍按独立摘要策略保留，不受 request body 设置拆分，但 retention 天数可由后台配置覆盖默认值。
+- Given a token has a bound primary key with an active `http_global` cooldown
+  When foreground HTTP selects a key while SQLite connections are contended
+  Then cooldown exclusion is evaluated with the key query, the cooled key is rebound through the
+  existing fallback order, and a transient maintenance-read timeout does not become HTTP 500.
 
 ## Test Plan
 

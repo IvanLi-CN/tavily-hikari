@@ -107,6 +107,10 @@ durable claim fences, and the retention/recovery guards specified below.
   writer. They enter instance-owned bounded deferred queues; pressure deltas are replayable from
   request logs, while a rejected rebalance audit records explicit stale coverage without changing
   MCP success or billing truth. Every deferred flush uses `SqliteRuntime` operation budgets.
+- Foreground HTTP user/token primary-affinity selection must evaluate active `http_global` cooldown
+  in the existing specific-key eligibility query instead of acquiring a separate
+  `ScheduledJobControl` read. The active-cooldown boundary and established rebind/fallback order
+  remain unchanged.
 - Administrator API-key creation and undelete are foreground durable commands. Their SQLite
   acquire, `BEGIN IMMEDIATE`, and connection-local busy wait use the `AdminMutation` runtime
   operation and one bounded retry window. Exhausted transient contention returns a retryable
