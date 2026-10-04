@@ -24,6 +24,7 @@
   资产名称及新增的 portable 资产。
 - CI workflow 增加 embedded asset contract coverage，避免无外部静态目录的 binary 路径回归。
 - `scripts/check-version-layer-reuse.sh` 在 `codex-testbox` 的 amd64 OCI 验收通过：21 个 RootFS diffID 在同源码、同 SemVer、不同输入 mtime 构建间逐层一致；合成 SemVer A/B 只改变主服务层（gzip -1 估算 15,498,527 bytes）与前端应用层（7,431,177 bytes）。该 A/B 是包装合同验证，不证明生产历史曾只改版本号。当前 testbox BuildKit 仅提供 amd64 平台，arm64 验收仍待具备 arm64 执行能力的 runner。
+- 逐层 amd64 RootFS diffID 与压缩字节明细：[oci-acceptance-amd64-335859fa.md](evidence/oci-acceptance-amd64-335859fa.md)。
 
 ## 验证
 
