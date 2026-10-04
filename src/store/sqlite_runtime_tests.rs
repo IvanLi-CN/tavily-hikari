@@ -891,19 +891,37 @@ async fn maintenance_bulk_retains_request_logs_gc_progress_continuation() {
     permit.retain_progress_continuation();
     drop(permit);
 
-    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 2);
+    {
+        let state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        assert_eq!(
+            SqliteMaintenanceCoordinator::oldest_pending(&state),
+            Some(SqliteMaintenanceClass::RequestLogsGc)
+        );
+    }
     assert_eq!(
         runtime
             .try_admit_maintenance_bulk(SqliteOperation::DashboardIntegrityWrite)
             .expect_err("later rolling integrity work waits behind GC continuation"),
         SqliteAdmissionDeferReason::BulkBusy
     );
-    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 2);
 
     let continuation = runtime
         .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
         .expect("the productive GC continuation retains its next turn");
     drop(continuation);
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+
+    let rolling_integrity = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::DashboardIntegrityWrite)
+        .expect("the waiting dashboard turn follows the productive GC slice");
+    drop(rolling_integrity);
 }
 
 #[tokio::test]
