@@ -19,6 +19,10 @@ INPUT_EPOCH_B=1800000000
 PLATFORMS="${PLATFORMS:-linux/amd64}"
 CODEX_THREAD_ID="${CODEX_THREAD_ID:-}"
 CANDIDATE_SHA="${CANDIDATE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf 'unbound')}"
+BUILDX_BUILDER_ARGS=()
+if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+  BUILDX_BUILDER_ARGS=(--builder "$BUILDX_BUILDER")
+fi
 
 declare -a CONTAINERS=()
 declare -a IMAGES=()
@@ -158,6 +162,10 @@ hash_layers() {
   docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$1"
 }
 
+buildx_build() {
+  docker buildx build "${BUILDX_BUILDER_ARGS[@]}" "$@"
+}
+
 build_image() {
   local platform="$1"
   local tag="$2"
@@ -174,7 +182,7 @@ build_image() {
   if [[ "$force_normalizer" == "true" ]]; then
     build_args+=(--no-cache-filter=payload-normalizer)
   fi
-  docker buildx build "${build_args[@]}" "$context"
+  buildx_build "${build_args[@]}" "$context"
   IMAGES+=("$tag")
 }
 
@@ -333,7 +341,7 @@ EOF
 
 first_platform="${PLATFORM_LIST[0]}"
 audit_tag="${IMAGE_PREFIX}-context-audit"
-docker buildx build --platform "$first_platform" --load --target context-audit --tag "$audit_tag" "$CONTEXT_A"
+buildx_build --platform "$first_platform" --load --target context-audit --tag "$audit_tag" "$CONTEXT_A"
 IMAGES+=("$audit_tag")
 
 for platform in "${PLATFORM_LIST[@]}"; do
