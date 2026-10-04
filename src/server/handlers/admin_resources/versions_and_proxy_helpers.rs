@@ -1,9 +1,8 @@
 fn resolve_backend_base_version(
-    runtime_version: Option<&str>,
     compile_time_version: Option<&str>,
     package_version: &str,
 ) -> String {
-    [runtime_version, compile_time_version, Some(package_version)]
+    [compile_time_version, Some(package_version)]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -12,73 +11,40 @@ fn resolve_backend_base_version(
         .to_string()
 }
 
-fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
-    let runtime_version = std::env::var("APP_EFFECTIVE_VERSION").ok();
-    let backend_base = resolve_backend_base_version(
-        runtime_version.as_deref(),
+fn packaged_app_version() -> String {
+    let base = resolve_backend_base_version(
         option_env!("APP_EFFECTIVE_VERSION"),
         env!("CARGO_PKG_VERSION"),
     );
-    let backend = if cfg!(debug_assertions) {
-        format!("{}-dev", backend_base)
+    if cfg!(debug_assertions) {
+        format!("{base}-dev")
     } else {
-        backend_base
-    };
+        base
+    }
+}
 
-    // Try reading version.json produced by front-end build
-    let frontend_from_dist = static_dir.and_then(|dir| {
+fn external_frontend_version(static_dir: Option<&FsPath>) -> Option<String> {
+    static_dir.and_then(|dir| {
         let path = dir.join("version.json");
-        fs::File::open(&path).ok().and_then(|mut f| {
-            let mut s = String::new();
-            if f.read_to_string(&mut s).is_ok() {
-                serde_json::from_str::<serde_json::Value>(&s)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("version")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-            } else {
-                None
-            }
-        })
-    });
-
-    let frontend_from_embedded = tavily_hikari::web_assets::embedded_bytes("version.json").and_then(|bytes| {
-        serde_json::from_slice::<serde_json::Value>(bytes)
+        fs::read_to_string(path)
             .ok()
-            .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(|s| s.to_string()))
-    });
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+            .and_then(|value| value.get("version")?.as_str().map(str::trim).map(str::to_string))
+            .filter(|version| !version.is_empty())
+    })
+}
 
-    // Fallback to web/package.json for dev setups
-    let frontend = frontend_from_dist
-        .or(frontend_from_embedded)
-        .or_else(|| {
-            let path = FsPath::new("web").join("package.json");
-            fs::File::open(&path).ok().and_then(|mut f| {
-                let mut s = String::new();
-                if f.read_to_string(&mut s).is_ok() {
-                    serde_json::from_str::<serde_json::Value>(&s)
-                        .ok()
-                        .and_then(|v| {
-                            v.get("version")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                        })
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let frontend = if cfg!(debug_assertions) {
-        format!("{}-dev", frontend)
+fn frontend_version(static_dir: Option<&FsPath>) -> String {
+    let base = external_frontend_version(static_dir).unwrap_or_else(packaged_app_version);
+    if cfg!(debug_assertions) && !base.ends_with("-dev") {
+        format!("{base}-dev")
     } else {
-        frontend
-    };
+        base
+    }
+}
 
-    (backend, frontend)
+fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
+    (packaged_app_version(), frontend_version(static_dir))
 }
 
 #[cfg(test)]
@@ -86,19 +52,22 @@ mod version_detection_tests {
     use super::*;
 
     #[test]
-    fn runtime_version_overrides_compile_time_and_package_fallbacks() {
+    fn compile_time_version_precedes_package_fallback() {
         assert_eq!(
-            resolve_backend_base_version(Some(" runtime-version "), Some("compile-version"), "package-version"),
-            "runtime-version"
-        );
-        assert_eq!(
-            resolve_backend_base_version(Some("  "), Some("compile-version"), "package-version"),
+            resolve_backend_base_version(Some(" compile-version "), "package-version"),
             "compile-version"
         );
         assert_eq!(
-            resolve_backend_base_version(None, None, "package-version"),
+            resolve_backend_base_version(None, "package-version"),
             "package-version"
         );
+    }
+
+    #[test]
+    fn backend_and_frontend_default_to_the_packaged_version() {
+        let (backend, frontend) = detect_versions(None);
+        assert_eq!(backend, packaged_app_version());
+        assert_eq!(frontend, backend);
     }
 
     #[test]

@@ -7,10 +7,10 @@
 - SPA 服务路径改为统一从外部静态目录优先读取，找不到时回落到内嵌资源；`/assets/*`、`/favicon.svg`、`/version.json` 与 HTML 页面共享这套读取逻辑。
 - 版本检测同样保持外部静态目录优先，避免 `--static-dir` 覆盖部署时版本信息与实际服务的前端不一致。
 - `Dockerfile` 在 builder 阶段复制 `build.rs`，保证新增 Cargo build script 后容器构建路径仍可用；容器运行时继续通过 `WEB_STATIC_DIR=/srv/app/web` 使用镜像内静态目录。
-- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest，移除 builder 阶段的版本 ARG；稳定 Xray/入口/维护二进制/Web 资产层位于尾部动态 COPY 之前，维护 CLI 继续保留，入口脚本使用 `COPY --chmod`。
+- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再分别 COPY；前端 JS、HTML shells、workers 和版本化 asset graph 合为真实应用层，图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
 - `.dockerignore` 采用 Cargo 源码、两个 Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 枚举上下文并检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
-- 后端版本 helper 优先读取运行时 `APP_EFFECTIVE_VERSION`，缺失时回退编译期版本；镜像 ENV、OCI label 与 `/api/version` 由同一发布版本驱动，原生发行二进制继续使用编译期回退。
-- `scripts/check-version-layer-reuse.sh` 与 PR job 构建版本 A/B，机械断言稳定 Web 产物不变、仅尾部 HTML/SW/version.json 变化，并检查 RootFS 稳定前缀、ENV/LABEL 与上下文审计；该 job 上传 B 镜像，Compose mock smoke 直接加载并校验该 B 镜像的 `/api/version`。
+- 后端版本 helper 从主服务二进制编译期 `APP_EFFECTIVE_VERSION` 读取产品版本，不再使用运行时 ENV；`/api/version` 与动态 `/version.json` 使用同一产品版本，显式外部静态目录内的 `version.json` 仍可覆盖前端版本。OCI label 继续报告同一 SemVer，镜像 `Config.Env` 不含该变量。
+- `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
 - release workflow 将 `org.opencontainers.image.version` 显式绑定到 `APP_EFFECTIVE_VERSION`，避免 metadata-action 的默认标签覆盖发布版本。
 - release workflow 先在单独的 `web-assets` job 内构建一次 `web/dist` 并上传 `release-web-dist` artifact，随后 `docker-native` 与 `binary-native` 都只下载该 artifact 复用，不再各自重复 Bun 安装与前端构建。
 - `binary-native` matrix 继续在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上构建 release binary、打包 `tar.gz`、生成 `.sha256` 并 smoke 解包后的 binary。

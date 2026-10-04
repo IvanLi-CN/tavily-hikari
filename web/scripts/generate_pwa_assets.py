@@ -14,7 +14,7 @@ from PIL import Image
 WEB_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = Path(os.environ.get("WEB_DIST_DIR", WEB_ROOT / "dist")).resolve()
 VITE_MANIFEST_PATH = DIST_DIR / ".vite" / "manifest.json"
-VERSION_PATH = DIST_DIR / "version.json"
+PACKAGE_PATH = WEB_ROOT / "package.json"
 ICON_SIZES = (64, 96, 128, 144, 152, 167, 180, 192, 256, 384, 512, 1024)
 MASKABLE_SIZES = (192, 512)
 
@@ -108,10 +108,10 @@ def hash_cache_key(values: list[str]) -> str:
 
 
 def load_build_version() -> str:
-    payload = json.loads(VERSION_PATH.read_text(encoding="utf-8"))
-    version = payload.get("version") if isinstance(payload, dict) else None
+    package = json.loads(PACKAGE_PATH.read_text(encoding="utf-8"))
+    version = os.environ.get("VITE_APP_VERSION", "").strip() or package.get("version")
     if not isinstance(version, str) or not version.strip():
-        raise RuntimeError(f"{VERSION_PATH} must contain a non-empty string version")
+        raise RuntimeError("VITE_APP_VERSION or web/package.json must contain a non-empty version")
     return version.strip()
 
 

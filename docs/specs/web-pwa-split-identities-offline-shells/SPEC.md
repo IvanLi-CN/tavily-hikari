@@ -1,5 +1,11 @@
 # Web PWA 双身份离线壳与管理员缓存预算控制（#2br7z）
 
+## Context and Scope
+
+- Context: public/admin PWA 更新缓存身份需要准确反映当前应用包所含的产品发布版本。
+- In scope: 前端 SemVer 注入、更新提示读取、public/admin worker 缓存 identity，以及版本兼容端点与静态产物边界。
+- Out of scope: 改变 PWA 用户交互、manifest identity、离线业务数据行为或 `/api/*` 响应字段。
+
 ## 背景 / 问题陈述
 
 - 当前 Web 前台、用户控制台与管理员后台都没有真正的 PWA 合同，已访问用户在断网时只能看到浏览器级失败或空白。
@@ -40,6 +46,7 @@
 - `web/public/assets/linuxdo-logo.svg`
 - `web/public/assets/favicon-*.png`
 - `web/src/*main.tsx`
+- `web/src/version.ts`
 - `web/src/api/runtime.ts`
 - `web/src/components/**`
 - `web/src/PublicHome.tsx`
@@ -95,7 +102,7 @@
 - 各 HTML shell 只声明自身对应的 manifest，不声明 `rel="apple-touch-icon"`。在 WebKit 中 legacy `apple-touch-icon` 会优先于 manifest 图标，因此不能让它成为未重新验证的第二套安装元数据来源。
 - PWA regular/maskable PNG 必须以最终 PNG 字节的短 SHA-256 摘要命名，例如 `pwa/admin-1024-<content-hash>.png` 与 `pwa/admin-maskable-512-<content-hash>.png`；manifest 只能引用当前导出的 URL。图标 artwork 继续使用已批准的 Relay Mesh light/dark icon，不在本轮重新设计。
 - 方形 launcher、maskable 与 mono 图标必须按可见前景边界居中；批准稿透明画布中的 padding 不得把 mark 推离图标画布中心。
-- HTML shell、两个 manifest、两个 service worker 与 `version.json` 必须使用 `no-cache, must-revalidate`；带内容哈希的 `pwa/*.png` 使用 `public, max-age=31536000, immutable`。
+- HTML shell、两个 manifest、两个 service worker 与动态 HTTP `/version.json` 必须使用 `no-cache, must-revalidate`；带内容哈希的 `pwa/*.png` 使用 `public, max-age=31536000, immutable`。`version.json` 是兼容 HTTP 路由，不是 `web/dist` 或生产镜像中的静态文件。
 - Service Worker 不得预缓存或 cache-first 固化 manifest、regular 图标、maskable 图标或产品 Apple 图标路径；只预缓存当前 identity 的应用壳及其构建依赖。manifest 与图标请求必须留在普通网络路径，分别遵守 metadata revalidation 与内容哈希 immutable 缓存。public/admin 不得互相预缓存 manifest 或图标；页面注册 worker 时使用 `updateViaCache: 'none'`。
 
 ### 平台更新边界
@@ -109,7 +116,7 @@
 
 - `sw-public.js` 与 `sw-admin.js` 安装时必须先完成 precache，再进入 waiting；不得在 install 阶段主动 `skipWaiting()`。
 - 页面检测到 `/api/version.frontend` 变化时，只触发当前 identity 的 `registration.update()`；用户可见的更新提示必须以 service worker 已发现 waiting worker 且新版资源已准备完成为准。安装/缓存中的中间态保持静默，不对用户暴露“正在更新”的提示。
-- 更新提示中的“当前版本”必须读取当前 HTML shell 的 `tavily-hikari-build-version` meta 标记，表示当前页面实际运行的前端 bundle 版本；“目标版本”必须表示后端当前提供、且与 waiting worker 对齐的具体版本号，不得回退为 `latest`、channel 名称或其他非版本号占位词。
+- 更新提示中的“当前版本”必须读取编入当前前端 JavaScript 应用包的产品发布 SemVer；“目标版本”必须表示后端当前提供、且与 waiting worker 对齐的具体版本号，不得回退为 `latest`、channel 名称或其他非版本号占位词。
 - 用户点击更新时：
   - 若新 worker 已经 waiting，页面向该 worker 发送 `TAVILY_HIKARI_ACTIVATE_UPDATE`，由 worker `skipWaiting()`，并立即刷新当前页以应用新版本。
   - worker 的 activate 事件只清理旧 cache，不调用 `clients.claim()`；版本更新由目标 worker 到达 `activated` 后 reload，并在新导航中接管页面。
@@ -161,6 +168,7 @@
 
 - Vite build manifest 必须开启，供 post-build 读取 multipage output graph。
 - 生成脚本必须按 entrypoint 归类 public/admin asset graph，并输出两套 PWA 合同文件。
+- `VITE_APP_VERSION` 必须使用产品发布 SemVer，并编入前端 JavaScript 应用包；public/admin service worker 使用同一值形成各自的版本化缓存 identity。构建不得通过 HTML meta 或静态 `version.json` 注入前端版本。
 - Relay Mesh 资产导出链必须显式产出 light / dark / mono 变体，并保留默认亮色别名文件用于现有入口兼容。
 - 完整 lockup 的 tagline 使用仓库固定、预实例化的 Roboto Condensed weight 400 与 OFL 1.1 许可证作为 outline 生成输入；发布 SVG 不得包含 `<text>`、`<image>`、`href`、data URI 或运行时字体依赖。
 - 完整 lockup 必须保持批准稿的 `1000 × 310` 横向轮廓与品牌语法：Relay Mesh mark 位于左列，wordmark 与 tagline 组成共享光学中轴的右侧两行文字块；tagline 使用 `tagline-primary`、`tagline-separator`、`tagline-secondary` 三个逻辑组，其中 separator 是字间点而非竖线。Tagline outline 总高度必须保持在 `36–39` SVG units、总宽度保持在 `625–635` units，与上移后的 wordmark 保留 `20–28` units 的可见间距，水平中心限定在 `610–620` units；全文使用单一连续渐变，亮色端点为 `#6D28D9 → #0369A1`，暗色端点为 `#A78BFA → #38BDF8`，文字颜色在对应设计基准背景上必须达到 `4.5:1` 对比度。
@@ -178,7 +186,7 @@
 
 - Rust 静态服务必须可直出 `.webmanifest`、`sw-public.js`、`sw-admin.js` 与 `pwa/*` 图标资产。
 - `.webmanifest` 返回 `application/manifest+json`。
-- HTML shell、manifest、service worker 与 `version.json` 必须要求重新验证；内容哈希 PWA 图标必须返回 immutable 缓存策略。
+- HTML shell、manifest、service worker 与动态 HTTP `/version.json` 必须要求重新验证；内容哈希 PWA 图标必须返回 immutable 缓存策略。构建目录和生产镜像不含静态 `version.json`。
 - service worker 脚本必须可在浏览器直接访问。
 - owner-facing 品牌位统一通过 `/assets/*` 暴露；`/favicon.svg` 只作为站点 favicon 入口保留根路径合同。
 
@@ -241,9 +249,9 @@
   When admin worker 完成安装
   Then admin worker 静默激活，不展示版本更新提示，不触发主动 reload。
 
-- Given 只发布了新的前端版本号且稳定静态资源内容未改变
-  When post-build 写入 HTML shell meta、`version.json` 与两个 service worker
-  Then 五个 HTML shell、两个 worker 与 `version.json` 携带新版本，旧 shell 仍可离线运行，且 worker cache identity 发生变化。
+- Given 产品发布 SemVer 更新
+  When Vite 和 PWA 生成步骤使用同一 `VITE_APP_VERSION` 构建
+  Then 前端 JavaScript bundle 与两个 service worker 携带同一 SemVer，两个 PWA cache identity 随之变化，构建目录不生成静态 `version.json`，更新提示从应用包读取当前版本。
 
 - Given public 或 admin 的 regular/maskable 安装图标内容发生变化
   When post-build 生成 PWA 产物
@@ -271,7 +279,7 @@
 
 - `cd web && bun test`
 - `cargo test`
-- 版本 A/B 构建门禁必须证明稳定 `assets/**`、`pwa/**`、favicon、两个 manifest 与 Vite manifest 不随纯版本发布变化；仅五个 HTML shell、两个 worker 与 `version.json` 可以变化。
+- PWA 离线 E2E 必须验证前端应用包版本、public/admin service worker 缓存版本一致、waiting worker 更新流程可用，且 `web/dist` 不含静态 `version.json`。
 
 ### Build
 
@@ -338,9 +346,43 @@
 
   ![管理员登录页更新提示移动端布局](./assets/update-banner-login-header-mobile.png)
 
+## Requirements
+
+### REQ-PWA-PRODUCT-VERSION
+
+- Production frontend MUST compile the product release SemVer into its JavaScript application package, and both public/admin service workers MUST use that same `VITE_APP_VERSION` for their versioned cache identity.
+
+### REQ-PWA-PACKAGE-IDENTITY
+
+- The update UI MUST read its current version from the running JavaScript package; HTML version meta tags and a static `version.json` MUST NOT be used to inject the packaged version.
+
+### REQ-PWA-VERSION-COMPATIBILITY
+
+- Production `web/dist` and the Docker image MUST NOT contain static `version.json`; HTTP `/version.json` MUST remain available with its existing JSON shape and agree with `/api/version.frontend` unless an explicit external static override is configured.
+
+## Verification
+
+### VER-PWA-BUILD-VERSION
+
+- Method: build with `VITE_APP_VERSION` and inspect emitted JavaScript, public/admin workers, HTML and `web/dist`.
+- covers: `REQ-PWA-PRODUCT-VERSION`, `REQ-PWA-PACKAGE-IDENTITY`
+- Pass condition: JavaScript and both workers contain the same product SemVer, no HTML version meta exists, and the build output has no static `version.json`.
+
+### VER-PWA-OFFLINE-UPDATE
+
+- Method: `bun run test:e2e:pwa-offline` with two release fixtures.
+- covers: `REQ-PWA-PRODUCT-VERSION`, `REQ-PWA-PACKAGE-IDENTITY`
+- Pass condition: offline shell behavior and waiting-worker update behavior pass, and the active JavaScript package reports the expected fixture version after activation.
+
+### VER-PWA-HTTP-COMPATIBILITY
+
+- Method: backend HTTP contract test plus image version-route smoke checks.
+- covers: `REQ-PWA-VERSION-COMPATIBILITY`
+- Pass condition: dynamic `/version.json` retains `{ "version": "..." }`, matches `/api/version.frontend`, and explicit external static override behavior remains available.
+
 ## Related ADRs
 
-- None
+- [ADR 0007: Release Version Embedding and Image Layer Reuse](../../adr/0007-release-version-embedding-and-image-layer-reuse.md)
 
 ## 风险 / 假设
 

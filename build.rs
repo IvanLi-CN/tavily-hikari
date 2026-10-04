@@ -5,6 +5,7 @@ use std::{
 
 fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=APP_EFFECTIVE_VERSION");
     println!("cargo:rerun-if-env-changed=TAVILY_HIKARI_WEB_DIST_DIR");
     println!("cargo:rustc-check-cfg=cfg(web_assets_embedded)");
 

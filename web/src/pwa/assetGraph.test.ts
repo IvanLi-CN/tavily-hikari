@@ -140,10 +140,17 @@ test('built HTML points to the matching manifest without a legacy touch-icon ove
     const html = fs.readFileSync(path.join(build.distDir, htmlFile), 'utf8')
     const parserWindow = new Window()
     const document = new parserWindow.DOMParser().parseFromString(html, 'text/html')
-    const manifestLinks = document.querySelectorAll('link[rel~="manifest"]')
+    const linkElements = Array.from(document.getElementsByTagName('link'))
+    const manifestLinks = linkElements.filter((link) =>
+      (link.getAttribute('rel') ?? '').split(/\s+/).includes('manifest'),
+    )
     expect(manifestLinks.length).toBe(1)
     expect(manifestLinks[0]?.getAttribute('href')).toBe(`/${manifestPath}`)
-    expect(document.querySelectorAll('link[rel~="apple-touch-icon"]').length).toBe(0)
+    expect(
+      linkElements.filter((link) =>
+        (link.getAttribute('rel') ?? '').split(/\s+/).includes('apple-touch-icon'),
+      ).length,
+    ).toBe(0)
   }
   expect(fs.existsSync(path.join(build.distDir, 'assets/apple-touch-icon.png'))).toBe(false)
 })
@@ -315,18 +322,25 @@ test('built service workers leave manifests and icons on the network path', asyn
 
 test('built service workers carry the release version in their identity', () => {
   const build = readAssetGraph()
-  const versionPath = build ? path.join(build.distDir, 'version.json') : ''
-  if (!build || !fs.existsSync(versionPath)) {
+  if (!build) {
     expect(true).toBe(true)
     return
   }
 
-  const version = JSON.parse(fs.readFileSync(versionPath, 'utf8')) as { version: string }
-  expect(version.version).toBeString()
+  const packagePath = path.resolve(import.meta.dir, '../../package.json')
+  const packageVersion = (JSON.parse(fs.readFileSync(packagePath, 'utf8')) as { version: string }).version
+  const version = process.env.VITE_APP_VERSION?.trim() || packageVersion
+  expect(fs.existsSync(path.join(build.distDir, 'version.json'))).toBe(false)
+
+  const applicationScripts = [...build.graph.public.files, ...build.graph.admin.files]
+    .filter((file) => file.endsWith('.js'))
+    .map((file) => fs.readFileSync(path.join(build.distDir, file), 'utf8'))
+  expect(applicationScripts.some((source) => source.includes(JSON.stringify(version)))).toBe(true)
+
   for (const identity of [build.graph.public, build.graph.admin]) {
     const serviceWorkerPath = path.join(build.distDir, identity.serviceWorker)
     const source = fs.readFileSync(serviceWorkerPath, 'utf8')
-    expect(source).toContain(`const BUILD_VERSION = ${JSON.stringify(version.version)};`)
+    expect(source).toContain(`const BUILD_VERSION = ${JSON.stringify(version)};`)
   }
 })
 

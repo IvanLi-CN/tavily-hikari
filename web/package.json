@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "bun --bun ./node_modules/.bin/vite",
     "demo": "VITE_DEMO_MODE=true bun --bun ./node_modules/.bin/vite --host 127.0.0.1 --port 55174",
-    "build": "bun --bun ./node_modules/.bin/tsc -b && bun --bun ./node_modules/.bin/vite build && bun ./scripts/write-version.mjs && python3 ./scripts/generate_pwa_assets.py",
+    "build": "bun --bun ./node_modules/.bin/tsc -b && bun --bun ./node_modules/.bin/vite build && python3 ./scripts/generate_pwa_assets.py",
     "storybook": "bun --bun ./node_modules/.bin/storybook dev --host 127.0.0.1 --port 56006 --disable-telemetry",
     "storybook:ci": "bun --bun ./node_modules/.bin/storybook dev --ci --no-open --host 127.0.0.1 --port 56006 --disable-telemetry",
     "build-storybook": "bun --bun ./node_modules/.bin/storybook build --disable-telemetry",
