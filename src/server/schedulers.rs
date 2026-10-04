@@ -77,6 +77,15 @@ fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
         REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
     }
 }
+
+fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
+    match reason {
+        "foreground_pressure" | "pool_pressure" | "recent_contention" => {
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        }
+        _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+    }
+}
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -542,12 +551,13 @@ async fn run_dashboard_rollup_integrity_claimed_job(
     let _bulk_admission = match state.proxy.admit_dashboard_rollup_integrity() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            let retry_delay_secs = dashboard_integrity_admission_retry_delay(reason);
             return finish_dashboard_rollup_integrity_and_enqueue(
                 state.as_ref(),
                 job_id,
                 claim_generation,
                 &format!("state=deferred admission={reason}"),
-                now.saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
+                now.saturating_add(retry_delay_secs),
             )
             .await;
         }
@@ -1003,12 +1013,13 @@ async fn run_request_logs_gc_catchup_claimed_job(
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
             let msg = format!("deferred={reason}");
+            let continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS;
             tracing::debug!(
                 component = "request_logs_gc",
                 event = "deferred",
                 job_id,
                 defer_reason = reason,
-                continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                continuation_delay_secs,
                 "request-log GC deferred before SQLite connection acquisition"
             );
             return finish_request_logs_gc_with_continuation_after(
@@ -1017,7 +1028,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 claim_generation,
                 "success",
                 msg,
-                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                continuation_delay_secs,
             )
             .await;
         }

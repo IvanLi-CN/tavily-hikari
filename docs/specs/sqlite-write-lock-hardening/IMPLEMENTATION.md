@@ -15,9 +15,9 @@
   bulk permit, fixed workload budgets, and a bounded workload aggregation window. Bulk admission
   is rejected before a pooled connection is obtained whenever fewer than two foreground slots
   remain, foreground activity exceeds `5 rps`, or a busy/pool-timeout occurred in the last five
-  seconds. An aged coordinator turn may reach the operation's bounded 100ms pool acquire even
-  when all currently-open connections are checked out; pools at or below the two-slot foreground
-  reserve remain foreground-only.
+  seconds. An aged coordinator turn may bypass class ordering and the ordinary pool-capacity
+  precheck, but not the foreground-rate gate. Explicit research-drain and admin-cache liveness
+  paths retain their separate bounded admission policies.
 - The physical bulk permit is fronted by a fixed-size per-runtime coordinator. The ten maintenance
   classes (`admin_read`, `alert_projection`, `capacity_warm`, `dashboard_integrity`, `ha_outbox_gc`,
   `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,
@@ -35,10 +35,12 @@
   wait, and stale-ticket counts for every class. This makes bounded fairness and quiet-tail
   freshness inspectable without synchronously flushing derived state from owner-facing reads.
 - A typed admission defer keeps the class's single pending ticket while its caller retries, including
-  foreground, pool, and recent-contention pressure. Admission defers retry every five seconds,
-  including reconciliation, and the coordinator's aged-turn exception uses the same five-second
-  boundary. Completed request-log GC keeps its five-minute continuation, while HA GC keeps its
-  separate 30-second post-admission contention continuation.
+  foreground, pool, and recent-contention pressure. Ordinary admission defers retry every five
+  seconds, including reconciliation, and the coordinator's aged class-order turn uses the same
+  boundary. Request-log GC uses a five-minute continuation after any admission defer; Dashboard
+  integrity uses five minutes for foreground, pool, or recent-contention pressure and five seconds
+  for `bulk_busy`. Completed request-log GC also uses five minutes after no progress, while HA GC
+  keeps its separate post-admission contention continuation.
 - A transient scheduled-job dequeue or claim conflict retries on that same five-second cadence.
   The worker does not impose a global 30-second sleep on pending maintenance classes after a
   bounded control write fails. A real-worker regression holds a competing SQLite writer across

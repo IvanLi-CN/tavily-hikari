@@ -819,7 +819,7 @@ async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
 }
 
 #[tokio::test]
-async fn maintenance_bulk_ages_a_foreground_ticket_into_a_bounded_slice() {
+async fn maintenance_bulk_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
@@ -841,22 +841,21 @@ async fn maintenance_bulk_ages_a_foreground_ticket_into_a_bounded_slice() {
             .pending
             .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
             .expect("foreground defer registers a fair ticket")
-            .first_requested_at = Instant::now() - MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE;
+            .first_requested_at = Instant::now() - Duration::from_secs(30);
     }
     drop(holder);
 
-    let permit = runtime
-        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
-        .expect("an aged foreground ticket receives a bounded slice");
     assert_eq!(
-        runtime.inner.maintenance_coordinator.active_class(),
-        Some(SqliteMaintenanceClass::RequestStatsFlush)
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+            .expect_err("class age cannot bypass the foreground rate limit"),
+        SqliteAdmissionDeferReason::ForegroundPressure
     );
-    drop(permit);
+    assert_eq!(runtime.inner.maintenance_coordinator.active_class(), None);
 }
 
 #[tokio::test]
-async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn() {
+async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {
         runtime.record_foreground_activity();
@@ -877,16 +876,15 @@ async fn reconciliation_preflight_ages_a_foreground_ticket_into_a_bounded_turn()
             .pending
             .get_mut(&SqliteMaintenanceClass::ReconciliationProjection)
             .expect("preflight defer registers a fair ticket")
-            .first_requested_at = Instant::now() - MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE;
+            .first_requested_at = Instant::now() - Duration::from_secs(30);
     }
 
-    let _preflight = runtime
-        .preflight_reconciliation_projection_admission()
-        .expect("aged preflight bypasses foreground pressure");
-    let permit = runtime
-        .try_admit_maintenance_bulk(SqliteOperation::ReconciliationProjection)
-        .expect("aged reconciliation ticket receives its bounded slice");
-    drop(permit);
+    assert_eq!(
+        runtime
+            .preflight_reconciliation_projection_admission()
+            .expect_err("class age cannot bypass the foreground rate limit"),
+        SqliteAdmissionDeferReason::ForegroundPressure
+    );
 }
 
 #[tokio::test]

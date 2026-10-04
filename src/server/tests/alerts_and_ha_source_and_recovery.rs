@@ -2225,3 +2225,19 @@ fn request_logs_gc_continuation_tracks_durable_progress() {
     report.deleted_request_logs = 100;
     assert_eq!(request_logs_gc_continuation_delay(&report), 1);
 }
+
+#[test]
+fn dashboard_integrity_admission_pressure_uses_five_minute_backoff() {
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("foreground_pressure"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    );
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("pool_pressure"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    );
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("bulk_busy"),
+        SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+    );
+}

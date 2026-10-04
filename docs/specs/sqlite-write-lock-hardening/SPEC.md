@@ -242,7 +242,12 @@ durable claim fences, and the retention/recovery guards specified below.
 - The three-connection application pool reserves two actual or immediately allocatable slots for
   foreground work. Bulk maintenance takes one instance-local permit only when foreground arrival
   rate is at most `5 rps` and the preceding five seconds contain no pool-timeout or SQLite busy
-  outcome. Admission rejection occurs before pool acquisition and records a typed deferred reason.
+  outcome. An aged coordinator turn may bypass class ordering or the ordinary pool-capacity
+  precheck, but never the foreground-rate gate. Admission rejection occurs before pool acquisition
+  and records a typed deferred reason.
+- Request-log GC uses a persisted five-minute continuation after an admission defer. Dashboard
+  integrity also uses a five-minute continuation for foreground, pool, or recent-contention
+  pressure; ordinary `bulk_busy` fairness retries remain on the five-second cadence.
 - `REQ-MAINTENANCE-CONTROL`: Scheduled-job metadata writes are `maintenance_control`: they use a
   `100ms` connection/writer
   budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
