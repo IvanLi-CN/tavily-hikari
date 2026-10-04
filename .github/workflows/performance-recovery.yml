@@ -1,0 +1,149 @@
+name: Performance Recovery A/B
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type yes to start the production-shaped comparison
+        required: true
+        type: choice
+        options:
+          - no
+          - yes
+        default: no
+      baseline_ref:
+        description: Baseline Git revision to compare against
+        required: true
+        type: string
+        default: 1d6d93cbf4de6e673d75811fadd21f45b9a40482
+      candidate_ref:
+        description: Candidate Git revision; blank uses the dispatched ref
+        required: false
+        type: string
+        default: ""
+      duration_secs:
+        description: Measured duration per variant; production proof requires at least 600
+        required: true
+        type: string
+        default: "600"
+      run_id:
+        description: Optional safe run identifier for the isolated testbox workspace
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# The comparison owns a read-only production snapshot and an isolated Docker run. Never run
+# two copies concurrently on the dedicated runner or testbox.
+concurrency:
+  group: performance-recovery-manual
+  cancel-in-progress: false
+
+jobs:
+  performance-recovery:
+    name: Performance Recovery Comparison
+    runs-on: [self-hosted, linux, x64, performance-recovery]
+    timeout-minutes: 120
+    steps:
+      - name: Prepare local evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/performance-recovery"
+
+      - name: Checkout candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate dispatch and candidate identity
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          DURATION_SECS: ${{ inputs.duration_secs }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "yes" ]]; then
+            echo "Refusing to start: dispatch the workflow with confirm=yes." >&2
+            exit 2
+          fi
+          if ! [[ "${DURATION_SECS}" =~ ^[0-9]+$ ]] ||
+            (( DURATION_SECS < 600 || DURATION_SECS > 1800 )); then
+            echo "duration_secs must be an integer between 600 and 1800." >&2
+            exit 2
+          fi
+          baseline_sha="$(git rev-parse --verify "${BASELINE_REF}^{commit}")"
+          candidate_sha="$(git rev-parse HEAD)"
+          if [[ "${baseline_sha}" == "${candidate_sha}" ]]; then
+            echo "baseline_ref and candidate_ref must resolve to different commits." >&2
+            exit 2
+          fi
+          {
+            echo "candidate_sha=${candidate_sha}"
+            echo "baseline_sha=${baseline_sha}"
+            echo "duration_secs=${DURATION_SECS}"
+          } | tee "${RUNNER_TEMP}/performance-recovery/identity.txt"
+
+      - name: Verify dedicated performance runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          for command in git ssh rsync docker python3; do
+            command -v "${command}" >/dev/null || {
+              echo "missing required runner command: ${command}" >&2
+              exit 2
+            }
+          done
+          docker info >/dev/null
+          ssh -o BatchMode=yes -o ConnectTimeout=15 192.168.31.11 \
+            'test -d /home/ivan/srv/ai'
+          ssh -o BatchMode=yes -o ConnectTimeout=15 codex-testbox \
+            'docker info >/dev/null'
+
+      - name: Run controlled baseline/candidate comparison
+        shell: bash
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          DURATION_SECS: ${{ inputs.duration_secs }}
+          RUN_ID: ${{ inputs.run_id }}
+          SOURCE_SSH_TARGET: 192.168.31.11
+          TESTBOX_HOST: codex-testbox
+          REMOTE_SPACE_MARGIN_BYTES: "10737418240"
+        run: |
+          set +e
+          scripts/run-performance-recovery-testbox-comparison.sh 2>&1 \
+            | tee "${RUNNER_TEMP}/performance-recovery/comparison.log"
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "${status}" > "${RUNNER_TEMP}/performance-recovery/exit-status.txt"
+          exit "${status}"
+
+      - name: Upload sanitized comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/performance-recovery
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Write comparison handoff
+        if: ${{ always() }}
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "## Performance Recovery A/B"
+            echo ""
+            echo "- Job status: ${JOB_STATUS}"
+            echo "- Run: ${RUN_URL}"
+            echo "- Raw production SQLite snapshots remain on the internal runner/testbox."
+            echo "- Sanitized logs and comparison output are in the uploaded artifact."
+          } >> "${GITHUB_STEP_SUMMARY}"

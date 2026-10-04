@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - self-hosted
+    - linux
+    - x64
+    - performance-recovery
