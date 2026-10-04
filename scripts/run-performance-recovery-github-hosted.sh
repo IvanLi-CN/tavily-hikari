@@ -57,6 +57,9 @@ for command in git docker python3 zstd sha256sum curl tar; do
 done
 docker info >/dev/null
 
+RUNNER_UID="$(id -u)"
+RUNNER_GID="$(id -g)"
+
 CANDIDATE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${CANDIDATE_REF}^{commit}")"
 BASELINE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${BASELINE_REF}^{commit}")"
 [[ "$BASELINE_SHA" != "$CANDIDATE_SHA" ]] || {
@@ -104,6 +107,7 @@ docker build \
 echo "Initializing disposable GitHub-hosted SQLite fixtures..."
 docker run --detach \
   --name "$FIXTURE_CONTAINER" \
+  --user "${RUNNER_UID}:${RUNNER_GID}" \
   --publish 127.0.0.1::8787 \
   --volume "$RUN_ROOT/fixture-data:/srv/app/data" \
   --env PROXY_DB_PATH=/srv/app/data/tavily_proxy.db \
