@@ -460,7 +460,13 @@ async fn integrity_prioritizes_new_hot_page_then_gc_blocking_day() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read saved hot page");
-    assert_eq!(hot_page, (2, "pending".to_string()));
+    assert_eq!(
+        hot_page,
+        (
+            crate::store::DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY,
+            "pending".to_string()
+        )
+    );
 
     proxy
         .run_dashboard_rollup_integrity_slice()
@@ -481,7 +487,13 @@ async fn integrity_prioritizes_new_hot_page_then_gc_blocking_day() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read still-pending hot page");
-    assert_eq!(hot_page, (2, "pending".to_string()));
+    assert_eq!(
+        hot_page,
+        (
+            crate::store::DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY,
+            "pending".to_string()
+        )
+    );
 }
 
 #[tokio::test]

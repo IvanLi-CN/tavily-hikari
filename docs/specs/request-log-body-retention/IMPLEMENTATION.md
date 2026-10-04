@@ -8,9 +8,9 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
-- A newly created hot segment gets its first bounded page ahead of historical work. If another page
-  is needed, its checkpointed continuation yields to a pending GC-blocking day so hot work cannot
-  starve seal recovery.
+- A newly created hot segment gets its first bounded page ahead of historical work. Its checkpointed
+  continuation yields to a pending GC-blocking day while remaining distinct from rolling hot pages,
+  which a new hot segment may still preempt.
 - Scan progress compares the retained cursor before and after the entire pass. A terminal page
   that clears the cursor, including repeated bodyless scans during an integrity block, does not
   qualify for one-second continuation. The internal progress flag is omitted from serialized reports.

@@ -8,6 +8,7 @@ const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN: Duration = Duration::from_millis(250);
 const DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS: i64 = SECS_PER_DAY;
 const DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS: i64 = 2 * SECS_PER_HOUR;
+pub(crate) const DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY: i64 = 5;
 const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +300,7 @@ impl KeyStore {
             r#"SELECT (hot_cursor < hot_fence OR hot_fence < ?) AND NOT EXISTS (
                 SELECT 1 FROM dashboard_rollup_integrity_work_items
                 WHERE status = 'pending' AND recovery = 0 AND range_start >= ? AND range_end <= ?
+                  AND priority IN (0, 3, 4, 5)
             ) FROM dashboard_rollup_integrity_state WHERE id = 1"#,
         )
         .bind(latest_closed)
@@ -618,12 +620,14 @@ impl KeyStore {
                 WHEN EXISTS (SELECT 1 FROM dashboard_rollup_integrity_day_reaudits d
                     WHERE d.gc_blocking = 1 AND d.status = 'pending'
                       AND range_start >= d.bucket_start AND range_end <= d.bucket_end) THEN 3
+                WHEN recovery = 0 AND priority = ? THEN 2
                 ELSE priority END DESC, updated_at ASC, range_start ASC
             LIMIT 1
             "#,
         )
         .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS))
         .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS) - DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS)
+        .bind(DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
@@ -1180,7 +1184,7 @@ impl KeyStore {
             r#"
             UPDATE dashboard_rollup_integrity_work_items
             SET cursor_created_at = ?, cursor_id = ?, counts_json = ?,
-                priority = CASE WHEN priority = 4 THEN 2 ELSE priority END,
+                priority = CASE WHEN priority = 4 THEN ? ELSE priority END,
                 updated_at = ?
             WHERE range_start = ? AND status = 'pending'
             "#,
@@ -1188,6 +1192,7 @@ impl KeyStore {
         .bind(item.cursor_created_at)
         .bind(item.cursor_id)
         .bind(counts_json)
+        .bind(DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY)
         .bind(now)
         .bind(item.range_start)
         .execute(&mut *conn)
