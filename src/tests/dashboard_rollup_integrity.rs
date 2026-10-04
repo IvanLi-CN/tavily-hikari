@@ -323,6 +323,25 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     let range_start =
         (now - 10 * SECS_PER_MINUTE).div_euclid(SECS_PER_FIVE_MINUTES) * SECS_PER_FIVE_MINUTES;
     let range_end = range_start + 2 * SECS_PER_HOUR;
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    sqlx::query(
+        r#"
+        UPDATE dashboard_rollup_integrity_state
+        SET hot_cursor = ?, hot_fence = ?, hot_reaudit_cursor = ?, history_cursor = ?,
+            last_history_attempt_at = ?, last_day_reaudit_attempt_at = ?, updated_at = ?
+        WHERE id = 1
+        "#,
+    )
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("hold unrelated integrity work while checking the source range");
     insert_visible_dashboard_log(&proxy, range_start + SECS_PER_HOUR + 60).await;
     let source_fence: i64 = sqlx::query_scalar("SELECT MAX(id) FROM request_logs")
         .fetch_one(&proxy.key_store.pool)
