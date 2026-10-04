@@ -194,6 +194,103 @@ class TvlyHikariCliTest(unittest.TestCase):
             self.assertEqual(payload["api_key"], VALID_TOKEN)
             self.assertEqual(payload["args"], ["search", "query", "--json"])
 
+    def write_crlf_python3(self, fake_bin: Path):
+        """Shim python3 so stdout ends with CRLF, as Windows-native python3 does."""
+        real_python3 = subprocess.run(
+            ["bash", "-c", "command -v python3"],
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout.strip()
+        shim = fake_bin / "python3"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -o pipefail\n"
+            f"{real_python3} \"$@\" | sed -e 's/$/\\r/'\n",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+
+    def write_mode_hostile_install(self, fake_bin: Path):
+        """Shim install(1) so `-d` fails, as it does on msys2 where POSIX modes
+        cannot be applied to Windows ACLs."""
+        shim = fake_bin / "install"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            'for arg in "$@"; do\n'
+            '  if [[ "${arg}" == "-d" ]]; then\n'
+            "    echo 'install: cannot change permissions: Permission denied' >&2\n"
+            "    exit 1\n"
+            "  fi\n"
+            "done\n"
+            'exec /usr/bin/install "$@"\n',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+
+    def test_configure_tolerates_crlf_python_stdout(self):
+        """Windows-native python3 emits CRLF; a stray CR must not corrupt the token."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            capture = root / "capture.json"
+            self.write_fake_tvly(fake_bin, capture)
+            self.write_crlf_python3(fake_bin)
+            env = self.base_env(root / "home", fake_bin)
+
+            self.run_cmd(
+                [
+                    "bash",
+                    str(WRAPPER),
+                    "configure",
+                    "--base-url",
+                    "http://127.0.0.1:58087",
+                    "--token",
+                    VALID_TOKEN,
+                ],
+                env=env,
+            )
+            # Pre-fix this failed with "must be an unmasked Hikari token".
+            result = self.run_cmd(["bash", str(WRAPPER), "config", "show"], env=env)
+            self.assertIn("apiBaseUrl: http://127.0.0.1:58087/api/tavily", result.stdout)
+
+            self.run_cmd(["bash", str(WRAPPER), "search", "query", "--json"], env=env)
+            payload = json.loads(capture.read_text(encoding="utf-8"))
+            self.assertEqual(payload["api_base_url"], "http://127.0.0.1:58087/api/tavily")
+            self.assertEqual(payload["api_key"], VALID_TOKEN)
+
+    def test_configure_survives_unsupported_directory_mode(self):
+        """`install -d -m 0700` fails on msys2; configure must not depend on it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            self.write_mode_hostile_install(fake_bin)
+            env = self.base_env(root / "home", fake_bin)
+            config_dir = root / "config"
+
+            # Pre-fix this aborted with "cannot change permissions".
+            self.run_cmd(
+                [
+                    "bash",
+                    str(WRAPPER),
+                    "configure",
+                    "--base-url",
+                    "http://127.0.0.1:58087",
+                    "--token",
+                    VALID_TOKEN,
+                    "--config-dir",
+                    str(config_dir),
+                ],
+                env=env,
+            )
+
+            data = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["token"], VALID_TOKEN)
+            # The umask fallback must keep the directory no wider than 0700.
+            self.assertEqual(stat.S_IMODE(config_dir.stat().st_mode), 0o700)
+
     def test_installer_installs_wrapper_config_and_optional_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
