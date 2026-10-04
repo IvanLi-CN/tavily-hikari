@@ -201,7 +201,7 @@ check_image_contract() {
   local image="$1"
   local expected_version="$2"
   local container_name="$3"
-  local port response cli_version
+  local port response cli_version api_response version_json_response oci_label
 
   cli_version="$(docker run --rm \
     --name "${container_name}-version" \
@@ -227,6 +227,7 @@ check_image_contract() {
   port="$(docker port "$container_name" 8787/tcp | sed -n 's/.*://p' | head -n 1)"
 
   local api_ok=false
+  api_response=""
   for _ in $(seq 1 60); do
     if response="$(curl -fsS "http://127.0.0.1:${port}/api/version" 2>/dev/null)" \
       && EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$response" python3 - <<'PY'
@@ -239,6 +240,7 @@ if payload.get("backend") != expected or payload.get("frontend") != expected:
 PY
     then
       api_ok=true
+      api_response="$response"
       break
     fi
     sleep 1
@@ -249,8 +251,8 @@ PY
     return 1
   fi
 
-  response="$(curl -fsS "http://127.0.0.1:${port}/version.json")"
-  EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$response" python3 - <<'PY'
+  version_json_response="$(curl -fsS "http://127.0.0.1:${port}/version.json")"
+  EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$version_json_response" python3 - <<'PY'
 import json
 import os
 payload = json.loads(os.environ["VERSION_RESPONSE"])
@@ -260,7 +262,7 @@ PY
 
   docker exec "$container_name" test ! -e /srv/app/web/version.json
   docker exec "$container_name" grep -a -Fq "$expected_version" /usr/local/bin/tavily-hikari
-  EXPECTED_VERSION="$expected_version" IMAGE_INSPECT="$(docker image inspect "$image")" python3 - <<'PY'
+  oci_label="$(EXPECTED_VERSION="$expected_version" IMAGE_INSPECT="$(docker image inspect "$image")" python3 - <<'PY'
 import json
 import os
 image = json.loads(os.environ["IMAGE_INSPECT"])[0]
@@ -270,7 +272,17 @@ if label != version:
     raise SystemExit(f"OCI version label {label!r} does not match {version!r}")
 if any(value.startswith("APP_EFFECTIVE_VERSION=") for value in image.get("Config", {}).get("Env", [])):
     raise SystemExit("APP_EFFECTIVE_VERSION leaked into runtime Config.Env")
+print(label)
 PY
+  )"
+
+  printf -- '- Image `%s`:\n' "$expected_version" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `--version`: `tavily-hikari %s`\n' "$expected_version" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `/api/version`: `%s`\n' "$api_response" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `/version.json`: `%s`\n' "$version_json_response" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - OCI `org.opencontainers.image.version`: `%s`\n' "$oci_label" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `APP_EFFECTIVE_VERSION` runtime environment: absent\n' >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - Static `/srv/app/web/version.json`: absent\n' >> "$RUN_ROOT/runtime-version-results.md"
 }
 
 analyze_changed_layers() {
@@ -354,7 +366,15 @@ PY
 REPORT_DIR="$(dirname -- "$REPORT_PATH")"
 mkdir -p "$REPORT_DIR"
 CHANGED_LAYER_REPORT="$RUN_ROOT/changed-layers.md"
+RUNTIME_VERSION_REPORT="$RUN_ROOT/runtime-version-results.md"
 : > "$CHANGED_LAYER_REPORT"
+: > "$RUNTIME_VERSION_REPORT"
+tested_arm64=false
+for platform in "${PLATFORM_LIST[@]}"; do
+  if [[ "$platform" == "linux/arm64" ]]; then
+    tested_arm64=true
+  fi
+done
 cat > "$REPORT_PATH" <<EOF
 # OCI version/layer reuse acceptance
 
@@ -362,6 +382,7 @@ cat > "$REPORT_PATH" <<EOF
 - Source date epoch: $SOURCE_DATE_EPOCH
 - Synthetic package versions: $VERSION_A and $VERSION_B
 - Platforms: $PLATFORMS
+- ARM64 evidence: $([[ "$tested_arm64" == true ]] && printf 'included' || printf 'not tested; this report provides no ARM64 evidence')
 - Scenario: same source and SemVer with different Docker-context mtimes; then same source with different SemVer
 - Note: SemVer A/B is a synthetic packaging contract test, not evidence of a historical production version-only release.
 
@@ -436,6 +457,8 @@ done
   cat "$CHANGED_LAYER_REPORT"
   printf '\n## Packaged CLI versions\n\n'
   cat "$RUN_ROOT/cli-version-results.md"
+  printf '\n## Runtime and OCI version checks\n\n'
+  cat "$RUNTIME_VERSION_REPORT"
 } >> "$REPORT_PATH"
 
 echo "OCI version/layer reuse acceptance passed: ${PLATFORM_RESULTS[*]}"
