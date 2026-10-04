@@ -1,6 +1,6 @@
 # OCI version/layer reuse acceptance
 
-- Candidate: 335859fa
+- Candidate: 6f0f31a06f1833dcdadce9525161cb5e9f55a779
 - Source date epoch: 0
 - Synthetic package versions: 0.0.0-ci.1 and 0.0.0-ci.2
 - Platforms: linux/amd64
@@ -18,8 +18,8 @@
 | Platform    | Index | RootFS diffID                                                             |
 | ----------- | ----: | ------------------------------------------------------------------------- |
 | linux/amd64 |     0 | `sha256:66462cc862fe2053b9863fefa3866e07bb5dfb06f6b3ce3177cc096e4021aabe` |
-| linux/amd64 |     1 | `sha256:fe86dfe366461a9818bc14623dde53e894bed587ffba78468bb2b9123a201490` |
-| linux/amd64 |     2 | `sha256:0b6fad41c95c3c55089147efe2434ecd14d5e499a89e40e3fc4a6a14654ea8fa` |
+| linux/amd64 |     1 | `sha256:931f3939cb53e94bb2d1b5c016ed093d37694c3af0ef421eff074ecfa2e38521` |
+| linux/amd64 |     2 | `sha256:8bb9c5dff6a38a5e35bbbbfaaf74092b7662028e19966e97030f0fc702c29400` |
 | linux/amd64 |     3 | `sha256:2f5bc0ebb6459de970ab2dbf6e622cba2052c4a2e8c018dbda8a545c56ab6063` |
 | linux/amd64 |     4 | `sha256:7df2767c4409503637d19848d24b1da53602025a69b4e2c68119d714ae8746c6` |
 | linux/amd64 |     5 | `sha256:076b869c2c43e9d673f65193bbaa37cc446304c68e4454e32715464943289424` |
