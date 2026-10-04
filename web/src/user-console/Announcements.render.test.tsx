@@ -14,8 +14,9 @@ mock.module('../components/ui/dialog', () => {
   const DialogHeader = ({ children, ...props }: ComponentProps<'div'>) => <div {...props}>{children}</div>
   const DialogFooter = ({ children, ...props }: ComponentProps<'div'>) => <div {...props}>{children}</div>
   const DialogTitle = ({ children, ...props }: ComponentProps<'h2'>) => <h2 {...props}>{children}</h2>
+  const DialogDescription = ({ children, ...props }: ComponentProps<'p'>) => <p {...props}>{children}</p>
 
-  return { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle }
+  return { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle }
 })
 
 mock.module('../components/ui/drawer', () => {
