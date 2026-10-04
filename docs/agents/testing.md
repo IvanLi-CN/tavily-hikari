@@ -18,19 +18,16 @@ must stay stubbed or sandboxed; production Tavily endpoints require explicit app
 
 ## GitHub Actions Performance Recovery A/B
 
-`.github/workflows/performance-recovery.yml` is a manual-only production-shaped comparison gate. It
-must run on the dedicated GitHub Actions runner with labels `self-hosted`, `linux`, `x64`, and
-`performance-recovery`. That runner must have passwordless SSH access compatible with the existing
-exporter to `192.168.31.11` and the `codex-testbox` SSH alias, plus `git`, `ssh`, `rsync`, `docker`,
-and `python3`.
+`.github/workflows/performance-recovery.yml` is a manual-only A/B comparison gate on the GitHub-hosted
+`ubuntu-24.04` runner. It creates a disposable SQLite/core-sidecar fixture from the candidate build,
+archives the baseline and candidate source revisions locally, and runs the existing isolated
+baseline/candidate Docker comparison with only the local/mock upstream. It uses only managed
+GitHub-hosted compute and does not require SSH, private network hosts, or production database
+snapshots.
 
-The workflow reads the production SQLite databases through the existing read-only snapshot path,
-creates and removes only its own temporary exporter/testbox directories, runs the existing isolated
-baseline/candidate comparison on `codex-testbox`, and uses only the comparison's local/mock
-upstream.
 It requires `confirm=yes` and a duration from 600 to 1800 seconds per variant. It uploads sanitized
-logs and comparison output for 14 days; raw production SQLite snapshots stay on the internal
-runner/testbox. Do not run it concurrently with unrelated testbox workloads.
+logs and comparison output for 14 days. A passing run proves the recovery behavior against the
+GitHub-hosted fixture; it is not a claim about a production snapshot or private-machine behavior.
 
 From the GitHub UI, dispatch `Performance Recovery A/B` from the candidate ref. The equivalent CLI
 form is:

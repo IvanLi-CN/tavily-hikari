@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type yes to start the production-shaped comparison
+        description: Type yes to start the GitHub-hosted fixture comparison
         required: true
         type: choice
         options:
@@ -27,7 +27,7 @@ on:
         type: string
         default: "600"
       run_id:
-        description: Optional safe run identifier for the isolated testbox workspace
+        description: Optional safe run identifier for the isolated GitHub-hosted workspace
         required: false
         type: string
         default: ""
@@ -35,8 +35,8 @@ on:
 permissions:
   contents: read
 
-# The comparison owns a read-only production snapshot and an isolated Docker run. Never run
-# two copies concurrently on the dedicated runner or testbox.
+# The comparison owns generated fixture databases and an isolated Docker run. Never run two
+# copies concurrently on the same GitHub-hosted runner.
 concurrency:
   group: performance-recovery-manual
   cancel-in-progress: false
@@ -44,8 +44,8 @@ concurrency:
 jobs:
   performance-recovery:
     name: Performance Recovery Comparison
-    runs-on: [self-hosted, linux, x64, performance-recovery]
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       - name: Prepare local evidence directory
         shell: bash
@@ -89,38 +89,20 @@ jobs:
             echo "duration_secs=${DURATION_SECS}"
           } | tee "${RUNNER_TEMP}/performance-recovery/identity.txt"
 
-      - name: Verify dedicated performance runner
-        shell: bash
+      - name: Install local fixture dependencies
         run: |
-          set -euo pipefail
-          for command in git ssh rsync docker python3; do
-            command -v "${command}" >/dev/null || {
-              echo "missing required runner command: ${command}" >&2
-              exit 2
-            }
-          done
-          docker info >/dev/null
-          ssh -o BatchMode=yes -o ConnectTimeout=15 192.168.31.11 \
-            'test -d /home/ivan/srv/ai'
-          ssh -o BatchMode=yes -o ConnectTimeout=15 codex-testbox \
-            'docker info >/dev/null'
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y sqlite3 zstd
 
-      - name: Run controlled baseline/candidate comparison
+      - name: Run GitHub-hosted fixture comparison
         shell: bash
         env:
           BASELINE_REF: ${{ inputs.baseline_ref }}
           DURATION_SECS: ${{ inputs.duration_secs }}
           RUN_ID: ${{ inputs.run_id }}
-          SOURCE_SSH_TARGET: 192.168.31.11
-          TESTBOX_HOST: codex-testbox
-          REMOTE_SPACE_MARGIN_BYTES: "10737418240"
         run: |
-          set +e
-          scripts/run-performance-recovery-testbox-comparison.sh 2>&1 \
+          scripts/run-performance-recovery-github-hosted.sh 2>&1 \
             | tee "${RUNNER_TEMP}/performance-recovery/comparison.log"
-          status=${PIPESTATUS[0]}
-          printf '%s\n' "${status}" > "${RUNNER_TEMP}/performance-recovery/exit-status.txt"
-          exit "${status}"
 
       - name: Upload sanitized comparison evidence
         if: ${{ always() }}
@@ -144,6 +126,7 @@ jobs:
             echo ""
             echo "- Job status: ${JOB_STATUS}"
             echo "- Run: ${RUN_URL}"
-            echo "- Raw production SQLite snapshots remain on the internal runner/testbox."
+            echo "- Execution target: GitHub-hosted ubuntu-24.04."
+            echo "- Databases are generated local fixtures; no production snapshot or private network host is used."
             echo "- Sanitized logs and comparison output are in the uploaded artifact."
           } >> "${GITHUB_STEP_SUMMARY}"

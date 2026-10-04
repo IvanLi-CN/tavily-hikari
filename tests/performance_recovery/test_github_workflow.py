@@ -7,6 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "performance-recovery.yml"
+RUNNER = ROOT / "scripts" / "run-performance-recovery-github-hosted.sh"
 
 
 class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
@@ -20,9 +21,12 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
             self.assertNotIn(event, self.source)
         self.assertIn("group: performance-recovery-manual", self.source)
         self.assertIn("cancel-in-progress: false", self.source)
-        self.assertIn("runs-on: [self-hosted, linux, x64, performance-recovery]", self.source)
+        self.assertIn("runs-on: ubuntu-24.04", self.source)
+        self.assertNotIn("self-hosted", self.source)
+        self.assertNotIn("192.168.31.11", self.source)
+        self.assertNotIn("codex-testbox", self.source)
 
-    def test_workflow_requires_production_duration_and_confirmation(self) -> None:
+    def test_workflow_requires_fixture_duration_and_confirmation(self) -> None:
         self.assertIn("name: Performance Recovery A/B", self.source)
         self.assertIn("confirm:", self.source)
         self.assertIn("default: no", self.source)
@@ -32,22 +36,29 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("BASELINE_REF", self.source)
         self.assertIn("candidate_ref || github.sha", self.source)
 
-    def test_workflow_reuses_isolated_mock_comparison_and_keeps_snapshots_internal(self) -> None:
+    def test_workflow_uses_the_github_hosted_fixture_comparison(self) -> None:
         self.assertIn(
-            "scripts/run-performance-recovery-testbox-comparison.sh",
+            "scripts/run-performance-recovery-github-hosted.sh",
             self.source,
         )
-        self.assertIn("SOURCE_SSH_TARGET: 192.168.31.11", self.source)
-        self.assertIn("TESTBOX_HOST: codex-testbox", self.source)
-        self.assertIn('REMOTE_SPACE_MARGIN_BYTES: "10737418240"', self.source)
         self.assertIn("actions/upload-artifact@v7", self.source)
         self.assertIn("retention-days: 14", self.source)
         self.assertIn(
-            "Raw production SQLite snapshots remain on the internal runner/testbox.",
+            "Databases are generated local fixtures; no production snapshot or private network host is used.",
             self.source,
         )
         self.assertNotIn("https://api.tavily.com", self.source)
         self.assertNotIn("TAVILY_UPSTREAM", self.source)
+
+    def test_github_hosted_runner_has_no_private_network_requirements(self) -> None:
+        runner = RUNNER.read_text(encoding="utf-8")
+        self.assertIn("PERFORMANCE_RECOVERY_RUN_MODE=github-hosted", runner)
+        self.assertIn("docker compose", runner)
+        self.assertIn('git -C "$ROOT_DIR" archive', runner)
+        self.assertIn("tavily_proxy-observability.db", runner)
+        self.assertNotIn("self-hosted", runner)
+        self.assertNotIn("192.168.31.11", runner)
+        self.assertNotIn("codex-testbox", runner)
 
 
 if __name__ == "__main__":

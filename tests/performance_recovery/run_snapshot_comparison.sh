@@ -5,11 +5,11 @@ show_help() {
   cat <<'EOF'
 Usage: run_snapshot_comparison.sh
 
-Run isolated baseline and candidate performance checks against a copied 101 core/observability
-SQLite snapshot. The caller must provide repositories and a snapshot under one owned REMOTE_RUN.
+Run isolated baseline and candidate performance checks against a copied core/observability SQLite
+fixture. The caller must provide repositories and a snapshot under one owned REMOTE_RUN.
 
 Required environment:
-  REMOTE_RUN        Isolated /srv/codex run directory
+  REMOTE_RUN        Isolated run directory owned by the caller
   CANDIDATE_REPO    Candidate source tree within REMOTE_RUN
   BASELINE_REPO     Baseline source tree within REMOTE_RUN
   SNAPSHOT_DIR      Directory containing manifest.env and compressed core/observability snapshots
@@ -35,9 +35,9 @@ ARTIFACTS_DIR="${REMOTE_RUN}/artifacts/performance-recovery"
 WORK_DIR="${REMOTE_RUN}/performance-recovery"
 CANDIDATE_SHA="${CANDIDATE_SHA:-unknown}"
 BASELINE_SHA="${BASELINE_SHA:-unknown}"
-# Testbox retries must not ask Docker Hub to resolve a mutable tag. This digest
-# is the exact Rust 1.91 Bookworm image used by the checked-in test Dockerfile.
-TESTBOX_RUST_BASE_IMAGE="rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33"
+# Retries must not ask Docker Hub to resolve a mutable tag. This digest is the exact Rust 1.91
+# Bookworm image used by the checked-in test Dockerfile.
+RUST_BASE_IMAGE="rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33"
 
 # These lists deliberately mirror the HA event-table allowlists. The recovery
 # gate must only require progress on data the online GC may legally delete;
@@ -89,9 +89,24 @@ done
 CORE_COMPRESSED_DB="$SNAPSHOT_DIR/$CORE_COMPRESSED_NAME"
 SIDECAR_COMPRESSED_DB="$SNAPSHOT_DIR/$SIDECAR_COMPRESSED_NAME"
 
-case "$REMOTE_RUN" in
-  /srv/codex/workspaces/*/runs/*) ;;
-  *) echo "REMOTE_RUN must be an isolated /srv/codex workspace run" >&2; exit 2 ;;
+case "${PERFORMANCE_RECOVERY_RUN_MODE:-internal}" in
+  internal)
+    case "$REMOTE_RUN" in
+      /srv/codex/workspaces/*/runs/*) ;;
+      *) echo "REMOTE_RUN must be an isolated /srv/codex workspace run" >&2; exit 2 ;;
+    esac
+    ;;
+  github-hosted)
+    runner_temp_root="${RUNNER_TEMP:?RUNNER_TEMP is required for github-hosted mode}"
+    case "$REMOTE_RUN" in
+      "$runner_temp_root"/*) ;;
+      *) echo "REMOTE_RUN must be inside RUNNER_TEMP in github-hosted mode" >&2; exit 2 ;;
+    esac
+    ;;
+  *)
+    echo "unsupported PERFORMANCE_RECOVERY_RUN_MODE" >&2
+    exit 2
+    ;;
 esac
 [[ "$COMPOSE_PROJECT" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || {
   echo "invalid COMPOSE_PROJECT" >&2
@@ -508,10 +523,10 @@ write_compose() {
 
   runner_uid="$(id -u)"
   runner_gid="$(id -g)"
-  sed "s|^FROM rust:1.91-bookworm AS builder$|FROM $TESTBOX_RUST_BASE_IMAGE AS builder|" \
+  sed "s|^FROM rust:1.91-bookworm AS builder$|FROM $RUST_BASE_IMAGE AS builder|" \
     "$repo/tests/ha/Dockerfile.app" > "$dockerfile"
-  grep -qx "FROM $TESTBOX_RUST_BASE_IMAGE AS builder" "$dockerfile" || {
-    echo "unexpected testbox app Dockerfile base image" >&2
+  grep -qx "FROM $RUST_BASE_IMAGE AS builder" "$dockerfile" || {
+    echo "unexpected app Dockerfile base image" >&2
     exit 2
   }
   cat > "$WORK_DIR/compose.yml" <<EOF
@@ -671,9 +686,8 @@ run_variant() {
     normalize_baseline_schema_ledger "$variant_dir/tavily_proxy.db" "$repo"
   fi
   write_compose "$repo" "$variant_dir" "$artifact_dir"
-  # The testbox is deliberately isolated from production services. Reusing its
-  # locked base-image cache keeps a transient registry failure out of the
-  # baseline/candidate comparison.
+  # The comparison is deliberately isolated from external services. The pinned base image keeps
+  # a mutable registry tag out of the baseline/candidate comparison.
   compose build app
   compose up -d app upstream
   if [[ "$name" == "baseline" ]]; then
