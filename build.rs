@@ -9,6 +9,15 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-env-changed=TAVILY_HIKARI_WEB_DIST_DIR");
     println!("cargo:rustc-check-cfg=cfg(web_assets_embedded)");
 
+    let effective_version = env::var("APP_EFFECTIVE_VERSION")
+        .ok()
+        .map(|version| version.trim().to_owned())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| {
+            env::var("CARGO_PKG_VERSION").expect("Cargo provides CARGO_PKG_VERSION")
+        });
+    println!("cargo:rustc-env=APP_EFFECTIVE_VERSION={effective_version}");
+
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set"));
     let generated_path = out_dir.join("embedded_web_assets.rs");
     let dist_dir = match env::var_os("TAVILY_HIKARI_WEB_DIST_DIR") {

@@ -42,7 +42,11 @@ use tavily_hikari::{
 use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Tavily reverse proxy with key rotation")]
+#[command(
+    author,
+    version = env!("APP_EFFECTIVE_VERSION"),
+    about = "Tavily reverse proxy with key rotation"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -835,9 +839,18 @@ fn preferred_admin_passkey_rp_host(
 #[cfg(test)]
 mod main_tests {
     use super::{
-        AdminPasskeyRpHostSource, builtin_admin_requires_startup_secret,
+        AdminPasskeyRpHostSource, Cli, builtin_admin_requires_startup_secret,
         effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
     };
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_version_uses_the_embedded_product_version() {
+        assert_eq!(
+            Cli::command().get_version(),
+            Some(env!("APP_EFFECTIVE_VERSION"))
+        );
+    }
 
     #[test]
     fn forward_auth_stays_compatible_when_legacy_headers_are_configured() {

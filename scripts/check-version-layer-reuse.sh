@@ -201,7 +201,19 @@ check_image_contract() {
   local image="$1"
   local expected_version="$2"
   local container_name="$3"
-  local port response
+  local port response cli_version
+
+  cli_version="$(docker run --rm \
+    --name "${container_name}-version" \
+    "${DOCKER_LABEL_ARGS[@]}" \
+    --entrypoint /usr/local/bin/tavily-hikari \
+    "$image" --version)"
+  if [[ "$cli_version" != "tavily-hikari $expected_version" ]]; then
+    echo "$image reports unexpected CLI version: $cli_version" >&2
+    return 1
+  fi
+  printf -- '- Image `%s`: `--version` reports `%s`.\n' "$expected_version" "$cli_version" \
+    >> "$RUN_ROOT/cli-version-results.md"
 
   docker run --detach \
     --name "$container_name" \
@@ -422,6 +434,8 @@ done
   printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Method |\n'
   printf '| --- | ---: | --- | ---: | --- |\n'
   cat "$CHANGED_LAYER_REPORT"
+  printf '\n## Packaged CLI versions\n\n'
+  cat "$RUN_ROOT/cli-version-results.md"
 } >> "$REPORT_PATH"
 
 echo "OCI version/layer reuse acceptance passed: ${PLATFORM_RESULTS[*]}"

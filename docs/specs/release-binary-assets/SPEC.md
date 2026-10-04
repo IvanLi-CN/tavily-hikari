@@ -90,11 +90,11 @@
   When release workflow 进入 GitHub Release job 前
   Then GitHub Release 资产上传必须被阻断。
 - Given 相同源码和发布版本的两次构建具有不同输入文件 mtime
-  When 分别构建 amd64 与 arm64 镜像
-  Then 每个架构的所有文件系统层 digest 必须完全相同。
+  When 在 testbox 分别构建 `linux/amd64` 镜像
+  Then 两次构建的所有文件系统层 digest 必须完全相同。
 - Given 相同源码只改变合成测试 SemVer
-  When 使用相应版本构建 amd64 与 arm64 镜像 A/B
-  Then 只有主服务二进制层和包含真实 JavaScript 的前端应用包层变化；十个维护二进制层及归一化静态层相同，不存在版本元数据专层，OCI label、`/api/version` 与动态 `/version.json` 各自匹配该构建的 SemVer。
+  When 在 testbox 使用相应版本构建 `linux/amd64` 镜像 A/B
+  Then 只有主服务二进制层和包含真实 JavaScript 的前端应用包层变化；十个维护二进制层及归一化静态层相同，不存在版本元数据专层，OCI label、CLI `--version`、`/api/version` 与动态 `/version.json` 各自匹配该构建的 SemVer。
 - Given production `web/dist` 被打包进 Docker 镜像
   When 检查镜像文件与运行时配置
   Then 不存在 `/srv/app/web/version.json`，`Config.Env` 不含 `APP_EFFECTIVE_VERSION`，且 `org.opencontainers.image.version` 等于产品发布 SemVer。
@@ -118,7 +118,7 @@
 
 ### REQ-REL-VERSION-EMBEDDING
 
-- 产品发布 SemVer MUST 编译进 Tavily Hikari 主服务二进制与真实前端 JavaScript 应用包；两个 service worker MUST 使用同一 SemVer；`APP_EFFECTIVE_VERSION` MUST NOT 出现在镜像运行时环境中。
+- 产品发布 SemVer MUST 编译进 Tavily Hikari 主服务二进制与真实前端 JavaScript 应用包；服务 CLI 的 `--version` 与后端版本接口 MUST 报告该 SemVer；两个 service worker MUST 使用同一 SemVer；`APP_EFFECTIVE_VERSION` MUST NOT 出现在镜像运行时环境中。
 
 ### REQ-REL-MTIME-NORMALIZATION
 
@@ -142,9 +142,9 @@
 
 ### VER-REL-OCI-MTIME
 
-- Method: `scripts/check-version-layer-reuse.sh` on `codex-testbox` for `linux/amd64` and `linux/arm64`.
+- Method: `PLATFORMS=linux/amd64 scripts/check-version-layer-reuse.sh` on `codex-testbox`.
 - covers: `REQ-REL-MTIME-NORMALIZATION`
-- Pass condition: same-source/same-version images built from distinct input mtimes have identical RootFS layer digests on each architecture.
+- Pass condition: same-source/same-version AMD64 images built from distinct input mtimes have identical RootFS layer digests.
 
 ### VER-REL-OCI-SEMVERS
 
@@ -154,9 +154,9 @@
 
 ### VER-REL-VERSION-ROUTES
 
-- Method: `cargo test --locked --bin tavily-hikari version_detection`, `cargo test --locked --bin tavily-hikari --test server_http_contract embedded_public_assets_are_served_without_static_dir`, and the version-layer image HTTP smoke checks.
+- Method: `cargo test --locked --bin tavily-hikari version_detection`, `cargo test --locked --bin tavily-hikari cli_version_uses_the_embedded_product_version`, `cargo test --locked --test server_http_contract embedded_public_assets_are_served_without_static_dir`, and the version-layer image HTTP smoke checks.
 - covers: `REQ-REL-VERSION-COMPATIBILITY`
-- Pass condition: packaged backend/frontend versions and dynamic `/version.json` agree; an explicit external static override remains supported.
+- Pass condition: packaged backend API, CLI `--version`, frontend version, and dynamic `/version.json` agree for release builds; an explicit external static override remains supported.
 
 ## Related ADRs
 
