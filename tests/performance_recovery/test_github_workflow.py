@@ -62,6 +62,12 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertNotIn("192.168.31.11", runner)
         self.assertNotIn("codex-testbox", runner)
 
+    def test_fixture_container_preserves_host_mount_ownership(self) -> None:
+        runner = RUNNER.read_text(encoding="utf-8")
+        self.assertIn('RUNNER_UID="$(id -u)"', runner)
+        self.assertIn('RUNNER_GID="$(id -g)"', runner)
+        self.assertIn('--user "${RUNNER_UID}:${RUNNER_GID}"', runner)
+
 
 if __name__ == "__main__":
     unittest.main()
