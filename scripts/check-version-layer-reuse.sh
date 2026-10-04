@@ -289,7 +289,17 @@ if len(diff_a) != len(diff_b):
     raise SystemExit("SemVer A/B images have different filesystem layer counts")
 changed = [index for index, pair in enumerate(zip(diff_a, diff_b)) if pair[0] != pair[1]]
 if len(changed) != 2:
-    raise SystemExit(f"expected exactly two SemVer-dependent filesystem layers, found {changed}")
+    print(f"expected exactly two SemVer-dependent filesystem layers, found {changed}", file=sys.stderr)
+    for index in changed:
+        paths_a = set(names_a[index])
+        paths_b = set(names_b[index])
+        only_a = sorted(paths_a - paths_b)
+        only_b = sorted(paths_b - paths_a)
+        print(f"layer {index}: paths only in A ({len(only_a)}): {only_a[:5]}", file=sys.stderr)
+        print(f"layer {index}: paths only in B ({len(only_b)}): {only_b[:5]}", file=sys.stderr)
+        if paths_a == paths_b:
+            print(f"layer {index}: same {len(paths_a)} paths have different content or metadata", file=sys.stderr)
+    raise SystemExit(1)
 
 entries = []
 for index in changed:
@@ -365,6 +375,7 @@ for platform in "${PLATFORM_LIST[@]}"; do
     echo "$platform same-version image layers differ when only input mtimes change" >&2
     exit 1
   fi
+  printf '%s\n' "$layers_a" > "$RUN_ROOT/${arch}-rootfs-diffids.txt"
 
   layer_count="$(printf '%s\n' "$layers_a" | sed '/^$/d' | wc -l | tr -d ' ')"
   check_image_contract "$image_a" "$VERSION_A" "${CONTAINER_PREFIX}-${arch}-a"
@@ -381,6 +392,18 @@ for platform in "${PLATFORM_LIST[@]}"; do
 done
 
 {
+  printf '\n## Same-version RootFS diffIDs\n\n'
+  printf '| Platform | Index | RootFS diffID |\n'
+  printf '| --- | ---: | --- |\n'
+  for platform in "${PLATFORM_LIST[@]}"; do
+    arch="${platform##*/}"
+    index=0
+    while IFS= read -r diff_id; do
+      [[ -n "$diff_id" ]] || continue
+      printf '| %s | %s | `%s` |\n' "$platform" "$index" "$diff_id"
+      index=$((index + 1))
+    done < "$RUN_ROOT/${arch}-rootfs-diffids.txt"
+  done
   printf '\n## Changed layer compressed byte estimates\n\n'
   printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Method |\n'
   printf '| --- | ---: | --- | ---: | --- |\n'

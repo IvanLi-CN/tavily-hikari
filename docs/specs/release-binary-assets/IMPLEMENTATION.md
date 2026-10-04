@@ -7,7 +7,7 @@
 - SPA 服务路径改为统一从外部静态目录优先读取，找不到时回落到内嵌资源；`/assets/*`、`/favicon.svg`、`/version.json` 与 HTML 页面共享这套读取逻辑。
 - 版本检测同样保持外部静态目录优先，避免 `--static-dir` 覆盖部署时版本信息与实际服务的前端不一致。
 - `Dockerfile` 在 builder 阶段复制 `build.rs`，保证新增 Cargo build script 后容器构建路径仍可用；容器运行时继续通过 `WEB_STATIC_DIR=/srv/app/web` 使用镜像内静态目录。
-- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再分别 COPY；前端 JS、HTML shells、workers 和版本化 asset graph 合为真实应用层，图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
+- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再从只读 BuildKit bind mount 写入各自最终层，并在同层复位目标目录 mtime。实测发现，即使来源文件已归一，最终 `COPY` 仍会更新目标父目录 mtime，导致内容不变的独立层 diffID 漂移。前端 JS、HTML shells、workers 和版本化 asset graph 合为真实应用层，图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
 - `.dockerignore` 采用 Cargo 源码、两个 Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 枚举上下文并检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
 - 后端版本 helper 从主服务二进制编译期 `APP_EFFECTIVE_VERSION` 读取产品版本，不再使用运行时 ENV；`/api/version` 与动态 `/version.json` 使用同一产品版本，显式外部静态目录内的 `version.json` 仍可覆盖前端版本。OCI label 继续报告同一 SemVer，镜像 `Config.Env` 不含该变量。
 - `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
@@ -23,6 +23,7 @@
 - GitHub Release job 下载 binary artifacts 后用 `gh release upload --clobber --repo "${GITHUB_REPOSITORY}"` 上传资产；该 job 没有 checkout，不能依赖本地 `.git` 推断仓库。GitHub Release 会包含 binary
   资产名称及新增的 portable 资产。
 - CI workflow 增加 embedded asset contract coverage，避免无外部静态目录的 binary 路径回归。
+- `scripts/check-version-layer-reuse.sh` 在 `codex-testbox` 的 amd64 OCI 验收通过：21 个 RootFS diffID 在同源码、同 SemVer、不同输入 mtime 构建间逐层一致；合成 SemVer A/B 只改变主服务层（gzip -1 估算 15,498,527 bytes）与前端应用层（7,431,177 bytes）。该 A/B 是包装合同验证，不证明生产历史曾只改版本号。当前 testbox BuildKit 仅提供 amd64 平台，arm64 验收仍待具备 arm64 执行能力的 runner。
 
 ## 验证
 

@@ -360,6 +360,10 @@
 
 - Production `web/dist` and the Docker image MUST NOT contain static `version.json`; HTTP `/version.json` MUST remain available with its existing JSON shape and agree with `/api/version.frontend` unless an explicit external static override is configured.
 
+### REQ-PWA-OCI-APPLICATION-LAYER
+
+- The production frontend application layer MUST contain the versioned JavaScript bundle, HTML shells, and both service workers. Product SemVer MUST NOT require a standalone version metadata file or metadata-only filesystem layer.
+
 ## Verification
 
 ### VER-PWA-BUILD-VERSION
@@ -379,6 +383,12 @@
 - Method: backend HTTP contract test plus image version-route smoke checks.
 - covers: `REQ-PWA-VERSION-COMPATIBILITY`
 - Pass condition: dynamic `/version.json` retains `{ "version": "..." }`, matches `/api/version.frontend`, and explicit external static override behavior remains available.
+
+### VER-PWA-OCI-APPLICATION-LAYER
+
+- Method: `scripts/check-version-layer-reuse.sh` on `codex-testbox`.
+- covers: `REQ-PWA-OCI-APPLICATION-LAYER`
+- Pass condition: the SemVer A/B changes the actual JavaScript application layer containing both workers and shells, with no static `version.json` or metadata-only layer.
 
 ## Related ADRs
 

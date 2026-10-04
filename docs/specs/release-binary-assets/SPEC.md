@@ -25,7 +25,7 @@
 - 继续保留 GHCR 镜像发布路径，不用 binary 替代镜像。
 - release workflow 在上传 GitHub Release 前，对打包后的 binary 做本机 smoke，阻断不可用资产发布。
 - release workflow 内部的前端 `web/dist` 只构建一次，并通过 release-local artifact 复用给 Docker 与 binary 发布 job。
-- Docker 镜像必须使用已解析的 tag+digest 基础镜像；所有复制到最终镜像的程序和静态资产都须先将时间戳固定到 `SOURCE_DATE_EPOCH=0`，并归一化 owner/mode，避免相同内容因输入 mtime 漂移而产生不同文件系统层摘要。
+- Docker 镜像必须使用已解析的 tag+digest 基础镜像；最终镜像中的程序和静态资产都须先将时间戳固定到 `SOURCE_DATE_EPOCH=0`，并归一化 owner/mode。每个最终层在写入文件后，还须在同一层中复位被修改的目标目录 mtime；仅归一化来源 payload 不足以阻止 `COPY` 更新父目录时间戳并改变 layer digest。
 - 产品发布 SemVer 必须由同一发布输入编入 Tavily Hikari 主服务二进制和真实前端 JavaScript 应用包；两个 service worker 使用该版本作为对应 PWA identity 的缓存版本。
 - `APP_EFFECTIVE_VERSION` 是 Docker/Rust 构建输入，不写入运行时环境；OCI `org.opencontainers.image.version` label、主服务二进制、前端包和发布 workflow 使用同一产品 SemVer。
 - Docker 最终镜像不得包含静态 `/srv/app/web/version.json` 或只承载版本元数据的文件系统层。HTTP `/version.json` 保留 `{ "version": "..." }` 兼容响应，并在无外部静态覆盖时由服务端动态生成；`--static-dir` / `WEB_STATIC_DIR` 中显式提供的 `version.json` 仍可覆盖 `/api/version.frontend` 与该 HTTP 响应。
@@ -122,7 +122,7 @@
 
 ### REQ-REL-MTIME-NORMALIZATION
 
-- Docker MUST 在最终镜像 COPY 前将 payload 的 mtime 归一为 `SOURCE_DATE_EPOCH=0`、owner 归一为 `0:0`，并将普通文件、目录及可执行文件权限分别归一为 `0644`、`0755`、`0755`。
+- Docker MUST 将 payload 的 mtime 归一为 `SOURCE_DATE_EPOCH=0`、owner 归一为 `0:0`，并将普通文件、目录及可执行文件权限分别归一为 `0644`、`0755`、`0755`。每个最终镜像层写入文件后 MUST 在同一层内将受影响的父目录 mtime 复位到该 epoch，以免最终目标目录自身的时间戳使后续 layer digest 漂移。
 
 ### REQ-REL-LAYER-BOUNDARIES
 

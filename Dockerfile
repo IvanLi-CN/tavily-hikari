@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7.1
+
 ########## Stage 1: compile the Rust binary ##########
 FROM rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS builder
 WORKDIR /app
@@ -112,6 +114,7 @@ RUN set -eux; \
 
 ########## Stage 4: final runtime image ##########
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
+ARG SOURCE_DATE_EPOCH=0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0 \
@@ -119,27 +122,71 @@ RUN apt-get update \
 
 WORKDIR /srv/app
 
-COPY --from=payload-normalizer /payload/xray/bin/xray /usr/local/bin/xray
-COPY --from=payload-normalizer /payload/xray/share/ /usr/local/share/xray/
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/bin/xray,target=/tmp/xray,ro \
+    install -m 0755 -o 0 -g 0 /tmp/xray /usr/local/bin/xray \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/xray /usr/local/bin
 
-COPY --from=payload-normalizer /payload/bin/tavily-hikari /usr/local/bin/tavily-hikari
-COPY --from=payload-normalizer /payload/bin/billing_ledger_audit /usr/local/bin/billing_ledger_audit
-COPY --from=payload-normalizer /payload/bin/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase
-COPY --from=payload-normalizer /payload/bin/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair
-COPY --from=payload-normalizer /payload/bin/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair
-COPY --from=payload-normalizer /payload/bin/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate
-COPY --from=payload-normalizer /payload/bin/observability_lock_holder /usr/local/bin/observability_lock_holder
-COPY --from=payload-normalizer /payload/bin/db_compaction_once /usr/local/bin/db_compaction_once
-COPY --from=payload-normalizer /payload/bin/request_logs_gc_once /usr/local/bin/request_logs_gc_once
-COPY --from=payload-normalizer /payload/bin/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once
-COPY --from=payload-normalizer /payload/bin/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once
-COPY --from=payload-normalizer /payload/runtime-scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY --from=payload-normalizer /payload/runtime-scripts/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/share,target=/tmp/xray-share,ro \
+    mkdir -p /usr/local/share/xray \
+    && cp -a /tmp/xray-share/. /usr/local/share/xray/ \
+    && find /usr/local/share/xray -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} + \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/share /usr/local
+
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/tavily-hikari,target=/tmp/tavily-hikari,ro \
+    install -m 0755 -o 0 -g 0 /tmp/tavily-hikari /usr/local/bin/tavily-hikari \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/tavily-hikari /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/billing_ledger_audit,target=/tmp/billing_ledger_audit,ro \
+    install -m 0755 -o 0 -g 0 /tmp/billing_ledger_audit /usr/local/bin/billing_ledger_audit \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/billing_ledger_audit /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/monthly_quota_rebase,target=/tmp/monthly_quota_rebase,ro \
+    install -m 0755 -o 0 -g 0 /tmp/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/monthly_quota_rebase /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_search_billing_repair,target=/tmp/mcp_search_billing_repair,ro \
+    install -m 0755 -o 0 -g 0 /tmp/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/mcp_search_billing_repair /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_request_log_retry_repair,target=/tmp/mcp_request_log_retry_repair,ro \
+    install -m 0755 -o 0 -g 0 /tmp/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/mcp_request_log_retry_repair /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_sidecar_migrate,target=/tmp/observability_sidecar_migrate,ro \
+    install -m 0755 -o 0 -g 0 /tmp/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/observability_sidecar_migrate /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_lock_holder,target=/tmp/observability_lock_holder,ro \
+    install -m 0755 -o 0 -g 0 /tmp/observability_lock_holder /usr/local/bin/observability_lock_holder \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/observability_lock_holder /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/db_compaction_once,target=/tmp/db_compaction_once,ro \
+    install -m 0755 -o 0 -g 0 /tmp/db_compaction_once /usr/local/bin/db_compaction_once \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/db_compaction_once /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/request_logs_gc_once,target=/tmp/request_logs_gc_once,ro \
+    install -m 0755 -o 0 -g 0 /tmp/request_logs_gc_once /usr/local/bin/request_logs_gc_once \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/request_logs_gc_once /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_outbox_cleanup_once,target=/tmp/ha_outbox_cleanup_once,ro \
+    install -m 0755 -o 0 -g 0 /tmp/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/ha_outbox_cleanup_once /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_trigger_repair_once,target=/tmp/ha_trigger_repair_once,ro \
+    install -m 0755 -o 0 -g 0 /tmp/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/ha_trigger_repair_once /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-entrypoint.sh,target=/tmp/docker-entrypoint.sh,ro \
+    install -m 0755 -o 0 -g 0 /tmp/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/docker-entrypoint.sh /usr/local/bin
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-healthcheck.sh,target=/tmp/docker-healthcheck.sh,ro \
+    install -m 0755 -o 0 -g 0 /tmp/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/docker-healthcheck.sh /usr/local/bin
 
 # The application package layer contains the versioned JavaScript bundle and shells.
-COPY --from=payload-normalizer /payload/web/app/ /srv/app/web/
-COPY --from=payload-normalizer /payload/web/pwa/ /srv/app/web/pwa/
-COPY --from=payload-normalizer /payload/web/meta/favicon.svg /payload/web/meta/manifest.webmanifest /payload/web/meta/manifest-admin.webmanifest /srv/app/web/
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/app,target=/tmp/web-app,ro \
+    mkdir -p /srv/app/web \
+    && cp -a /tmp/web-app/. /srv/app/web/ \
+    && find /srv/app/web -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} + \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /srv/app /srv
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/pwa,target=/tmp/web-pwa,ro \
+    mkdir -p /srv/app/web/pwa \
+    && cp -a /tmp/web-pwa/. /srv/app/web/pwa/ \
+    && find /srv/app/web/pwa -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} + \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /srv/app/web /srv/app /srv
+RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/meta,target=/tmp/web-meta,ro \
+    cp -a /tmp/web-meta/. /srv/app/web/ \
+    && find /srv/app/web -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} + \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /srv/app /srv
 
 VOLUME ["/srv/app/data"]
 EXPOSE 8787
