@@ -8,6 +8,9 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
+- A newly created hot segment gets its first bounded page ahead of historical work. If another page
+  is needed, its checkpointed continuation yields to a pending GC-blocking day so hot work cannot
+  starve seal recovery.
 - Scan progress compares the retained cursor before and after the entire pass. A terminal page
   that clears the cursor, including repeated bodyless scans during an integrity block, does not
   qualify for one-second continuation. The internal progress flag is omitted from serialized reports.
@@ -46,8 +49,9 @@
 - `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream probe. Its manual
   GitHub Actions suite runs 10 business requests per second for 30 minutes, then 0.1 requests per
   second for up to 30 minutes to verify bounded deletion and seal recovery. It requires at least
-  5,000 expired rows to be deleted. The suite also runs the maintenance-ticket backoff regression
-  and records integrity cursors and scheduler messages in failure evidence. The high-phase result
+  5,000 expired rows to be deleted. The suite also runs the maintenance-ticket backoff and
+  hot-page-yield regressions and records integrity cursors, blocking work items, priorities, and
+  scheduler messages in failure evidence. The high-phase result
   is checkpointed independently so a slow recovery does not hide latency evidence. Only JSON
   acceptance evidence is uploaded; fixture databases and service logs stay on the GitHub-hosted
   runner.

@@ -299,7 +299,6 @@ impl KeyStore {
             r#"SELECT (hot_cursor < hot_fence OR hot_fence < ?) AND NOT EXISTS (
                 SELECT 1 FROM dashboard_rollup_integrity_work_items
                 WHERE status = 'pending' AND recovery = 0 AND range_start >= ? AND range_end <= ?
-                  AND priority IN (0, 3, 4)
             ) FROM dashboard_rollup_integrity_state WHERE id = 1"#,
         )
         .bind(latest_closed)
@@ -1180,7 +1179,9 @@ impl KeyStore {
         let write_result = sqlx::query(
             r#"
             UPDATE dashboard_rollup_integrity_work_items
-            SET cursor_created_at = ?, cursor_id = ?, counts_json = ?, updated_at = ?
+            SET cursor_created_at = ?, cursor_id = ?, counts_json = ?,
+                priority = CASE WHEN priority = 4 THEN 2 ELSE priority END,
+                updated_at = ?
             WHERE range_start = ? AND status = 'pending'
             "#,
         )

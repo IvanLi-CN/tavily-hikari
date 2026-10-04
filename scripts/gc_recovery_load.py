@@ -81,12 +81,14 @@ def snapshot(core, sidecar, threshold):
         old = conn.execute("SELECT COUNT(*) FROM request_logs WHERE created_at < ?", (threshold,)).fetchone()[0]
         pending = conn.execute("SELECT bucket_start,cursor,gc_blocking FROM dashboard_rollup_integrity_day_reaudits ORDER BY bucket_start").fetchall()
         hot = conn.execute("SELECT hot_cursor,hot_fence FROM dashboard_rollup_integrity_state WHERE id=1").fetchone()
-        integrity_work = conn.execute("SELECT range_start,range_end,cursor_created_at,cursor_id,status FROM dashboard_rollup_integrity_work_items WHERE status='pending' ORDER BY priority DESC,range_start LIMIT 3").fetchall()
+        integrity_work = conn.execute("SELECT range_start,range_end,cursor_created_at,cursor_id,priority,status FROM dashboard_rollup_integrity_work_items WHERE status='pending' ORDER BY priority DESC,range_start LIMIT 16").fetchall()
+        blocking_work = conn.execute("SELECT w.range_start,w.range_end,w.cursor_created_at,w.cursor_id,w.priority,w.status FROM dashboard_rollup_integrity_day_reaudits d JOIN dashboard_rollup_integrity_work_items w ON w.range_start >= d.bucket_start AND w.range_end <= d.bucket_end WHERE d.gc_blocking=1 AND d.status='pending' AND w.status='pending' ORDER BY d.updated_at,w.range_start LIMIT 8").fetchall()
+        work_priority_counts = conn.execute("SELECT priority,COUNT(*) FROM dashboard_rollup_integrity_work_items WHERE status='pending' GROUP BY priority ORDER BY priority DESC").fetchall()
     with sqlite3.connect(core, timeout=1) as conn:
         active = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND status IN ('queued','running')").fetchone()[0]
         messages = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='request_logs_gc' ORDER BY id DESC LIMIT 3").fetchall()
         integrity_jobs = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='dashboard_rollup_integrity' ORDER BY id DESC LIMIT 3").fetchall()
-    return {"expired": old, "pending_days": pending, "hot": hot, "integrity_work": integrity_work, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs}
+    return {"expired": old, "pending_days": pending, "hot": hot, "integrity_work": integrity_work, "blocking_work": blocking_work, "work_priority_counts": work_priority_counts, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs}
 
 
 def load(origin, token, seconds, rps, on_tick=None, stop_when=None):

@@ -196,6 +196,9 @@ jobs:
       - name: Test maintenance ticket survival across pressure backoff
         run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_ticket_survives_scheduled_pressure_backoff
 
+      - name: Test hot-page yield to GC-blocking re-audit
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
+
       - name: Run two-phase synthetic recovery acceptance
         shell: bash
         env:

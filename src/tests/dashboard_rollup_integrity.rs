@@ -371,7 +371,7 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
 }
 
 #[tokio::test]
-async fn integrity_prioritizes_hot_slices_over_sealed_day_reaudits() {
+async fn integrity_prioritizes_new_hot_page_then_gc_blocking_day() {
     let db_path = temp_db_path("dashboard-rollup-integrity-hot-priority");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -399,9 +399,31 @@ async fn integrity_prioritizes_hot_slices_over_sealed_day_reaudits() {
     .expect("seed a hot backlog");
     sqlx::query(
         r#"
+        WITH RECURSIVE ids(id) AS (
+            VALUES(1)
+            UNION ALL SELECT id + 1 FROM ids WHERE id < 501
+        )
+        INSERT INTO request_logs (
+            auth_token_id, method, path, query, status_code, tavily_status_code,
+            error_message, result_status, request_kind_key, counts_business_quota,
+            business_credits, request_body, response_body, forwarded_headers,
+            dropped_headers, visibility, created_at
+        )
+        SELECT NULL, 'GET', '/api/tavily/search', NULL, 200, 200,
+               NULL, 'success', 'api:search', 1,
+               3, NULL, NULL, '[]', '[]', 'visible', ? + (id % 300)
+        FROM ids
+        "#,
+    )
+    .bind(hot_cursor)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed a multi-page hot segment");
+    sqlx::query(
+        r#"
         INSERT INTO dashboard_rollup_integrity_day_reaudits (
-            bucket_start, bucket_end, cursor, status, updated_at
-        ) VALUES (?, ?, ?, 'pending', ?)
+            bucket_start, bucket_end, cursor, status, updated_at, gc_blocking
+        ) VALUES (?, ?, ?, 'pending', ?, 1)
         "#,
     )
     .bind(day_start)
@@ -430,6 +452,36 @@ async fn integrity_prioritizes_hot_slices_over_sealed_day_reaudits() {
             .await
             .expect("read advanced hot cursor");
     assert_eq!(advanced_hot_cursor, hot_fence);
+
+    let hot_page: (i64, String) = sqlx::query_as(
+        "SELECT priority, status FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
+    )
+    .bind(hot_cursor)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read saved hot page");
+    assert_eq!(hot_page, (2, "pending".to_string()));
+
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("run GC-blocking day page after the first hot page");
+    let day_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read advanced GC-blocking day cursor");
+    assert_eq!(day_cursor, day_start + SECS_PER_FIVE_MINUTES);
+    let hot_page: (i64, String) = sqlx::query_as(
+        "SELECT priority, status FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
+    )
+    .bind(hot_cursor)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read still-pending hot page");
+    assert_eq!(hot_page, (2, "pending".to_string()));
 }
 
 #[tokio::test]
