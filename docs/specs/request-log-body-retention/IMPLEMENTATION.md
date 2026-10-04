@@ -8,9 +8,10 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
-- A newly created hot segment gets its first bounded page ahead of historical work. Its checkpointed
-  continuation yields to a pending GC-blocking day while remaining distinct from rolling hot pages,
-  which a new hot segment may still preempt.
+- A newly created hot segment gets its first bounded page ahead of historical work. Once its fence
+  advances, a pending GC-blocking day can take over without waiting for the whole hot cursor backlog
+  to drain. Checkpointed hot continuation remains distinct from rolling hot pages, which a new hot
+  segment may still preempt.
 - GC-blocking day re-audits advance in bounded two-hour source ranges; range-wide committed,
   cancelled, and in-flight mutation fences prevent a later five-minute source bucket from being
   missed while ordinary history work retains five-minute ranges.

@@ -428,7 +428,8 @@ async fn integrity_prioritizes_new_hot_page_then_gc_blocking_day() {
         .await
         .expect("create proxy");
     let now = proxy.backend_time().now_ts();
-    let hot_fence = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let latest_closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let hot_fence = latest_closed - 6 * SECS_PER_FIVE_MINUTES;
     let hot_cursor = hot_fence - SECS_PER_FIVE_MINUTES;
     let day_start = local_day_bucket_start_utc_ts(now - 3 * SECS_PER_DAY);
     let day_end = next_local_day_start_utc_ts(day_start);

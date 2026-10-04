@@ -711,7 +711,13 @@ impl KeyStore {
             .as_ref()
             .map(|row| row.get::<i64, _>("gc_blocking") != 0)
             .unwrap_or(false);
-        let day_reaudit = if !hot_is_behind && (day_reaudit_due || gc_reaudit_due) {
+        // Extend the hot fence once before yielding to a GC-blocking day. Waiting
+        // for the cursor to drain the whole hot backlog would starve retention
+        // recovery after an outage; the pending hot page still wins by priority.
+        let new_hot_segment_due = hot_fence < latest_closed;
+        let day_reaudit = if (gc_reaudit_due && !new_hot_segment_due)
+            || (day_reaudit_due && !hot_is_behind)
+        {
             sealed_day_reaudit
         } else {
             None
