@@ -29,6 +29,8 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
     def test_workflow_requires_fixture_duration_and_confirmation(self) -> None:
         self.assertIn("name: Performance Recovery A/B", self.source)
         self.assertIn("confirm:", self.source)
+        self.assertIn('          - "no"', self.source)
+        self.assertIn('          - "yes"', self.source)
         self.assertIn("default: no", self.source)
         self.assertIn('if [[ "${CONFIRM}" != "yes" ]]', self.source)
         self.assertIn("DURATION_SECS < 600", self.source)

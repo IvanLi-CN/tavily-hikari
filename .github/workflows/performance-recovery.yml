@@ -8,8 +8,8 @@ on:
         required: true
         type: choice
         options:
-          - no
-          - yes
+          - "no"
+          - "yes"
         default: no
       baseline_ref:
         description: Baseline Git revision to compare against
