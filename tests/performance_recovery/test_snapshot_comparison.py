@@ -234,6 +234,12 @@ class SnapshotComparisonTests(unittest.TestCase):
         self.assertIn("unixepoch() - 1800, unixepoch() - 600, 1,", shadow_fixture)
         self.assertNotIn("unixepoch() - 1800, unixepoch() - 601, 1,", shadow_fixture)
 
+    def test_reconciliation_fixture_resets_completed_projection_state(self) -> None:
+        self.assertIn("name = 'upstream_reconciliation_projection_state'", COMPARISON)
+        self.assertIn("cursor_token_id = '', cursor_key_id = '', cursor_period_code = ''", COMPARISON)
+        self.assertIn("transaction_p95_ms = 0, tx_hold_le_10 = 0", COMPARISON)
+        self.assertIn("tx_hold_over_250 = 0, completed = 0, next_retry_at = 0", COMPARISON)
+
     def test_docker_context_allows_the_test_toolchain_input(self) -> None:
         self.assertIn("!rust-toolchain.toml", DOCKERIGNORE)
         self.assertIn("build.rs|rust-toolchain.toml|src", DOCKERFILE)

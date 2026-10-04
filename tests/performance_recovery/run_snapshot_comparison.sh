@@ -430,6 +430,26 @@ UPDATE upstream_reconciliation_control_state
 SQL
   fi
 
+  # A copied production snapshot may have already completed its historical projection. Reset
+  # the derived cursor and hold histogram so the fixture produces a fresh, measurable slice.
+  if [[ "$(sqlite3 "$database_path" "
+    SELECT EXISTS(
+      SELECT 1 FROM sqlite_master
+       WHERE type = 'table' AND name = 'upstream_reconciliation_projection_state'
+    );
+  ")" == "1" ]]; then
+    sqlite3 "$database_path" <<'SQL'
+UPDATE upstream_reconciliation_projection_state
+   SET cursor_token_id = '', cursor_key_id = '', cursor_period_code = '',
+       batch_size = 25, fast_slice_streak = 0, scanned_rows = 0,
+       transaction_p95_ms = 0, tx_hold_le_10 = 0, tx_hold_le_25 = 0,
+       tx_hold_le_50 = 0, tx_hold_le_100 = 0, tx_hold_le_250 = 0,
+       tx_hold_over_250 = 0, completed = 0, next_retry_at = 0,
+       last_defer_reason = NULL, updated_at = 0
+ WHERE id = 'local';
+SQL
+  fi
+
   local transport_isolated
   transport_isolated="$(sqlite3 "$database_path" "
     SELECT CASE WHEN COUNT(*) = 1
