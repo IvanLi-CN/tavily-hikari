@@ -326,6 +326,21 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
     sqlx::query(
         r#"
+        INSERT OR IGNORE INTO dashboard_rollup_integrity_state (
+            id, hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed integrity state before freezing automatic work");
+    sqlx::query(
+        r#"
         UPDATE dashboard_rollup_integrity_state
         SET hot_cursor = ?, hot_fence = ?, hot_reaudit_cursor = ?, history_cursor = ?,
             last_history_attempt_at = ?, last_day_reaudit_attempt_at = ?, updated_at = ?
