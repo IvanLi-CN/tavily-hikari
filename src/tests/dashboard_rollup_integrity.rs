@@ -328,17 +328,27 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("read source fence");
+    let source_version = proxy
+        .key_store
+        .request_stats_coalescer
+        .dashboard_rollup_source_version(range_start, range_end)
+        .await;
+    sqlx::query("DELETE FROM dashboard_rollup_integrity_work_items WHERE status = 'pending'")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("isolate cancelled-source work item");
     sqlx::query(
         r#"
         INSERT INTO dashboard_rollup_integrity_work_items (
             range_start, range_end, source_fence, source_version, cursor_created_at, cursor_id,
             counts_json, status, updated_at
-        ) VALUES (?, ?, ?, 0, NULL, NULL, '{}', 'pending', ?)
+        ) VALUES (?, ?, ?, ?, NULL, NULL, '{}', 'pending', ?)
         "#,
     )
     .bind(range_start)
     .bind(range_end)
     .bind(source_fence)
+    .bind(source_version)
     .bind(now)
     .execute(&proxy.key_store.pool)
     .await
@@ -354,6 +364,12 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
         .await
         .expect("commit source update before cancellation");
     drop(mutation);
+    let cancelled_source_version = proxy
+        .key_store
+        .request_stats_coalescer
+        .dashboard_rollup_source_version(range_start, range_end)
+        .await;
+    assert_eq!(cancelled_source_version, source_version + 1);
 
     let result = proxy
         .run_dashboard_rollup_integrity_slice()
@@ -367,7 +383,7 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read restarted source version");
-    assert_eq!(restarted_version, 1);
+    assert_eq!(restarted_version, cancelled_source_version);
 }
 
 #[tokio::test]
