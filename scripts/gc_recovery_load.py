@@ -76,9 +76,10 @@ def stop(process):
         raise RuntimeError("synthetic service failed to shut down within 30 seconds")
 
 
-def snapshot(core, sidecar, threshold):
+def snapshot(core, sidecar, threshold, retained_start, retained_end):
     with sqlite3.connect(sidecar, timeout=1) as conn:
         old = conn.execute("SELECT COUNT(*) FROM request_logs WHERE created_at < ?", (threshold,)).fetchone()[0]
+        retained = conn.execute("SELECT COUNT(*) FROM request_logs WHERE created_at >= ? AND created_at < ?", (retained_start, retained_end)).fetchone()[0]
         pending = conn.execute("SELECT bucket_start,cursor,gc_blocking FROM dashboard_rollup_integrity_day_reaudits ORDER BY bucket_start").fetchall()
         hot = conn.execute("SELECT hot_cursor,hot_fence FROM dashboard_rollup_integrity_state WHERE id=1").fetchone()
         integrity_work = conn.execute("SELECT range_start,range_end,cursor_created_at,cursor_id,priority,status FROM dashboard_rollup_integrity_work_items WHERE status='pending' ORDER BY priority DESC,range_start LIMIT 16").fetchall()
@@ -88,7 +89,7 @@ def snapshot(core, sidecar, threshold):
         active = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND status IN ('queued','running')").fetchone()[0]
         messages = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='request_logs_gc' ORDER BY id DESC LIMIT 3").fetchall()
         integrity_jobs = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='dashboard_rollup_integrity' ORDER BY id DESC LIMIT 3").fetchall()
-    return {"expired": old, "pending_days": pending, "hot": hot, "integrity_work": integrity_work, "blocking_work": blocking_work, "work_priority_counts": work_priority_counts, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs}
+    return {"expired": old, "retained_fixture_rows": retained, "pending_days": pending, "hot": hot, "integrity_work": integrity_work, "blocking_work": blocking_work, "work_priority_counts": work_priority_counts, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs}
 
 
 def load(origin, token, seconds, rps, on_tick=None, stop_when=None):
@@ -179,12 +180,14 @@ def main():
         now = int(time.time())
         closed = now - now % 300
         day = (now + 28800) // 86400 * 86400 - 28800 - 10 * 86400
+        retained_day = day + 4 * 86400
         threshold = (now + 28800) // 86400 * 86400 - 28800 - 7 * 86400
         with sqlite3.connect(sidecar) as conn:
-            conn.executemany("INSERT INTO request_logs (method,path,result_status,request_kind_key,status_code,tavily_status_code,visibility,created_at,business_credits,counts_business_quota,request_body) VALUES ('POST','/api/tavily/search','success','api:search',200,200,'visible',?,1,1,?)", ((day + (index // 50000) * 86400 + (index % 50000) * 86399 // 50000, b'{"query":"synthetic old source"}') for index in range(100000)))
+            conn.executemany("INSERT INTO request_logs (method,path,result_status,request_kind_key,status_code,tavily_status_code,visibility,created_at,business_credits,counts_business_quota,request_body) VALUES ('POST','/api/tavily/search','success','api:search',200,200,'visible',?,1,1,?)", ((day + index * 86399 // 5000, b'{"query":"synthetic expired source"}') for index in range(5000)))
+            conn.executemany("INSERT INTO request_logs (method,path,result_status,request_kind_key,status_code,tavily_status_code,visibility,created_at,business_credits,counts_business_quota,request_body) VALUES ('POST','/api/tavily/search','success','api:search',200,200,'visible',?,1,1,?)", ((retained_day + index * 86399 // 95000, b'{"query":"synthetic retained source"}') for index in range(95000)))
             conn.execute("INSERT OR REPLACE INTO dashboard_rollup_integrity_state (id,hot_cursor,hot_fence,history_cursor,hot_reaudit_cursor,last_history_attempt_at,last_seal_attempt_at,updated_at) VALUES (1,?,?,?,?,?,?,?)", (closed, closed, closed - 86400, closed - 86400, now, now, now))
             bad = dict.fromkeys(COUNT_FIELDS, 0)
-            bad.update(total_requests=50000, success_count=50000, valuable_success_count=50000, api_billable=50000, local_estimated_credits=49999)
+            bad.update(total_requests=5000, success_count=5000, valuable_success_count=5000, api_billable=5000, local_estimated_credits=4999)
             conn.execute("INSERT INTO dashboard_rollup_daily_seals VALUES (?,?,?)", (day, json.dumps(bad), now))
         process = start_service(False)
         status, _, body = request(origin, "/api/tavily/search", {"query": "synthetic preflight", "max_results": 1}, token)
@@ -194,7 +197,10 @@ def main():
         stop(process)
         process = start_service(True)
         triggered = False
-        high_start = snapshot(core, sidecar, threshold)
+        high_start = snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)
+        initial_expired = high_start["expired"]
+        assert initial_expired == 5000, high_start
+        assert high_start["retained_fixture_rows"] == 95000, high_start
 
         def high_tick(elapsed):
             nonlocal triggered
@@ -202,42 +208,43 @@ def main():
                 status, _, body = request(origin, "/api/jobs/trigger", {"jobType": "request_logs_gc"})
                 assert status in (200, 202), (status, body)
                 triggered = True
-            print(json.dumps({"phase": "high", "elapsed": elapsed, **snapshot(core, sidecar, threshold)}), flush=True)
+            print(json.dumps({"phase": "high", "elapsed": elapsed, **snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)}), flush=True)
 
         high = load(origin, token, args.high_seconds, 10, high_tick)
-        high_end = snapshot(core, sidecar, threshold)
+        high_end = snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)
         assert triggered, "high phase must be long enough to trigger GC after foreground pressure stabilizes"
         assert baseline["non_200"] == high["non_200"] == 0, (baseline, high)
         assert high["p95_ms"] - baseline["p95_ms"] <= 250, (baseline, high)
-        assert high_end["expired"] == high_start["expired"] == 100000, high_end
+        assert high_end["expired"] == initial_expired, high_end
+        assert high_end["retained_fixture_rows"] == 95000, high_end
         with sqlite3.connect(core) as conn:
             defers = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND message LIKE '%foreground_pressure%' AND status='success'").fetchone()[0]
         assert defers > 0, "foreground pressure must cause a durable GC defer"
-        high_evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "baseline": baseline, "high": high, "foreground_defers": defers}
+        high_evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers}
         (run_dir / "high-evidence.json").write_text(json.dumps(high_evidence, indent=2) + "\n")
         print(json.dumps({"phase": "high-complete", **high_evidence}), flush=True)
         recovered = False
 
         def low_tick(elapsed):
             nonlocal recovered
-            state = snapshot(core, sidecar, threshold)
+            state = snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)
             assert state["active_gc"] <= 1, state
-            recovered = 100000 - state["expired"] >= 5000
+            recovered = initial_expired - state["expired"] >= 5000
             (run_dir / "latest-progress.json").write_text(json.dumps({"phase": "low", "elapsed": elapsed, **state}, indent=2) + "\n")
             print(json.dumps({"phase": "low", "elapsed": elapsed, **state}), flush=True)
 
         low = load(origin, token, args.low_seconds, args.low_rps, low_tick, lambda: recovered)
-        final = snapshot(core, sidecar, threshold)
-        if low["non_200"] != 0 or 100000 - final["expired"] < 5000:
-            failure = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "low": low, "final": final, "passed": False}
+        final = snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)
+        if low["non_200"] != 0 or initial_expired - final["expired"] < 5000 or final["retained_fixture_rows"] != 95000:
+            failure = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "low": low, "final": final, "passed": False}
             (run_dir / "recovery-failure-evidence.json").write_text(json.dumps(failure, indent=2) + "\n")
             raise AssertionError((low, final))
         with sqlite3.connect(sidecar) as conn:
             seal = json.loads(conn.execute("SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start=?", (day,)).fetchone()[0])
             daily = conn.execute("SELECT total_requests,local_estimated_credits FROM dashboard_request_rollup_buckets WHERE bucket_start=? AND bucket_secs=86400", (day,)).fetchone()
-            assert seal["total_requests"] == seal["local_estimated_credits"] == 50000, seal
-            assert daily == (50000, 50000), daily
-        evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "baseline": baseline, "high": high, "foreground_defers": defers, "low": low, "deleted_expired": 100000 - final["expired"], "final": final, "recovered_seal": seal, "passed": True}
+            assert seal["total_requests"] == seal["local_estimated_credits"] == 5000, seal
+            assert daily == (5000, 5000), daily
+        evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers, "low": low, "deleted_expired": initial_expired - final["expired"], "final": final, "recovered_seal": seal, "passed": True}
         (run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print(json.dumps({"evidence": str(run_dir / "evidence.json"), **evidence}), flush=True)
     finally:

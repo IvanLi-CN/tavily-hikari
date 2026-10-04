@@ -12,7 +12,7 @@ on:
           - request-log-gc
         default: comparison
       confirm:
-        description: Type yes to start the GitHub-hosted fixture comparison
+        description: Type yes to start the selected GitHub-hosted synthetic suite
         required: true
         type: choice
         options:
@@ -157,6 +157,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Require explicit manual confirmation
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "yes" ]]; then
+            echo "Refusing to start: dispatch the workflow with confirm=yes." >&2
+            exit 2
+          fi
+
       - name: Verify GC workflow and harness contracts
         run: python3 -m unittest discover -s tests/performance_recovery -p 'test_github_workflow.py'
 
@@ -198,6 +209,12 @@ jobs:
 
       - name: Test hot-page yield to GC-blocking re-audit
         run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
+
+      - name: Test wide-range source mutation fencing
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_restarts_after_a_cancelled_existing_source_mutation
+
+      - name: Test full GC-blocking day seal recovery
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing
 
       - name: Run two-phase synthetic recovery acceptance
         shell: bash

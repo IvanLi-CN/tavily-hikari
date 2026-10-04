@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Instant as StdInstant;
 
 const DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS: i64 = SECS_PER_FIVE_MINUTES;
+const DASHBOARD_ROLLUP_INTEGRITY_GC_BLOCKING_WORK_SECS: i64 = 2 * SECS_PER_HOUR;
 const DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS: i64 = 500;
 const DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET: Duration = Duration::from_millis(150);
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(100);
@@ -493,7 +494,7 @@ impl KeyStore {
         let range_end_for_item = (cursor + DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS).min(range_end);
         let source_version = self
             .request_stats_coalescer
-            .dashboard_rollup_source_version(cursor)
+            .dashboard_rollup_source_version(cursor, range_end_for_item)
             .await;
         let item = DashboardRollupIntegrityWorkItem::empty(
             cursor,
@@ -726,7 +727,13 @@ impl KeyStore {
             }
             (
                 cursor,
-                (cursor + DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS).min(day_end),
+                (cursor
+                    + if gc_reaudit_due {
+                        DASHBOARD_ROLLUP_INTEGRITY_GC_BLOCKING_WORK_SECS
+                    } else {
+                        DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS
+                    })
+                    .min(day_end),
                 DashboardRollupIntegrityWorkKind::SealedDayReaudit {
                     day_start,
                     gc_blocking: gc_reaudit_due,
@@ -779,7 +786,7 @@ impl KeyStore {
                 .await?;
         let source_version = self
             .request_stats_coalescer
-            .dashboard_rollup_source_version(range_start)
+            .dashboard_rollup_source_version(range_start, range_end)
             .await;
         let item = DashboardRollupIntegrityWorkItem::empty(
             range_start,
@@ -1108,7 +1115,11 @@ impl KeyStore {
         Ok(latest_source_id > item.source_fence_id
             || !self
                 .request_stats_coalescer
-                .dashboard_rollup_source_version_is_stable(item.range_start, item.source_version)
+                .dashboard_rollup_source_version_is_stable(
+                    item.range_start,
+                    item.range_end,
+                    item.source_version,
+                )
                 .await)
     }
 
@@ -1122,7 +1133,7 @@ impl KeyStore {
             .await?;
         let source_version = self
             .request_stats_coalescer
-            .dashboard_rollup_source_version(item.range_start)
+            .dashboard_rollup_source_version(item.range_start, item.range_end)
             .await;
         let counts_json = serde_json::to_string(&BTreeMap::<i64, DashboardRequestRollupCounts>::new())
             .map_err(|err| {

@@ -11,6 +11,9 @@
 - A newly created hot segment gets its first bounded page ahead of historical work. Its checkpointed
   continuation yields to a pending GC-blocking day while remaining distinct from rolling hot pages,
   which a new hot segment may still preempt.
+- GC-blocking day re-audits advance in bounded two-hour source ranges; range-wide committed,
+  cancelled, and in-flight mutation fences prevent a later five-minute source bucket from being
+  missed while ordinary history work retains five-minute ranges.
 - Scan progress compares the retained cursor before and after the entire pass. A terminal page
   that clears the cursor, including repeated bodyless scans during an integrity block, does not
   qualify for one-second continuation. The internal progress flag is omitted from serialized reports.
@@ -49,8 +52,10 @@
 - `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream probe. Its manual
   GitHub Actions suite runs 10 business requests per second for 30 minutes, then 0.1 requests per
   second for up to 30 minutes to verify bounded deletion and seal recovery. It requires at least
-  5,000 expired rows to be deleted. The suite also runs the maintenance-ticket backoff and
-  hot-page-yield regressions and records integrity cursors, blocking work items, priorities, and
+  5,000 expired rows to be deleted from a 5,000-row expired blocking day while preserving 95,000
+  rows inside the retention window. The suite also runs maintenance-ticket backoff, hot-page-yield,
+  wide-range mutation-fence, and full-day seal-recovery regressions and records integrity cursors,
+  blocking work items, priorities, and
   scheduler messages in failure evidence. The high-phase result
   is checkpointed independently so a slow recovery does not hide latency evidence. Only JSON
   acceptance evidence is uploaded; fixture databases and service logs stay on the GitHub-hosted

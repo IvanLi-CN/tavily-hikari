@@ -322,8 +322,8 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     let now = proxy.backend_time().now_ts();
     let range_start =
         (now - 10 * SECS_PER_MINUTE).div_euclid(SECS_PER_FIVE_MINUTES) * SECS_PER_FIVE_MINUTES;
-    let range_end = range_start + SECS_PER_FIVE_MINUTES;
-    insert_visible_dashboard_log(&proxy, range_start + 60).await;
+    let range_end = range_start + 2 * SECS_PER_HOUR;
+    insert_visible_dashboard_log(&proxy, range_start + SECS_PER_HOUR + 60).await;
     let source_fence: i64 = sqlx::query_scalar("SELECT MAX(id) FROM request_logs")
         .fetch_one(&proxy.key_store.pool)
         .await
@@ -347,7 +347,7 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     let mutation = proxy
         .key_store
         .request_stats_coalescer
-        .begin_dashboard_rollup_source_mutation(range_start);
+        .begin_dashboard_rollup_source_mutation(range_start + SECS_PER_HOUR + 60);
     sqlx::query("UPDATE request_logs SET business_credits = 9 WHERE id = ?")
         .bind(source_fence)
         .execute(&proxy.key_store.pool)
@@ -479,7 +479,7 @@ async fn integrity_prioritizes_new_hot_page_then_gc_blocking_day() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read advanced GC-blocking day cursor");
-    assert_eq!(day_cursor, day_start + SECS_PER_FIVE_MINUTES);
+    assert_eq!(day_cursor, day_start + 2 * SECS_PER_HOUR);
     let hot_page: (i64, String) = sqlx::query_as(
         "SELECT priority, status FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
     )
@@ -1585,7 +1585,7 @@ async fn integrity_new_gc_blocker_preempts_ordinary_page_without_resetting_it() 
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("inspect GC progress");
-        assert_eq!(day_cursor, gc_day + SECS_PER_FIVE_MINUTES);
+        assert_eq!(day_cursor, gc_day + 2 * SECS_PER_HOUR);
         let hot_cursor: i64 = sqlx::query_scalar(
             "SELECT hot_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
         )
