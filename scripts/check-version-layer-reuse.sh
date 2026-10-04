@@ -19,35 +19,26 @@ INPUT_EPOCH_B=1800000000
 PLATFORMS="${PLATFORMS:-linux/amd64}"
 CODEX_THREAD_ID="${CODEX_THREAD_ID:-}"
 CANDIDATE_SHA="${CANDIDATE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf 'unbound')}"
+INVOCATION_ID=""
 BUILDX_BUILDER_ARGS=()
 if [[ -n "${BUILDX_BUILDER:-}" ]]; then
   BUILDX_BUILDER_ARGS=(--builder "$BUILDX_BUILDER")
 fi
 
-declare -a CONTAINERS=()
 declare -a IMAGES=()
 declare -a PLATFORM_RESULTS=()
 
 mkdir -p "$RUN_ROOT"
 
-cleanup_container() {
-  local name="$1"
-  local container_id
-  container_id="$(docker ps -aq --filter "name=^/${name}$" | head -n 1)"
-  [[ -n "$container_id" ]] || return 0
-  if [[ -n "$CODEX_THREAD_ID" ]]; then
-    local owner
-    owner="$(docker inspect --format '{{ index .Config.Labels "codex.testbox.agent" }}' "$container_id" 2>/dev/null || true)"
-    [[ "$owner" == "$CODEX_THREAD_ID" ]] || return 0
-  fi
-  docker rm -f "$container_id" >/dev/null 2>&1 || true
-}
-
 cleanup() {
+  local container_id
   if command -v docker >/dev/null 2>&1; then
-    for name in "${CONTAINERS[@]}"; do
-      cleanup_container "$name"
-    done
+    if [[ -n "$INVOCATION_ID" ]]; then
+      while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        docker rm -f "$container_id" >/dev/null 2>&1 || true
+      done < <(docker ps -aq --filter "label=codex.testbox.run=$INVOCATION_ID" 2>/dev/null || true)
+    fi
     if ((${#IMAGES[@]})); then
       docker image rm "${IMAGES[@]}" >/dev/null 2>&1 || true
     fi
@@ -71,10 +62,13 @@ fi
 
 if [[ -n "$CODEX_THREAD_ID" ]]; then
   CONTAINER_PREFIX="testbox-${CODEX_THREAD_ID}-${IMAGE_PREFIX}"
-  DOCKER_LABEL_ARGS=(--label "codex.testbox.agent=$CODEX_THREAD_ID")
 else
   CONTAINER_PREFIX="$IMAGE_PREFIX"
-  DOCKER_LABEL_ARGS=()
+fi
+INVOCATION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+DOCKER_LABEL_ARGS=(--label "codex.testbox.run=$INVOCATION_ID")
+if [[ -n "$CODEX_THREAD_ID" ]]; then
+  DOCKER_LABEL_ARGS+=(--label "codex.testbox.agent=$CODEX_THREAD_ID")
 fi
 
 IFS=, read -r -a PLATFORM_LIST <<< "$PLATFORMS"
@@ -192,7 +186,6 @@ check_image_contract() {
   local container_name="$3"
   local port response
 
-  CONTAINERS+=("$container_name")
   docker run --detach \
     --name "$container_name" \
     "${DOCKER_LABEL_ARGS[@]}" \

@@ -23,8 +23,8 @@
 - GitHub Release job 下载 binary artifacts 后用 `gh release upload --clobber --repo "${GITHUB_REPOSITORY}"` 上传资产；该 job 没有 checkout，不能依赖本地 `.git` 推断仓库。GitHub Release 会包含 binary
   资产名称及新增的 portable 资产。
 - CI workflow 增加 embedded asset contract coverage，避免无外部静态目录的 binary 路径回归。
-- `scripts/check-version-layer-reuse.sh` 在 `codex-testbox` 的 amd64 OCI 验收通过：21 个 RootFS diffID 在同源码、同 SemVer、不同输入 mtime 构建间逐层一致；合成 SemVer A/B 只改变主服务层（gzip -1 估算 15,498,527 bytes）与前端应用层（7,431,177 bytes）。该 A/B 是包装合同验证，不证明生产历史曾只改版本号。本次验收按主人指定仅覆盖 amd64。
-- 逐层 amd64 RootFS diffID 与压缩字节明细：[oci-acceptance-amd64-6f0f31a0.md](evidence/oci-acceptance-amd64-6f0f31a0.md)。
+- 已归档的 amd64 OCI 报告记录 21 个 RootFS diffID 在同源码、同 SemVer、不同输入 mtime 构建间逐层一致；合成 SemVer A/B 只改变主服务层（gzip -1 估算 15,498,527 bytes）与前端应用层（7,431,177 bytes）。该 A/B 是包装合同验证，不证明生产历史曾只改版本号。此归档绑定较早候选，不作为当前候选的经验验收证明。
+- 逐层 amd64 RootFS diffID 与压缩字节明细：[oci-acceptance-amd64-6f0f31a0.md](evidence/oci-acceptance-amd64-6f0f31a0.md)。当前候选以绑定其提交 SHA 的 AMD64 经验验收记录为准。
 
 ## 验证
 
