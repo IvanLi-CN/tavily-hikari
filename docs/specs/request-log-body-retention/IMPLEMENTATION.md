@@ -6,6 +6,8 @@
   recovery prevents deletion until minute/daily rollups and the seal have been finalized.
 - Productive bounded passes continue after one second; no-progress, pressure and error passes
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
+- SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
+  so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
 - Scan progress compares the retained cursor before and after the entire pass. A terminal page
   that clears the cursor, including repeated bodyless scans during an integrity block, does not
   qualify for one-second continuation. The internal progress flag is omitted from serialized reports.
@@ -44,9 +46,11 @@
 - `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream probe. Its manual
   GitHub Actions suite runs 10 business requests per second for 30 minutes, then 0.1 requests per
   second for up to 30 minutes to verify bounded deletion and seal recovery. It requires at least
-  5,000 expired rows to be deleted; the high-phase result is checkpointed independently so a slow
-  recovery does not hide latency evidence. Only JSON acceptance evidence is uploaded; fixture
-  databases and service logs stay on the GitHub-hosted runner.
+  5,000 expired rows to be deleted. The suite also runs the maintenance-ticket backoff regression
+  and records integrity cursors and scheduler messages in failure evidence. The high-phase result
+  is checkpointed independently so a slow recovery does not hide latency evidence. Only JSON
+  acceptance evidence is uploaded; fixture databases and service logs stay on the GitHub-hosted
+  runner.
 
 - `cargo clippy -- -D warnings`
 - `cargo test request_log_retention -- --nocapture`
@@ -59,4 +63,4 @@
 
 - Status: 进行中（快车道）
 - Created: 2026-06-02
-- Last: 2026-10-04
+- Last: 2026-10-05

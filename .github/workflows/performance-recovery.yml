@@ -193,6 +193,9 @@ jobs:
       - name: Build service binary
         run: cargo build --locked --all-features --profile ci-test --bin tavily-hikari
 
+      - name: Test maintenance ticket survival across pressure backoff
+        run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_ticket_survives_scheduled_pressure_backoff
+
       - name: Run two-phase synthetic recovery acceptance
         shell: bash
         env:

@@ -81,10 +81,12 @@ def snapshot(core, sidecar, threshold):
         old = conn.execute("SELECT COUNT(*) FROM request_logs WHERE created_at < ?", (threshold,)).fetchone()[0]
         pending = conn.execute("SELECT bucket_start,cursor,gc_blocking FROM dashboard_rollup_integrity_day_reaudits ORDER BY bucket_start").fetchall()
         hot = conn.execute("SELECT hot_cursor,hot_fence FROM dashboard_rollup_integrity_state WHERE id=1").fetchone()
+        integrity_work = conn.execute("SELECT range_start,range_end,cursor_created_at,cursor_id,status FROM dashboard_rollup_integrity_work_items WHERE status='pending' ORDER BY priority DESC,range_start LIMIT 3").fetchall()
     with sqlite3.connect(core, timeout=1) as conn:
         active = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND status IN ('queued','running')").fetchone()[0]
         messages = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='request_logs_gc' ORDER BY id DESC LIMIT 3").fetchall()
-    return {"expired": old, "pending_days": pending, "hot": hot, "active_gc": active, "gc_jobs": messages}
+        integrity_jobs = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='dashboard_rollup_integrity' ORDER BY id DESC LIMIT 3").fetchall()
+    return {"expired": old, "pending_days": pending, "hot": hot, "integrity_work": integrity_work, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs}
 
 
 def load(origin, token, seconds, rps, on_tick=None, stop_when=None):
@@ -219,11 +221,15 @@ def main():
             state = snapshot(core, sidecar, threshold)
             assert state["active_gc"] <= 1, state
             recovered = 100000 - state["expired"] >= 5000
+            (run_dir / "latest-progress.json").write_text(json.dumps({"phase": "low", "elapsed": elapsed, **state}, indent=2) + "\n")
             print(json.dumps({"phase": "low", "elapsed": elapsed, **state}), flush=True)
 
         low = load(origin, token, args.low_seconds, args.low_rps, low_tick, lambda: recovered)
         final = snapshot(core, sidecar, threshold)
-        assert low["non_200"] == 0 and 100000 - final["expired"] >= 5000, (low, final)
+        if low["non_200"] != 0 or 100000 - final["expired"] < 5000:
+            failure = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "low": low, "final": final, "passed": False}
+            (run_dir / "recovery-failure-evidence.json").write_text(json.dumps(failure, indent=2) + "\n")
+            raise AssertionError((low, final))
         with sqlite3.connect(sidecar) as conn:
             seal = json.loads(conn.execute("SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start=?", (day,)).fetchone()[0])
             daily = conn.execute("SELECT total_requests,local_estimated_credits FROM dashboard_request_rollup_buckets WHERE bucket_start=? AND bucket_secs=86400", (day,)).fetchone()

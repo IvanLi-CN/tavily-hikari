@@ -111,7 +111,9 @@ impl SqliteAdmissionDeferReason {
     }
 }
 
-const MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+// Keep a deferred ticket through the five-minute scheduler backoff so other
+// coordinator activity cannot erase its aged turn before the worker retries.
+const MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum SqliteMaintenanceClass {

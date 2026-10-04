@@ -770,6 +770,118 @@ async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_ticket_survives_scheduled_pressure_backoff() {
+    let runtime = three_connection_runtime().await;
+    let holder = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("first maintenance slice");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::ServerPressureRebuild)
+        .expect_err("server pressure becomes the oldest pending class");
+    runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect_err("request stats waits behind the active slice");
+
+    let first_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("first foreground");
+    let second_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("second foreground");
+    let third_foreground = runtime
+        .inner
+        .pool
+        .acquire()
+        .await
+        .expect("third foreground");
+    drop(holder);
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+            .expect_err("pool pressure defers the retrying class"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+
+    let (older_ticket, request_stats_ticket, first_requested_at) = {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        let aged_at = Instant::now() - Duration::from_secs(300);
+        let older_ticket = {
+            let older = state
+                .pending
+                .get_mut(&SqliteMaintenanceClass::ServerPressureRebuild)
+                .expect("server pressure keeps its earlier ticket");
+            older.first_requested_at = aged_at;
+            older.last_requested_at = aged_at;
+            older.ticket
+        };
+        let (request_stats_ticket, first_requested_at) = {
+            let pending = state
+                .pending
+                .get_mut(&SqliteMaintenanceClass::RequestStatsFlush)
+                .expect("request stats keeps its ticket during backoff");
+            pending.first_requested_at = aged_at;
+            pending.last_requested_at = aged_at;
+            (pending.ticket, pending.first_requested_at)
+        };
+        (older_ticket, request_stats_ticket, first_requested_at)
+    };
+
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::AlertProjection)
+            .expect_err("the new class also observes pool pressure"),
+        SqliteAdmissionDeferReason::PoolPressure
+    );
+    {
+        let state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        assert_eq!(
+            state
+                .pending
+                .get(&SqliteMaintenanceClass::ServerPressureRebuild)
+                .expect("the older ticket also survives the backoff")
+                .ticket,
+            older_ticket
+        );
+        let pending = state
+            .pending
+            .get(&SqliteMaintenanceClass::RequestStatsFlush)
+            .expect("coordinator activity must not expire the sleeping ticket");
+        assert_eq!(pending.ticket, request_stats_ticket);
+        assert_eq!(pending.first_requested_at, first_requested_at);
+    }
+
+    drop((third_foreground, second_foreground, first_foreground));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime.inner.pool.num_idle() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("foreground connections return to the pool");
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestStatsFlush)
+        .expect("the original pending class receives the recovered turn");
+    drop(permit);
+}
+
+#[tokio::test]
 async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
