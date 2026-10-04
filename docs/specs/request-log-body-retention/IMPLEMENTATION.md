@@ -41,11 +41,12 @@
   of the same file. Scheduled continuation tests cover progress, no progress and claim-fenced restart.
 - Affinity regressions cover global-cooldown rebinding, unrelated-scope isolation, and successful
   cooldown selection after all pooled connections remain occupied beyond 100ms.
-- `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream testbox probe: 30 minutes
-  at ten business requests per second, then a configurable rate no greater than five until at least
-  5,000 expired rows are deleted. The default quiet phase uses 0.1 requests per second for up to
-  30 minutes because a lower foreground rate still does not guarantee an idle SQLite pool. The
-  high-phase result is checkpointed independently so a slow recovery does not hide latency evidence.
+- `scripts/gc_recovery_load.py` provides a private 100,000-row mock-upstream probe. Its manual
+  GitHub Actions suite runs 10 business requests per second for 30 minutes, then 0.1 requests per
+  second for up to 30 minutes to verify bounded deletion and seal recovery. It requires at least
+  5,000 expired rows to be deleted; the high-phase result is checkpointed independently so a slow
+  recovery does not hide latency evidence. Only JSON acceptance evidence is uploaded; fixture
+  databases and service logs stay on the GitHub-hosted runner.
 
 - `cargo clippy -- -D warnings`
 - `cargo test request_log_retention -- --nocapture`

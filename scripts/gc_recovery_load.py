@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise retention recovery with private synthetic databases and a mock upstream.
 
-Run on the shared testbox, never against a deployed database. The high-load phase
-keeps the existing five-request/second admission threshold; the low-load phase
-then measures source-backed seal recovery and bounded GC catch-up.
+Run on a GitHub-hosted runner or the shared testbox, never against a deployed
+database. The high-load phase keeps the existing five-request/second admission
+threshold; the low-load phase then measures source-backed seal recovery and
+bounded GC catch-up.
 """
 
 import argparse
@@ -120,8 +121,18 @@ def main():
     parser.add_argument("--baseline-seconds", type=int, default=60)
     args = parser.parse_args()
     root = args.agent_dir.resolve()
-    if not root.is_relative_to(Path("/srv/codex/agents")) or root == Path("/srv/codex/agents"):
-        parser.error("--agent-dir must be a task-owned directory below /srv/codex/agents")
+    allowed_roots = [Path("/srv/codex/agents")]
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+        and runner_temp
+    ):
+        allowed_roots.append(Path(runner_temp).resolve())
+    if not any(root.is_relative_to(parent) and root != parent for parent in allowed_roots):
+        parser.error(
+            "--agent-dir must be below /srv/codex/agents or a GitHub-hosted RUNNER_TEMP"
+        )
     if min(args.high_seconds, args.low_seconds, args.baseline_seconds) <= 0:
         parser.error("phase durations must be positive")
     if not 0 < args.low_rps <= 5:
