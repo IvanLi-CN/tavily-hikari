@@ -205,6 +205,12 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
     _permit: OwnedSemaphorePermit,
 }
 
+impl SqliteMaintenanceBulkPermit {
+    pub(crate) fn retain_progress_continuation(&self) {
+        self._lease.retain_progress_continuation();
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SqliteMaintenancePreflightLease {
     coordinator: Arc<SqliteMaintenanceCoordinator>,
@@ -246,6 +252,12 @@ impl Drop for SqliteMaintenanceAdmissionLease {
             let stats = state.stats.entry(self.class).or_default();
             stats.completed = stats.completed.saturating_add(1);
         }
+    }
+}
+
+impl SqliteMaintenanceAdmissionLease {
+    fn retain_progress_continuation(&self) {
+        self.coordinator.register_continuation(self.class);
     }
 }
 
@@ -331,6 +343,29 @@ impl SqliteMaintenanceCoordinator {
             pending.ordinary_request = true;
         }
         pending.ticket
+    }
+
+    fn register_continuation(&self, class: SqliteMaintenanceClass) {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active != Some(class) || state.pending.contains_key(&class) {
+            return;
+        }
+        let ticket = state.next_ticket;
+        state.next_ticket = state.next_ticket.saturating_add(1);
+        state.pending.insert(
+            class,
+            PendingMaintenanceRequest {
+                ticket,
+                first_requested_at: now,
+                last_requested_at: now,
+                preflight_holders: 0,
+                ordinary_request: true,
+            },
+        );
     }
 
     fn is_turn(&self, class: SqliteMaintenanceClass, allow_aged_turn: bool) -> bool {

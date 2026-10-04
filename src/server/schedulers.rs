@@ -69,13 +69,16 @@ const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
 const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
 
 fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
-    if report.cleaned_request_log_bodies + report.deleted_request_logs + report.deleted_rollups > 0
-        || report.body_scan_cursor_advanced
-    {
+    if request_logs_gc_made_progress(report) {
         REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS
     } else {
         REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
     }
+}
+
+fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
+    report.cleaned_request_log_bodies + report.deleted_request_logs + report.deleted_rollups > 0
+        || report.body_scan_cursor_advanced
 }
 
 fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
@@ -1009,7 +1012,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
         _job_execution_gate,
     } = claimed_job;
     drop(_job_execution_gate);
-    let _bulk_admission = match state.proxy.admit_request_logs_gc() {
+    let bulk_admission = match state.proxy.admit_request_logs_gc() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
             let msg = format!("deferred={reason}");
@@ -1037,7 +1040,13 @@ async fn run_request_logs_gc_catchup_claimed_job(
         .proxy
         .gc_request_logs_with_options(scheduled_request_logs_gc_options())
         .await;
-    drop(_bulk_admission);
+    if result
+        .as_ref()
+        .is_ok_and(|report| !report.completed && request_logs_gc_made_progress(report))
+    {
+        bulk_admission.retain_request_logs_gc_progress_continuation();
+    }
+    drop(bulk_admission);
 
     match result {
         Ok(report) => {

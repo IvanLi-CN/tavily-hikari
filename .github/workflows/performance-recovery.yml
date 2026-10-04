@@ -207,6 +207,9 @@ jobs:
       - name: Test maintenance ticket survival across pressure backoff
         run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_ticket_survives_scheduled_pressure_backoff
 
+      - name: Test productive GC continuation turn retention
+        run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_retains_request_logs_gc_progress_continuation
+
       - name: Test hot-page yield to GC-blocking re-audit
         run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
 

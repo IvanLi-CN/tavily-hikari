@@ -78,6 +78,8 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("if: ${{ inputs.suite == 'request-log-gc' }}", self.source)
         self.assertIn("runs-on: ubuntu-24.04", gc_job)
         self.assertIn("Require explicit manual confirmation", gc_job)
+        self.assertIn("Test productive GC continuation turn retention", gc_job)
+        self.assertIn("maintenance_bulk_retains_request_logs_gc_progress_continuation", gc_job)
         self.assertIn("scripts/gc_recovery_load.py", gc_job)
         self.assertIn("integrity_restarts_after_a_cancelled_existing_source_mutation", gc_job)
         self.assertIn("integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing", gc_job)

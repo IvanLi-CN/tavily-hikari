@@ -71,6 +71,10 @@
 - Productive passes, including durable body-scan cursor advancement, continue after one second.
   Zero progress, an integrity block without other progress, admission pressure, or an error retries
   after 300 seconds; continuations retain the existing single-active-job claim fence.
+- Before releasing its bulk permit, an incomplete productive pass retains a fair maintenance turn for
+  its one-second continuation. Earlier pending maintenance work remains ahead; later rolling work
+  cannot repeatedly overtake the GC continuation. Foreground, pool, and contention admission checks
+  still apply.
 - Missing or inconsistent dashboard day seals enqueue source-backed day recovery before row
   deletion. Expired bodies outside the row-retention window are reclaimed with their source rows
   after recovery; daily summaries and the billing ledger remain intact.

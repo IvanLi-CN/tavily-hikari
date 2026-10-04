@@ -882,6 +882,31 @@ async fn maintenance_bulk_ticket_survives_scheduled_pressure_backoff() {
 }
 
 #[tokio::test]
+async fn maintenance_bulk_retains_request_logs_gc_progress_continuation() {
+    let runtime = three_connection_runtime().await;
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+        .expect("request-log GC slice");
+
+    permit.retain_progress_continuation();
+    drop(permit);
+
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+    assert_eq!(
+        runtime
+            .try_admit_maintenance_bulk(SqliteOperation::DashboardIntegrityWrite)
+            .expect_err("later rolling integrity work waits behind GC continuation"),
+        SqliteAdmissionDeferReason::BulkBusy
+    );
+    assert_eq!(runtime.inner.maintenance_coordinator.pending_count(), 1);
+
+    let continuation = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+        .expect("the productive GC continuation retains its next turn");
+    drop(continuation);
+}
+
+#[tokio::test]
 async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
     let runtime = three_connection_runtime().await;
     let holder = runtime
