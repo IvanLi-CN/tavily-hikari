@@ -24,6 +24,7 @@
 - `/api/version.frontend` 变化只触发 `registration.update()`，不直接展示可更新提示；安装/缓存中的中间态继续静默，只有 waiting worker 已 ready 或用户触发后的失败态才展示 banner。
 - 更新横幅的“当前版本”由当前 JavaScript 应用包提供；“目标版本”会在初始版本探测、waiting worker ready、以及失败重试态重新向 `/api/version` 校准，避免回退到 `latest` 或把服务器版本误认成当前页版本。
 - `write-version.mjs` 已移除；Vite 从同一 `VITE_APP_VERSION` 编译应用版本，PWA 生成器使用该输入设置两个 worker 的 cache identity。production `web/dist` 不生成静态 `version.json`，HTTP `/version.json` 保持动态兼容响应。
+- CI 的 production web-assets 检查拒绝 `web/dist/version.json`；后端测试 fixture 仍可用显式静态 `version.json` 覆盖前端版本，以保留外部静态目录兼容合同。
 - Chromium 离线 E2E 直接检查初始及更新后实际加载的 JavaScript bundle 版本，并在同一浏览器 registration 的 public/admin A→B 切换中，于 waiting worker 激活前后验证新 bundle、V2 manifest/icon、稳定 identity、缓存头与旧 shell 离线可用，覆盖真实缓存生命周期。
 - 更新提示由共享 runtime/hook 与 `UpdateAvailableBanner` 承载，覆盖 public、console、login、registration-paused 与 admin app shell。
 - 管理员登录页将更新提示提升为页头后的页面级状态：桌面宽度独立于 `36rem` 登录表单，移动端保持操作按钮同行且无横向溢出；提示标题、版本信息和操作按钮按阅读优先级分层。

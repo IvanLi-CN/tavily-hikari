@@ -538,23 +538,25 @@ def minimal_web_assets_dir(cargo_profile):
     return ROOT / "target" / profile_dir / "ci-web-assets"
 
 
-def verify_web_assets(root):
+def verify_web_assets(root, *, require_no_static_version=False):
     root = Path(root)
+    required_files = WEB_ASSET_FIXTURE_FILES
+    if require_no_static_version:
+        required_files = {
+            relative_path: contents
+            for relative_path, contents in WEB_ASSET_FIXTURE_FILES.items()
+            if relative_path != "version.json"
+        }
     missing = []
-    for relative_path in WEB_ASSET_FIXTURE_FILES:
+    for relative_path in required_files:
         path = root / relative_path
         if not path.is_file() or path.stat().st_size == 0:
             missing.append(relative_path)
     if missing:
         raise SystemExit(f"web asset contract missing: {', '.join(missing)}")
 
-    version_path = root / "version.json"
-    try:
-        version = json.loads(version_path.read_text(encoding="utf-8"))["version"]
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise SystemExit(f"invalid version.json at {version_path}") from exc
-    if not isinstance(version, str) or not version:
-        raise SystemExit(f"version.json at {version_path} needs a non-empty version")
+    if require_no_static_version and (root / "version.json").exists():
+        raise SystemExit("production web asset contract must not contain static version.json")
 
 
 def sha256_file(path):
@@ -1489,7 +1491,7 @@ def main():
         verify_manifest(prebuilt_root=args.prebuilt_root)
         return
     if args.command == "verify-web-assets":
-        verify_web_assets(args.root)
+        verify_web_assets(args.root, require_no_static_version=True)
         return
     if args.command == "matrix":
         output_matrix(args.kind)

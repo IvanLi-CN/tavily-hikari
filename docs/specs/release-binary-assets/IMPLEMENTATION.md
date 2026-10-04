@@ -11,6 +11,7 @@
 - `.dockerignore` 采用 Cargo 源码、两个 Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 枚举上下文并检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
 - 后端版本 helper 从主服务二进制编译期 `APP_EFFECTIVE_VERSION` 读取产品版本，不再使用运行时 ENV；`/api/version` 与动态 `/version.json` 使用同一产品版本，显式外部静态目录内的 `version.json` 仍可覆盖前端版本。OCI label 继续报告同一 SemVer，镜像 `Config.Env` 不含该变量。
 - `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；验收报告逐镜像记录 CLI、`/api/version`、`/version.json`、OCI label 和运行时配置结果，并显式列出架构范围，未测试架构不计入证据。合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
+- CI 的 production `web-assets` job 通过 `scripts/ci_backend_tests.py verify-web-assets` 拒绝静态 `version.json`；后端测试用的最小静态目录 fixture 仍保留该文件，以覆盖显式外部静态版本覆盖。
 - release workflow 将 `org.opencontainers.image.version` 显式绑定到 `APP_EFFECTIVE_VERSION`，避免 metadata-action 的默认标签覆盖发布版本。
 - release workflow 先在单独的 `web-assets` job 内构建一次 `web/dist` 并上传 `release-web-dist` artifact，随后 `docker-native` 与 `binary-native` 都只下载该 artifact 复用，不再各自重复 Bun 安装与前端构建。
 - `binary-native` matrix 继续在 `ubuntu-24.04` 与 `ubuntu-24.04-arm` 上构建 release binary、打包 `tar.gz`、生成 `.sha256` 并 smoke 解包后的 binary。

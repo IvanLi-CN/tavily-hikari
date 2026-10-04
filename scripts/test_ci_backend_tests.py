@@ -399,6 +399,16 @@ class BackendTestRunnerContractTests(unittest.TestCase):
 
             RUNNER.verify_web_assets(temp_dir)
 
+    def test_production_web_asset_contract_rejects_static_version_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            RUNNER.write_minimal_web_assets(temp_dir)
+
+            with self.assertRaisesRegex(SystemExit, "must not contain static version.json"):
+                RUNNER.verify_web_assets(temp_dir, require_no_static_version=True)
+
+            (Path(temp_dir) / "version.json").unlink()
+            RUNNER.verify_web_assets(temp_dir, require_no_static_version=True)
+
     def test_minimal_web_assets_do_not_rewrite_unchanged_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fixture_dir = Path(temp_dir)

@@ -1,6 +1,6 @@
 # Bun Runtime 强制化与 Node 痕迹收口（#9b9w5）
 
-## 背景 / 问题陈述
+## Context and Scope
 
 - 旧的 `docs/specs/bun-runtime-enforcement/HISTORY.md` 已经完成了 package manager、lockfile 与 CI 的 Bun 迁移，但仓库日常命令仍可能因为 `node_modules/.bin/*` 的 shebang 回落到 `node` runtime。
 - 当前 root / `web/` 的 `package.json` 都已固定 `packageManager: bun@1.3.10`，CI / release workflow 也已切到 `oven-sh/setup-bun@v2`；因此新的问题不再是“是否迁移到 Bun”，而是“如何把 Bun 作为默认执行 runtime 收口到位”。
@@ -51,6 +51,20 @@
 - 改变 Storybook 作为组件验收环境的角色与覆盖范围。
 - 移除系统层面的 Node 安装；本轮只证明仓库核心命令不再依赖它。
 
+## Requirements
+
+### REQ-BUN-REPO-RUNTIME
+
+- 仓库维护的 root 与 web 命令 MUST 通过 Bun 执行，不得依赖系统 `node` runtime。
+
+### REQ-BUN-WEB-BUILD
+
+- Vite production build MUST 成功，且 `web/dist` MUST NOT 包含静态版本元数据 `version.json`。
+
+### REQ-BUN-HTTP-ROUTES
+
+- Web 构建 MUST 保持现有页面、API、代理与健康检查入口不变。
+
 ## 接口契约（Interfaces & Contracts）
 
 ### Public / runtime-facing contracts
@@ -69,6 +83,20 @@
 - 仓库所有由我们维护的脚本入口，凡是会命中 `.bin` shebang 的路径，都必须显式通过 Bun 执行（`bun --bun` / `bunx --bun`）。
 - loader-sensitive 配置文件允许按收益择机保留，只要在实际执行链路中不再要求 `node` runtime。
 
+## Verification
+
+### VER-BUN-CORE-COMMANDS
+
+- Method: run the root/web Bun commands and the failing-`node`-shim proof below.
+- covers: `REQ-BUN-REPO-RUNTIME`, `REQ-BUN-WEB-BUILD`
+- Pass condition: required install, build, and tool commands pass without invoking the system `node` runtime; the production build has no static `version.json`.
+
+### VER-BUN-BROWSER-ROUTES
+
+- Method: smoke-test the page, API, proxy, and health-check entrypoints below.
+- covers: `REQ-BUN-HTTP-ROUTES`
+- Pass condition: routes remain available and preserve their existing behavior.
+
 ## 验收标准（Acceptance Criteria）
 
 - Given root 依赖已安装
@@ -85,7 +113,7 @@
 
 - Given `web/` 构建脚本已切换到 Bun runtime
   When 执行 `cd web && bun run build`
-  Then 构建成功，并生成 `web/dist/version.json`。
+  Then 构建成功。
 
 - Given Storybook 仍保留为验收工具
   When 执行 `cd web && bun run build-storybook`
@@ -130,3 +158,7 @@
 - 风险：`node_modules/.bin` 中仍会保留 `#!/usr/bin/env node` 的第三方可执行文件；本轮只能消除“仓库默认命令路径”对它们的依赖，不能改变第三方分发格式。
 - 假设：Storybook 继续保留为验收工具，不作为“Strict no-Node” 的阻断项，只要求其由 Bun runtime 成功驱动。
 - 假设：系统层面的 `node` 安装状态不纳入本 spec 的完成条件；完成条件是“前置失败 node shim 后仓库核心命令仍通过”。
+
+## Related ADRs
+
+None
