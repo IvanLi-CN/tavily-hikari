@@ -944,6 +944,7 @@
         "server::tests::alerts_and_ha_source_and_recovery::maintenance_worker_retries_a_locked_claim_",
         "server::tests::alerts_and_ha_source_and_recovery::request_logs_gc_",
         "server::tests::alerts_and_ha_source_and_recovery::dashboard_integrity_admission_pressure_",
+        "server::dashboard_integrity_admission_tests::",
         "server::tests::alerts_and_ha_source_and_recovery::aged_",
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_reconciliation_",
         "server::tests::alerts_and_ha_source_and_recovery::non_aged_research_",
