@@ -295,6 +295,7 @@ analyze_changed_layers() {
   docker image save --output "$RUN_ROOT/layer-b.tar" "$image_b"
   python3 - "$RUN_ROOT/layer-a.tar" "$RUN_ROOT/layer-b.tar" "$report_file" "$platform" <<'PY'
 import gzip
+import hashlib
 import io
 import json
 import pathlib
@@ -309,35 +310,58 @@ def load_image(path):
         manifest = json.load(archive.extractfile("manifest.json"))[0]
         config = json.load(archive.extractfile(manifest["Config"]))
         layers = []
-        names = []
+        entries = []
         for layer_path in manifest["Layers"]:
             data = archive.extractfile(layer_path).read()
             layers.append(data)
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as layer:
-                names.append([member.name.lstrip("./") for member in layer.getmembers()])
-        return config["rootfs"]["diff_ids"], layers, names
+                layer_entries = {}
+                for member in layer.getmembers():
+                    name = member.name.lstrip("./")
+                    content_hash = None
+                    if member.isfile():
+                        content_hash = hashlib.sha256(layer.extractfile(member).read()).hexdigest()
+                    layer_entries[name] = {
+                        "type": member.type,
+                        "mode": oct(member.mode),
+                        "uid": member.uid,
+                        "gid": member.gid,
+                        "mtime": member.mtime,
+                        "size": member.size,
+                        "linkname": member.linkname,
+                        "sha256": content_hash,
+                    }
+                entries.append(layer_entries)
+        return config["rootfs"]["diff_ids"], layers, entries
 
-diff_a, blobs_a, names_a = load_image(archive_a)
-diff_b, blobs_b, names_b = load_image(archive_b)
+diff_a, blobs_a, entries_a = load_image(archive_a)
+diff_b, blobs_b, entries_b = load_image(archive_b)
 if len(diff_a) != len(diff_b):
     raise SystemExit("SemVer A/B images have different filesystem layer counts")
 changed = [index for index, pair in enumerate(zip(diff_a, diff_b)) if pair[0] != pair[1]]
 if len(changed) != 2:
     print(f"expected exactly two SemVer-dependent filesystem layers, found {changed}", file=sys.stderr)
     for index in changed:
-        paths_a = set(names_a[index])
-        paths_b = set(names_b[index])
+        paths_a = set(entries_a[index])
+        paths_b = set(entries_b[index])
         only_a = sorted(paths_a - paths_b)
         only_b = sorted(paths_b - paths_a)
         print(f"layer {index}: paths only in A ({len(only_a)}): {only_a[:5]}", file=sys.stderr)
         print(f"layer {index}: paths only in B ({len(only_b)}): {only_b[:5]}", file=sys.stderr)
         if paths_a == paths_b:
             print(f"layer {index}: same {len(paths_a)} paths have different content or metadata", file=sys.stderr)
+            changed_entries = [
+                (path, entries_a[index][path], entries_b[index][path])
+                for path in sorted(paths_a)
+                if entries_a[index][path] != entries_b[index][path]
+            ]
+            for path, entry_a, entry_b in changed_entries[:8]:
+                print(f"  {path}: A={entry_a} B={entry_b}", file=sys.stderr)
     raise SystemExit(1)
 
 entries = []
 for index in changed:
-    paths = names_b[index]
+    paths = list(entries_b[index])
     if any(path == "usr/local/bin/tavily-hikari" for path in paths):
         layer_type = "main-service-binary"
     elif any(path.startswith("srv/app/web/") for path in paths):
@@ -351,7 +375,7 @@ for index in changed:
 
 if {entry[1] for entry in entries} != {"main-service-binary", "frontend-application"}:
     raise SystemExit(f"unexpected changed layer types: {[entry[1] for entry in entries]}")
-if any("srv/app/web/version.json" in paths for paths in names_b):
+if any("srv/app/web/version.json" in paths for paths in entries_b):
     raise SystemExit("static version.json exists in the production image")
 
 with report_path.open("a", encoding="utf-8") as report:
