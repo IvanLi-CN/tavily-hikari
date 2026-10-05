@@ -227,6 +227,9 @@ jobs:
       - name: Test productive GC continuation turn retention
         run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_retains_request_logs_gc_progress_continuation
 
+      - name: Test request-log GC survives process restart
+        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_remains_queued_after_process_restart
+
       - name: Test dashboard integrity admission retry policy
         run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_pressure_uses_full_backoff
 

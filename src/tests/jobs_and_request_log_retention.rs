@@ -896,6 +896,61 @@ async fn abandon_active_scheduled_jobs_abandons_queued_and_running_rows() {
 }
 
 #[tokio::test]
+async fn request_logs_gc_remains_queued_after_process_restart() {
+    let db_path = temp_db_path("request-logs-gc-restart-recovery");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let job_id = proxy
+        .scheduled_job_claim("request_logs_gc", "auto", None, 1)
+        .await
+        .expect("claim request-log GC job")
+        .expect("request-log GC job created");
+
+    proxy
+        .abandon_active_scheduled_jobs()
+        .await
+        .expect("apply process-restart recovery");
+
+    let row: (String, Option<i64>, Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT status, started_at, finished_at, message FROM scheduled_jobs WHERE id = ?",
+    )
+    .bind(job_id)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read request-log GC restart state");
+    assert_eq!(row.0, "queued");
+    assert!(row.1.is_none(), "requeued job must not retain started_at");
+    assert!(row.2.is_none(), "requeued job must not become terminal");
+    assert!(
+        row.3
+            .as_deref()
+            .is_some_and(|message| message.contains("process_restart")),
+        "requeued job should retain a restart deferral marker: {:?}",
+        row.3
+    );
+
+    sqlx::query("UPDATE scheduled_jobs SET available_at = 0 WHERE id = ?")
+        .bind(job_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("let restart backoff elapse");
+    let queued = proxy
+        .fetch_queued_scheduled_jobs(16)
+        .await
+        .expect("fetch requeued request-log GC job");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id, job_id);
+    assert_eq!(queued[0].job_type, "request_logs_gc");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn abandoned_running_scheduled_jobs_unblocks_future_claims() {
     let db_path = temp_db_path("scheduled-job-abandon-running");
     let db_str = db_path.to_string_lossy().to_string();
