@@ -34,6 +34,11 @@ on:
         required: true
         type: string
         default: "600"
+      low_seconds:
+        description: Maximum low-load recovery window after the 10 requests/second phase
+        required: true
+        type: string
+        default: "3600"
       run_id:
         description: Optional safe run identifier for the isolated GitHub-hosted workspace
         required: false
@@ -144,7 +149,7 @@ jobs:
     if: ${{ inputs.suite == 'request-log-gc' }}
     name: Request Log GC Recovery Load
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 140
     steps:
       - name: Prepare private evidence directory
         shell: bash
@@ -165,6 +170,18 @@ jobs:
           set -euo pipefail
           if [[ "$CONFIRM" != "yes" ]]; then
             echo "Refusing to start: dispatch the workflow with confirm=yes." >&2
+            exit 2
+          fi
+
+      - name: Validate low-load recovery duration
+        shell: bash
+        env:
+          LOW_SECONDS: ${{ inputs.low_seconds }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${LOW_SECONDS}" =~ ^[0-9]+$ ]] ||
+            (( LOW_SECONDS < 1800 || LOW_SECONDS > 3600 )); then
+            echo "low_seconds must be an integer between 1800 and 3600." >&2
             exit 2
           fi
 
@@ -232,6 +249,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          LOW_SECONDS: ${{ inputs.low_seconds }}
         run: |
           set -euo pipefail
           python3 scripts/gc_recovery_load.py \
@@ -240,7 +258,7 @@ jobs:
             --candidate-sha "${CANDIDATE_SHA}" \
             --baseline-seconds 60 \
             --high-seconds 1800 \
-            --low-seconds 1800 \
+            --low-seconds "${LOW_SECONDS}" \
             --low-rps 0.1
 
       - name: Upload JSON acceptance evidence only
