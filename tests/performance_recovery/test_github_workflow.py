@@ -35,6 +35,7 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn('if [[ "${CONFIRM}" != "yes" ]]', self.source)
         self.assertIn("DURATION_SECS < 600", self.source)
         self.assertIn("DURATION_SECS > 1800", self.source)
+        self.assertIn("low_seconds:", self.source)
         self.assertIn("BASELINE_REF", self.source)
         self.assertIn("candidate_ref || github.sha", self.source)
 
@@ -67,6 +68,42 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn('RUNNER_UID="$(id -u)"', runner)
         self.assertIn('RUNNER_GID="$(id -g)"', runner)
         self.assertIn('--user "${RUNNER_UID}:${RUNNER_GID}"', runner)
+
+    def test_gc_recovery_is_a_manual_github_hosted_suite(self) -> None:
+        gc_job = self.source.split("  request-log-gc-recovery:\n", 1)[1]
+        harness = (ROOT / "scripts" / "gc_recovery_load.py").read_text(encoding="utf-8")
+
+        self.assertIn("      suite:\n", self.source)
+        self.assertIn("          - request-log-gc", self.source)
+        self.assertIn("if: ${{ inputs.suite == 'comparison' }}", self.source)
+        self.assertIn("if: ${{ inputs.suite == 'request-log-gc' }}", self.source)
+        self.assertIn("runs-on: ubuntu-24.04", gc_job)
+        self.assertIn("Require explicit manual confirmation", gc_job)
+        self.assertIn("Validate low-load recovery duration", gc_job)
+        self.assertIn("LOW_SECONDS < 1800", gc_job)
+        self.assertIn("LOW_SECONDS > 7200", gc_job)
+        self.assertIn('        default: "7200"', self.source)
+        self.assertIn("timeout-minutes: 180", gc_job)
+        self.assertIn("Test productive GC continuation turn retention", gc_job)
+        self.assertIn("maintenance_bulk_retains_request_logs_gc_progress_continuation", gc_job)
+        self.assertIn("Test dashboard integrity admission retry policy", gc_job)
+        self.assertIn("dashboard_integrity_admission_pressure_uses_full_backoff", gc_job)
+        self.assertIn("Test GC admission pressure retry policy", gc_job)
+        self.assertIn("request_logs_gc_admission_pressure_uses_full_backoff", gc_job)
+        self.assertIn("Test pending hot cursor page before GC-blocking re-audit", gc_job)
+        self.assertIn("integrity_new_hot_work_preempts_a_pending_gc_reaudit_page", gc_job)
+        self.assertIn("scripts/gc_recovery_load.py", gc_job)
+        self.assertIn("integrity_restarts_after_a_cancelled_existing_source_mutation", gc_job)
+        self.assertIn("integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing", gc_job)
+        self.assertIn("--high-seconds 1800", gc_job)
+        self.assertIn('--low-seconds "${LOW_SECONDS}"', gc_job)
+        self.assertIn("--low-rps 0.1", gc_job)
+        self.assertIn("${{ runner.temp }}/gc-recovery/**/*.json", gc_job)
+        self.assertNotIn(".db", gc_job)
+        self.assertNotIn("codex-testbox", gc_job)
+        self.assertNotIn("192.168.31.11", gc_job)
+        self.assertIn('os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"', harness)
+        self.assertIn("Path(runner_temp).resolve()", harness)
 
 
 if __name__ == "__main__":

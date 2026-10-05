@@ -39,7 +39,6 @@ const MAINTENANCE_BULK_MAX_FOREGROUND_RPS: i64 = 5;
 const MAINTENANCE_BULK_CONTENTION_COOLDOWN: Duration = Duration::from_secs(5);
 const MAINTENANCE_BULK_RESERVED_FOREGROUND_CONNECTIONS: u32 = 2;
 const MAINTENANCE_BULK_HEAP_TRIM_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE: Duration = Duration::from_secs(15);
 const MAINTENANCE_BULK_TURN_BYPASS_AGE: Duration = Duration::from_secs(5);
 const MAINTENANCE_RUN_SLOTS: u32 = 1_024;
 const FOREGROUND_ACTIVITY_BUCKETS: usize = 10;
@@ -112,7 +111,9 @@ impl SqliteAdmissionDeferReason {
     }
 }
 
-const MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+// Keep a deferred ticket through the five-minute scheduler backoff so other
+// coordinator activity cannot erase its aged turn before the worker retries.
+const MAINTENANCE_BULK_PENDING_IDLE_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum SqliteMaintenanceClass {
@@ -204,6 +205,12 @@ pub(crate) struct SqliteMaintenanceBulkPermit {
     _permit: OwnedSemaphorePermit,
 }
 
+impl SqliteMaintenanceBulkPermit {
+    pub(crate) fn retain_progress_continuation(&self) {
+        self._lease.retain_progress_continuation();
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SqliteMaintenancePreflightLease {
     coordinator: Arc<SqliteMaintenanceCoordinator>,
@@ -245,6 +252,12 @@ impl Drop for SqliteMaintenanceAdmissionLease {
             let stats = state.stats.entry(self.class).or_default();
             stats.completed = stats.completed.saturating_add(1);
         }
+    }
+}
+
+impl SqliteMaintenanceAdmissionLease {
+    fn retain_progress_continuation(&self) {
+        self.coordinator.register_continuation(self.class);
     }
 }
 
@@ -332,6 +345,29 @@ impl SqliteMaintenanceCoordinator {
         pending.ticket
     }
 
+    fn register_continuation(&self, class: SqliteMaintenanceClass) {
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active != Some(class) || state.pending.contains_key(&class) {
+            return;
+        }
+        let ticket = state.next_ticket;
+        state.next_ticket = state.next_ticket.saturating_add(1);
+        state.pending.insert(
+            class,
+            PendingMaintenanceRequest {
+                ticket,
+                first_requested_at: now,
+                last_requested_at: now,
+                preflight_holders: 0,
+                ordinary_request: true,
+            },
+        );
+    }
+
     fn is_turn(&self, class: SqliteMaintenanceClass, allow_aged_turn: bool) -> bool {
         let now = Instant::now();
         let mut state = self
@@ -340,18 +376,6 @@ impl SqliteMaintenanceCoordinator {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::prune_idle_requests(&mut state, now);
         Self::eligible_pending(&state, class, now, allow_aged_turn)
-    }
-
-    fn foreground_bypass_due(&self, class: SqliteMaintenanceClass) -> bool {
-        let now = Instant::now();
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.pending.get(&class).is_some_and(|pending| {
-            now.saturating_duration_since(pending.first_requested_at)
-                >= MAINTENANCE_BULK_FOREGROUND_BYPASS_AGE
-        })
     }
 
     fn turn_bypass_due(&self, class: SqliteMaintenanceClass) -> bool {
@@ -1272,13 +1296,9 @@ impl SqliteRuntime {
             .maintenance_class()
             .expect("reconciliation projection is a maintenance bulk operation");
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
-        let aged_foreground_bypass = self
-            .inner
-            .maintenance_coordinator
-            .foreground_bypass_due(class);
         if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
-            aged_foreground_bypass,
+            false,
             false,
             false,
             aged_turn_bypass,
@@ -1296,14 +1316,10 @@ impl SqliteRuntime {
             .inner
             .maintenance_coordinator
             .register_preflight_request(class);
-        let aged_foreground_bypass = self
-            .inner
-            .maintenance_coordinator
-            .foreground_bypass_due(class);
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
         if let Some(reason) = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
-            aged_foreground_bypass,
+            false,
             false,
             true,
             aged_turn_bypass,
@@ -1356,32 +1372,21 @@ impl SqliteRuntime {
             false,
             aged_turn_bypass,
         );
-        if reason.is_some_and(|reason| !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)) {
-            self.inner.maintenance_coordinator.register_request(class);
-        }
-        let aged_foreground_bypass =
-            matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) && {
-                self.inner
-                    .maintenance_coordinator
-                    .foreground_bypass_due(class)
-            };
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
-            && !aged_foreground_bypass
         {
+            self.inner.maintenance_coordinator.register_request(class);
             if !SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
                 self.inner.maintenance_coordinator.cancel_request(class);
             }
             self.record_deferred(operation, reason);
             return Err(reason);
         }
-        if !matches!(reason, Some(SqliteAdmissionDeferReason::ForegroundPressure)) {
-            self.inner.maintenance_coordinator.register_request(class);
-        }
+        self.inner.maintenance_coordinator.register_request(class);
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
         let reason = self.maintenance_bulk_defer_reason_for_with_policy(
             operation,
-            bypass_foreground_pressure || aged_foreground_bypass,
+            bypass_foreground_pressure,
             force_recent_contention_defer,
             true,
             aged_turn_bypass,

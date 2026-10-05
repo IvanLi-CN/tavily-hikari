@@ -130,55 +130,56 @@ impl RequestStatsCoalescer {
     pub(crate) async fn dashboard_rollup_source_version_is_stable(
         &self,
         range_start: i64,
+        range_end: i64,
         expected_version: i64,
     ) -> bool {
-        let current_version = self
-            .state
-            .lock()
-            .await
-            .dashboard_rollup_source_versions
-            .get(&range_start)
-            .copied()
-            .unwrap_or_default();
+        let state = self.state.lock().await;
         let updates = self
             .dashboard_rollup_source_updates
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        current_version.wrapping_add(
-            updates
-                .cancelled_versions
-                .get(&range_start)
-                .copied()
-                .unwrap_or_default(),
+        Self::dashboard_rollup_source_version_for_range(
+            &state.dashboard_rollup_source_versions,
+            &updates.cancelled_versions,
+            range_start,
+            range_end,
         ) == expected_version
-            && updates
-                .in_flight
-                .get(&range_start)
-                .copied()
-                .unwrap_or_default()
-                == 0
+            && updates.in_flight.range(range_start..range_end).next().is_none()
     }
 
-    pub(crate) async fn dashboard_rollup_source_version(&self, range_start: i64) -> i64 {
-        let current_version = self
-            .state
-            .lock()
-            .await
-            .dashboard_rollup_source_versions
-            .get(&range_start)
-            .copied()
-            .unwrap_or_default();
+    pub(crate) async fn dashboard_rollup_source_version(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> i64 {
+        let state = self.state.lock().await;
         let updates = self
             .dashboard_rollup_source_updates
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        current_version.wrapping_add(
-            updates
-                .cancelled_versions
-                .get(&range_start)
-                .copied()
-                .unwrap_or_default(),
+        Self::dashboard_rollup_source_version_for_range(
+            &state.dashboard_rollup_source_versions,
+            &updates.cancelled_versions,
+            range_start,
+            range_end,
         )
+    }
+
+    fn dashboard_rollup_source_version_for_range(
+        committed: &BTreeMap<i64, i64>,
+        cancelled: &BTreeMap<i64, i64>,
+        range_start: i64,
+        range_end: i64,
+    ) -> i64 {
+        committed
+            .range(range_start..range_end)
+            .map(|(_, version)| *version)
+            .chain(
+                cancelled
+                    .range(range_start..range_end)
+                    .map(|(_, version)| *version),
+            )
+            .fold(0_i64, i64::saturating_add)
     }
 
     fn mark_flush_deadline_if_pending(state: &mut RequestStatsCoalescerState) {
@@ -595,29 +596,29 @@ pub(crate) struct DashboardRollupSourceMutation {
 
 impl DashboardRollupSourceMutation {
     pub(crate) async fn commit(mut self) {
-        {
-            let mut state = self.coalescer.state.lock().await;
-            let retention_floor = self.range_start.saturating_sub(92 * SECS_PER_DAY);
-            state
-                .dashboard_rollup_source_versions
-                .retain(|bucket_start, _| *bucket_start >= retention_floor);
-            let version = state
-                .dashboard_rollup_source_versions
-                .entry(self.range_start)
-                .or_default();
-            *version = version.wrapping_add(1);
-        }
+        let mut state = self.coalescer.state.lock().await;
         let mut updates = self
             .coalescer
             .dashboard_rollup_source_updates
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let retention_floor = self.range_start.saturating_sub(92 * SECS_PER_DAY);
+        state
+            .dashboard_rollup_source_versions
+            .retain(|bucket_start, _| *bucket_start >= retention_floor);
+        let version = state
+            .dashboard_rollup_source_versions
+            .entry(self.range_start)
+            .or_default();
+        *version = version.wrapping_add(1);
         if let Some(count) = updates.in_flight.get_mut(&self.range_start) {
             *count -= 1;
             if *count == 0 {
                 updates.in_flight.remove(&self.range_start);
             }
         }
+        drop(updates);
+        drop(state);
         self.committed = true;
     }
 }

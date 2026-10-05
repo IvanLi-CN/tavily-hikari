@@ -494,12 +494,19 @@ pub struct RequestLogsGcReport {
     pub has_more: bool,
     pub elapsed_ms: u128,
     pub scanned_body_candidates: i64,
+    /// Internal scheduling evidence; clearing or revisiting a cursor is not progress.
+    #[serde(skip)]
+    pub body_scan_cursor_advanced: bool,
     pub unique_retention_users: i64,
     pub retention_context_cache_hits: i64,
     pub body_candidate_query_elapsed_ms: u128,
     pub body_retention_decision_elapsed_ms: u128,
     pub body_write_elapsed_ms: u128,
     pub progress_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_day_start: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -572,7 +579,7 @@ pub fn format_request_logs_gc_report_message(
     passes: usize,
 ) -> String {
     format!(
-        "cleaned_bodies={} deleted_rows={} rollup_deleted={} scanned_candidates={} unique_users={} retention_cache_hits={} progress={} completed={} has_more={} retention_days={} batches={} passes={} elapsed_ms={} candidate_query_ms={} decision_ms={} write_ms={}",
+        "cleaned_bodies={} deleted_rows={} rollup_deleted={} scanned_candidates={} unique_users={} retention_cache_hits={} progress={} completed={} has_more={} retention_days={} batches={} passes={} elapsed_ms={} candidate_query_ms={} decision_ms={} write_ms={} blocked_day_start={} blocked_reason={}",
         report.cleaned_request_log_bodies,
         report.deleted_request_logs,
         report.deleted_rollups,
@@ -589,6 +596,11 @@ pub fn format_request_logs_gc_report_message(
         report.body_candidate_query_elapsed_ms,
         report.body_retention_decision_elapsed_ms,
         report.body_write_elapsed_ms,
+        report
+            .blocked_day_start
+            .map(|day| day.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        report.blocked_reason.as_deref().unwrap_or("none"),
     )
 }
 

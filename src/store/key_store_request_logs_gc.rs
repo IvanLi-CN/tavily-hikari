@@ -781,36 +781,18 @@ impl KeyStore {
                 break;
             }
         }
-        if has_more {
-            self.set_request_log_body_gc_cursor(after.map(|(created_at, id)| {
-                RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at,
-                }
-            }))
-            .await?;
-        } else if self.backend_time.instant_now() >= deadline && after.is_some() {
+        if self.backend_time.instant_now() >= deadline && after.is_some() {
             has_more = true;
-            self.set_request_log_body_gc_cursor(after.map(|(created_at, id)| {
-                RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at,
-                }
-            }))
-            .await?;
-        } else if let Some((created_at, id)) = after {
-            if let Some(restart_at) = restart_at {
-                self.set_request_log_body_gc_cursor(Some(RequestLogBodyGcCursor {
-                    created_at,
-                    id,
-                    restart_at: Some(restart_at),
-                }))
-                .await?;
-            } else {
-                self.set_request_log_body_gc_cursor(None).await?;
-            }
+        }
+        let persisted_cursor = after
+            .filter(|_| has_more || restart_at.is_some())
+            .map(|(created_at, id)| RequestLogBodyGcCursor {
+                created_at,
+                id,
+                restart_at,
+            });
+        if after.is_some() {
+            self.set_request_log_body_gc_cursor(persisted_cursor).await?;
         }
 
         Ok(RequestLogBodyGcBatch {
@@ -837,7 +819,11 @@ impl KeyStore {
         let mut deleted_request_logs = 0_i64;
         let mut deleted_rollups = 0_i64;
         let mut body_batch_has_more = false;
+        let initial_body_cursor = self.get_request_log_body_gc_cursor().await?
+            .map(|cursor| (cursor.created_at, cursor.id));
         let mut blocked_by_integrity = false;
+        let mut blocked_day_start = None;
+        let mut blocked_reason = None;
         let mut batches = 0_i64;
         let mut retention_contexts = std::collections::HashMap::new();
         let mut body_gc_diagnostics = RequestLogBodyGcDiagnostics::default();
@@ -851,9 +837,12 @@ impl KeyStore {
                 )
                 .await?;
             let raw_delete_cutoff = self
-                .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+                .dashboard_rollup_integrity_request_log_gc_decision(threshold)
                 .await?;
-            let request_deleted = if let Some(raw_delete_cutoff) = raw_delete_cutoff {
+            let request_deleted = if let DashboardRollupRequestLogGcDecision::Allowed(
+                raw_delete_cutoff,
+            ) = raw_delete_cutoff
+            {
                 // Delete only the earliest sealed local day. This prevents one large
                 // batch from crossing into a later day that has not been sealed yet.
                 self.unlink_old_request_log_references_batch(raw_delete_cutoff, batch_size)
@@ -867,6 +856,12 @@ impl KeyStore {
                     threshold,
                     "request log deletion and reference unlinking delayed until its local-day recovery seal exists"
                 );
+                if let DashboardRollupRequestLogGcDecision::Blocked { day_start, reason } =
+                    raw_delete_cutoff
+                {
+                    blocked_day_start = Some(day_start);
+                    blocked_reason = Some(reason.to_string());
+                }
                 blocked_by_integrity = true;
                 0
             };
@@ -910,6 +905,9 @@ impl KeyStore {
             || self.has_old_request_log_rollup_rows(threshold).await?
             || body_batch_has_more;
         self.invalidate_request_logs_catalog_cache().await;
+        let body_scan_cursor_advanced = self.get_request_log_body_gc_cursor().await?
+            .is_some_and(|cursor| initial_body_cursor
+                .is_none_or(|initial| (cursor.created_at, cursor.id) > initial));
         Ok(RequestLogsGcReport {
             retention_days,
             threshold,
@@ -923,12 +921,15 @@ impl KeyStore {
             has_more,
             elapsed_ms: started.elapsed().as_millis(),
             scanned_body_candidates: body_gc_diagnostics.scanned_body_candidates,
+            body_scan_cursor_advanced,
             unique_retention_users: body_gc_diagnostics.unique_retention_users,
             retention_context_cache_hits: body_gc_diagnostics.retention_context_cache_hits,
             body_candidate_query_elapsed_ms: body_gc_diagnostics.body_candidate_query_elapsed_ms,
             body_retention_decision_elapsed_ms: body_gc_diagnostics
                 .body_retention_decision_elapsed_ms,
             body_write_elapsed_ms: body_gc_diagnostics.body_write_elapsed_ms,
+            blocked_day_start,
+            blocked_reason,
             progress_status: if !has_more {
                 "completed"
             } else if blocked_by_integrity {

@@ -3,8 +3,16 @@ name: Performance Recovery A/B
 on:
   workflow_dispatch:
     inputs:
+      suite:
+        description: Select the comparison or the synthetic request-log GC recovery test
+        required: true
+        type: choice
+        options:
+          - comparison
+          - request-log-gc
+        default: comparison
       confirm:
-        description: Type yes to start the GitHub-hosted fixture comparison
+        description: Type yes to start the selected GitHub-hosted synthetic suite
         required: true
         type: choice
         options:
@@ -26,6 +34,11 @@ on:
         required: true
         type: string
         default: "600"
+      low_seconds:
+        description: Maximum low-load recovery window after the 10 requests/second phase; stops early when recovery completes
+        required: true
+        type: string
+        default: "7200"
       run_id:
         description: Optional safe run identifier for the isolated GitHub-hosted workspace
         required: false
@@ -43,6 +56,7 @@ concurrency:
 
 jobs:
   performance-recovery:
+    if: ${{ inputs.suite == 'comparison' }}
     name: Performance Recovery Comparison
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -129,4 +143,147 @@ jobs:
             echo "- Execution target: GitHub-hosted ubuntu-24.04."
             echo "- Databases are generated local fixtures; no production snapshot or private network host is used."
             echo "- Sanitized logs and comparison output are in the uploaded artifact."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  request-log-gc-recovery:
+    if: ${{ inputs.suite == 'request-log-gc' }}
+    name: Request Log GC Recovery Load
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Prepare private evidence directory
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/gc-recovery"
+
+      - name: Checkout candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require explicit manual confirmation
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "yes" ]]; then
+            echo "Refusing to start: dispatch the workflow with confirm=yes." >&2
+            exit 2
+          fi
+
+      - name: Validate low-load recovery duration
+        shell: bash
+        env:
+          LOW_SECONDS: ${{ inputs.low_seconds }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${LOW_SECONDS}" =~ ^[0-9]+$ ]] ||
+            (( LOW_SECONDS < 1800 || LOW_SECONDS > 7200 )); then
+            echo "low_seconds must be an integer between 1800 and 7200." >&2
+            exit 2
+          fi
+
+      - name: Verify GC workflow and harness contracts
+        run: python3 -m unittest discover -s tests/performance_recovery -p 'test_github_workflow.py'
+
+      - name: Record candidate identity
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_sha="$(git rev-parse HEAD)"
+          printf 'candidate_sha=%s\n' "${candidate_sha}" >> "${GITHUB_OUTPUT}"
+          printf '{"candidate_sha":"%s","suite":"request-log-gc","run_id":"%s"}\n' \
+            "${candidate_sha}" "${GITHUB_RUN_ID}" \
+            > "${RUNNER_TEMP}/gc-recovery-identity.json"
+
+      - name: Install SQLite build dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache Rust build inputs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/ci-test
+          key: ${{ runner.os }}-gc-recovery-rust-1.91.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'rust-toolchain.toml', '.cargo/**', 'src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-gc-recovery-rust-1.91.0-
+
+      - name: Build service binary
+        run: cargo build --locked --all-features --profile ci-test --bin tavily-hikari
+
+      - name: Test maintenance ticket survival across pressure backoff
+        run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_ticket_survives_scheduled_pressure_backoff
+
+      - name: Test productive GC continuation turn retention
+        run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_retains_request_logs_gc_progress_continuation
+
+      - name: Test dashboard integrity admission retry policy
+        run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_pressure_uses_full_backoff
+
+      - name: Test GC admission pressure retry policy
+        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_admission_pressure_uses_full_backoff
+
+      - name: Test pending hot cursor page before GC-blocking re-audit
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_new_hot_work_preempts_a_pending_gc_reaudit_page
+
+      - name: Test hot-page yield to GC-blocking re-audit
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
+
+      - name: Test wide-range source mutation fencing
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_restarts_after_a_cancelled_existing_source_mutation
+
+      - name: Test full GC-blocking day seal recovery
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing
+
+      - name: Run two-phase synthetic recovery acceptance
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.candidate_sha }}
+          LOW_SECONDS: ${{ inputs.low_seconds }}
+        run: |
+          set -euo pipefail
+          python3 scripts/gc_recovery_load.py \
+            --binary target/ci-test/tavily-hikari \
+            --agent-dir "${RUNNER_TEMP}/gc-recovery" \
+            --candidate-sha "${CANDIDATE_SHA}" \
+            --baseline-seconds 60 \
+            --high-seconds 1800 \
+            --low-seconds "${LOW_SECONDS}" \
+            --low-rps 0.1
+
+      - name: Upload JSON acceptance evidence only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: gc-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gc-recovery-identity.json
+            ${{ runner.temp }}/gc-recovery/**/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write GC recovery handoff
+        if: ${{ always() }}
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "## Request Log GC Recovery Load"
+            echo ""
+            echo "- Job status: ${JOB_STATUS}"
+            echo "- Run: ${RUN_URL}"
+            echo "- Execution target: GitHub-hosted ubuntu-24.04."
+            echo "- Fixture databases and service logs remain on the runner; only JSON acceptance evidence is uploaded."
           } >> "${GITHUB_STEP_SUMMARY}"

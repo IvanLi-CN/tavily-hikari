@@ -61,6 +61,11 @@ source when a usable persisted runtime already exists.
 
 ## Requirements
 
+### REQ-SQLITE-MAINTENANCE — Scoped, bounded maintenance
+
+SQLite maintenance MUST preserve foreground capacity, bounded source reads and write windows,
+durable claim fences, and the retention/recovery guards specified below.
+
 - `REQ-BOUNDED-WRITE-RETRY`: `quota_subject_locks` acquire/refresh/release writes must retry
   transient SQLite write errors with
   bounded backoff and must remain inside the existing lock timeout/lease budget.
@@ -102,6 +107,10 @@ source when a usable persisted runtime already exists.
   writer. They enter instance-owned bounded deferred queues; pressure deltas are replayable from
   request logs, while a rejected rebalance audit records explicit stale coverage without changing
   MCP success or billing truth. Every deferred flush uses `SqliteRuntime` operation budgets.
+- Foreground HTTP user/token primary-affinity selection must evaluate active `http_global` cooldown
+  in the existing specific-key eligibility query instead of acquiring a separate
+  `ScheduledJobControl` read. The active-cooldown boundary and established rebind/fallback order
+  remain unchanged.
 - Administrator API-key creation and undelete are foreground durable commands. Their SQLite
   acquire, `BEGIN IMMEDIATE`, and connection-local busy wait use the `AdminMutation` runtime
   operation and one bounded retry window. Exhausted transient contention returns a retryable
@@ -184,14 +193,15 @@ source when a usable persisted runtime already exists.
   five-minute age adjustment for non-manual jobs. The adjustment may raise an older job only to
   effective priority `2`; manual priority remains unchanged. This prevents fresh GC continuation
   rows from indefinitely starving HA cleanup or other aged maintenance work.
-- Incomplete automatic request-log GC must requeue with a persisted five-minute delay. A manual
+- Incomplete automatic request-log GC must requeue with a persisted one-second delay after deletion,
+  body cleanup, or durable scan progress; no progress, pressure, or errors use five minutes. A manual
   trigger may reuse and immediately unlock its queued representative row. Body cleanup must cache
   retention context per unique user for a bounded pass, and its `(created_at, id)` partial body
   cursor index must be built by a low-priority post-ready maintenance task rather than schema
   bootstrap. The online scheduler obtains `maintenance_bulk` admission before acquiring a
   connection; when a required local-day seal is absent it records one typed incomplete result and
   defers instead of repeating raw-row, reference-unlink, or rollup work in that slice.
-- The request-log GC completion and its incomplete five-minute continuation must be one fenced
+- The request-log GC completion and its incomplete continuation must be one fenced
   queue transaction. If the short control transaction cannot commit, the current claim remains
   running for the request-log stale reaper; it must not finish first and then silently lose a
   separate continuation enqueue. A permanent GC error must retain `error` status on the completed
@@ -232,7 +242,12 @@ source when a usable persisted runtime already exists.
 - The three-connection application pool reserves two actual or immediately allocatable slots for
   foreground work. Bulk maintenance takes one instance-local permit only when foreground arrival
   rate is at most `5 rps` and the preceding five seconds contain no pool-timeout or SQLite busy
-  outcome. Admission rejection occurs before pool acquisition and records a typed deferred reason.
+  outcome. An aged coordinator turn may bypass class ordering or the ordinary pool-capacity
+  precheck, but never the foreground-rate gate. Admission rejection occurs before pool acquisition
+  and records a typed deferred reason.
+- Request-log GC uses a persisted five-minute continuation after an admission defer. Dashboard
+  integrity also uses a five-minute continuation for foreground, pool, or recent-contention
+  pressure; ordinary `bulk_busy` fairness retries remain on the five-second cadence.
 - `REQ-MAINTENANCE-CONTROL`: Scheduled-job metadata writes are `maintenance_control`: they use a
   `100ms` connection/writer
   budget, do not wait for the bulk permit, and never start an unbounded retry task. A durable
@@ -308,6 +323,13 @@ source when a usable persisted runtime already exists.
 - `VER-MAINTENANCE-CONTROL` (covers: REQ-MAINTENANCE-CONTROL): Maintenance control tests verify
   bounded admission, durable representative reuse, and claim-fenced recovery. Manual trigger
   admission failure must retain its explicit unavailable response.
+
+### VER-SQLITE-MAINTENANCE — Retention and scheduling regressions
+
+covers: REQ-SQLITE-MAINTENANCE
+
+The backend maintenance, retention, admission, integrity and restart regression suites verify
+these guards. Synthetic two-phase load verifies foreground deferral and subsequent bounded catch-up.
 
 ### Cancellation-safe maintenance transactions
 

@@ -13,3 +13,8 @@
 ## Legacy Identity
 
 - Legacy compatibility identity: `#h2698`.
+
+- 2026-10-03: Define resumable GC-blocking day recovery, stale hot-window repair, and productive
+  catch-up scheduling without changing retention or billing truth.
+- 2026-10-05: Queue an outstanding initial hot page before blocked-day recovery and use the planned
+  five-minute admission backoff under foreground, pool, and SQLite contention pressure.

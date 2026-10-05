@@ -369,6 +369,16 @@ month-tail public metrics scan.
   should be abandoned during the next claim instead of waiting for a restart.
 - Do not hold that job execution gate while a catch-up scheduler is sleeping between cleanup
   windows. Hold it for the active DB write window, then release it before throttled rechecks.
+- Distinguish sealed-day recovery debt from raw-row cleanup throughput. An absent or divergent
+  seal must queue the earliest blocking day for source-backed reauditing, retain its checkpoint on
+  duplicate registration, and forbid deletion until full-day finalization. Keep newly closed hot
+  slices ahead of that recovery at page boundaries, and derive a stale hot interval's end from its
+  clamped start so an old fence cannot create an inverted range.
+- Shorten continuation only after durable progress: deletion, body cleanup, or a persisted scan
+  cursor. Keep five-minute defers on no progress, foreground pressure, contention and errors. A
+  faster retry never enlarges a page, write window or pass budget. Test foreground protection at
+  ten business requests per second, then reduce load below the admission threshold to measure
+  actual deletion; requiring both high load and bulk deletion contradicts the existing guard.
 - Provide a one-shot operational CLI for retention cleanup so production-derived database samples
   can be tested deterministically. Do not rely only on the daily scheduler when validating cleanup
   behavior.

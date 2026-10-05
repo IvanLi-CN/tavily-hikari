@@ -28,11 +28,11 @@ contention policy. Add one instance-local coordinator in front of that semaphore
   oldest ticket is not being retried, any caller whose own ticket has waited at least five seconds
   may take the turn; this keeps a low-frequency worker from holding every other class past the
   freshness bound.
-- Ordinary admission still reserves two foreground pool slots. Once a ticket is eligible for an
-  aged turn, it may reach the operation's bounded pool acquire even when all currently-open
-  connections are checked out; the 100ms acquire budget is the safety boundary, so a full pool
-  cannot starve an aged ticket behind a pre-admission `pool_pressure` check. Pools at or below the
-  two-slot foreground reserve remain foreground-only after a ticket ages.
+- Ordinary admission still reserves two foreground pool slots. Aging changes maintenance-class
+  ordering and can let an eligible turn reach its bounded pool acquire even when all currently-open
+  connections are checked out, but it never bypasses the foreground-rate gate. The 100ms acquire
+  budget is the safety boundary, so a full pool cannot starve an aged ticket behind a pre-admission
+  `pool_pressure` check. Pools at or below the two-slot foreground reserve remain foreground-only.
 - Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
   or receives the existing typed defer reason and retries through its existing bounded loop.
 - A class keeps its one pending ticket while a caller is still retrying any typed admission defer;
@@ -49,10 +49,12 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Runtime workload-window logs expose pending age and per-class admission/completion statistics;
   each admitted slice logs its class and wait age.
 
-Admission-defer continuations and the coordinator's aged-turn exception both use a five-second
-cadence, so a retained ticket is revisited promptly even when the oldest worker is not retrying.
-A normally completed request-log GC continuation keeps its existing five-minute cadence, and HA
-GC's post-admission channel continuation keeps its separate durable 30-second contention delay.
+Ordinary admission-defer continuations and the coordinator's aged-class-order turn use a
+five-second cadence. Request-log GC uses a five-minute retry after any admission defer, while
+Dashboard integrity uses five minutes for foreground, pool, or recent-contention pressure and
+five seconds when another bulk class owns the permit. A normally completed request-log GC
+continuation keeps its five-minute cadence, and HA GC's post-admission channel continuation keeps
+its separate durable contention delay.
 
 ## Alternatives Rejected
 

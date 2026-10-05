@@ -1,5 +1,13 @@
 # History
 
+- 2026-10-04: Shared 10 rps recovery acceptance exposed aged maintenance turns bypassing the
+  foreground-rate gate and starving SQLite pool acquisition. Keep the 5 rps gate strict for normal
+  bulk maintenance and back off request-log GC/integrity admission pressure for five minutes.
+- 2026-10-04: Move foreground HTTP primary-affinity cooldown evaluation into the Key eligibility
+  query so maintenance-read admission pressure cannot turn a transient pool wait into HTTP 500.
+- 2026-10-03: Align request-log GC continuation with durable progress while preserving five-minute
+  pressure/error defers, fenced handoff, and foreground admission.
+
 ## 2026-08-02
 
 - Added low-pressure HA GC recovery with persisted debt/SLO state, foreground-aware continuation

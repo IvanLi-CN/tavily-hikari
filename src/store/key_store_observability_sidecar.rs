@@ -248,6 +248,7 @@ impl KeyStore {
     async fn ensure_observability_sidecar_derived_schema_in_pool(
         pool: &SqlitePool,
     ) -> Result<(), ProxyError> {
+        Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(pool).await?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS observability.api_key_usage_buckets (
@@ -362,15 +363,6 @@ impl KeyStore {
                 bucket_start INTEGER PRIMARY KEY,
                 counts_json TEXT NOT NULL,
                 verified_at INTEGER NOT NULL
-            )
-            "#,
-            r#"
-            CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_integrity_day_reaudits (
-                bucket_start INTEGER PRIMARY KEY,
-                bucket_end INTEGER NOT NULL,
-                cursor INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
             )
             "#,
             r#"
@@ -603,6 +595,30 @@ impl KeyStore {
             sqlx::query(sql).execute(pool).await?;
         }
 
+        Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_gc_reaudit_schema_in_pool(pool: &SqlitePool) -> Result<(), ProxyError> {
+        sqlx::query(r#"CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_integrity_day_reaudits (
+            bucket_start INTEGER PRIMARY KEY,
+            bucket_end INTEGER NOT NULL,
+            cursor INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            gc_blocking INTEGER NOT NULL DEFAULT 0
+        )"#).execute(pool).await?;
+        let has_gc_blocking_column: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_integrity_day_reaudits') WHERE name = 'gc_blocking' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_gc_blocking_column.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_integrity_day_reaudits ADD COLUMN gc_blocking INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
         Ok(())
     }
 

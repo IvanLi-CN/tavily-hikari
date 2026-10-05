@@ -1,14 +1,23 @@
 # Implementation
 
+- HTTP user/token primary-affinity selection now embeds its optional transient-cooldown predicate
+  in the existing Key eligibility query, avoiding the bounded maintenance-read admission path while
+  preserving `http_global` cooldown behavior and the original affinity rebind fallback.
+- Request-log GC blocking-day registration uses the existing scoped write budget. In the legacy
+  same-file attachment layout it uses a single atomic UPSERT, preserving the fail-closed source
+  guard without requesting two immediate locks on the same SQLite file.
+- Continuation uses the cursor retained at the end of a bounded pass; a terminal scan that clears
+  the cursor does not create a one-second no-progress loop during a seal or source-recovery block.
+
 ## Current Coverage
 
 - `SqliteRuntime` now owns per-`KeyStore` foreground activity, recent contention signals, one
   bulk permit, fixed workload budgets, and a bounded workload aggregation window. Bulk admission
   is rejected before a pooled connection is obtained whenever fewer than two foreground slots
   remain, foreground activity exceeds `5 rps`, or a busy/pool-timeout occurred in the last five
-  seconds. An aged coordinator turn may reach the operation's bounded 100ms pool acquire even
-  when all currently-open connections are checked out; pools at or below the two-slot foreground
-  reserve remain foreground-only.
+  seconds. An aged coordinator turn may bypass class ordering and the ordinary pool-capacity
+  precheck, but not the foreground-rate gate. Explicit research-drain and admin-cache liveness
+  paths retain their separate bounded admission policies.
 - The physical bulk permit is fronted by a fixed-size per-runtime coordinator. The ten maintenance
   classes (`admin_read`, `alert_projection`, `capacity_warm`, `dashboard_integrity`, `ha_outbox_gc`,
   `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,
@@ -26,10 +35,12 @@
   wait, and stale-ticket counts for every class. This makes bounded fairness and quiet-tail
   freshness inspectable without synchronously flushing derived state from owner-facing reads.
 - A typed admission defer keeps the class's single pending ticket while its caller retries, including
-  foreground, pool, and recent-contention pressure. Admission defers retry every five seconds,
-  including reconciliation, and the coordinator's aged-turn exception uses the same five-second
-  boundary. Completed request-log GC keeps its five-minute continuation, while HA GC keeps its
-  separate 30-second post-admission contention continuation.
+  foreground, pool, and recent-contention pressure. Ordinary admission defers retry every five
+  seconds, including reconciliation, and the coordinator's aged class-order turn uses the same
+  boundary. Request-log GC uses a five-minute continuation after any admission defer; Dashboard
+  integrity uses five minutes for foreground, pool, or recent-contention pressure and five seconds
+  for `bulk_busy`. Completed request-log GC also uses five minutes after no progress, while HA GC
+  keeps its separate post-admission contention continuation.
 - A transient scheduled-job dequeue or claim conflict retries on that same five-second cadence.
   The worker does not impose a global 30-second sleep on pending maintenance classes after a
   bounded control write fails. A real-worker regression holds a competing SQLite writer across
@@ -214,7 +225,8 @@
   updates covered by the trigger set.
 - The daily `request_logs_gc` scheduler now runs one bounded cleanup pass per
   `scheduled_jobs` row. If backlog remains, it persists an automatic continuation with a
-  five-minute `available_at` delay instead of keeping one long-running `running` row open.
+  one-second `available_at` delay after durable progress, or five minutes after no progress,
+  pressure or an error, instead of keeping one long-running `running` row open.
 - Scheduled jobs now distinguish `trigger_source` from `job_type`, use an atomic claim path to avoid
   duplicate active work, and expose manual trigger entrypoints for maintenance/admin jobs.
 - `quota_sync` now uses a hard `/usage` timeout, a bounded job runtime budget, and claim-time stale
@@ -526,6 +538,9 @@
 - `cargo clippy -- -D warnings`
 - Full `cargo test --locked --all-features`
 - `cargo clippy -- -D warnings`
+- `cargo test --lib http_key_selection_ -- --nocapture`
+- `cargo test --lib http_affinity_cooldown_selector_waits_for_saturated_pool -- --nocapture`
+- `cargo test --lib token_primary_rebind -- --nocapture`
 - Shared testbox isolated run:
   - remote workspace `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb`
   - remote run `/srv/codex/workspaces/ivan/tavily-hikari__7aa37deb/runs/20260617_035715_7dfaaa12_sidecar`
@@ -666,4 +681,4 @@
 
 - Lifecycle: active
 - Created: 2026-05-07
-- Last: 2026-07-05
+- Last: 2026-10-04

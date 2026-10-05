@@ -931,6 +931,15 @@ pub struct SqliteMaintenanceAdmission {
     _kind: SqliteMaintenanceAdmissionKind,
 }
 
+impl SqliteMaintenanceAdmission {
+    /// Keep a fair SQLite maintenance turn for a productive request-log GC continuation.
+    pub fn retain_request_logs_gc_progress_continuation(&self) {
+        if let SqliteMaintenanceAdmissionKind::Bulk { _permit } = &self._kind {
+            _permit.retain_progress_continuation();
+        }
+    }
+}
+
 #[derive(Debug)]
 enum SqliteMaintenanceAdmissionKind {
     Bulk {

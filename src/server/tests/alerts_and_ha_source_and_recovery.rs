@@ -624,6 +624,16 @@ async fn aged_research_bypasses_foreground_heuristic_once() {
     let turn = controller
         .reserve_aged_research_drain_turn()
         .expect("aged Research receives a turn");
+    for _ in 0..6 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        for _ in 0..6 {
+            state.proxy.record_foreground_activity();
+        }
+    }
+    assert!(
+        state.proxy.foreground_activity_rps() > tavily_hikari::HA_OUTBOX_GC_LOW_PRESSURE_RPS,
+        "fixture keeps foreground-rate pressure while setup contention cools"
+    );
 
     assert!(
         run_manual_claimed_job(
@@ -2177,4 +2187,67 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
     assert_ne!(before_sig, after_sig);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn request_logs_gc_continuation_tracks_durable_progress() {
+    let mut report = RequestLogsGcReport {
+        retention_days: 7,
+        threshold: 0,
+        batch_size: 100,
+        max_batches: 5,
+        cleaned_request_log_bodies: 0,
+        deleted_request_logs: 0,
+        deleted_rollups: 0,
+        batches: 1,
+        completed: false,
+        has_more: true,
+        elapsed_ms: 0,
+        scanned_body_candidates: 0,
+        body_scan_cursor_advanced: false,
+        unique_retention_users: 0,
+        retention_context_cache_hits: 0,
+        body_candidate_query_elapsed_ms: 0,
+        body_retention_decision_elapsed_ms: 0,
+        body_write_elapsed_ms: 0,
+        progress_status: "incomplete_blocked_integrity".into(),
+        blocked_day_start: Some(0),
+        blocked_reason: Some("missing_seal".into()),
+    };
+    assert_eq!(request_logs_gc_continuation_delay(&report), 300);
+    report.scanned_body_candidates = 64;
+    assert_eq!(request_logs_gc_continuation_delay(&report), 300);
+    report.body_scan_cursor_advanced = true;
+    assert_eq!(
+        request_logs_gc_continuation_delay(&report),
+        1,
+        "a persisted bodyless scan window is productive"
+    );
+    report.scanned_body_candidates = 0;
+    report.body_scan_cursor_advanced = false;
+    report.cleaned_request_log_bodies = 1;
+    assert_eq!(
+        request_logs_gc_continuation_delay(&report),
+        1,
+        "body cleanup can progress while row deletion is blocked"
+    );
+    report.cleaned_request_log_bodies = 0;
+    report.deleted_request_logs = 100;
+    assert_eq!(request_logs_gc_continuation_delay(&report), 1);
+}
+
+#[test]
+fn dashboard_integrity_admission_pressure_uses_five_minute_backoff() {
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("foreground_pressure"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    );
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("pool_pressure"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    );
+    assert_eq!(
+        dashboard_integrity_admission_retry_delay("bulk_busy"),
+        SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+    );
 }

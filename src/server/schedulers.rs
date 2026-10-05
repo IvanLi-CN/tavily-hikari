@@ -66,6 +66,78 @@ const SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
     [100, 200, 400, 800, 1_600];
+const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
+
+fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
+    if request_logs_gc_made_progress(report) {
+        REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS
+    } else {
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    }
+}
+
+fn request_logs_gc_admission_retry_delay(_reason: &str) -> i64 {
+    REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+}
+
+fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
+    report.cleaned_request_log_bodies + report.deleted_request_logs + report.deleted_rollups > 0
+        || report.body_scan_cursor_advanced
+}
+
+fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
+    match reason {
+        "foreground_pressure" | "pool_pressure" | "recent_contention" => {
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        }
+        _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+    }
+}
+
+#[cfg(test)]
+mod dashboard_integrity_admission_tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_integrity_admission_pressure_uses_full_backoff() {
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("foreground_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("pool_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("recent_contention"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("bulk_busy"),
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+        );
+    }
+
+    #[test]
+    fn request_logs_gc_admission_pressure_uses_full_backoff() {
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("pool_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("foreground_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("recent_contention"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("bulk_busy"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+    }
+}
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;
 const AUTH_TOKEN_LOGS_ALERT_INDEX_ENSURE_JOB_TYPE: &str =
     "auth_token_logs_alert_index_ensure";
@@ -531,12 +603,13 @@ async fn run_dashboard_rollup_integrity_claimed_job(
     let _bulk_admission = match state.proxy.admit_dashboard_rollup_integrity() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            let retry_delay_secs = dashboard_integrity_admission_retry_delay(reason);
             return finish_dashboard_rollup_integrity_and_enqueue(
                 state.as_ref(),
                 job_id,
                 claim_generation,
                 &format!("state=deferred admission={reason}"),
-                now.saturating_add(SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS),
+                now.saturating_add(retry_delay_secs),
             )
             .await;
         }
@@ -988,16 +1061,17 @@ async fn run_request_logs_gc_catchup_claimed_job(
         _job_execution_gate,
     } = claimed_job;
     drop(_job_execution_gate);
-    let _bulk_admission = match state.proxy.admit_request_logs_gc() {
+    let bulk_admission = match state.proxy.admit_request_logs_gc() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
-            let msg = format!("deferred={reason}");
+            let continuation_delay_secs = request_logs_gc_admission_retry_delay(reason);
+            let msg = format!("deferred={reason} next_retry_secs={continuation_delay_secs}");
             tracing::debug!(
                 component = "request_logs_gc",
                 event = "deferred",
                 job_id,
                 defer_reason = reason,
-                continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                continuation_delay_secs,
                 "request-log GC deferred before SQLite connection acquisition"
             );
             return finish_request_logs_gc_with_continuation_after(
@@ -1006,7 +1080,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
                 claim_generation,
                 "success",
                 msg,
-                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                continuation_delay_secs,
             )
             .await;
         }
@@ -1015,11 +1089,25 @@ async fn run_request_logs_gc_catchup_claimed_job(
         .proxy
         .gc_request_logs_with_options(scheduled_request_logs_gc_options())
         .await;
-    drop(_bulk_admission);
+    if result
+        .as_ref()
+        .is_ok_and(|report| !report.completed && request_logs_gc_made_progress(report))
+    {
+        bulk_admission.retain_request_logs_gc_progress_continuation();
+    }
+    drop(bulk_admission);
 
     match result {
         Ok(report) => {
-            let msg = format_request_logs_gc_report_message(&report, 1);
+            let continuation_delay_secs = if report.completed {
+                0
+            } else {
+                request_logs_gc_continuation_delay(&report)
+            };
+            let msg = format!(
+                "{} next_retry_secs={continuation_delay_secs}",
+                format_request_logs_gc_report_message(&report, 1)
+            );
             let zero_progress = report.progress_status == "incomplete_zero_progress";
             let zero_progress_streak = if zero_progress {
                 REQUEST_LOGS_GC_ZERO_PROGRESS_STREAK.fetch_add(1, Ordering::Relaxed) + 1
@@ -1071,12 +1159,13 @@ async fn run_request_logs_gc_catchup_claimed_job(
                     }
                 }
             } else {
-                finish_request_logs_gc_with_continuation(
+                finish_request_logs_gc_with_continuation_after(
                     &state,
                     job_id,
                     claim_generation,
                     "success",
                     msg,
+                    continuation_delay_secs,
                 )
                 .await
             }
@@ -1106,7 +1195,9 @@ async fn finish_request_logs_gc_with_continuation(
         job_id,
         claim_generation,
         status,
-        message,
+        format!(
+            "{message} next_retry_secs={REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS}"
+        ),
         REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
     )
     .await

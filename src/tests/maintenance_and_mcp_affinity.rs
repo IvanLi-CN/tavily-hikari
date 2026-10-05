@@ -2108,6 +2108,141 @@ async fn http_key_selection_ignores_mcp_session_init_backoff() {
 }
 
 #[tokio::test]
+async fn http_key_selection_avoids_global_backoff_on_token_primary() {
+    let db_path = temp_db_path("http-selection-global-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-selection-global-a".to_string(),
+            "tvly-http-selection-global-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("http-selection-global-backoff"))
+        .await
+        .expect("create token");
+    let key_ids = fetch_all_api_key_ids(&proxy.key_store.pool).await;
+    let cooled_key_id = key_ids[0].clone();
+    let fallback_key_id = key_ids[1].clone();
+    let now = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &cooled_key_id)
+        .await
+        .expect("set token primary affinity");
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &cooled_key_id,
+            scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm global HTTP cooldown");
+
+    let lease = proxy
+        .acquire_key_for(Some(&token.id))
+        .await
+        .expect("rebind HTTP token away from cooled primary");
+    assert_eq!(lease.id, fallback_key_id);
+    let affinity = proxy
+        .key_store
+        .get_token_primary_api_key_affinity(&token.id)
+        .await
+        .expect("load token primary affinity")
+        .expect("token affinity remains bound");
+    assert_eq!(affinity.api_key_id, fallback_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_affinity_cooldown_selector_waits_for_saturated_pool() {
+    let db_path = temp_db_path("http-affinity-cooldown-pool-wait");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-http-affinity-pool-wait".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let key_id = fetch_all_api_key_ids(&proxy.key_store.pool)
+        .await
+        .into_iter()
+        .next()
+        .expect("test key exists");
+    let now = Utc::now().timestamp();
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &key_id,
+            scope: HTTP_GLOBAL_BACKOFF_SCOPE,
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm global HTTP cooldown");
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let holder_proxy = proxy.clone();
+    let holder_release = Arc::clone(&release);
+    let holder = tokio::spawn(async move {
+        holder_proxy
+            .hold_sqlite_pool_until_for_test(ready_tx, holder_release)
+            .await
+            .expect("hold all SQLite pool connections");
+    });
+    ready_rx.await.expect("pool connections held");
+
+    let selector_proxy = proxy.clone();
+    let selector_key_id = key_id.clone();
+    let mut selection = tokio::spawn(async move {
+        selector_proxy
+            .key_store
+            .try_acquire_affinity_specific_key_avoiding_transient_backoff(
+                &selector_key_id,
+                HTTP_GLOBAL_BACKOFF_SCOPE,
+            )
+            .await
+    });
+    let remains_pending = tokio::time::timeout(Duration::from_millis(150), &mut selection)
+        .await
+        .is_err();
+    release.notify_one();
+    assert!(
+        remains_pending,
+        "cooldown selection must wait for the pooled connection instead of using the short maintenance-read budget"
+    );
+
+    let selected = tokio::time::timeout(Duration::from_secs(2), selection)
+        .await
+        .expect("selection completes after pool release")
+        .expect("selection task joins")
+        .expect("cooldown selector succeeds");
+    holder.await.expect("pool holder joins");
+    assert!(
+        selected.is_none(),
+        "an active cooldown must exclude its key"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn http_429_without_routing_key_arms_api_rebalance_backoff() {
     let db_path = temp_db_path("http-no-route-arms-api-rebalance-backoff");
     let db_str = db_path.to_string_lossy().to_string();
