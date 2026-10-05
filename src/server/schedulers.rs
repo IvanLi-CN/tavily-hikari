@@ -67,6 +67,7 @@ const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
     [100, 200, 400, 800, 1_600];
 const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
+const DASHBOARD_ROLLUP_INTEGRITY_ADMISSION_PRESSURE_RETRY_DELAY_SECS: i64 = 30;
 
 fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
     if request_logs_gc_made_progress(report) {
@@ -83,10 +84,36 @@ fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
 
 fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
     match reason {
-        "foreground_pressure" | "pool_pressure" | "recent_contention" => {
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        "foreground_pressure" => REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+        "pool_pressure" | "recent_contention" => {
+            DASHBOARD_ROLLUP_INTEGRITY_ADMISSION_PRESSURE_RETRY_DELAY_SECS
         }
         _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+    }
+}
+
+#[cfg(test)]
+mod dashboard_integrity_admission_tests {
+    use super::*;
+
+    #[test]
+    fn dashboard_integrity_admission_retry_keeps_transient_contention_short() {
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("foreground_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("pool_pressure"),
+            DASHBOARD_ROLLUP_INTEGRITY_ADMISSION_PRESSURE_RETRY_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("recent_contention"),
+            DASHBOARD_ROLLUP_INTEGRITY_ADMISSION_PRESSURE_RETRY_DELAY_SECS
+        );
+        assert_eq!(
+            dashboard_integrity_admission_retry_delay("bulk_busy"),
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+        );
     }
 }
 const HA_OUTBOX_GC_BASELINE_SECS: i64 = 60 * 60;

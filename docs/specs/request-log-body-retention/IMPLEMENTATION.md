@@ -8,6 +8,9 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
+- Dashboard integrity admission keeps its five-minute backoff only for sustained foreground pressure;
+  transient pool pressure and recent contention retry after thirty seconds so GC-blocking day audits
+  can continue while the admission guard still protects foreground capacity.
 - A productive request-log GC slice registers its next maintenance turn before releasing the current
   permit, keeping the one-second continuation ahead of later rolling integrity work.
 - A newly created hot segment gets its first bounded page ahead of historical work. Once its fence
