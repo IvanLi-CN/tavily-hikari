@@ -3,16 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_DIR="$ROOT_DIR/web"
-RUN_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tavily-hikari-version-layer-reuse-${GITHUB_RUN_ID:-$$}"
-DIST_A="$RUN_ROOT/dist-a"
-DIST_B="$RUN_ROOT/dist-b"
-CONTEXT_A="$RUN_ROOT/context-a"
-CONTEXT_A_MTIME="$RUN_ROOT/context-a-mtime"
-CONTEXT_B="$RUN_ROOT/context-b"
+RUN_PARENT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+RUN_ROOT=""
+RUN_ROOT_CREATED=0
+DIST_A=""
+DIST_B=""
+CONTEXT_A=""
+CONTEXT_A_MTIME=""
+CONTEXT_B=""
 VERSION_A="${VERSION_A:-0.0.0-ci.1}"
 VERSION_B="${VERSION_B:-0.0.0-ci.2}"
 IMAGE_PREFIX="${IMAGE_PREFIX:-tavily-hikari-version-layer-${GITHUB_RUN_ID:-$$}}"
-REPORT_PATH="${LAYER_ACCEPTANCE_REPORT:-$RUN_ROOT/acceptance.md}"
+REPORT_PATH=""
 IMAGE_B_TAG_FILE="${IMAGE_B_TAG_FILE:-}"
 SOURCE_DATE_EPOCH=0
 INPUT_EPOCH_A=1700000000
@@ -29,8 +31,6 @@ fi
 declare -a IMAGE_TAGS=()
 declare -a IMAGE_IDS=()
 declare -a PLATFORM_RESULTS=()
-
-mkdir -p "$RUN_ROOT"
 
 cleanup() {
   local container_id
@@ -51,11 +51,20 @@ cleanup() {
       fi
     done
   fi
-  if [[ "${KEEP_RUN_ROOT:-0}" != "1" ]]; then
-    rm -rf "$RUN_ROOT"
+  if [[ "$RUN_ROOT_CREATED" == "1" && "${KEEP_RUN_ROOT:-0}" != "1" ]]; then
+    rm -rf -- "$RUN_ROOT"
   fi
 }
 trap cleanup EXIT
+
+RUN_ROOT="$(mktemp -d "${RUN_PARENT%/}/tavily-hikari-version-layer-reuse-${GITHUB_RUN_ID:-$$}.XXXXXXXXXX")"
+RUN_ROOT_CREATED=1
+DIST_A="$RUN_ROOT/dist-a"
+DIST_B="$RUN_ROOT/dist-b"
+CONTEXT_A="$RUN_ROOT/context-a"
+CONTEXT_A_MTIME="$RUN_ROOT/context-a-mtime"
+CONTEXT_B="$RUN_ROOT/context-b"
+REPORT_PATH="${LAYER_ACCEPTANCE_REPORT:-$RUN_ROOT/acceptance.md}"
 
 command -v docker >/dev/null
 command -v bun >/dev/null
@@ -304,8 +313,10 @@ import tarfile
 
 archive_a, archive_b, report_path = map(pathlib.Path, sys.argv[1:4])
 platform = sys.argv[4]
+version_a, version_b = sys.argv[5:7]
 
-def load_image(path):
+def load_image(path, release_version):
+    release_version_bytes = release_version.encode("utf-8")
     with tarfile.open(path, "r") as archive:
         manifest = json.load(archive.extractfile("manifest.json"))[0]
         config = json.load(archive.extractfile(manifest["Config"]))
@@ -319,8 +330,15 @@ def load_image(path):
                 for member in layer.getmembers():
                     name = member.name.lstrip("./")
                     content_hash = None
+                    contains_release_version = False
                     if member.isfile():
-                        content_hash = hashlib.sha256(layer.extractfile(member).read()).hexdigest()
+                        content = layer.extractfile(member).read()
+                        content_hash = hashlib.sha256(content).hexdigest()
+                        contains_release_version = (
+                            name.startswith("srv/app/web/assets/")
+                            and name.endswith(".js")
+                            and release_version_bytes in content
+                        )
                     layer_entries[name] = {
                         "type": member.type,
                         "mode": oct(member.mode),
@@ -330,12 +348,13 @@ def load_image(path):
                         "size": member.size,
                         "linkname": member.linkname,
                         "sha256": content_hash,
+                        "contains_release_version": contains_release_version,
                     }
                 entries.append(layer_entries)
         return config["rootfs"]["diff_ids"], layers, entries
 
-diff_a, blobs_a, entries_a = load_image(archive_a)
-diff_b, blobs_b, entries_b = load_image(archive_b)
+diff_a, blobs_a, entries_a = load_image(archive_a, version_a)
+diff_b, blobs_b, entries_b = load_image(archive_b, version_b)
 if len(diff_a) != len(diff_b):
     raise SystemExit("SemVer A/B images have different filesystem layer counts")
 changed = [index for index, pair in enumerate(zip(diff_a, diff_b)) if pair[0] != pair[1]]
@@ -364,14 +383,39 @@ for index in changed:
     paths = list(entries_b[index])
     if any(path == "usr/local/bin/tavily-hikari" for path in paths):
         layer_type = "main-service-binary"
+        binary_path = "usr/local/bin/tavily-hikari"
+        binary_sha_a = entries_a[index].get(binary_path, {}).get("sha256")
+        binary_sha_b = entries_b[index].get(binary_path, {}).get("sha256")
+        if not binary_sha_a or not binary_sha_b or binary_sha_a == binary_sha_b:
+            raise SystemExit("main service binary layer changed without a binary content change")
+        content_proof = f"binary sha256 {binary_sha_a} -> {binary_sha_b}"
     elif any(path.startswith("srv/app/web/") for path in paths):
         layer_type = "frontend-application"
-        if not any(path.startswith("srv/app/web/assets/") and path.endswith(".js") for path in paths):
-            raise SystemExit("frontend application layer changed without a real JavaScript bundle")
+        versioned_js_a = {
+            path: entry["sha256"]
+            for path, entry in entries_a[index].items()
+            if path.startswith("srv/app/web/assets/")
+            and path.endswith(".js")
+            and entry["contains_release_version"]
+        }
+        versioned_js_b = {
+            path: entry["sha256"]
+            for path, entry in entries_b[index].items()
+            if path.startswith("srv/app/web/assets/")
+            and path.endswith(".js")
+            and entry["contains_release_version"]
+        }
+        if not versioned_js_a or not versioned_js_b:
+            raise SystemExit("frontend application layer lacks a JavaScript bundle with its SemVer")
+        if versioned_js_a == versioned_js_b:
+            raise SystemExit("frontend application layer changed without a versioned JavaScript content change")
+        js_path_a, js_sha_a = sorted(versioned_js_a.items())[0]
+        js_path_b, js_sha_b = sorted(versioned_js_b.items())[0]
+        content_proof = f"SemVer JS {js_path_a}@{js_sha_a} -> {js_path_b}@{js_sha_b}"
     else:
         raise SystemExit(f"changed layer {index} is not the server binary or frontend application: {paths}")
     compressed_size = len(gzip.compress(blobs_b[index], compresslevel=1, mtime=0))
-    entries.append((index, layer_type, compressed_size, paths))
+    entries.append((index, layer_type, compressed_size, paths, content_proof))
 
 if {entry[1] for entry in entries} != {"main-service-binary", "frontend-application"}:
     raise SystemExit(f"unexpected changed layer types: {[entry[1] for entry in entries]}")
@@ -379,11 +423,11 @@ if any("srv/app/web/version.json" in paths for paths in entries_b):
     raise SystemExit("static version.json exists in the production image")
 
 with report_path.open("a", encoding="utf-8") as report:
-    for index, layer_type, size, paths in entries:
-        report.write(f"| {platform} | {index} | {layer_type} | {size} | gzip -1 of docker-save layer.tar |\n")
+    for index, layer_type, size, paths, content_proof in entries:
+        report.write(f"| {platform} | {index} | {layer_type} | {size} | `{content_proof}` | gzip -1 of docker-save layer.tar |\n")
 print("SemVer-changing layers:")
-for index, layer_type, size, _ in entries:
-    print(f"  index={index} type={layer_type} compressed_bytes={size}")
+for index, layer_type, size, _, content_proof in entries:
+    print(f"  index={index} type={layer_type} compressed_bytes={size} content_proof={content_proof}")
 PY
 }
 
@@ -496,8 +540,8 @@ done
     done < "$RUN_ROOT/${arch}-rootfs-diffids.txt"
   done
   printf '\n## Changed layer compressed byte estimates\n\n'
-  printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Method |\n'
-  printf '| --- | ---: | --- | ---: | --- |\n'
+  printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Content proof | Method |\n'
+  printf '| --- | ---: | --- | ---: | --- | --- |\n'
   cat "$CHANGED_LAYER_REPORT"
   echo
   echo "## Invalid version input"
