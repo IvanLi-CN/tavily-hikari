@@ -1,5 +1,8 @@
 # History
 
+- 2026-10-06: Added restart recovery coverage for automatic request-log GC. Startup now preserves
+  a running request-log GC representative as a delayed queued continuation, and the focused test
+  plus synthetic recovery acceptance cover both the state transition and backlog convergence.
 - 2026-10-04: Shared 10 rps recovery acceptance exposed aged maintenance turns bypassing the
   foreground-rate gate and starving SQLite pool acquisition. Keep the 5 rps gate strict for normal
   bulk maintenance and back off request-log GC/integrity admission pressure for five minutes.

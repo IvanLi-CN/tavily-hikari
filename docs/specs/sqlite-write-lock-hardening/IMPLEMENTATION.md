@@ -8,6 +8,10 @@
   guard without requesting two immediate locks on the same SQLite file.
 - Continuation uses the cursor retained at the end of a bounded pass; a terminal scan that clears
   the cursor does not create a one-second no-progress loop during a seal or source-recovery block.
+- Startup recovery keeps a running automatic `request_logs_gc` representative queued after a
+  process restart, preserving the restart deferral and clearing execution timestamps instead of
+  abandoning the durable continuation. Focused coverage verifies the state transition and the
+  synthetic recovery workflow verifies that the retained backlog drains without foreground errors.
 
 ## Current Coverage
 
