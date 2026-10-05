@@ -363,7 +363,13 @@ jobs:
           gzip -dc "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tar.gz" | docker load
           IMAGE_TAG="$(cat "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tag")"
           docker image inspect "${IMAGE_TAG}" >/dev/null
+          IMAGE_VERSION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${IMAGE_TAG}")"
+          if [[ -z "${IMAGE_VERSION}" || "${IMAGE_VERSION}" == "<no value>" ]]; then
+            echo "Version layer B image is missing its OCI version label" >&2
+            exit 1
+          fi
           printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$GITHUB_ENV"
+          printf 'IMAGE_VERSION=%s\n' "$IMAGE_VERSION" >> "$GITHUB_ENV"
 
       - name: Start compose stack
         shell: bash
@@ -433,7 +439,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected="ci-layer-b"
+          expected="${IMAGE_VERSION}"
           curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
             '.backend == $expected and .frontend == $expected'
 
