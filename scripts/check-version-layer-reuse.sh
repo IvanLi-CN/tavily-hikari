@@ -391,8 +391,10 @@ REPORT_DIR="$(dirname -- "$REPORT_PATH")"
 mkdir -p "$REPORT_DIR"
 CHANGED_LAYER_REPORT="$RUN_ROOT/changed-layers.md"
 RUNTIME_VERSION_REPORT="$RUN_ROOT/runtime-version-results.md"
+INVALID_VERSION_REPORT="$RUN_ROOT/invalid-version-results.md"
 : > "$CHANGED_LAYER_REPORT"
 : > "$RUNTIME_VERSION_REPORT"
+: > "$INVALID_VERSION_REPORT"
 tested_arm64=false
 for platform in "${PLATFORM_LIST[@]}"; do
   if [[ "$platform" == "linux/arm64" ]]; then
@@ -431,6 +433,24 @@ for platform in "${PLATFORM_LIST[@]}"; do
   fi
 
   build_image "$platform" "$image_a" "$VERSION_A" "$CONTEXT_A"
+  if [[ "$platform" == "$first_platform" ]]; then
+    invalid_version_log="$RUN_ROOT/invalid-version-build.log"
+    if buildx_build --progress=plain --platform "$platform" --target app-builder \
+      --build-arg APP_EFFECTIVE_VERSION=not-semver \
+      --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+      "$CONTEXT_A" >"$invalid_version_log" 2>&1; then
+      echo "app-builder accepted an invalid APP_EFFECTIVE_VERSION" >&2
+      exit 1
+    fi
+    if ! grep -Fq "APP_EFFECTIVE_VERSION must be a valid SemVer" "$invalid_version_log"; then
+      cat "$invalid_version_log" >&2
+      echo "invalid APP_EFFECTIVE_VERSION failed for an unexpected reason" >&2
+      exit 1
+    fi
+    cat "$invalid_version_log"
+    echo "Verified app-builder rejects invalid APP_EFFECTIVE_VERSION"
+    printf '%s' '- `app-builder` rejects `APP_EFFECTIVE_VERSION=not-semver` during build.' > "$INVALID_VERSION_REPORT"
+  fi
   build_image "$platform" "$image_a_mtime" "$VERSION_A" "$CONTEXT_A_MTIME" true
   build_image "$platform" "$image_b" "$VERSION_B" "$CONTEXT_B"
 
@@ -479,6 +499,10 @@ done
   printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Method |\n'
   printf '| --- | ---: | --- | ---: | --- |\n'
   cat "$CHANGED_LAYER_REPORT"
+  echo
+  echo "## Invalid version input"
+  echo
+  cat "$INVALID_VERSION_REPORT"
   printf '\n## Packaged CLI versions\n\n'
   cat "$RUN_ROOT/cli-version-results.md"
   printf '\n## Runtime and OCI version checks\n\n'

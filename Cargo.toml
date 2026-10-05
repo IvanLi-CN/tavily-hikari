@@ -10,6 +10,9 @@ debug = 0
 strip = "debuginfo"
 incremental = false
 
+[build-dependencies]
+semver = "1"
+
 [dependencies]
 axum = { version = "0.7", features = ["macros", "json", "http1", "tokio"] }
 bytes = "1"

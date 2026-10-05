@@ -10,6 +10,7 @@
 - `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再从只读 BuildKit bind mount 写入各自最终层。AMD64 归档检查确认每个 runtime `RUN --mount` 层还会把 `/etc`、`/tmp` 目录 mtime 写入 diffID；现在每层都会在写入后归一这些路径。PWA 与 manifest/favicon 层只复制自身 payload 并复位目录，不再递归触碰已由 app 层写入的 JS、shell、worker 或 asset graph。图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
 - `.dockerignore` 采用 Cargo 源码、两个 Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 枚举上下文并检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
 - 后端版本 helper 从主服务二进制编译期 `APP_EFFECTIVE_VERSION` 读取产品版本，不再使用运行时 ENV；`/api/version` 与动态 `/version.json` 使用同一产品版本，显式外部静态目录内的 `version.json` 仍可覆盖前端版本。OCI label 继续报告同一 SemVer，镜像 `Config.Env` 不含该变量。
+- Rust build script 只在 `APP_EFFECTIVE_VERSION` 未设置时回退到 Cargo 包版本；显式输入必须是严格有效的 SemVer，否则在编译主服务时失败，避免 OCI label 与程序/API 版本不一致。
 - `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；验收报告逐镜像记录 CLI、`/api/version`、`/version.json`、OCI label 和运行时配置结果，并显式列出架构范围，未测试架构不计入证据。合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。PR CI 固定验收为 `linux/amd64`，checkout 精确 PR head，并上传报告与脚本原始日志；CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
 - CI 的 production `web-assets` job 通过 `scripts/ci_backend_tests.py verify-web-assets` 拒绝静态 `version.json`；后端测试用的最小静态目录 fixture 仍保留该文件，以覆盖显式外部静态版本覆盖。
 - release workflow 将 `org.opencontainers.image.version` 显式绑定到 `APP_EFFECTIVE_VERSION`，避免 metadata-action 的默认标签覆盖发布版本。
