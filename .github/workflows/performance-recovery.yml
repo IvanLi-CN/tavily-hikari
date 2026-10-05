@@ -211,10 +211,13 @@ jobs:
         run: cargo test --locked --all-features --profile ci-test --lib maintenance_bulk_retains_request_logs_gc_progress_continuation
 
       - name: Test dashboard integrity admission retry policy
-        run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_retry_keeps_transient_contention_short
+        run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_pressure_uses_full_backoff
 
-      - name: Test GC transient pool pressure retry policy
-        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_retries_transient_pool_pressure_before_full_backoff
+      - name: Test GC admission pressure retry policy
+        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_admission_pressure_uses_full_backoff
+
+      - name: Test pending hot cursor page before GC-blocking re-audit
+        run: cargo test --locked --all-features --profile ci-test --lib integrity_new_hot_work_preempts_a_pending_gc_reaudit_page
 
       - name: Test hot-page yield to GC-blocking re-audit
         run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
