@@ -408,10 +408,18 @@ for index in changed:
         }
         if not versioned_js_a or not versioned_js_b:
             raise SystemExit("frontend application layer lacks a JavaScript bundle with its SemVer")
-        if versioned_js_a == versioned_js_b:
-            raise SystemExit("frontend application layer changed without a versioned JavaScript content change")
-        js_path_a, js_sha_a = sorted(versioned_js_a.items())[0]
-        js_path_b, js_sha_b = sorted(versioned_js_b.items())[0]
+        hashes_a = set(versioned_js_a.values())
+        hashes_b = set(versioned_js_b.values())
+        if hashes_a == hashes_b:
+            raise SystemExit("frontend application layer changed without a versioned JavaScript content hash change")
+        js_sha_a, js_sha_b = next(
+            (sha_a, sha_b)
+            for sha_a in sorted(hashes_a)
+            for sha_b in sorted(hashes_b)
+            if sha_a != sha_b
+        )
+        js_path_a = min(path for path, sha in versioned_js_a.items() if sha == js_sha_a)
+        js_path_b = min(path for path, sha in versioned_js_b.items() if sha == js_sha_b)
         content_proof = f"SemVer JS {js_path_a}@{js_sha_a} -> {js_path_b}@{js_sha_b}"
     else:
         raise SystemExit(f"changed layer {index} is not the server binary or frontend application: {paths}")
