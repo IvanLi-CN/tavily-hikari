@@ -573,6 +573,15 @@ async fn reclaim_canonical_groups_generation_batch_when_admitted(
             {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
+            Err(ProxyError::Database(sqlx::Error::PoolTimedOut))
+                if tokio::time::Instant::now() < retry_deadline =>
+            {
+                // The admission check can observe the pool becoming available
+                // just after the owned transaction starts. Treat that bounded
+                // handoff as transient pressure and retry within the test's
+                // existing convergence window.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
             result => return result,
         }
     }

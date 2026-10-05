@@ -315,6 +315,9 @@
         "tests::proxy_affinity_runtime_geo::record_",
         "tests::proxy_affinity_runtime_geo::persist_",
         "tests::observability_and_lifecycle::small_"
+      ],
+      "serial_prefixes": [
+        "tests::observability_and_lifecycle::observability_"
       ]
     },
     {
