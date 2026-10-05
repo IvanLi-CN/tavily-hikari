@@ -1367,24 +1367,33 @@ impl KeyStore {
                 r#"
                 UPDATE scheduled_jobs
                 SET status = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN 'queued'
+                        WHEN status = 'running'
+                            AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
+                            THEN 'queued'
                         ELSE 'abandoned'
                     END,
                     message = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc'
+                        WHEN status = 'running'
+                            AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
                             THEN COALESCE(message, 'deferred=process_restart')
                         ELSE COALESCE(message, 'abandoned after process restart')
                     END,
                     started_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
+                            THEN NULL
                         ELSE started_at
                     END,
                     finished_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN NULL
+                        WHEN status = 'running'
+                            AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
+                            THEN NULL
                         ELSE ?
                     END,
                     available_at = CASE
-                        WHEN status = 'running' AND job_type = 'ha_outbox_gc' THEN MAX(available_at, ?)
+                        WHEN status = 'running'
+                            AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
+                            THEN MAX(available_at, ?)
                         ELSE available_at
                     END
                 WHERE (
