@@ -73,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -84,15 +86,28 @@ jobs:
 
       - name: Build and verify version layers
         env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           IMAGE_B_ARCHIVE: ${{ runner.temp }}/version-layer-image-b.tar.gz
           IMAGE_B_TAG_FILE: ${{ runner.temp }}/version-layer-image-b.tag
+          LAYER_ACCEPTANCE_REPORT: ${{ runner.temp }}/version-layer-acceptance.md
+          PLATFORMS: linux/amd64
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           cd web
           bun install --frozen-lockfile
           cd ..
-          bash scripts/check-version-layer-reuse.sh
+          bash scripts/check-version-layer-reuse.sh 2>&1 | tee "${RUNNER_TEMP}/version-layer-acceptance.log"
+
+      - name: Upload version layer acceptance evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: version-layer-acceptance-evidence
+          path: |
+            ${{ runner.temp }}/version-layer-acceptance.md
+            ${{ runner.temp }}/version-layer-acceptance.log
+          if-no-files-found: ignore
 
       - name: Upload version layer B image
         uses: actions/upload-artifact@v7

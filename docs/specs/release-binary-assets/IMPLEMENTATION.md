@@ -7,10 +7,10 @@
 - SPA 服务路径改为统一从外部静态目录优先读取，找不到时回落到内嵌资源；`/assets/*`、`/favicon.svg`、`/version.json` 与 HTML 页面共享这套读取逻辑。
 - 版本检测同样保持外部静态目录优先，避免 `--static-dir` 覆盖部署时版本信息与实际服务的前端不一致。
 - `Dockerfile` 在 builder 阶段复制 `build.rs`，保证新增 Cargo build script 后容器构建路径仍可用；容器运行时继续通过 `WEB_STATIC_DIR=/srv/app/web` 使用镜像内静态目录。
-- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再从只读 BuildKit bind mount 写入各自最终层，并在同层复位目标目录 mtime。实测发现，即使来源文件已归一，最终 `COPY` 仍会更新目标父目录 mtime，导致内容不变的独立层 diffID 漂移。前端 JS、HTML shells、workers 和版本化 asset graph 合为真实应用层，图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
+- `Dockerfile` 固定 Rust、Debian 与 Xray 基础镜像的 tag+digest；十个维护程序无产品 SemVer 构建，主服务单独注入编译期 SemVer。所有最终 payload 先在中间阶段归一为 `SOURCE_DATE_EPOCH=0`、owner `0:0` 与规范权限，再从只读 BuildKit bind mount 写入各自最终层。AMD64 归档检查确认每个 runtime `RUN --mount` 层还会把 `/etc`、`/tmp` 目录 mtime 写入 diffID；现在每层都会在写入后归一这些路径。PWA 与 manifest/favicon 层只复制自身 payload 并复位目录，不再递归触碰已由 app 层写入的 JS、shell、worker 或 asset graph。图标、manifest/favicon、运行脚本及各维护二进制继续独立分组。
 - `.dockerignore` 采用 Cargo 源码、两个 Docker 脚本与 `web/dist` 的严格 allowlist；`context-audit` target 枚举上下文并检查 `.env`、数据库与 `node_modules` 不会进入上下文，Dependabot 每周更新 Docker 基础镜像。
 - 后端版本 helper 从主服务二进制编译期 `APP_EFFECTIVE_VERSION` 读取产品版本，不再使用运行时 ENV；`/api/version` 与动态 `/version.json` 使用同一产品版本，显式外部静态目录内的 `version.json` 仍可覆盖前端版本。OCI label 继续报告同一 SemVer，镜像 `Config.Env` 不含该变量。
-- `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；验收报告逐镜像记录 CLI、`/api/version`、`/version.json`、OCI label 和运行时配置结果，并显式列出架构范围，未测试架构不计入证据。合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
+- `scripts/check-version-layer-reuse.sh` 与 CI job 构建同版本/不同输入 mtime 及同源码/不同合成 SemVer 镜像，按架构检查 RootFS diffID、动态层归属、gzip 压缩字节、版本接口、OCI label、无静态版本 JSON 与上下文审计；验收报告逐镜像记录 CLI、`/api/version`、`/version.json`、OCI label 和运行时配置结果，并显式列出架构范围，未测试架构不计入证据。合成 SemVer A/B 是包装合同测试，不代表生产历史中曾发生纯版本号发布。PR CI 固定验收为 `linux/amd64`，checkout 精确 PR head，并上传报告与脚本原始日志；CI 继续上传 amd64 B 镜像供 Compose mock smoke 使用。
 - CI 的 production `web-assets` job 通过 `scripts/ci_backend_tests.py verify-web-assets` 拒绝静态 `version.json`；后端测试用的最小静态目录 fixture 仍保留该文件，以覆盖显式外部静态版本覆盖。
 - release workflow 将 `org.opencontainers.image.version` 显式绑定到 `APP_EFFECTIVE_VERSION`，避免 metadata-action 的默认标签覆盖发布版本。
 - release workflow 先在单独的 `web-assets` job 内构建一次 `web/dist` 并上传 `release-web-dist` artifact，随后 `docker-native` 与 `binary-native` 都只下载该 artifact 复用，不再各自重复 Bun 安装与前端构建。
@@ -26,6 +26,7 @@
 - CI workflow 增加 embedded asset contract coverage，避免无外部静态目录的 binary 路径回归。
 - 已归档的 amd64 OCI 报告记录 21 个 RootFS diffID 在同源码、同 SemVer、不同输入 mtime 构建间逐层一致；合成 SemVer A/B 只改变主服务层（gzip -1 估算 15,498,527 bytes）与前端应用层（7,431,177 bytes）。该 A/B 是包装合同验证，不证明生产历史曾只改版本号。此归档绑定较早候选，不作为当前候选的经验验收证明。
 - 逐层 amd64 RootFS diffID 与压缩字节明细：[oci-acceptance-amd64-6f0f31a0.md](evidence/oci-acceptance-amd64-6f0f31a0.md)。当前候选以绑定其提交 SHA 的 AMD64 经验验收记录为准。
+- Docker 实现提交 `0afdb307` 的 AMD64 VM 经验验收：[oci-acceptance-amd64-0afdb307.md](evidence/oci-acceptance-amd64-0afdb307.md)，原始日志同目录保存。21 个 RootFS diffID 在不同输入 mtime 间一致；合成 SemVer A/B 只改变主服务二进制层和前端应用层，gzip -1 层归档估算分别为 16,926,216 与 7,734,948 bytes。两镜像的 CLI、`/api/version`、动态 `/version.json` 与 OCI label 匹配各自 SemVer；镜像无运行时版本 ENV、无静态 `version.json`。当前 PR head 的 CI 会额外生成 SHA 绑定的 AMD64 报告和原始日志 artifact。
 
 ## 验证
 

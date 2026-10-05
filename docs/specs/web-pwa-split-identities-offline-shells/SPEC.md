@@ -362,7 +362,7 @@
 
 ### REQ-PWA-OCI-APPLICATION-LAYER
 
-- The production frontend application layer MUST contain the versioned JavaScript bundle, HTML shells, and both service workers. Product SemVer MUST NOT require a standalone version metadata file or metadata-only filesystem layer.
+- The production frontend application layer MUST contain the versioned JavaScript bundle, HTML shells, both service workers, and their versioned asset graph. PWA icons and stable manifest/favicon metadata MUST remain in separate normalized resource groups. Later groups MUST NOT retouch files already written by the application layer. Product SemVer MUST NOT require a standalone version metadata file or metadata-only filesystem layer.
 
 ## Verification
 
@@ -386,9 +386,9 @@
 
 ### VER-PWA-OCI-APPLICATION-LAYER
 
-- Method: `scripts/check-version-layer-reuse.sh` on `codex-testbox`.
+- Method: synthetic SemVer A/B packaging comparison with `PLATFORMS=linux/amd64` in a Docker-enabled Linux VM.
 - covers: `REQ-PWA-OCI-APPLICATION-LAYER`
-- Pass condition: the SemVer A/B changes the actual JavaScript application layer containing both workers and shells, with no static `version.json` or metadata-only layer.
+- Pass condition: the SemVer A/B changes the actual JavaScript application layer containing the asset graph, both workers, and shells; stable icon/manifest resource groups remain unchanged, with no static `version.json` or metadata-only layer.
 
 ## Related ADRs
 

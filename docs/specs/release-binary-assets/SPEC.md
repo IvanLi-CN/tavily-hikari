@@ -25,7 +25,7 @@
 - 继续保留 GHCR 镜像发布路径，不用 binary 替代镜像。
 - release workflow 在上传 GitHub Release 前，对打包后的 binary 做本机 smoke，阻断不可用资产发布。
 - release workflow 内部的前端 `web/dist` 只构建一次，并通过 release-local artifact 复用给 Docker 与 binary 发布 job。
-- Docker 镜像必须使用已解析的 tag+digest 基础镜像；最终镜像中的程序和静态资产都须先将时间戳固定到 `SOURCE_DATE_EPOCH=0`，并归一化 owner/mode。每个最终层在写入文件后，还须在同一层中复位被修改的目标目录 mtime；仅归一化来源 payload 不足以阻止 `COPY` 更新父目录时间戳并改变 layer digest。
+- Docker 镜像必须使用已解析的 tag+digest 基础镜像；最终镜像中的程序和静态资产都须先将时间戳固定到 `SOURCE_DATE_EPOCH=0`，并归一化 owner/mode。每个 runtime payload 层在写入后，还须在同一层中复位目标父目录及构建期间会变化的 `/etc`、`/tmp` 目录 mtime。后续静态资源层只能复位自身目标目录，不得递归触碰已由先前层写入的应用文件。
 - 产品发布 SemVer 必须由同一发布输入编入 Tavily Hikari 主服务二进制和真实前端 JavaScript 应用包；两个 service worker 使用该版本作为对应 PWA identity 的缓存版本。
 - `APP_EFFECTIVE_VERSION` 是 Docker/Rust 构建输入，不写入运行时环境；OCI `org.opencontainers.image.version` label、主服务二进制、前端包和发布 workflow 使用同一产品 SemVer。
 - Docker 最终镜像不得包含静态 `/srv/app/web/version.json` 或只承载版本元数据的文件系统层。HTTP `/version.json` 保留 `{ "version": "..." }` 兼容响应，并在无外部静态覆盖时由服务端动态生成；`--static-dir` / `WEB_STATIC_DIR` 中显式提供的 `version.json` 仍可覆盖 `/api/version.frontend` 与该 HTTP 响应。
@@ -90,10 +90,10 @@
   When release workflow 进入 GitHub Release job 前
   Then GitHub Release 资产上传必须被阻断。
 - Given 相同源码和发布版本的两次构建具有不同输入文件 mtime
-  When 在 testbox 分别构建 `linux/amd64` 镜像
+  When 在 Docker-enabled Linux VM 分别构建 `linux/amd64` 镜像
   Then 两次构建的所有文件系统层 digest 必须完全相同。
 - Given 相同源码只改变合成测试 SemVer
-  When 在 testbox 使用相应版本构建 `linux/amd64` 镜像 A/B
+  When 在 Docker-enabled Linux VM 使用相应版本构建 `linux/amd64` 镜像 A/B
   Then 只有主服务二进制层和包含真实 JavaScript 的前端应用包层变化；十个维护二进制层及归一化静态层相同，不存在版本元数据专层，OCI label、CLI `--version`、`/api/version` 与动态 `/version.json` 各自匹配该构建的 SemVer。
 - Given production `web/dist` 被打包进 Docker 镜像
   When 检查镜像文件与运行时配置
@@ -122,7 +122,7 @@
 
 ### REQ-REL-MTIME-NORMALIZATION
 
-- Docker MUST 将 payload 的 mtime 归一为 `SOURCE_DATE_EPOCH=0`、owner 归一为 `0:0`，并将普通文件、目录及可执行文件权限分别归一为 `0644`、`0755`、`0755`。每个最终镜像层写入文件后 MUST 在同一层内将受影响的父目录 mtime 复位到该 epoch，以免最终目标目录自身的时间戳使后续 layer digest 漂移。
+- Docker MUST 将 payload 的 mtime 归一为 `SOURCE_DATE_EPOCH=0`、owner 归一为 `0:0`，并将普通文件、目录及可执行文件权限分别归一为 `0644`、`0755`、`0755`。每个 runtime payload 层写入文件后 MUST 在同一层内将受影响的目标父目录以及 `/etc`、`/tmp` 的 mtime 复位到该 epoch。后续静态资源层 MUST NOT 递归改写先前应用层中的版本化文件；只可归一化本层新写入的 payload 和受影响目录。
 
 ### REQ-REL-LAYER-BOUNDARIES
 
@@ -142,13 +142,13 @@
 
 ### VER-REL-OCI-MTIME
 
-- Method: `PLATFORMS=linux/amd64 scripts/check-version-layer-reuse.sh` on `codex-testbox`.
+- Method: run `PLATFORMS=linux/amd64 scripts/check-version-layer-reuse.sh` in a Docker-enabled Linux VM.
 - covers: `REQ-REL-MTIME-NORMALIZATION`
 - Pass condition: same-source/same-version AMD64 images built from distinct input mtimes have identical RootFS layer digests.
 
 ### VER-REL-OCI-SEMVERS
 
-- Method: synthetic same-source SemVer A/B packaging comparison on `codex-testbox`.
+- Method: synthetic same-source SemVer A/B packaging comparison in a Docker-enabled Linux VM.
 - covers: `REQ-REL-LAYER-BOUNDARIES`
 - Pass condition: only the main service binary layer and frontend application layer change; each contains its real payload, no metadata-only layer exists, and compressed changed-layer byte counts are recorded.
 

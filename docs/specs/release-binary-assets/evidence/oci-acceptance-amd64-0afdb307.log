@@ -1,0 +1,1095 @@
+vite v5.4.21 building for production...
+transforming...
+Browserslist: browsers data (caniuse-lite) is 8 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+✓ 3691 modules transformed.
+rendering chunks...
+computing gzip size...
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/login.html                                           1.17 kB │ gzip:   0.48 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/registration-paused.html                             1.18 kB │ gzip:   0.48 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/index.html                                           1.47 kB │ gzip:   0.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/console.html                                         1.49 kB │ gzip:   0.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/admin.html                                           1.50 kB │ gzip:   0.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size3-Regular-CTq5MqoE.woff             4.42 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2            4.93 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size2-Regular-Dy4dx90m.woff2            5.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size1-Regular-mCD8mA8B.woff2            5.47 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size4-Regular-BF-4gkZK.woff             5.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size2-Regular-oD1tc_U0.woff             6.19 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size1-Regular-C195tn64.woff             6.50 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2      6.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2         6.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size3-Regular-DgpXs0kz.ttf              7.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff       7.66 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff          7.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Script-Regular-D3wIWfF6.woff2           9.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2       10.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size4-Regular-DWFBv043.ttf             10.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Script-Regular-D5yQViql.woff           10.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2         11.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2            11.35 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size2-Regular-B7gKUWhC.ttf             11.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2        12.03 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2          12.22 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Size1-Regular-Dbsnue_I.ttf             12.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff        12.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf       12.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf          12.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff          13.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Bold-BsDP51OF.woff             13.30 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2      13.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Italic-DN2j7dab.woff         14.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff           14.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff       16.03 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2         16.40 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-Italic-t53AETM-.woff2             16.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Script-Regular-C5JkGWo-.ttf            16.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2         16.78 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Italic-NWA7e6Wa.woff2             16.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff          18.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-Italic-DA0__PXp.woff              18.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-BoldItalic-SpSLRI95.woff          19.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf         19.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Regular-CB_wures.ttf           19.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf              19.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Italic-BMLOBm91.woff              19.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf          22.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf            24.50 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Bold-Cx986IdX.woff2               25.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Regular-B22Nviop.woff2            26.27 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf        27.56 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2             28.08 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Bold-Jm3AIy58.woff                29.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Regular-Dr94JaBh.woff             30.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf           31.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Math-Italic-flOr_0UB.ttf               31.31 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf           32.97 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_AMS-Regular-DMm9YOAa.woff              33.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Italic-3WenGoN9.ttf               33.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Bold-waoOVXN0.ttf                 51.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_Main-Regular-ypZvNtVU.ttf              53.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KaTeX_AMS-Regular-DRggAlZN.ttf               63.63 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/.vite/manifest.json                                 68.44 kB │ gzip:   7.27 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-B96bnACx.css                          580.39 kB │ gzip:  95.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/diff-DbItnlRl.js                              0.31 kB │ gzip:   0.24 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/brainfuck-C4LP7Hcl.js                         0.61 kB │ gzip:   0.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/properties-C78fOPTZ.js                        0.67 kB │ gzip:   0.35 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/cmake-BQqOBYOt.js                             0.78 kB │ gzip:   0.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/asciiarmor-Df11BRmG.js                        0.79 kB │ gzip:   0.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/http-DBlCnlav.js                              0.85 kB │ gzip:   0.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/protobuf-ChK-085T.js                          0.86 kB │ gzip:   0.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/solr-DehyRSwq.js                              0.87 kB │ gzip:   0.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/NotFoundFallbackPreview-B_xRt_1t.js           0.90 kB │ gzip:   0.45 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/troff-wAsdV37c.js                             0.96 kB │ gzip:   0.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/card-3GPQb66V.js                              1.10 kB │ gzip:   0.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/spreadsheet-BCZA_wO0.js                       1.14 kB │ gzip:   0.54 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/toml-Bm5Em-hy.js                              1.14 kB │ gzip:   0.54 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mbox-CNhZ1qSd.js                              1.40 kB │ gzip:   0.66 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/sieve-C3Gn_uJK.js                             1.62 kB │ gzip:   0.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/rpm-CTu-6PCP.js                               1.62 kB │ gzip:   0.83 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/factor-kuTfRLto.js                            1.67 kB │ gzip:   0.61 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/z80-Hz9HOZM7.js                               1.75 kB │ gzip:   0.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/eiffel-CnydiIhH.js                            1.81 kB │ gzip:   0.92 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/elm-vLlmbW-K.js                               1.89 kB │ gzip:   0.82 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mathematica-DTrFuWx2.js                       1.92 kB │ gzip:   0.82 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/dockerfile-BKs6k2Af.js                        1.95 kB │ gzip:   0.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/turtle-B1tBg_DP.js                            1.98 kB │ gzip:   0.90 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ebnf-CDyGwa7X.js                              1.99 kB │ gzip:   0.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/smalltalk-CnHTOXQT.js                         2.01 kB │ gzip:   0.85 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/dtd-DF_7sFjM.js                               2.06 kB │ gzip:   0.87 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mumps-BT43cFF4.js                             2.07 kB │ gzip:   0.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/fcl-Kvtd6kyn.js                               2.08 kB │ gzip:   0.95 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ntriples-BfvgReVJ.js                          2.10 kB │ gzip:   0.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/apl-B4CMkyY2.js                               2.12 kB │ gzip:   1.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/yacas-BJ4BC0dw.js                             2.15 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/simple-mode-GW_nhZxv.js                       2.28 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/octave-Ck1zUtKM.js                            2.30 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/pascal--L3eBynH.js                            2.30 kB │ gzip:   1.19 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/commonlisp-DBKNyK5s.js                        2.32 kB │ gzip:   1.10 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/tcl-DVfN8rqt.js                               2.36 kB │ gzip:   1.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/webidl-ZXfAyPTL.js                            2.52 kB │ gzip:   1.26 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/registrationPaused-BG2Aj3ru.js                2.53 kB │ gzip:   1.07 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/pig-CevX1Tat.js                               2.53 kB │ gzip:   1.38 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/puppet-DMA9R1ak.js                            2.54 kB │ gzip:   1.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/forth-Ffai-XNe.js                             2.54 kB │ gzip:   1.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/shell-CjFT_Tl9.js                             2.57 kB │ gzip:   1.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/velocity-D8B20fx6.js                          2.67 kB │ gzip:   1.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/switch-BJ1HZD97.js                            2.68 kB │ gzip:   1.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CQwtVreo.js                             2.68 kB │ gzip:   1.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/tiddlywiki-DO-Gjzrf.js                        2.78 kB │ gzip:   1.07 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/modelica-Dc1JOy9r.js                          2.79 kB │ gzip:   1.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/oz-BzwKVEFT.js                                2.90 kB │ gzip:   1.28 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-WL8HIOcl.js                             2.90 kB │ gzip:   1.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/r-DUYO_cvP.js                                 2.94 kB │ gzip:   1.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/stex-C3f8Ysf7.js                              3.12 kB │ gzip:   1.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/tiki-DGYXhP31.js                              3.25 kB │ gzip:   1.26 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/vhdl-lSbBsy5d.js                              3.35 kB │ gzip:   1.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/lua-VAEuO923.js                               3.41 kB │ gzip:   1.43 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mscgen-BA5vi2Kp.js                            3.51 kB │ gzip:   0.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/sparql-DkYu6x3z.js                            3.55 kB │ gzip:   1.63 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/cypher-C_CwsFkJ.js                            3.56 kB │ gzip:   1.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-DiKINIEL.js                             3.67 kB │ gzip:   1.86 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/d-pRatUO7H.js                                 3.72 kB │ gzip:   1.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/coffeescript-S37ZYGWr.js                      3.87 kB │ gzip:   1.69 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/vb-CmGdzxic.js                                3.90 kB │ gzip:   1.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/swift-BzpIVaGY.js                             3.96 kB │ gzip:   1.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/asn1-EdZsLKOL.js                              3.98 kB │ gzip:   1.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/q-pXgVlZs6.js                                 4.03 kB │ gzip:   1.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ttcn-cfg-B9xdYoR4.js                          4.05 kB │ gzip:   1.71 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/dylan-DwRh75JA.js                             4.05 kB │ gzip:   1.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/livescript-BwQOo05w.js                        4.09 kB │ gzip:   1.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/groovy-D9Dt4D0W.js                            4.14 kB │ gzip:   1.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/haskell-BWDZoCOh.js                           4.16 kB │ gzip:   1.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/asterisk-B-8jnY81.js                          4.48 kB │ gzip:   1.78 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/gas-Bneqetm1.js                               4.57 kB │ gzip:   1.28 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/fortran-DYz_wnZ1.js                           4.65 kB │ gzip:   2.01 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mllike-CXdrOF99.js                            4.79 kB │ gzip:   1.53 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ttcn-CfJYG6tj.js                              4.80 kB │ gzip:   2.13 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ecl-Cabwm37j.js                               5.13 kB │ gzip:   2.31 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/crystal-SjHAIU92.js                           5.13 kB │ gzip:   2.07 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ruby-B2Rjki9n.js                              5.16 kB │ gzip:   2.15 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-Ct3chxSX.js                             5.34 kB │ gzip:   2.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/julia-DuME0IfC.js                             5.39 kB │ gzip:   2.14 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/vbscript-BuJXcnF6.js                          5.82 kB │ gzip:   2.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/mirc-CjQqDB4T.js                              5.92 kB │ gzip:   2.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/cobol-CWcv1MsR.js                             6.20 kB │ gzip:   2.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/scheme-C41bIUwD.js                            6.37 kB │ gzip:   2.39 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/python-BuPzkPfP.js                            6.48 kB │ gzip:   2.73 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/SearchableFacetSelect-Cv8ap_0H.js             6.48 kB │ gzip:   2.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/UserDetailTokenTable-05cKWU8h.js              6.55 kB │ gzip:   1.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/xquery-CQfU5ijd.js                            6.62 kB │ gzip:   2.56 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/pug-DukmZTjD.js                               6.67 kB │ gzip:   1.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/textile-CnDTJFAw.js                           6.80 kB │ gzip:   2.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/nsis-LdVXkNf5.js                              6.81 kB │ gzip:   2.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/nginx-DdIZxoE0.js                             7.34 kB │ gzip:   2.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/login-DgbXPSDc.js                             7.51 kB │ gzip:   2.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/powershell-CFHJl5sT.js                        7.77 kB │ gzip:   3.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/haxe-H-WmDvRZ.js                              7.89 kB │ gzip:   2.95 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/gherkin-heZmZLOM.js                           7.96 kB │ gzip:   5.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/erlang-BNw1qcRV.js                            8.07 kB │ gzip:   2.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/verilog-C6RDOZhf.js                           8.24 kB │ gzip:   3.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/TokenSecretField-DI9VRNML.js                  9.07 kB │ gzip:   2.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/sas-B4kiWyti.js                               9.33 kB │ gzip:   4.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/useOfflineState-BMCskLaX.js                   9.68 kB │ gzip:   3.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/perl-CdXCOZ3F.js                              9.75 kB │ gzip:   3.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/clojure-BMjYHr_A.js                          10.82 kB │ gzip:   3.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/idl-BEugSyMb.js                              11.63 kB │ gzip:   4.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/McpSessionBindingsModule-Dm3j075B.js         12.62 kB │ gzip:   4.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/AdminRechargeRecordsModule-vSYsifgA.js       12.78 kB │ gzip:   3.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-DLU7GMxu.js                            12.98 kB │ gzip:   5.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/KeyStickyPanels-BtQ2uO9f.js                  13.84 kB │ gzip:   3.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-D4Og5lO9.js                            15.06 kB │ gzip:   6.12 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/AdminSecuritySettingsModule-0heQOhbq.js      16.37 kB │ gzip:   4.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-DR4BM3k6.js                            16.58 kB │ gzip:   7.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/UserDetailSharedUsagePanel-Dzs04hlh.js       16.83 kB │ gzip:   4.93 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/javascript-qCveANmP.js                       17.08 kB │ gzip:   5.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ApiKeysValidationDialog-Cinh61Y3.js          17.33 kB │ gzip:   4.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/AnnouncementsModule-D0HyUbRx.js              18.16 kB │ gzip:   6.18 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/responsive-pvI2awWb.js                       18.55 kB │ gzip:   7.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-8evPgRYf.js                            21.19 kB │ gzip:   9.49 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-eykcsAb_.js                            21.47 kB │ gzip:   9.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/clike-B9uivgTg.js                            22.30 kB │ gzip:   7.86 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-DUXKEPIJ.js                            23.33 kB │ gzip:  10.53 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/stylus-B533Al4x.js                           25.80 kB │ gzip:   8.60 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/TokenDetail-BLymDE8R.js                      26.17 kB │ gzip:   8.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-BfnQSjHs.js                            26.50 kB │ gzip:   8.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/css-BnMrqG3P.js                              27.13 kB │ gzip:   8.47 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CPzzOdmM.js                            27.47 kB │ gzip:  12.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-tvtJzMzW.js                            28.96 kB │ gzip:  11.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/UpstreamPrivacyStatusModule-BB79aEyG.js      31.03 kB │ gzip:   8.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CDjG9Xwb.js                            31.06 kB │ gzip:  12.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CQ-dXL3o.js                            32.59 kB │ gzip:  13.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/AlertsCenter-38D4TirQ.js                     33.91 kB │ gzip:   8.92 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/SystemSettingsModule-B51Piz60.js             35.97 kB │ gzip:   7.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/sql-D0XecflT.js                              37.05 kB │ gzip:  10.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/AdminRecentRequestsPanel-BmK9-OIX.js         40.79 kB │ gzip:   9.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CZKnBSac.js                            41.00 kB │ gzip:  16.90 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CRkHmhSj.js                            44.42 kB │ gzip:  15.47 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-CPc0wF6h.js                            45.37 kB │ gzip:  19.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/main-1GWw1aEH.js                             47.39 kB │ gzip:  14.74 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/ForwardProxySettingsModule-mpT5ZVcR.js       60.22 kB │ gzip:  15.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-Dars3jrq.js                            71.08 kB │ gzip:  25.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-B7ql_VPa.js                            87.24 kB │ gzip:  34.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/requestRate-C-bJFmte.js                      88.88 kB │ gzip:  26.84 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-eDKVYvf4.js                            98.13 kB │ gzip:  28.60 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-Y2_tSVPY.js                           100.82 kB │ gzip:  33.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/console-BKF_GLz-.js                         146.15 kB │ gzip:  39.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/text-BHHe7DQR.js                            188.27 kB │ gzip:  59.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/index-aPBiDBfP.js                           609.68 kB │ gzip: 198.12 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/admin-CxTUbzPA.js                         1,065.92 kB │ gzip: 328.02 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-a/assets/MarkdownEditor-CMCQOFl-.js                1,356.51 kB │ gzip: 430.27 kB
+✓ built in 28.68s
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[pwa] generated split PWA assets in /workspace/worktrees/tavily-hikari-a5cf13da/evidence/tavily-hikari-version-layer-reuse-19370/dist-a
+vite v5.4.21 building for production...
+transforming...
+Browserslist: browsers data (caniuse-lite) is 8 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+✓ 3691 modules transformed.
+rendering chunks...
+computing gzip size...
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/login.html                                           1.17 kB │ gzip:   0.48 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/registration-paused.html                             1.18 kB │ gzip:   0.48 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/index.html                                           1.47 kB │ gzip:   0.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/console.html                                         1.49 kB │ gzip:   0.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/admin.html                                           1.50 kB │ gzip:   0.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size3-Regular-CTq5MqoE.woff             4.42 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2            4.93 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size2-Regular-Dy4dx90m.woff2            5.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size1-Regular-mCD8mA8B.woff2            5.47 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size4-Regular-BF-4gkZK.woff             5.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size2-Regular-oD1tc_U0.woff             6.19 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size1-Regular-C195tn64.woff             6.50 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2      6.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2         6.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size3-Regular-DgpXs0kz.ttf              7.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff       7.66 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff          7.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Script-Regular-D3wIWfF6.woff2           9.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2       10.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size4-Regular-DWFBv043.ttf             10.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Script-Regular-D5yQViql.woff           10.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2         11.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2            11.35 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size2-Regular-B7gKUWhC.ttf             11.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2        12.03 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2          12.22 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Size1-Regular-Dbsnue_I.ttf             12.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff        12.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf       12.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf          12.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff          13.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Bold-BsDP51OF.woff             13.30 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2      13.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Italic-DN2j7dab.woff         14.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff           14.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff       16.03 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2         16.40 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-Italic-t53AETM-.woff2             16.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Script-Regular-C5JkGWo-.ttf            16.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2         16.78 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Italic-NWA7e6Wa.woff2             16.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff          18.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-Italic-DA0__PXp.woff              18.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-BoldItalic-SpSLRI95.woff          19.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf         19.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Regular-CB_wures.ttf           19.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf              19.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Italic-BMLOBm91.woff              19.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf          22.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf            24.50 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Bold-Cx986IdX.woff2               25.32 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Regular-B22Nviop.woff2            26.27 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf        27.56 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2             28.08 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Bold-Jm3AIy58.woff                29.91 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Regular-Dr94JaBh.woff             30.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf           31.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Math-Italic-flOr_0UB.ttf               31.31 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf           32.97 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_AMS-Regular-DMm9YOAa.woff              33.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Italic-3WenGoN9.ttf               33.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Bold-waoOVXN0.ttf                 51.34 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_Main-Regular-ypZvNtVU.ttf              53.58 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KaTeX_AMS-Regular-DRggAlZN.ttf               63.63 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/.vite/manifest.json                                 68.44 kB │ gzip:   7.27 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-B96bnACx.css                          580.39 kB │ gzip:  95.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/diff-DbItnlRl.js                              0.31 kB │ gzip:   0.24 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/brainfuck-C4LP7Hcl.js                         0.61 kB │ gzip:   0.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/properties-C78fOPTZ.js                        0.67 kB │ gzip:   0.35 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/cmake-BQqOBYOt.js                             0.78 kB │ gzip:   0.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/asciiarmor-Df11BRmG.js                        0.79 kB │ gzip:   0.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/http-DBlCnlav.js                              0.85 kB │ gzip:   0.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/protobuf-ChK-085T.js                          0.86 kB │ gzip:   0.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/solr-DehyRSwq.js                              0.87 kB │ gzip:   0.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/NotFoundFallbackPreview-CuHkn070.js           0.90 kB │ gzip:   0.45 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/troff-wAsdV37c.js                             0.96 kB │ gzip:   0.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/card-Zwy9VPGP.js                              1.10 kB │ gzip:   0.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/spreadsheet-BCZA_wO0.js                       1.14 kB │ gzip:   0.54 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/toml-Bm5Em-hy.js                              1.14 kB │ gzip:   0.54 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mbox-CNhZ1qSd.js                              1.40 kB │ gzip:   0.66 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/sieve-C3Gn_uJK.js                             1.62 kB │ gzip:   0.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/rpm-CTu-6PCP.js                               1.62 kB │ gzip:   0.83 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/factor-kuTfRLto.js                            1.67 kB │ gzip:   0.61 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/z80-Hz9HOZM7.js                               1.75 kB │ gzip:   0.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/eiffel-CnydiIhH.js                            1.81 kB │ gzip:   0.92 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/elm-vLlmbW-K.js                               1.89 kB │ gzip:   0.82 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mathematica-DTrFuWx2.js                       1.92 kB │ gzip:   0.82 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/dockerfile-BKs6k2Af.js                        1.95 kB │ gzip:   0.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/turtle-B1tBg_DP.js                            1.98 kB │ gzip:   0.90 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ebnf-CDyGwa7X.js                              1.99 kB │ gzip:   0.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/smalltalk-CnHTOXQT.js                         2.01 kB │ gzip:   0.85 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/dtd-DF_7sFjM.js                               2.06 kB │ gzip:   0.87 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mumps-BT43cFF4.js                             2.07 kB │ gzip:   0.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/fcl-Kvtd6kyn.js                               2.08 kB │ gzip:   0.95 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ntriples-BfvgReVJ.js                          2.10 kB │ gzip:   0.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/apl-B4CMkyY2.js                               2.12 kB │ gzip:   1.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/yacas-BJ4BC0dw.js                             2.15 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/simple-mode-GW_nhZxv.js                       2.28 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/octave-Ck1zUtKM.js                            2.30 kB │ gzip:   1.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/pascal--L3eBynH.js                            2.30 kB │ gzip:   1.19 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/commonlisp-DBKNyK5s.js                        2.32 kB │ gzip:   1.10 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/tcl-DVfN8rqt.js                               2.36 kB │ gzip:   1.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/webidl-ZXfAyPTL.js                            2.52 kB │ gzip:   1.26 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/registrationPaused-UxDupBF2.js                2.53 kB │ gzip:   1.08 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/pig-CevX1Tat.js                               2.53 kB │ gzip:   1.38 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/puppet-DMA9R1ak.js                            2.54 kB │ gzip:   1.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/forth-Ffai-XNe.js                             2.54 kB │ gzip:   1.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/shell-CjFT_Tl9.js                             2.57 kB │ gzip:   1.21 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/velocity-D8B20fx6.js                          2.67 kB │ gzip:   1.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/switch-BRl76Zds.js                            2.68 kB │ gzip:   1.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BeDaWenH.js                             2.68 kB │ gzip:   1.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/tiddlywiki-DO-Gjzrf.js                        2.78 kB │ gzip:   1.07 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/modelica-Dc1JOy9r.js                          2.79 kB │ gzip:   1.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/oz-BzwKVEFT.js                                2.90 kB │ gzip:   1.28 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DQ0IGuSg.js                             2.90 kB │ gzip:   1.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/r-DUYO_cvP.js                                 2.94 kB │ gzip:   1.36 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/stex-C3f8Ysf7.js                              3.12 kB │ gzip:   1.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/tiki-DGYXhP31.js                              3.25 kB │ gzip:   1.26 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/vhdl-lSbBsy5d.js                              3.35 kB │ gzip:   1.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/lua-VAEuO923.js                               3.41 kB │ gzip:   1.43 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mscgen-BA5vi2Kp.js                            3.51 kB │ gzip:   0.98 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/sparql-DkYu6x3z.js                            3.55 kB │ gzip:   1.63 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/cypher-C_CwsFkJ.js                            3.56 kB │ gzip:   1.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BHfG4SRx.js                             3.67 kB │ gzip:   1.86 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/d-pRatUO7H.js                                 3.72 kB │ gzip:   1.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/coffeescript-S37ZYGWr.js                      3.87 kB │ gzip:   1.69 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/vb-CmGdzxic.js                                3.90 kB │ gzip:   1.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/swift-BzpIVaGY.js                             3.96 kB │ gzip:   1.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/asn1-EdZsLKOL.js                              3.98 kB │ gzip:   1.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/q-pXgVlZs6.js                                 4.03 kB │ gzip:   1.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ttcn-cfg-B9xdYoR4.js                          4.05 kB │ gzip:   1.71 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/dylan-DwRh75JA.js                             4.05 kB │ gzip:   1.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/livescript-BwQOo05w.js                        4.09 kB │ gzip:   1.64 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/groovy-D9Dt4D0W.js                            4.14 kB │ gzip:   1.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/haskell-BWDZoCOh.js                           4.16 kB │ gzip:   1.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/asterisk-B-8jnY81.js                          4.48 kB │ gzip:   1.78 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/gas-Bneqetm1.js                               4.57 kB │ gzip:   1.28 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/fortran-DYz_wnZ1.js                           4.65 kB │ gzip:   2.01 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mllike-CXdrOF99.js                            4.79 kB │ gzip:   1.53 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ttcn-CfJYG6tj.js                              4.80 kB │ gzip:   2.13 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ecl-Cabwm37j.js                               5.13 kB │ gzip:   2.31 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/crystal-SjHAIU92.js                           5.13 kB │ gzip:   2.07 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ruby-B2Rjki9n.js                              5.16 kB │ gzip:   2.15 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-B5tF7yw6.js                             5.34 kB │ gzip:   2.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/julia-DuME0IfC.js                             5.39 kB │ gzip:   2.14 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/vbscript-BuJXcnF6.js                          5.82 kB │ gzip:   2.57 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/mirc-CjQqDB4T.js                              5.92 kB │ gzip:   2.68 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/cobol-CWcv1MsR.js                             6.20 kB │ gzip:   2.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/scheme-C41bIUwD.js                            6.37 kB │ gzip:   2.39 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/python-BuPzkPfP.js                            6.48 kB │ gzip:   2.73 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/SearchableFacetSelect-D1EIqNLG.js             6.48 kB │ gzip:   2.23 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/UserDetailTokenTable-BMf5q7A9.js              6.55 kB │ gzip:   1.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/xquery-CQfU5ijd.js                            6.62 kB │ gzip:   2.56 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/pug-DukmZTjD.js                               6.67 kB │ gzip:   1.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/textile-CnDTJFAw.js                           6.80 kB │ gzip:   2.44 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/nsis-LdVXkNf5.js                              6.81 kB │ gzip:   2.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/nginx-DdIZxoE0.js                             7.34 kB │ gzip:   2.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/login-CaBLwfJh.js                             7.51 kB │ gzip:   2.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/powershell-CFHJl5sT.js                        7.77 kB │ gzip:   3.33 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/haxe-H-WmDvRZ.js                              7.89 kB │ gzip:   2.95 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/gherkin-heZmZLOM.js                           7.96 kB │ gzip:   5.09 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/erlang-BNw1qcRV.js                            8.07 kB │ gzip:   2.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/verilog-C6RDOZhf.js                           8.24 kB │ gzip:   3.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/TokenSecretField-CEfu8lGP.js                  9.07 kB │ gzip:   2.81 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/sas-B4kiWyti.js                               9.33 kB │ gzip:   4.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/useOfflineState-l7H2sxcP.js                   9.68 kB │ gzip:   3.72 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/perl-CdXCOZ3F.js                              9.75 kB │ gzip:   3.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/clojure-BMjYHr_A.js                          10.82 kB │ gzip:   3.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/idl-BEugSyMb.js                              11.63 kB │ gzip:   4.52 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/McpSessionBindingsModule-DUloiZv-.js         12.62 kB │ gzip:   4.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/AdminRechargeRecordsModule-BMdbRgsJ.js       12.78 kB │ gzip:   3.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DF4erWgq.js                            12.98 kB │ gzip:   5.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/KeyStickyPanels-Dz-4T5zs.js                  13.84 kB │ gzip:   3.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BxDeUJ1p.js                            15.06 kB │ gzip:   6.12 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/AdminSecuritySettingsModule-CTnQJvy3.js      16.37 kB │ gzip:   4.67 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-B_2Fd7Lb.js                            16.58 kB │ gzip:   7.59 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/UserDetailSharedUsagePanel-DB4yXfCe.js       16.83 kB │ gzip:   4.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/javascript-qCveANmP.js                       17.08 kB │ gzip:   5.75 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ApiKeysValidationDialog-B55IxiOS.js          17.33 kB │ gzip:   4.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/AnnouncementsModule-nNOk0jcS.js              18.16 kB │ gzip:   6.18 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/responsive-BhHzU8AG.js                       18.55 kB │ gzip:   7.11 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BUGjsy0o.js                            21.19 kB │ gzip:   9.49 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-CrnMd7dt.js                            21.47 kB │ gzip:   9.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/clike-B9uivgTg.js                            22.30 kB │ gzip:   7.86 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-JbIOmL8r.js                            23.33 kB │ gzip:  10.53 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/stylus-B533Al4x.js                           25.80 kB │ gzip:   8.60 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/TokenDetail-s0-1GZ5C.js                      26.17 kB │ gzip:   8.51 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DTh4hhWH.js                            26.50 kB │ gzip:   8.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/css-BnMrqG3P.js                              27.13 kB │ gzip:   8.47 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-CWWFUnpB.js                            27.47 kB │ gzip:  12.41 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-ByYhyfYq.js                            28.96 kB │ gzip:  11.80 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/UpstreamPrivacyStatusModule-DAn7heVV.js      31.03 kB │ gzip:   8.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DrLcqSzs.js                            31.06 kB │ gzip:  12.79 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BjMp-8LV.js                            32.59 kB │ gzip:  13.20 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/AlertsCenter-C1HwzwU-.js                     33.91 kB │ gzip:   8.92 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/SystemSettingsModule-BI5s0m_h.js             35.97 kB │ gzip:   7.88 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/sql-D0XecflT.js                              37.05 kB │ gzip:  10.94 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/AdminRecentRequestsPanel-C05ndua_.js         40.79 kB │ gzip:   9.37 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-CuVIp02P.js                            41.00 kB │ gzip:  16.89 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-rOSu5BI4.js                            44.42 kB │ gzip:  15.46 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BG71PoER.js                            45.37 kB │ gzip:  19.29 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/main-C7vW-1m0.js                             47.39 kB │ gzip:  14.74 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/ForwardProxySettingsModule-BDNwI7in.js       60.22 kB │ gzip:  15.55 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BSeEyRjx.js                            71.08 kB │ gzip:  25.99 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DvNkmC7Q.js                            87.24 kB │ gzip:  34.65 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/requestRate-Bt_ja2q0.js                      88.88 kB │ gzip:  26.84 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-B0VA_MyK.js                            98.13 kB │ gzip:  28.60 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-BGmyoQSe.js                           100.82 kB │ gzip:  33.77 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/console-COpM-ZzR.js                         146.15 kB │ gzip:  39.56 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/text-DanhMnKZ.js                            188.27 kB │ gzip:  59.96 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/index-DTqhTD5Q.js                           609.68 kB │ gzip: 198.12 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/admin-D9GYhban.js                         1,065.92 kB │ gzip: 328.02 kB
+../../evidence/tavily-hikari-version-layer-reuse-19370/dist-b/assets/MarkdownEditor-C3WlSspR.js                1,356.51 kB │ gzip: 430.26 kB
+✓ built in 24.22s
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[pwa] generated split PWA assets in /workspace/worktrees/tavily-hikari-a5cf13da/evidence/tavily-hikari-version-layer-reuse-19370/dist-b
+Verified 28 stable PWA icons and stable manifests/favicon
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 12.10kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7.1
+#2 DONE 2.8s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#4 DONE 1.7s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 374B done
+#5 DONE 0.0s
+
+#6 [builder 1/6] FROM docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 101.41kB 0.0s done
+#7 DONE 0.0s
+
+#8 [builder 2/6] WORKDIR /app
+#8 CACHED
+
+#9 [builder 4/6] COPY Cargo.toml Cargo.lock build.rs ./
+#9 CACHED
+
+#10 [builder 5/6] RUN mkdir -p src     && printf 'fn main() {}\n' > src/main.rs     && cargo fetch
+#10 CACHED
+
+#11 [builder 6/6] COPY src ./src
+#11 CACHED
+
+#12 [context-audit 1/2] COPY . /context
+#12 CACHED
+
+#13 [builder 3/6] RUN apt-get update     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev     && rm -rf /var/lib/apt/lists/*
+#13 CACHED
+
+#14 [context-audit 2/2] RUN test ! -e /context/.env     && test ! -e /context/.env.local     && test -z "$(find /context -type d -name node_modules -print -quit)"     && test -z "$(find /context -type f \( -name '*.db' -o -name '*.db-*' \) -print -quit)"     && test -z "$(find /context -mindepth 1 -print | sed 's#^/context/##' | while IFS= read -r path; do       case "${path}" in         Cargo.toml|Cargo.lock|build.rs|rust-toolchain.toml|src|src/*|scripts|scripts/docker-entrypoint.sh|scripts/docker-healthcheck.sh|web|web/dist|web/dist/*) ;;         *) printf '%s\n' "${path}" ;;       esac;     done)"
+#14 CACHED
+
+#15 exporting to image
+#15 exporting layers done
+#15 writing image sha256:dc05294674de1597987adb2a6cc6b465494f0802c27f083659917ccba13f0979 done
+#15 naming to docker.io/library/tavily-hikari-version-layer-19370-4cc4f499-9553-4e6d-86d9-b765b70d40dc-context-audit done
+#15 DONE 0.0s
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 12.10kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7.1
+#2 DONE 0.4s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#4 DONE 0.0s
+
+#5 [internal] load metadata for ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#5 ...
+
+#6 [internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#6 DONE 1.7s
+
+#5 [internal] load metadata for ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#5 DONE 2.2s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 374B done
+#7 DONE 0.0s
+
+#8 [builder 1/6] FROM docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#8 DONE 0.0s
+
+#9 [runtime  1/21] FROM docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#9 DONE 0.0s
+
+#10 [xray-downloader 1/1] FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#10 DONE 0.0s
+
+#11 [runtime  2/21] RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0     && rm -rf /var/lib/apt/lists/*
+#11 CACHED
+
+#12 [runtime  3/21] WORKDIR /srv/app
+#12 CACHED
+
+#13 [internal] load build context
+#13 transferring context: 32.72kB 0.0s done
+#13 DONE 0.1s
+
+#14 [payload-normalizer 20/22] COPY web/dist/favicon.svg web/dist/manifest.webmanifest web/dist/manifest-admin.webmanifest /payload/web/meta/
+#14 CACHED
+
+#15 [payload-normalizer 13/22] COPY --from=maintenance-builder /app/target/release/ha_trigger_repair_once /payload/bin/ha_trigger_repair_once
+#15 CACHED
+
+#16 [builder 2/6] WORKDIR /app
+#16 CACHED
+
+#17 [builder 6/6] COPY src ./src
+#17 CACHED
+
+#18 [payload-normalizer 11/22] COPY --from=maintenance-builder /app/target/release/request_logs_gc_once /payload/bin/request_logs_gc_once
+#18 CACHED
+
+#19 [payload-normalizer 19/22] COPY web/dist/pwa/ /payload/web/pwa/
+#19 CACHED
+
+#20 [payload-normalizer  2/22] COPY --from=xray-downloader /usr/local/bin/xray /payload/xray/bin/xray
+#20 CACHED
+
+#21 [payload-normalizer  7/22] COPY --from=maintenance-builder /app/target/release/mcp_request_log_retry_repair /payload/bin/mcp_request_log_retry_repair
+#21 CACHED
+
+#22 [payload-normalizer 10/22] COPY --from=maintenance-builder /app/target/release/db_compaction_once /payload/bin/db_compaction_once
+#22 CACHED
+
+#23 [payload-normalizer  8/22] COPY --from=maintenance-builder /app/target/release/observability_sidecar_migrate /payload/bin/observability_sidecar_migrate
+#23 CACHED
+
+#24 [app-builder 1/1] RUN test -n "0.0.0-ci.1"     && APP_EFFECTIVE_VERSION="0.0.0-ci.1" cargo build --release --locked --bin tavily-hikari
+#24 CACHED
+
+#25 [payload-normalizer 14/22] COPY --from=app-builder /app/target/release/tavily-hikari /payload/bin/tavily-hikari
+#25 CACHED
+
+#26 [payload-normalizer 12/22] COPY --from=maintenance-builder /app/target/release/ha_outbox_cleanup_once /payload/bin/ha_outbox_cleanup_once
+#26 CACHED
+
+#27 [payload-normalizer  1/22] RUN mkdir -p     /payload/bin     /payload/runtime-scripts     /payload/web/app     /payload/web/app/pwa     /payload/web/meta     /payload/web/pwa     /payload/xray/bin     /payload/xray/share
+#27 CACHED
+
+#28 [builder 5/6] RUN mkdir -p src     && printf 'fn main() {}\n' > src/main.rs     && cargo fetch
+#28 CACHED
+
+#29 [payload-normalizer 16/22] COPY scripts/docker-healthcheck.sh /payload/runtime-scripts/docker-healthcheck.sh
+#29 CACHED
+
+#30 [payload-normalizer  9/22] COPY --from=maintenance-builder /app/target/release/observability_lock_holder /payload/bin/observability_lock_holder
+#30 CACHED
+
+#31 [payload-normalizer  3/22] COPY --from=xray-downloader /usr/local/share/xray/ /payload/xray/share/
+#31 CACHED
+
+#32 [payload-normalizer  4/22] COPY --from=maintenance-builder /app/target/release/billing_ledger_audit /payload/bin/billing_ledger_audit
+#32 CACHED
+
+#33 [maintenance-builder 1/1] RUN cargo build --release --locked     --bin billing_ledger_audit     --bin monthly_quota_rebase     --bin mcp_search_billing_repair     --bin mcp_request_log_retry_repair     --bin observability_sidecar_migrate     --bin observability_lock_holder     --bin db_compaction_once     --bin request_logs_gc_once     --bin ha_outbox_cleanup_once     --bin ha_trigger_repair_once
+#33 CACHED
+
+#34 [payload-normalizer  5/22] COPY --from=maintenance-builder /app/target/release/monthly_quota_rebase /payload/bin/monthly_quota_rebase
+#34 CACHED
+
+#35 [payload-normalizer  6/22] COPY --from=maintenance-builder /app/target/release/mcp_search_billing_repair /payload/bin/mcp_search_billing_repair
+#35 CACHED
+
+#36 [builder 3/6] RUN apt-get update     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev     && rm -rf /var/lib/apt/lists/*
+#36 CACHED
+
+#37 [payload-normalizer 17/22] COPY web/dist/assets/ /payload/web/app/assets/
+#37 CACHED
+
+#38 [payload-normalizer 21/22] RUN mv /payload/web/pwa/asset-graphs.json /payload/web/app/pwa/asset-graphs.json
+#38 CACHED
+
+#39 [builder 4/6] COPY Cargo.toml Cargo.lock build.rs ./
+#39 CACHED
+
+#40 [payload-normalizer 15/22] COPY scripts/docker-entrypoint.sh /payload/runtime-scripts/docker-entrypoint.sh
+#40 CACHED
+
+#41 [payload-normalizer 18/22] COPY web/dist/index.html web/dist/admin.html web/dist/console.html web/dist/login.html web/dist/registration-paused.html web/dist/sw-public.js web/dist/sw-admin.js /payload/web/app/
+#41 CACHED
+
+#42 [payload-normalizer 22/22] RUN set -eux;     find /payload -type d -exec chown 0:0 {} +;     find /payload -type f -exec chown 0:0 {} +;     find /payload -type d -exec chmod 0755 {} +;     find /payload -type f -exec chmod 0644 {} +;     chmod 0755       /payload/bin/tavily-hikari       /payload/bin/billing_ledger_audit       /payload/bin/monthly_quota_rebase       /payload/bin/mcp_search_billing_repair       /payload/bin/mcp_request_log_retry_repair       /payload/bin/observability_sidecar_migrate       /payload/bin/observability_lock_holder       /payload/bin/db_compaction_once       /payload/bin/request_logs_gc_once       /payload/bin/ha_outbox_cleanup_once       /payload/bin/ha_trigger_repair_once       /payload/runtime-scripts/docker-entrypoint.sh       /payload/runtime-scripts/docker-healthcheck.sh       /payload/xray/bin/xray;     find /payload -exec touch -h -d "@0" {} +
+#42 CACHED
+
+#43 [runtime  4/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/bin/xray,target=/tmp/xray,ro     install -m 0755 -o 0 -g 0 /tmp/xray /usr/local/bin/xray     && touch -d "@0" /usr/local/bin/xray /usr/local/bin /etc /tmp
+#43 DONE 0.3s
+
+#44 [runtime  5/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/share,target=/tmp/xray-share,ro     mkdir -p /usr/local/share/xray     && cp -a /tmp/xray-share/. /usr/local/share/xray/     && find /usr/local/share/xray -exec touch -h -d "@0" {} +     && touch -d "@0" /usr/local/share /usr/local /etc /tmp
+#44 DONE 0.3s
+
+#45 [runtime  6/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/tavily-hikari,target=/tmp/tavily-hikari,ro     install -m 0755 -o 0 -g 0 /tmp/tavily-hikari /usr/local/bin/tavily-hikari     && touch -d "@0" /usr/local/bin/tavily-hikari /usr/local/bin /etc /tmp
+#45 DONE 0.4s
+
+#46 [runtime  7/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/billing_ledger_audit,target=/tmp/billing_ledger_audit,ro     install -m 0755 -o 0 -g 0 /tmp/billing_ledger_audit /usr/local/bin/billing_ledger_audit     && touch -d "@0" /usr/local/bin/billing_ledger_audit /usr/local/bin /etc /tmp
+#46 DONE 0.3s
+
+#47 [runtime  8/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/monthly_quota_rebase,target=/tmp/monthly_quota_rebase,ro     install -m 0755 -o 0 -g 0 /tmp/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase     && touch -d "@0" /usr/local/bin/monthly_quota_rebase /usr/local/bin /etc /tmp
+#47 DONE 0.3s
+
+#48 [runtime  9/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_search_billing_repair,target=/tmp/mcp_search_billing_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair     && touch -d "@0" /usr/local/bin/mcp_search_billing_repair /usr/local/bin /etc /tmp
+#48 DONE 0.3s
+
+#49 [runtime 10/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_request_log_retry_repair,target=/tmp/mcp_request_log_retry_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair     && touch -d "@0" /usr/local/bin/mcp_request_log_retry_repair /usr/local/bin /etc /tmp
+#49 DONE 0.4s
+
+#50 [runtime 11/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_sidecar_migrate,target=/tmp/observability_sidecar_migrate,ro     install -m 0755 -o 0 -g 0 /tmp/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate     && touch -d "@0" /usr/local/bin/observability_sidecar_migrate /usr/local/bin /etc /tmp
+#50 DONE 0.3s
+
+#51 [runtime 12/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_lock_holder,target=/tmp/observability_lock_holder,ro     install -m 0755 -o 0 -g 0 /tmp/observability_lock_holder /usr/local/bin/observability_lock_holder     && touch -d "@0" /usr/local/bin/observability_lock_holder /usr/local/bin /etc /tmp
+#51 DONE 0.4s
+
+#52 [runtime 13/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/db_compaction_once,target=/tmp/db_compaction_once,ro     install -m 0755 -o 0 -g 0 /tmp/db_compaction_once /usr/local/bin/db_compaction_once     && touch -d "@0" /usr/local/bin/db_compaction_once /usr/local/bin /etc /tmp
+#52 DONE 0.3s
+
+#53 [runtime 14/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/request_logs_gc_once,target=/tmp/request_logs_gc_once,ro     install -m 0755 -o 0 -g 0 /tmp/request_logs_gc_once /usr/local/bin/request_logs_gc_once     && touch -d "@0" /usr/local/bin/request_logs_gc_once /usr/local/bin /etc /tmp
+#53 DONE 0.3s
+
+#54 [runtime 15/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_outbox_cleanup_once,target=/tmp/ha_outbox_cleanup_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once     && touch -d "@0" /usr/local/bin/ha_outbox_cleanup_once /usr/local/bin /etc /tmp
+#54 DONE 0.3s
+
+#55 [runtime 16/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_trigger_repair_once,target=/tmp/ha_trigger_repair_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once     && touch -d "@0" /usr/local/bin/ha_trigger_repair_once /usr/local/bin /etc /tmp
+#55 DONE 0.3s
+
+#56 [runtime 17/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-entrypoint.sh,target=/tmp/docker-entrypoint.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh     && touch -d "@0" /usr/local/bin/docker-entrypoint.sh /usr/local/bin /etc /tmp
+#56 DONE 0.3s
+
+#57 [runtime 18/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-healthcheck.sh,target=/tmp/docker-healthcheck.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh     && touch -d "@0" /usr/local/bin/docker-healthcheck.sh /usr/local/bin /etc /tmp
+#57 DONE 0.3s
+
+#58 [runtime 19/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/app,target=/tmp/web-app,ro     mkdir -p /srv/app/web     && cp -a /tmp/web-app/. /srv/app/web/     && find /srv/app/web -exec touch -h -d "@0" {} +     && touch -d "@0" /srv/app /srv /etc /tmp
+#58 DONE 0.6s
+
+#59 [runtime 20/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/pwa,target=/tmp/web-pwa,ro     mkdir -p /srv/app/web/pwa     && cp -a /tmp/web-pwa/. /srv/app/web/pwa/     && touch -d "@0" /srv/app/web/pwa /srv/app/web /srv/app /srv /etc /tmp
+#59 DONE 0.3s
+
+#60 [runtime 21/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/meta,target=/tmp/web-meta,ro     cp -a /tmp/web-meta/. /srv/app/web/     && touch -d "@0" /srv/app/web /srv/app /srv /etc /tmp
+#60 DONE 0.3s
+
+#61 exporting to image
+#61 exporting layers
+#61 exporting layers 0.8s done
+#61 writing image sha256:7a67af03435a5248b15feb6e33c67cf0b2ab8f2686dc993101ad4f3bbdef9b0b done
+#61 naming to docker.io/library/tavily-hikari-version-layer-19370-4cc4f499-9553-4e6d-86d9-b765b70d40dc-a-amd64 0.0s done
+#61 DONE 0.8s
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 12.10kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7.1
+#2 DONE 0.4s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 CACHED
+
+#4 [internal] load metadata for ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#4 DONE 0.0s
+
+#5 [internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#5 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#6 DONE 0.1s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 374B done
+#7 DONE 0.0s
+
+#8 [builder 1/6] FROM docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#8 DONE 0.0s
+
+#9 [runtime  1/21] FROM docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#9 DONE 0.0s
+
+#10 [xray-downloader 1/1] FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#10 CACHED
+
+#11 [internal] load build context
+#11 transferring context: 32.72kB 0.0s done
+#11 DONE 0.1s
+
+#12 [builder 4/6] COPY Cargo.toml Cargo.lock build.rs ./
+#12 CACHED
+
+#13 [builder 5/6] RUN mkdir -p src     && printf 'fn main() {}\n' > src/main.rs     && cargo fetch
+#13 CACHED
+
+#14 [builder 2/6] WORKDIR /app
+#14 CACHED
+
+#15 [builder 3/6] RUN apt-get update     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev     && rm -rf /var/lib/apt/lists/*
+#15 CACHED
+
+#16 [maintenance-builder 1/1] RUN cargo build --release --locked     --bin billing_ledger_audit     --bin monthly_quota_rebase     --bin mcp_search_billing_repair     --bin mcp_request_log_retry_repair     --bin observability_sidecar_migrate     --bin observability_lock_holder     --bin db_compaction_once     --bin request_logs_gc_once     --bin ha_outbox_cleanup_once     --bin ha_trigger_repair_once
+#16 CACHED
+
+#17 [builder 6/6] COPY src ./src
+#17 CACHED
+
+#18 [app-builder 1/1] RUN test -n "0.0.0-ci.1"     && APP_EFFECTIVE_VERSION="0.0.0-ci.1" cargo build --release --locked --bin tavily-hikari
+#18 CACHED
+
+#19 [payload-normalizer  1/22] RUN mkdir -p     /payload/bin     /payload/runtime-scripts     /payload/web/app     /payload/web/app/pwa     /payload/web/meta     /payload/web/pwa     /payload/xray/bin     /payload/xray/share
+#19 DONE 0.4s
+
+#20 [payload-normalizer  2/22] COPY --from=xray-downloader /usr/local/bin/xray /payload/xray/bin/xray
+#20 DONE 0.2s
+
+#21 [payload-normalizer  3/22] COPY --from=xray-downloader /usr/local/share/xray/ /payload/xray/share/
+#21 DONE 0.1s
+
+#22 [payload-normalizer  4/22] COPY --from=maintenance-builder /app/target/release/billing_ledger_audit /payload/bin/billing_ledger_audit
+#22 DONE 0.1s
+
+#23 [payload-normalizer  5/22] COPY --from=maintenance-builder /app/target/release/monthly_quota_rebase /payload/bin/monthly_quota_rebase
+#23 DONE 0.1s
+
+#24 [payload-normalizer  6/22] COPY --from=maintenance-builder /app/target/release/mcp_search_billing_repair /payload/bin/mcp_search_billing_repair
+#24 DONE 0.1s
+
+#25 [payload-normalizer  7/22] COPY --from=maintenance-builder /app/target/release/mcp_request_log_retry_repair /payload/bin/mcp_request_log_retry_repair
+#25 DONE 0.1s
+
+#26 [payload-normalizer  8/22] COPY --from=maintenance-builder /app/target/release/observability_sidecar_migrate /payload/bin/observability_sidecar_migrate
+#26 DONE 0.1s
+
+#27 [payload-normalizer  9/22] COPY --from=maintenance-builder /app/target/release/observability_lock_holder /payload/bin/observability_lock_holder
+#27 DONE 0.1s
+
+#28 [payload-normalizer 10/22] COPY --from=maintenance-builder /app/target/release/db_compaction_once /payload/bin/db_compaction_once
+#28 DONE 0.1s
+
+#29 [payload-normalizer 11/22] COPY --from=maintenance-builder /app/target/release/request_logs_gc_once /payload/bin/request_logs_gc_once
+#29 DONE 0.1s
+
+#30 [payload-normalizer 12/22] COPY --from=maintenance-builder /app/target/release/ha_outbox_cleanup_once /payload/bin/ha_outbox_cleanup_once
+#30 DONE 0.1s
+
+#31 [payload-normalizer 13/22] COPY --from=maintenance-builder /app/target/release/ha_trigger_repair_once /payload/bin/ha_trigger_repair_once
+#31 DONE 0.1s
+
+#32 [payload-normalizer 14/22] COPY --from=app-builder /app/target/release/tavily-hikari /payload/bin/tavily-hikari
+#32 DONE 0.1s
+
+#33 [payload-normalizer 15/22] COPY scripts/docker-entrypoint.sh /payload/runtime-scripts/docker-entrypoint.sh
+#33 DONE 0.1s
+
+#34 [payload-normalizer 16/22] COPY scripts/docker-healthcheck.sh /payload/runtime-scripts/docker-healthcheck.sh
+#34 DONE 0.1s
+
+#35 [payload-normalizer 17/22] COPY web/dist/assets/ /payload/web/app/assets/
+#35 DONE 0.2s
+
+#36 [payload-normalizer 18/22] COPY web/dist/index.html web/dist/admin.html web/dist/console.html web/dist/login.html web/dist/registration-paused.html web/dist/sw-public.js web/dist/sw-admin.js /payload/web/app/
+#36 DONE 0.1s
+
+#37 [payload-normalizer 19/22] COPY web/dist/pwa/ /payload/web/pwa/
+#37 DONE 0.1s
+
+#38 [payload-normalizer 20/22] COPY web/dist/favicon.svg web/dist/manifest.webmanifest web/dist/manifest-admin.webmanifest /payload/web/meta/
+#38 DONE 0.1s
+
+#39 [payload-normalizer 21/22] RUN mv /payload/web/pwa/asset-graphs.json /payload/web/app/pwa/asset-graphs.json
+#39 DONE 0.2s
+
+#40 [payload-normalizer 22/22] RUN set -eux;     find /payload -type d -exec chown 0:0 {} +;     find /payload -type f -exec chown 0:0 {} +;     find /payload -type d -exec chmod 0755 {} +;     find /payload -type f -exec chmod 0644 {} +;     chmod 0755       /payload/bin/tavily-hikari       /payload/bin/billing_ledger_audit       /payload/bin/monthly_quota_rebase       /payload/bin/mcp_search_billing_repair       /payload/bin/mcp_request_log_retry_repair       /payload/bin/observability_sidecar_migrate       /payload/bin/observability_lock_holder       /payload/bin/db_compaction_once       /payload/bin/request_logs_gc_once       /payload/bin/ha_outbox_cleanup_once       /payload/bin/ha_trigger_repair_once       /payload/runtime-scripts/docker-entrypoint.sh       /payload/runtime-scripts/docker-healthcheck.sh       /payload/xray/bin/xray;     find /payload -exec touch -h -d "@0" {} +
+#40 0.202 + find /payload -type d -exec chown 0:0 {} +
+#40 0.211 + find /payload -type f -exec chown 0:0 {} +
+#40 1.781 + find /payload -type d -exec chmod 0755 {} +
+#40 1.787 + find /payload -type f -exec chmod 0644 {} +
+#40 1.795 + chmod 0755 /payload/bin/tavily-hikari /payload/bin/billing_ledger_audit /payload/bin/monthly_quota_rebase /payload/bin/mcp_search_billing_repair /payload/bin/mcp_request_log_retry_repair /payload/bin/observability_sidecar_migrate /payload/bin/observability_lock_holder /payload/bin/db_compaction_once /payload/bin/request_logs_gc_once /payload/bin/ha_outbox_cleanup_once /payload/bin/ha_trigger_repair_once /payload/runtime-scripts/docker-entrypoint.sh /payload/runtime-scripts/docker-healthcheck.sh /payload/xray/bin/xray
+#40 1.796 + find /payload -exec touch -h -d @0 {} +
+#40 DONE 1.8s
+
+#41 [runtime 14/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/request_logs_gc_once,target=/tmp/request_logs_gc_once,ro     install -m 0755 -o 0 -g 0 /tmp/request_logs_gc_once /usr/local/bin/request_logs_gc_once     && touch -d "@0" /usr/local/bin/request_logs_gc_once /usr/local/bin /etc /tmp
+#41 CACHED
+
+#42 [runtime  5/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/share,target=/tmp/xray-share,ro     mkdir -p /usr/local/share/xray     && cp -a /tmp/xray-share/. /usr/local/share/xray/     && find /usr/local/share/xray -exec touch -h -d "@0" {} +     && touch -d "@0" /usr/local/share /usr/local /etc /tmp
+#42 CACHED
+
+#43 [runtime  3/21] WORKDIR /srv/app
+#43 CACHED
+
+#44 [runtime  7/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/billing_ledger_audit,target=/tmp/billing_ledger_audit,ro     install -m 0755 -o 0 -g 0 /tmp/billing_ledger_audit /usr/local/bin/billing_ledger_audit     && touch -d "@0" /usr/local/bin/billing_ledger_audit /usr/local/bin /etc /tmp
+#44 CACHED
+
+#45 [runtime 13/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/db_compaction_once,target=/tmp/db_compaction_once,ro     install -m 0755 -o 0 -g 0 /tmp/db_compaction_once /usr/local/bin/db_compaction_once     && touch -d "@0" /usr/local/bin/db_compaction_once /usr/local/bin /etc /tmp
+#45 CACHED
+
+#46 [runtime 17/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-entrypoint.sh,target=/tmp/docker-entrypoint.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh     && touch -d "@0" /usr/local/bin/docker-entrypoint.sh /usr/local/bin /etc /tmp
+#46 CACHED
+
+#47 [runtime 18/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-healthcheck.sh,target=/tmp/docker-healthcheck.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh     && touch -d "@0" /usr/local/bin/docker-healthcheck.sh /usr/local/bin /etc /tmp
+#47 CACHED
+
+#48 [runtime  6/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/tavily-hikari,target=/tmp/tavily-hikari,ro     install -m 0755 -o 0 -g 0 /tmp/tavily-hikari /usr/local/bin/tavily-hikari     && touch -d "@0" /usr/local/bin/tavily-hikari /usr/local/bin /etc /tmp
+#48 CACHED
+
+#49 [runtime 12/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_lock_holder,target=/tmp/observability_lock_holder,ro     install -m 0755 -o 0 -g 0 /tmp/observability_lock_holder /usr/local/bin/observability_lock_holder     && touch -d "@0" /usr/local/bin/observability_lock_holder /usr/local/bin /etc /tmp
+#49 CACHED
+
+#50 [runtime  8/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/monthly_quota_rebase,target=/tmp/monthly_quota_rebase,ro     install -m 0755 -o 0 -g 0 /tmp/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase     && touch -d "@0" /usr/local/bin/monthly_quota_rebase /usr/local/bin /etc /tmp
+#50 CACHED
+
+#51 [runtime 15/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_outbox_cleanup_once,target=/tmp/ha_outbox_cleanup_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once     && touch -d "@0" /usr/local/bin/ha_outbox_cleanup_once /usr/local/bin /etc /tmp
+#51 CACHED
+
+#52 [runtime 16/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_trigger_repair_once,target=/tmp/ha_trigger_repair_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once     && touch -d "@0" /usr/local/bin/ha_trigger_repair_once /usr/local/bin /etc /tmp
+#52 CACHED
+
+#53 [runtime 20/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/pwa,target=/tmp/web-pwa,ro     mkdir -p /srv/app/web/pwa     && cp -a /tmp/web-pwa/. /srv/app/web/pwa/     && touch -d "@0" /srv/app/web/pwa /srv/app/web /srv/app /srv /etc /tmp
+#53 CACHED
+
+#54 [runtime  4/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/bin/xray,target=/tmp/xray,ro     install -m 0755 -o 0 -g 0 /tmp/xray /usr/local/bin/xray     && touch -d "@0" /usr/local/bin/xray /usr/local/bin /etc /tmp
+#54 CACHED
+
+#55 [runtime 11/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_sidecar_migrate,target=/tmp/observability_sidecar_migrate,ro     install -m 0755 -o 0 -g 0 /tmp/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate     && touch -d "@0" /usr/local/bin/observability_sidecar_migrate /usr/local/bin /etc /tmp
+#55 CACHED
+
+#56 [runtime 19/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/app,target=/tmp/web-app,ro     mkdir -p /srv/app/web     && cp -a /tmp/web-app/. /srv/app/web/     && find /srv/app/web -exec touch -h -d "@0" {} +     && touch -d "@0" /srv/app /srv /etc /tmp
+#56 CACHED
+
+#57 [runtime 10/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_request_log_retry_repair,target=/tmp/mcp_request_log_retry_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair     && touch -d "@0" /usr/local/bin/mcp_request_log_retry_repair /usr/local/bin /etc /tmp
+#57 CACHED
+
+#58 [runtime  2/21] RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0     && rm -rf /var/lib/apt/lists/*
+#58 CACHED
+
+#59 [runtime  9/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_search_billing_repair,target=/tmp/mcp_search_billing_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair     && touch -d "@0" /usr/local/bin/mcp_search_billing_repair /usr/local/bin /etc /tmp
+#59 CACHED
+
+#60 [runtime 21/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/meta,target=/tmp/web-meta,ro     cp -a /tmp/web-meta/. /srv/app/web/     && touch -d "@0" /srv/app/web /srv/app /srv /etc /tmp
+#60 CACHED
+
+#61 exporting to image
+#61 exporting layers done
+#61 writing image sha256:7a67af03435a5248b15feb6e33c67cf0b2ab8f2686dc993101ad4f3bbdef9b0b done
+#61 naming to docker.io/library/tavily-hikari-version-layer-19370-4cc4f499-9553-4e6d-86d9-b765b70d40dc-a-mtime-amd64 done
+#61 DONE 0.0s
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 12.10kB 0.0s done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7.1
+#2 DONE 0.4s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#4 DONE 0.1s
+
+#5 [internal] load metadata for ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#5 DONE 0.1s
+
+#6 [internal] load metadata for docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#6 DONE 0.1s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 374B done
+#7 DONE 0.0s
+
+#8 [builder 1/6] FROM docker.io/library/rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33
+#8 DONE 0.0s
+
+#9 [runtime  1/21] FROM docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+#9 DONE 0.0s
+
+#10 [xray-downloader 1/1] FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e
+#10 DONE 0.0s
+
+#11 [internal] load build context
+#11 transferring context: 32.72kB 0.0s done
+#11 DONE 0.1s
+
+#12 [payload-normalizer 10/22] COPY --from=maintenance-builder /app/target/release/db_compaction_once /payload/bin/db_compaction_once
+#12 CACHED
+
+#13 [payload-normalizer  9/22] COPY --from=maintenance-builder /app/target/release/observability_lock_holder /payload/bin/observability_lock_holder
+#13 CACHED
+
+#14 [builder 6/6] COPY src ./src
+#14 CACHED
+
+#15 [builder 2/6] WORKDIR /app
+#15 CACHED
+
+#16 [payload-normalizer  3/22] COPY --from=xray-downloader /usr/local/share/xray/ /payload/xray/share/
+#16 CACHED
+
+#17 [builder 3/6] RUN apt-get update     && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev     && rm -rf /var/lib/apt/lists/*
+#17 CACHED
+
+#18 [payload-normalizer 15/22] COPY scripts/docker-entrypoint.sh /payload/runtime-scripts/docker-entrypoint.sh
+#18 CACHED
+
+#19 [payload-normalizer  1/22] RUN mkdir -p     /payload/bin     /payload/runtime-scripts     /payload/web/app     /payload/web/app/pwa     /payload/web/meta     /payload/web/pwa     /payload/xray/bin     /payload/xray/share
+#19 CACHED
+
+#20 [payload-normalizer  4/22] COPY --from=maintenance-builder /app/target/release/billing_ledger_audit /payload/bin/billing_ledger_audit
+#20 CACHED
+
+#21 [payload-normalizer 11/22] COPY --from=maintenance-builder /app/target/release/request_logs_gc_once /payload/bin/request_logs_gc_once
+#21 CACHED
+
+#22 [payload-normalizer 14/22] COPY --from=app-builder /app/target/release/tavily-hikari /payload/bin/tavily-hikari
+#22 CACHED
+
+#23 [payload-normalizer 17/22] COPY web/dist/assets/ /payload/web/app/assets/
+#23 CACHED
+
+#24 [payload-normalizer 16/22] COPY scripts/docker-healthcheck.sh /payload/runtime-scripts/docker-healthcheck.sh
+#24 CACHED
+
+#25 [app-builder 1/1] RUN test -n "0.0.0-ci.2"     && APP_EFFECTIVE_VERSION="0.0.0-ci.2" cargo build --release --locked --bin tavily-hikari
+#25 CACHED
+
+#26 [maintenance-builder 1/1] RUN cargo build --release --locked     --bin billing_ledger_audit     --bin monthly_quota_rebase     --bin mcp_search_billing_repair     --bin mcp_request_log_retry_repair     --bin observability_sidecar_migrate     --bin observability_lock_holder     --bin db_compaction_once     --bin request_logs_gc_once     --bin ha_outbox_cleanup_once     --bin ha_trigger_repair_once
+#26 CACHED
+
+#27 [payload-normalizer 19/22] COPY web/dist/pwa/ /payload/web/pwa/
+#27 CACHED
+
+#28 [payload-normalizer  7/22] COPY --from=maintenance-builder /app/target/release/mcp_request_log_retry_repair /payload/bin/mcp_request_log_retry_repair
+#28 CACHED
+
+#29 [payload-normalizer  8/22] COPY --from=maintenance-builder /app/target/release/observability_sidecar_migrate /payload/bin/observability_sidecar_migrate
+#29 CACHED
+
+#30 [payload-normalizer  5/22] COPY --from=maintenance-builder /app/target/release/monthly_quota_rebase /payload/bin/monthly_quota_rebase
+#30 CACHED
+
+#31 [payload-normalizer 13/22] COPY --from=maintenance-builder /app/target/release/ha_trigger_repair_once /payload/bin/ha_trigger_repair_once
+#31 CACHED
+
+#32 [builder 5/6] RUN mkdir -p src     && printf 'fn main() {}\n' > src/main.rs     && cargo fetch
+#32 CACHED
+
+#33 [payload-normalizer 12/22] COPY --from=maintenance-builder /app/target/release/ha_outbox_cleanup_once /payload/bin/ha_outbox_cleanup_once
+#33 CACHED
+
+#34 [payload-normalizer 21/22] RUN mv /payload/web/pwa/asset-graphs.json /payload/web/app/pwa/asset-graphs.json
+#34 CACHED
+
+#35 [builder 4/6] COPY Cargo.toml Cargo.lock build.rs ./
+#35 CACHED
+
+#36 [payload-normalizer  2/22] COPY --from=xray-downloader /usr/local/bin/xray /payload/xray/bin/xray
+#36 CACHED
+
+#37 [payload-normalizer  6/22] COPY --from=maintenance-builder /app/target/release/mcp_search_billing_repair /payload/bin/mcp_search_billing_repair
+#37 CACHED
+
+#38 [payload-normalizer 18/22] COPY web/dist/index.html web/dist/admin.html web/dist/console.html web/dist/login.html web/dist/registration-paused.html web/dist/sw-public.js web/dist/sw-admin.js /payload/web/app/
+#38 CACHED
+
+#39 [payload-normalizer 20/22] COPY web/dist/favicon.svg web/dist/manifest.webmanifest web/dist/manifest-admin.webmanifest /payload/web/meta/
+#39 CACHED
+
+#40 [payload-normalizer 22/22] RUN set -eux;     find /payload -type d -exec chown 0:0 {} +;     find /payload -type f -exec chown 0:0 {} +;     find /payload -type d -exec chmod 0755 {} +;     find /payload -type f -exec chmod 0644 {} +;     chmod 0755       /payload/bin/tavily-hikari       /payload/bin/billing_ledger_audit       /payload/bin/monthly_quota_rebase       /payload/bin/mcp_search_billing_repair       /payload/bin/mcp_request_log_retry_repair       /payload/bin/observability_sidecar_migrate       /payload/bin/observability_lock_holder       /payload/bin/db_compaction_once       /payload/bin/request_logs_gc_once       /payload/bin/ha_outbox_cleanup_once       /payload/bin/ha_trigger_repair_once       /payload/runtime-scripts/docker-entrypoint.sh       /payload/runtime-scripts/docker-healthcheck.sh       /payload/xray/bin/xray;     find /payload -exec touch -h -d "@0" {} +
+#40 CACHED
+
+#41 [runtime  3/21] WORKDIR /srv/app
+#41 CACHED
+
+#42 [runtime  2/21] RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl libsqlite3-0     && rm -rf /var/lib/apt/lists/*
+#42 CACHED
+
+#43 [runtime  4/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/bin/xray,target=/tmp/xray,ro     install -m 0755 -o 0 -g 0 /tmp/xray /usr/local/bin/xray     && touch -d "@0" /usr/local/bin/xray /usr/local/bin /etc /tmp
+#43 CACHED
+
+#44 [runtime  5/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/xray/share,target=/tmp/xray-share,ro     mkdir -p /usr/local/share/xray     && cp -a /tmp/xray-share/. /usr/local/share/xray/     && find /usr/local/share/xray -exec touch -h -d "@0" {} +     && touch -d "@0" /usr/local/share /usr/local /etc /tmp
+#44 CACHED
+
+#45 [runtime  6/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/tavily-hikari,target=/tmp/tavily-hikari,ro     install -m 0755 -o 0 -g 0 /tmp/tavily-hikari /usr/local/bin/tavily-hikari     && touch -d "@0" /usr/local/bin/tavily-hikari /usr/local/bin /etc /tmp
+#45 DONE 0.7s
+
+#46 [runtime  7/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/billing_ledger_audit,target=/tmp/billing_ledger_audit,ro     install -m 0755 -o 0 -g 0 /tmp/billing_ledger_audit /usr/local/bin/billing_ledger_audit     && touch -d "@0" /usr/local/bin/billing_ledger_audit /usr/local/bin /etc /tmp
+#46 DONE 0.4s
+
+#47 [runtime  8/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/monthly_quota_rebase,target=/tmp/monthly_quota_rebase,ro     install -m 0755 -o 0 -g 0 /tmp/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase     && touch -d "@0" /usr/local/bin/monthly_quota_rebase /usr/local/bin /etc /tmp
+#47 DONE 0.3s
+
+#48 [runtime  9/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_search_billing_repair,target=/tmp/mcp_search_billing_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair     && touch -d "@0" /usr/local/bin/mcp_search_billing_repair /usr/local/bin /etc /tmp
+#48 DONE 0.3s
+
+#49 [runtime 10/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_request_log_retry_repair,target=/tmp/mcp_request_log_retry_repair,ro     install -m 0755 -o 0 -g 0 /tmp/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair     && touch -d "@0" /usr/local/bin/mcp_request_log_retry_repair /usr/local/bin /etc /tmp
+#49 DONE 0.4s
+
+#50 [runtime 11/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_sidecar_migrate,target=/tmp/observability_sidecar_migrate,ro     install -m 0755 -o 0 -g 0 /tmp/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate     && touch -d "@0" /usr/local/bin/observability_sidecar_migrate /usr/local/bin /etc /tmp
+#50 DONE 0.4s
+
+#51 [runtime 12/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_lock_holder,target=/tmp/observability_lock_holder,ro     install -m 0755 -o 0 -g 0 /tmp/observability_lock_holder /usr/local/bin/observability_lock_holder     && touch -d "@0" /usr/local/bin/observability_lock_holder /usr/local/bin /etc /tmp
+#51 DONE 0.3s
+
+#52 [runtime 13/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/db_compaction_once,target=/tmp/db_compaction_once,ro     install -m 0755 -o 0 -g 0 /tmp/db_compaction_once /usr/local/bin/db_compaction_once     && touch -d "@0" /usr/local/bin/db_compaction_once /usr/local/bin /etc /tmp
+#52 DONE 0.4s
+
+#53 [runtime 14/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/request_logs_gc_once,target=/tmp/request_logs_gc_once,ro     install -m 0755 -o 0 -g 0 /tmp/request_logs_gc_once /usr/local/bin/request_logs_gc_once     && touch -d "@0" /usr/local/bin/request_logs_gc_once /usr/local/bin /etc /tmp
+#53 DONE 0.3s
+
+#54 [runtime 15/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_outbox_cleanup_once,target=/tmp/ha_outbox_cleanup_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_outbox_cleanup_once /usr/local/bin/ha_outbox_cleanup_once     && touch -d "@0" /usr/local/bin/ha_outbox_cleanup_once /usr/local/bin /etc /tmp
+#54 DONE 0.3s
+
+#55 [runtime 16/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/ha_trigger_repair_once,target=/tmp/ha_trigger_repair_once,ro     install -m 0755 -o 0 -g 0 /tmp/ha_trigger_repair_once /usr/local/bin/ha_trigger_repair_once     && touch -d "@0" /usr/local/bin/ha_trigger_repair_once /usr/local/bin /etc /tmp
+#55 DONE 0.3s
+
+#56 [runtime 17/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-entrypoint.sh,target=/tmp/docker-entrypoint.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh     && touch -d "@0" /usr/local/bin/docker-entrypoint.sh /usr/local/bin /etc /tmp
+#56 DONE 0.2s
+
+#57 [runtime 18/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/runtime-scripts/docker-healthcheck.sh,target=/tmp/docker-healthcheck.sh,ro     install -m 0755 -o 0 -g 0 /tmp/docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh     && touch -d "@0" /usr/local/bin/docker-healthcheck.sh /usr/local/bin /etc /tmp
+#57 DONE 0.2s
+
+#58 [runtime 19/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/app,target=/tmp/web-app,ro     mkdir -p /srv/app/web     && cp -a /tmp/web-app/. /srv/app/web/     && find /srv/app/web -exec touch -h -d "@0" {} +     && touch -d "@0" /srv/app /srv /etc /tmp
+#58 DONE 0.4s
+
+#59 [runtime 20/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/pwa,target=/tmp/web-pwa,ro     mkdir -p /srv/app/web/pwa     && cp -a /tmp/web-pwa/. /srv/app/web/pwa/     && touch -d "@0" /srv/app/web/pwa /srv/app/web /srv/app /srv /etc /tmp
+#59 DONE 0.2s
+
+#60 [runtime 21/21] RUN --mount=type=bind,from=payload-normalizer,source=/payload/web/meta,target=/tmp/web-meta,ro     cp -a /tmp/web-meta/. /srv/app/web/     && touch -d "@0" /srv/app/web /srv/app /srv /etc /tmp
+#60 DONE 0.2s
+
+#61 exporting to image
+#61 exporting layers
+#61 exporting layers 0.5s done
+#61 writing image sha256:ccfaccb7aa95ef61054a1b22f853be807a6593519142c289fe56da5b75f2ddd1 done
+#61 naming to docker.io/library/tavily-hikari-version-layer-19370-4cc4f499-9553-4e6d-86d9-b765b70d40dc-b done
+#61 DONE 0.5s
+SemVer-changing layers:
+  index=5 type=main-service-binary compressed_bytes=16926216
+  index=18 type=frontend-application compressed_bytes=7734948
+OCI version/layer reuse acceptance passed: linux/amd64: 21 layers, mtime normalized, exactly two SemVer-changing layers
+Acceptance report: /workspace/worktrees/tavily-hikari-a5cf13da/evidence/oci-acceptance-amd64-0afdb307.md

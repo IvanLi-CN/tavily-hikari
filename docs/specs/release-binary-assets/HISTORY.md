@@ -18,6 +18,7 @@
 - portable 构建链上的 `cargo-zigbuild` 必须显式钉版本，否则 tag 重放或历史 backfill 会因外部工具漂移而失去可复现性。
 - 2026-08-18: 版本 ARG 从 builder 与稳定运行时层移除，Docker 基础镜像改为 tag+digest，稳定 Web 层与尾部动态版本层分离，并增加上下文审计、Dependabot 与 A/B RootFS 复用门禁。
 - 2026-08-18: 严格上下文审计收紧到文件 allowlist，Compose smoke 改为加载 A/B 门禁生成的 B 镜像，release OCI version label 显式跟随有效发布版本。
+- 2026-10-05: AMD64 层归档把多余层变化归因为 runtime `/etc`、`/tmp` mtime 和后续 Web 层递归 restamp；已归一这些目录并让 PWA/metadata 层只写自己的 payload。SemVer A/B 现仅改变主服务二进制和真实前端应用层，结果记录在 companion implementation evidence。
 
 ## Legacy Identity
 

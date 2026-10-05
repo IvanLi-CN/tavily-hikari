@@ -18,6 +18,7 @@
 - 2026-09-01: 修复安装元数据与图标更新链：为 public/admin manifest 固定身份，移除会覆盖 manifest 的 legacy touch-icon HTML 声明，改用内容哈希图标 URL，并让静态缓存与 service worker 更新遵循可重新验证的 metadata / immutable asset 边界。
 - 2026-09-01: 修正方形品牌图标按透明源画布居中导致的前景偏移；导出器改按可见 mark 边界居中，并加入 Web 与 docs-site 图标几何门禁。
 - 2026-09-02: 修正旧 worker 通过 cache-first 隐藏新安装元数据的问题；产品 PWA worker 只预缓存应用壳，manifest 与 regular/maskable 图标走普通网络路径，并以同源 Chromium public/admin V1→V2 产物更新测试覆盖 waiting 前后的读取。
+- 2026-10-05: 发布身份改为由真实 JavaScript 应用包提供产品 SemVer，两个 worker 使用相同版本缓存身份；容器 app 层包含 JS、shell、workers 与 asset graph，稳定图标和 manifest 层不再重写 app 文件。AMD64 OCI A/B 证据随 release binary assets 实现记录保存。
 
 ## 变更记录（Change log）
 
@@ -33,6 +34,7 @@
 - 2026-08-18: 补充版本 A/B 机械门禁，确认稳定 PWA 资产不随纯版本发布变化，且两个 worker 的 cache identity 随版本变化。
 - 2026-08-18: 离线浏览器 E2E 增加 HTML meta 版本来源与旧 release shell 离线可用断言。
 - 2026-09-01: 补齐 manifest identity、图标内容哈希、缓存策略与 service worker 安装预缓存回归；记录 Chromium 可迁移更新路径及既有 iOS/iPadOS Web Clip 无法强制迁移的兼容边界。
+- 2026-10-05: PWA 包装合同改为应用 bundle SemVer 与 worker cache identity 同源，并将版本化 asset graph 固定在应用层；后续稳定资源层不再触碰已复制的 app 内容。
 
 ## Legacy Identity
 
