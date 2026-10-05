@@ -206,10 +206,10 @@ function ensureBackend(repoRoot: string): string {
   return binary;
 }
 
-function stageStaticRelease(repoRoot: string, tempRoot: string, releaseId: string): string {
+function stageStaticRelease(repoRoot: string, tempRoot: string, releaseId: string, sourceVersion: string): string {
   const staticDir = path.join(tempRoot, "dist");
   cpSync(path.join(repoRoot, "web", "dist"), staticDir, { recursive: true });
-  switchStaticRelease(staticDir, releaseId);
+  switchStaticRelease(staticDir, releaseId, sourceVersion);
   return staticDir;
 }
 
@@ -239,21 +239,30 @@ function rewriteManifestIconForRelease(
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function switchStaticRelease(staticDir: string, releaseId: string) {
+function listFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    return entry.isDirectory() ? listFiles(entryPath) : [entryPath];
+  });
+}
+
+function switchStaticRelease(staticDir: string, releaseId: string, sourceVersion: string) {
   writeFileSync(
     path.join(staticDir, "version.json"),
     `${JSON.stringify({ version: releaseId }, null, 2)}\n`,
   );
-  for (const htmlName of ["index.html", "admin.html", "console.html", "login.html", "registration-paused.html"]) {
-    const htmlPath = path.join(staticDir, htmlName);
-    const source = readFileSync(htmlPath, "utf8");
-    const next = source.replace(
-      /<meta\s+name="tavily-hikari-build-version"\s+content="[^"]*"\s*\/?\s*>/,
-      `<meta name="tavily-hikari-build-version" content="${releaseId}" />`,
-    );
-    if (next === source) throw new Error(`failed to rewrite version marker for ${htmlName}`);
-    writeFileSync(htmlPath, next);
+
+  let rewroteApplicationVersion = false;
+  for (const javascriptPath of listFiles(path.join(staticDir, "assets")).filter((file) => file.endsWith(".js"))) {
+    const source = readFileSync(javascriptPath, "utf8");
+    const next = source.replaceAll(JSON.stringify(sourceVersion), JSON.stringify(releaseId));
+    if (next !== source) {
+      rewroteApplicationVersion = true;
+      writeFileSync(javascriptPath, next);
+    }
   }
+  if (!rewroteApplicationVersion) throw new Error(`no application bundle contained ${sourceVersion}`);
+
   if (releaseId === "release-b") {
     // Reuse the other approved identity's PNG as a deterministic V2 fixture without changing production artwork.
     const publicManifest = JSON.parse(
@@ -433,8 +442,25 @@ async function assertText(page: import("playwright-core").Page, text: string) {
   );
 }
 
-async function readBuildVersion(page: import("playwright-core").Page): Promise<string | null> {
-  return await page.locator('meta[name="tavily-hikari-build-version"]').getAttribute("content");
+async function assertApplicationBundleVersion(page: import("playwright-core").Page, version: string) {
+  const found = await page.evaluate(async (expectedVersion) => {
+    const javascriptUrls = [...new Set(
+      performance.getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .filter((url) => {
+          const parsed = new URL(url, location.href);
+          return parsed.origin === location.origin && parsed.pathname.startsWith("/assets/") && parsed.pathname.endsWith(".js");
+        }),
+    )];
+
+    for (const url of javascriptUrls) {
+      const response = await fetch(url);
+      if (response.ok && (await response.text()).includes(JSON.stringify(expectedVersion))) return true;
+    }
+    return false;
+  }, version);
+
+  if (!found) throw new Error(`no loaded JavaScript application bundle contained ${version}`);
 }
 
 async function readInstallMetadata(
@@ -591,8 +617,10 @@ async function main() {
   const backendPort = await reservePort();
   const baseUrl = `http://127.0.0.1:${backendPort}`;
 
+  const webPackage = JSON.parse(readFileSync(path.join(repoRoot, "web", "package.json"), "utf8")) as { version: string };
+  const sourceVersion = process.env.VITE_APP_VERSION?.trim() || webPackage.version;
   ensureBuild(repoRoot);
-  const staticDir = stageStaticRelease(repoRoot, tempRoot, "release-a");
+  const staticDir = stageStaticRelease(repoRoot, tempRoot, "release-a", sourceVersion);
   const backendBinary = ensureBackend(repoRoot);
   const backend = startBackend(backendBinary, repoRoot, staticDir, backendPort, dbPath);
   let browser: import("playwright-core").Browser | null = null;
@@ -614,20 +642,14 @@ async function main() {
     await waitForServiceWorker(publicPage);
     await publicPage.reload({ waitUntil: "domcontentloaded" });
     await waitForController(publicPage, "/sw-public.js");
-    const initialBuildVersion = await readBuildVersion(publicPage);
-    if (initialBuildVersion !== "release-a") {
-      throw new Error(`initial public shell reported ${initialBuildVersion}, expected release-a`);
-    }
+    await assertApplicationBundleVersion(publicPage, "release-a");
     const publicV1Metadata = await readInstallMetadata(publicPage, "/manifest.webmanifest");
 
     log("verifying the release-a shell remains usable offline before an update");
     await setOffline(publicPage, true);
     await publicPage.reload({ waitUntil: "domcontentloaded" });
     await assertText(publicPage, "Offline shell loaded");
-    const offlineBuildVersion = await readBuildVersion(publicPage);
-    if (offlineBuildVersion !== "release-a") {
-      throw new Error(`offline public shell reported ${offlineBuildVersion}, expected release-a`);
-    }
+    await assertApplicationBundleVersion(publicPage, "release-a");
     await setOffline(publicPage, false);
 
     const adminAuthContext = await browser.newContext({
@@ -683,13 +705,14 @@ async function main() {
     await waitForController(adminPage, "/sw-admin.js");
 
     log("switching the same origin to release-b install metadata");
-    switchStaticRelease(staticDir, "release-b");
+    switchStaticRelease(staticDir, "release-b", "release-a");
 
     log("verifying the public V1 registration can read V2 manifest and icon before activation");
     await waitForAppUpdate(publicPage, "/");
     const publicV2BeforeActivation = await readInstallMetadata(publicPage, "/manifest.webmanifest");
     assertUpdatedInstallMetadata("public", publicV1Metadata, publicV2BeforeActivation);
     await activateWaitingAppUpdate(publicPage, "/sw-public.js", "public");
+    await assertApplicationBundleVersion(publicPage, "release-b");
     const publicV2Metadata = await readInstallMetadata(publicPage, "/manifest.webmanifest");
     assertUpdatedInstallMetadata("public", publicV1Metadata, publicV2Metadata);
     if (publicV2Metadata.iconPath !== publicV2BeforeActivation.iconPath) {
@@ -719,6 +742,7 @@ async function main() {
     const adminV2BeforeActivation = await readInstallMetadata(adminPage, "/manifest-admin.webmanifest");
     assertUpdatedInstallMetadata("admin", adminV1Metadata, adminV2BeforeActivation);
     await activateWaitingAppUpdate(adminPage, "/sw-admin.js", "admin");
+    await assertApplicationBundleVersion(adminPage, "release-b");
     const adminV2Metadata = await readInstallMetadata(adminPage, "/manifest-admin.webmanifest");
     assertUpdatedInstallMetadata("admin", adminV1Metadata, adminV2Metadata);
     if (adminV2Metadata.iconPath !== adminV2BeforeActivation.iconPath) {

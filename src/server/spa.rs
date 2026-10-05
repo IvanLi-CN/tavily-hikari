@@ -140,7 +140,19 @@ async fn serve_favicon(State(state): State<Arc<AppState>>) -> Result<Response<Bo
 }
 
 async fn serve_version_json(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
-    load_spa_response(state.as_ref(), "version.json").await
+    if local_static_file_exists(state.as_ref(), "version.json").await {
+        return load_spa_response(state.as_ref(), "version.json").await;
+    }
+
+    let version = frontend_version(state.static_dir.as_deref());
+    let body = serde_json::to_vec(&json!({ "version": version }))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "application/json")
+        .header(CACHE_CONTROL, "no-cache, must-revalidate")
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn serve_public_manifest(

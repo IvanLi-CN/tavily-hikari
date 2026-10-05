@@ -3,43 +3,97 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_DIR="$ROOT_DIR/web"
-RUN_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tavily-hikari-version-layer-reuse-${GITHUB_RUN_ID:-$$}"
-DIST_A="$RUN_ROOT/dist-a"
-DIST_B="$RUN_ROOT/dist-b"
-ORIGINAL_DIST="$RUN_ROOT/original-dist"
-VERSION_A="${VERSION_A:-ci-layer-a}"
-VERSION_B="${VERSION_B:-ci-layer-b}"
+RUN_PARENT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+RUN_ROOT=""
+RUN_ROOT_CREATED=0
+DIST_A=""
+DIST_B=""
+CONTEXT_A=""
+CONTEXT_A_MTIME=""
+CONTEXT_B=""
+VERSION_A="${VERSION_A:-0.0.0-ci.1}"
+VERSION_B="${VERSION_B:-0.0.0-ci.2}"
 IMAGE_PREFIX="${IMAGE_PREFIX:-tavily-hikari-version-layer-${GITHUB_RUN_ID:-$$}}"
-IMAGE_A="${IMAGE_PREFIX}-a"
-IMAGE_B="${IMAGE_PREFIX}-b"
-AUDIT_IMAGE="${IMAGE_PREFIX}-context-audit"
-CONTAINER_A="${IMAGE_PREFIX}-container-a"
-CONTAINER_B="${IMAGE_PREFIX}-container-b"
-
-mkdir -p "$RUN_ROOT"
-
-restore_dist() {
-  rm -rf "$WEB_DIR/dist"
-  if [[ -d "$ORIGINAL_DIST" ]]; then
-    mv "$ORIGINAL_DIST" "$WEB_DIR/dist"
-  fi
-}
-
-cleanup() {
-  restore_dist || true
-  if command -v docker >/dev/null 2>&1; then
-    docker rm -fv "$CONTAINER_A" "$CONTAINER_B" >/dev/null 2>&1 || true
-    docker image rm "$IMAGE_A" "$IMAGE_B" "$AUDIT_IMAGE" >/dev/null 2>&1 || true
-  fi
-  rm -rf "$RUN_ROOT"
-}
-
-trap cleanup EXIT
-
-if [[ -d "$WEB_DIR/dist" ]]; then
-  cp -a "$WEB_DIR/dist" "$ORIGINAL_DIST"
+REPORT_PATH=""
+IMAGE_B_TAG_FILE="${IMAGE_B_TAG_FILE:-}"
+SOURCE_DATE_EPOCH=0
+INPUT_EPOCH_A=1700000000
+INPUT_EPOCH_B=1800000000
+PLATFORMS="${PLATFORMS:-linux/amd64}"
+CODEX_THREAD_ID="${CODEX_THREAD_ID:-}"
+CANDIDATE_SHA="${CANDIDATE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf 'unbound')}"
+INVOCATION_ID=""
+BUILDX_BUILDER_ARGS=()
+if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+  BUILDX_BUILDER_ARGS=(--builder "$BUILDX_BUILDER")
 fi
 
+declare -a IMAGE_TAGS=()
+declare -a IMAGE_IDS=()
+declare -a PLATFORM_RESULTS=()
+
+cleanup() {
+  local container_id
+  local image_index image_tag expected_image_id current_image_id
+  if command -v docker >/dev/null 2>&1; then
+    if [[ -n "$INVOCATION_ID" ]]; then
+      while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        docker rm -f "$container_id" >/dev/null 2>&1 || true
+      done < <(docker ps -aq --filter "label=codex.testbox.run=$INVOCATION_ID" 2>/dev/null || true)
+    fi
+    for image_index in "${!IMAGE_TAGS[@]}"; do
+      image_tag="${IMAGE_TAGS[$image_index]}"
+      expected_image_id="${IMAGE_IDS[$image_index]}"
+      current_image_id="$(docker image inspect --format '{{.Id}}' "$image_tag" 2>/dev/null || true)"
+      if [[ "$current_image_id" == "$expected_image_id" ]]; then
+        docker image rm "$image_tag" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+  if [[ "$RUN_ROOT_CREATED" == "1" && "${KEEP_RUN_ROOT:-0}" != "1" ]]; then
+    rm -rf -- "$RUN_ROOT"
+  fi
+}
+trap cleanup EXIT
+
+RUN_ROOT="$(mktemp -d "${RUN_PARENT%/}/tavily-hikari-version-layer-reuse-${GITHUB_RUN_ID:-$$}.XXXXXXXXXX")"
+RUN_ROOT_CREATED=1
+DIST_A="$RUN_ROOT/dist-a"
+DIST_B="$RUN_ROOT/dist-b"
+CONTEXT_A="$RUN_ROOT/context-a"
+CONTEXT_A_MTIME="$RUN_ROOT/context-a-mtime"
+CONTEXT_B="$RUN_ROOT/context-b"
+REPORT_PATH="${LAYER_ACCEPTANCE_REPORT:-$RUN_ROOT/acceptance.md}"
+
+command -v docker >/dev/null
+command -v bun >/dev/null
+command -v python3 >/dev/null
+docker buildx version >/dev/null
+[[ "$VERSION_A" != "$VERSION_B" ]]
+
+if [[ -n "$CODEX_THREAD_ID" && ! "$CODEX_THREAD_ID" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "CODEX_THREAD_ID must match ^[a-z0-9][a-z0-9_-]*$ for labeled testbox containers" >&2
+  exit 2
+fi
+
+INVOCATION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+IMAGE_TAG_PREFIX="${IMAGE_PREFIX}-${INVOCATION_ID}"
+if [[ -n "$CODEX_THREAD_ID" ]]; then
+  CONTAINER_PREFIX="testbox-${CODEX_THREAD_ID}-${IMAGE_PREFIX}-${INVOCATION_ID}"
+else
+  CONTAINER_PREFIX="${IMAGE_PREFIX}-${INVOCATION_ID}"
+fi
+DOCKER_LABEL_ARGS=(--label "codex.testbox.run=$INVOCATION_ID")
+if [[ -n "$CODEX_THREAD_ID" ]]; then
+  DOCKER_LABEL_ARGS+=(--label "codex.testbox.agent=$CODEX_THREAD_ID")
+fi
+
+IFS=, read -r -a PLATFORM_LIST <<< "$PLATFORMS"
+if ((${#PLATFORM_LIST[@]} == 0)); then
+  echo "PLATFORMS must contain at least one comma-separated Docker platform" >&2
+  exit 2
+fi
 (
   cd "$WEB_DIR"
   bun --bun ./node_modules/.bin/tsc -b
@@ -54,159 +108,459 @@ build_web() {
   (
     cd "$WEB_DIR"
     VITE_APP_VERSION="$version" bun --bun ./node_modules/.bin/vite build --outDir "$output_dir"
-    VITE_APP_VERSION="$version" WEB_DIST_DIR="$output_dir" bun ./scripts/write-version.mjs
-    WEB_DIST_DIR="$output_dir" python3 ./scripts/generate_pwa_assets.py
+    VITE_APP_VERSION="$version" WEB_DIST_DIR="$output_dir" python3 ./scripts/generate_pwa_assets.py
   )
-  # Normalize stable files so their COPY layers are reproducible, while leaving
-  # version-bearing files with build-specific metadata to prevent cache aliasing.
-  find "$output_dir" -type d -exec touch -t 197001010000 {} +
-  while IFS= read -r file; do
-    case "$file" in
-      "$output_dir/version.json"|"$output_dir/index.html"|"$output_dir/admin.html"|"$output_dir/console.html"|"$output_dir/login.html"|"$output_dir/registration-paused.html"|"$output_dir/sw-public.js"|"$output_dir/sw-admin.js")
-        continue
-        ;;
-    esac
-    touch -t 197001010000 "$file"
-  done < <(find "$output_dir" -type f -print)
-}
 
-hash_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d ' ' -f 1
-  else
-    shasum -a 256 "$1" | cut -d ' ' -f 1
+  if [[ -e "$output_dir/version.json" ]]; then
+    echo "production web output must not contain static version.json" >&2
+    exit 1
+  fi
+  if grep -Eiq '<meta[^>]+(app-)?version' "$output_dir"/*.html; then
+    echo "production HTML must not contain a version meta tag" >&2
+    exit 1
+  fi
+  for worker in sw-public.js sw-admin.js; do
+    grep -Fq "const BUILD_VERSION = \"$version\";" "$output_dir/$worker"
+  done
+  if ! grep -rFl --include='*.js' -e "\"$version\"" "$output_dir/assets" >/dev/null; then
+    echo "frontend JavaScript bundle does not embed $version" >&2
+    exit 1
   fi
 }
 
 build_web "$VERSION_A" "$DIST_A"
 build_web "$VERSION_B" "$DIST_B"
 
-mapfile -t files_a < <(cd "$DIST_A" && find . -type f -print | sort)
-mapfile -t files_b < <(cd "$DIST_B" && find . -type f -print | sort)
-if ! diff -u <(printf '%s\n' "${files_a[@]}") <(printf '%s\n' "${files_b[@]}"); then
-  echo "version A/B output file inventories differ" >&2
-  exit 1
-fi
+python3 - "$DIST_A" "$DIST_B" <<'PY'
+import pathlib
+import sys
 
-dynamic_files=(
-  "./version.json"
-  "./index.html"
-  "./admin.html"
-  "./console.html"
-  "./login.html"
-  "./registration-paused.html"
-  "./sw-public.js"
-  "./sw-admin.js"
-)
-for file in "${dynamic_files[@]}"; do
-  if cmp -s "$DIST_A/$file" "$DIST_B/$file"; then
-    echo "expected version-specific output to differ: $file" >&2
-    exit 1
+left, right = map(pathlib.Path, sys.argv[1:])
+for relative in ("favicon.svg", "manifest.webmanifest", "manifest-admin.webmanifest"):
+    if (left / relative).read_bytes() != (right / relative).read_bytes():
+        raise SystemExit(f"stable web file changed between SemVer builds: {relative}")
+
+left_icons = sorted(path.name for path in (left / "pwa").glob("*.png"))
+right_icons = sorted(path.name for path in (right / "pwa").glob("*.png"))
+if left_icons != right_icons:
+    raise SystemExit("PWA icon file names changed between SemVer builds")
+for name in left_icons:
+    if (left / "pwa" / name).read_bytes() != (right / "pwa" / name).read_bytes():
+        raise SystemExit(f"stable PWA icon changed between SemVer builds: {name}")
+
+print(f"Verified {len(left_icons)} stable PWA icons and stable manifests/favicon")
+PY
+
+prepare_context() {
+  local output="$1"
+  local dist="$2"
+  local epoch="$3"
+
+  rm -rf "$output"
+  mkdir -p "$output/scripts" "$output/web"
+  cp "$ROOT_DIR/Dockerfile" "$ROOT_DIR/.dockerignore" "$ROOT_DIR/Cargo.toml" \
+    "$ROOT_DIR/Cargo.lock" "$ROOT_DIR/build.rs" "$ROOT_DIR/rust-toolchain.toml" "$output/"
+  cp -a "$ROOT_DIR/src" "$output/src"
+  cp "$ROOT_DIR/scripts/docker-entrypoint.sh" "$ROOT_DIR/scripts/docker-healthcheck.sh" "$output/scripts/"
+  cp -a "$dist" "$output/web/dist"
+  find "$output" -exec touch -h -d "@$epoch" {} +
+}
+
+prepare_context "$CONTEXT_A" "$DIST_A" "$INPUT_EPOCH_A"
+prepare_context "$CONTEXT_A_MTIME" "$DIST_A" "$INPUT_EPOCH_B"
+prepare_context "$CONTEXT_B" "$DIST_B" "$INPUT_EPOCH_A"
+
+hash_layers() {
+  docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$1"
+}
+
+buildx_build() {
+  docker buildx build "${BUILDX_BUILDER_ARGS[@]}" "$@"
+}
+
+track_image() {
+  local image_tag="$1"
+  local image_id
+  image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
+  IMAGE_TAGS+=("$image_tag")
+  IMAGE_IDS+=("$image_id")
+}
+
+build_image() {
+  local platform="$1"
+  local tag="$2"
+  local version="$3"
+  local context="$4"
+  local force_normalizer="${5:-false}"
+  local -a build_args=(
+    --platform "$platform"
+    --load
+    --tag "$tag"
+    --build-arg "APP_EFFECTIVE_VERSION=$version"
+    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+  )
+  if [[ "$force_normalizer" == "true" ]]; then
+    build_args+=(--no-cache-filter=payload-normalizer)
   fi
-done
+  buildx_build "${build_args[@]}" "$context"
+  track_image "$tag"
+}
 
-for file in "${files_a[@]}"; do
-  if printf '%s\n' "${dynamic_files[@]}" | grep -Fxq "$file"; then
-    continue
+check_image_contract() {
+  local image="$1"
+  local expected_version="$2"
+  local container_name="$3"
+  local port response cli_version api_response version_json_response oci_label
+
+  cli_version="$(docker run --rm \
+    --name "${container_name}-version" \
+    "${DOCKER_LABEL_ARGS[@]}" \
+    --entrypoint /usr/local/bin/tavily-hikari \
+    "$image" --version)"
+  if [[ "$cli_version" != "tavily-hikari $expected_version" ]]; then
+    echo "$image reports unexpected CLI version: $cli_version" >&2
+    return 1
   fi
-  hash_a="$(hash_file "$DIST_A/$file")"
-  hash_b="$(hash_file "$DIST_B/$file")"
-  if [[ "$hash_a" != "$hash_b" ]]; then
-    echo "stable output changed between versions: $file" >&2
-    exit 1
-  fi
-done
-
-grep -Fq "\"version\": \"$VERSION_A\"" "$DIST_A/version.json"
-grep -Fq "\"version\": \"$VERSION_B\"" "$DIST_B/version.json"
-grep -R -Fq "const BUILD_VERSION = \"$VERSION_A\";" "$DIST_A/sw-public.js" "$DIST_A/sw-admin.js"
-grep -R -Fq "const BUILD_VERSION = \"$VERSION_B\";" "$DIST_B/sw-public.js" "$DIST_B/sw-admin.js"
-
-rm -rf "$WEB_DIR/dist"
-cp -a "$DIST_A" "$WEB_DIR/dist"
-docker build --target context-audit --build-arg "APP_EFFECTIVE_VERSION=$VERSION_A" -t "$AUDIT_IMAGE" "$ROOT_DIR"
-docker build --build-arg "APP_EFFECTIVE_VERSION=$VERSION_A" -t "$IMAGE_A" "$ROOT_DIR"
-
-rm -rf "$WEB_DIR/dist"
-cp -a "$DIST_B" "$WEB_DIR/dist"
-docker build --build-arg "APP_EFFECTIVE_VERSION=$VERSION_B" -t "$IMAGE_B" "$ROOT_DIR"
-
-mapfile -t layers_a < <(docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE_A")
-mapfile -t layers_b < <(docker image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE_B")
-if [[ "${#layers_a[@]}" -lt 2 || "${#layers_a[@]}" -ne "${#layers_b[@]}" ]]; then
-  echo "version A/B image layer counts differ or are empty" >&2
-  exit 1
-fi
-dynamic_layer_index=$((${#layers_a[@]} - 2))
-for ((index = 0; index < dynamic_layer_index; index += 1)); do
-  if [[ "${layers_a[$index]}" != "${layers_b[$index]}" ]]; then
-    echo "stable image layer changed at index $index" >&2
-    exit 1
-  fi
-done
-# VOLUME may leave an empty trailing RootFS layer after the dynamic COPY.
-if [[ "${layers_a[$dynamic_layer_index]}" == "${layers_b[$dynamic_layer_index]}" ]]; then
-  echo "version-specific final image layer did not change" >&2
-  exit 1
-fi
-if [[ "${layers_a[$((${#layers_a[@]} - 1))]}" != "${layers_b[$((${#layers_b[@]} - 1))]}" ]]; then
-  echo "post-metadata image layer changed unexpectedly" >&2
-  exit 1
-fi
-
-check_api_version() {
-  local image_name="$1"
-  local container_name="$2"
-  local expected_version="$3"
-  local port
-  local response
+  printf -- '- Image `%s`: `--version` reports `%s`.\n' "$expected_version" "$cli_version" \
+    >> "$RUN_ROOT/cli-version-results.md"
 
   docker run --detach \
     --name "$container_name" \
+    "${DOCKER_LABEL_ARGS[@]}" \
     --publish 127.0.0.1::8787 \
     --env PROXY_BIND=0.0.0.0 \
     --env TAVILY_API_KEYS=tvly-ci-layer-check \
     --env TAVILY_UPSTREAM=http://127.0.0.1:9/mcp \
     --env DEV_OPEN_ADMIN=true \
-    "$image_name" >/dev/null
+    "$image" >/dev/null
   port="$(docker port "$container_name" 8787/tcp | sed -n 's/.*://p' | head -n 1)"
+
+  local api_ok=false
+  api_response=""
   for _ in $(seq 1 60); do
-    response="$(curl -fsS "http://127.0.0.1:${port}/api/version" 2>/dev/null || true)"
-    if EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$response" python3 - <<'PY'
+    if response="$(curl -fsS "http://127.0.0.1:${port}/api/version" 2>/dev/null)" \
+      && EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$response" python3 - <<'PY'
 import json
 import os
-
 payload = json.loads(os.environ["VERSION_RESPONSE"])
 expected = os.environ["EXPECTED_VERSION"]
 if payload.get("backend") != expected or payload.get("frontend") != expected:
     raise SystemExit(1)
 PY
     then
-      return 0
+      api_ok=true
+      api_response="$response"
+      break
     fi
     sleep 1
   done
-  docker logs "$container_name" >&2 || true
-  echo "${image_name} did not report release version ${expected_version}" >&2
-  return 1
+  if [[ "$api_ok" != true ]]; then
+    docker logs "$container_name" >&2 || true
+    echo "$image did not report backend/frontend version $expected_version" >&2
+    return 1
+  fi
+
+  version_json_response="$(curl -fsS "http://127.0.0.1:${port}/version.json")"
+  EXPECTED_VERSION="$expected_version" VERSION_RESPONSE="$version_json_response" python3 - <<'PY'
+import json
+import os
+payload = json.loads(os.environ["VERSION_RESPONSE"])
+if payload != {"version": os.environ["EXPECTED_VERSION"]}:
+    raise SystemExit(f"unexpected /version.json response: {payload!r}")
+PY
+
+  docker exec "$container_name" test ! -e /srv/app/web/version.json
+  docker exec "$container_name" grep -a -Fq "$expected_version" /usr/local/bin/tavily-hikari
+  oci_label="$(EXPECTED_VERSION="$expected_version" IMAGE_INSPECT="$(docker image inspect "$image")" python3 - <<'PY'
+import json
+import os
+image = json.loads(os.environ["IMAGE_INSPECT"])[0]
+version = os.environ["EXPECTED_VERSION"]
+label = image.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.version")
+if label != version:
+    raise SystemExit(f"OCI version label {label!r} does not match {version!r}")
+if any(value.startswith("APP_EFFECTIVE_VERSION=") for value in image.get("Config", {}).get("Env", [])):
+    raise SystemExit("APP_EFFECTIVE_VERSION leaked into runtime Config.Env")
+print(label)
+PY
+  )"
+
+  printf -- '- Image `%s`:\n' "$expected_version" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `--version`: `tavily-hikari %s`\n' "$expected_version" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `/api/version`: `%s`\n' "$api_response" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `/version.json`: `%s`\n' "$version_json_response" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - OCI `org.opencontainers.image.version`: `%s`\n' "$oci_label" >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - `APP_EFFECTIVE_VERSION` runtime environment: absent\n' >> "$RUN_ROOT/runtime-version-results.md"
+  printf -- '  - Static `/srv/app/web/version.json`: absent\n' >> "$RUN_ROOT/runtime-version-results.md"
 }
 
-check_api_version "$IMAGE_A" "$CONTAINER_A" "$VERSION_A"
-check_api_version "$IMAGE_B" "$CONTAINER_B" "$VERSION_B"
+analyze_changed_layers() {
+  local image_a="$1"
+  local image_b="$2"
+  local report_file="$3"
+  local platform="$4"
 
-for image_version in "$VERSION_A" "$VERSION_B"; do
-  image_name="$IMAGE_A"
-  [[ "$image_version" == "$VERSION_B" ]] && image_name="$IMAGE_B"
-  docker run --rm --entrypoint /bin/sh "$image_name" -c "grep -Fq '\"version\": \"$image_version\"' /srv/app/web/version.json"
-  env_version="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image_name" | sed -n "s/^APP_EFFECTIVE_VERSION=//p")"
-  label_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image_name")"
-  [[ "$env_version" == "$image_version" ]]
-  [[ "$label_version" == "$image_version" ]]
+  docker image save --output "$RUN_ROOT/layer-a.tar" "$image_a"
+  docker image save --output "$RUN_ROOT/layer-b.tar" "$image_b"
+  python3 - "$RUN_ROOT/layer-a.tar" "$RUN_ROOT/layer-b.tar" \
+    "$report_file" "$platform" "$VERSION_A" "$VERSION_B" <<'PY'
+import gzip
+import hashlib
+import io
+import json
+import pathlib
+import sys
+import tarfile
+
+archive_a, archive_b, report_path = map(pathlib.Path, sys.argv[1:4])
+platform = sys.argv[4]
+version_a, version_b = sys.argv[5:7]
+
+def load_image(path, release_version):
+    release_version_bytes = release_version.encode("utf-8")
+    with tarfile.open(path, "r") as archive:
+        manifest = json.load(archive.extractfile("manifest.json"))[0]
+        config = json.load(archive.extractfile(manifest["Config"]))
+        layers = []
+        entries = []
+        for layer_path in manifest["Layers"]:
+            data = archive.extractfile(layer_path).read()
+            layers.append(data)
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as layer:
+                layer_entries = {}
+                for member in layer.getmembers():
+                    name = member.name.lstrip("./")
+                    content_hash = None
+                    contains_release_version = False
+                    if member.isfile():
+                        content = layer.extractfile(member).read()
+                        content_hash = hashlib.sha256(content).hexdigest()
+                        contains_release_version = (
+                            name.startswith("srv/app/web/assets/")
+                            and name.endswith(".js")
+                            and release_version_bytes in content
+                        )
+                    layer_entries[name] = {
+                        "type": member.type,
+                        "mode": oct(member.mode),
+                        "uid": member.uid,
+                        "gid": member.gid,
+                        "mtime": member.mtime,
+                        "size": member.size,
+                        "linkname": member.linkname,
+                        "sha256": content_hash,
+                        "contains_release_version": contains_release_version,
+                    }
+                entries.append(layer_entries)
+        return config["rootfs"]["diff_ids"], layers, entries
+
+diff_a, blobs_a, entries_a = load_image(archive_a, version_a)
+diff_b, blobs_b, entries_b = load_image(archive_b, version_b)
+if len(diff_a) != len(diff_b):
+    raise SystemExit("SemVer A/B images have different filesystem layer counts")
+changed = [index for index, pair in enumerate(zip(diff_a, diff_b)) if pair[0] != pair[1]]
+if len(changed) != 2:
+    print(f"expected exactly two SemVer-dependent filesystem layers, found {changed}", file=sys.stderr)
+    for index in changed:
+        paths_a = set(entries_a[index])
+        paths_b = set(entries_b[index])
+        only_a = sorted(paths_a - paths_b)
+        only_b = sorted(paths_b - paths_a)
+        print(f"layer {index}: paths only in A ({len(only_a)}): {only_a[:5]}", file=sys.stderr)
+        print(f"layer {index}: paths only in B ({len(only_b)}): {only_b[:5]}", file=sys.stderr)
+        if paths_a == paths_b:
+            print(f"layer {index}: same {len(paths_a)} paths have different content or metadata", file=sys.stderr)
+            changed_entries = [
+                (path, entries_a[index][path], entries_b[index][path])
+                for path in sorted(paths_a)
+                if entries_a[index][path] != entries_b[index][path]
+            ]
+            for path, entry_a, entry_b in changed_entries[:8]:
+                print(f"  {path}: A={entry_a} B={entry_b}", file=sys.stderr)
+    raise SystemExit(1)
+
+entries = []
+for index in changed:
+    paths = list(entries_b[index])
+    if any(path == "usr/local/bin/tavily-hikari" for path in paths):
+        layer_type = "main-service-binary"
+        binary_path = "usr/local/bin/tavily-hikari"
+        binary_sha_a = entries_a[index].get(binary_path, {}).get("sha256")
+        binary_sha_b = entries_b[index].get(binary_path, {}).get("sha256")
+        if not binary_sha_a or not binary_sha_b or binary_sha_a == binary_sha_b:
+            raise SystemExit("main service binary layer changed without a binary content change")
+        content_proof = f"binary sha256 {binary_sha_a} -> {binary_sha_b}"
+    elif any(path.startswith("srv/app/web/") for path in paths):
+        layer_type = "frontend-application"
+        versioned_js_a = {
+            path: entry["sha256"]
+            for path, entry in entries_a[index].items()
+            if path.startswith("srv/app/web/assets/")
+            and path.endswith(".js")
+            and entry["contains_release_version"]
+        }
+        versioned_js_b = {
+            path: entry["sha256"]
+            for path, entry in entries_b[index].items()
+            if path.startswith("srv/app/web/assets/")
+            and path.endswith(".js")
+            and entry["contains_release_version"]
+        }
+        if not versioned_js_a or not versioned_js_b:
+            raise SystemExit("frontend application layer lacks a JavaScript bundle with its SemVer")
+        hashes_a = set(versioned_js_a.values())
+        hashes_b = set(versioned_js_b.values())
+        if hashes_a == hashes_b:
+            raise SystemExit("frontend application layer changed without a versioned JavaScript content hash change")
+        js_sha_a, js_sha_b = next(
+            (sha_a, sha_b)
+            for sha_a in sorted(hashes_a)
+            for sha_b in sorted(hashes_b)
+            if sha_a != sha_b
+        )
+        js_path_a = min(path for path, sha in versioned_js_a.items() if sha == js_sha_a)
+        js_path_b = min(path for path, sha in versioned_js_b.items() if sha == js_sha_b)
+        content_proof = f"SemVer JS {js_path_a}@{js_sha_a} -> {js_path_b}@{js_sha_b}"
+    else:
+        raise SystemExit(f"changed layer {index} is not the server binary or frontend application: {paths}")
+    compressed_size = len(gzip.compress(blobs_b[index], compresslevel=1, mtime=0))
+    entries.append((index, layer_type, compressed_size, paths, content_proof))
+
+if {entry[1] for entry in entries} != {"main-service-binary", "frontend-application"}:
+    raise SystemExit(f"unexpected changed layer types: {[entry[1] for entry in entries]}")
+if any("srv/app/web/version.json" in paths for paths in entries_b):
+    raise SystemExit("static version.json exists in the production image")
+
+with report_path.open("a", encoding="utf-8") as report:
+    for index, layer_type, size, paths, content_proof in entries:
+        report.write(f"| {platform} | {index} | {layer_type} | {size} | `{content_proof}` | gzip -1 of docker-save layer.tar |\n")
+print("SemVer-changing layers:")
+for index, layer_type, size, _, content_proof in entries:
+    print(f"  index={index} type={layer_type} compressed_bytes={size} content_proof={content_proof}")
+PY
+}
+
+REPORT_DIR="$(dirname -- "$REPORT_PATH")"
+mkdir -p "$REPORT_DIR"
+CHANGED_LAYER_REPORT="$RUN_ROOT/changed-layers.md"
+RUNTIME_VERSION_REPORT="$RUN_ROOT/runtime-version-results.md"
+INVALID_VERSION_REPORT="$RUN_ROOT/invalid-version-results.md"
+: > "$CHANGED_LAYER_REPORT"
+: > "$RUNTIME_VERSION_REPORT"
+: > "$INVALID_VERSION_REPORT"
+tested_arm64=false
+for platform in "${PLATFORM_LIST[@]}"; do
+  if [[ "$platform" == "linux/arm64" ]]; then
+    tested_arm64=true
+  fi
+done
+cat > "$REPORT_PATH" <<EOF
+# OCI version/layer reuse acceptance
+
+- Candidate: $CANDIDATE_SHA
+- Source date epoch: $SOURCE_DATE_EPOCH
+- Synthetic package versions: $VERSION_A and $VERSION_B
+- Platforms: $PLATFORMS
+- ARM64 evidence: $([[ "$tested_arm64" == true ]] && printf 'included' || printf 'not tested; this report provides no ARM64 evidence')
+- Scenario: same source and SemVer with different Docker-context mtimes; then same source with different SemVer
+- Note: SemVer A/B is a synthetic packaging contract test, not evidence of a historical production version-only release.
+
+## Same-version mtime comparison
+
+| Platform | Filesystem layers | Same-version mtime comparison | SemVer layer changes |
+| --- | ---: | --- | --- |
+EOF
+
+first_platform="${PLATFORM_LIST[0]}"
+audit_tag="${IMAGE_TAG_PREFIX}-context-audit"
+buildx_build --platform "$first_platform" --load --target context-audit --tag "$audit_tag" "$CONTEXT_A"
+track_image "$audit_tag"
+
+for platform in "${PLATFORM_LIST[@]}"; do
+  arch="${platform##*/}"
+  image_a="${IMAGE_TAG_PREFIX}-a-${arch}"
+  image_a_mtime="${IMAGE_TAG_PREFIX}-a-mtime-${arch}"
+  image_b="${IMAGE_TAG_PREFIX}-b-${arch}"
+  if [[ "$arch" == "amd64" ]]; then
+    image_b="${IMAGE_TAG_PREFIX}-b"
+  fi
+
+  build_image "$platform" "$image_a" "$VERSION_A" "$CONTEXT_A"
+  if [[ "$platform" == "$first_platform" ]]; then
+    invalid_version_log="$RUN_ROOT/invalid-version-build.log"
+    if buildx_build --progress=plain --platform "$platform" --target app-builder \
+      --build-arg APP_EFFECTIVE_VERSION=not-semver \
+      --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+      "$CONTEXT_A" >"$invalid_version_log" 2>&1; then
+      echo "app-builder accepted an invalid APP_EFFECTIVE_VERSION" >&2
+      exit 1
+    fi
+    if ! grep -Fq "APP_EFFECTIVE_VERSION must be a valid SemVer" "$invalid_version_log"; then
+      cat "$invalid_version_log" >&2
+      echo "invalid APP_EFFECTIVE_VERSION failed for an unexpected reason" >&2
+      exit 1
+    fi
+    cat "$invalid_version_log"
+    echo "Verified app-builder rejects invalid APP_EFFECTIVE_VERSION"
+    printf '%s' '- `app-builder` rejects `APP_EFFECTIVE_VERSION=not-semver` during build.' > "$INVALID_VERSION_REPORT"
+  fi
+  build_image "$platform" "$image_a_mtime" "$VERSION_A" "$CONTEXT_A_MTIME" true
+  build_image "$platform" "$image_b" "$VERSION_B" "$CONTEXT_B"
+
+  layers_a="$(hash_layers "$image_a")"
+  layers_a_mtime="$(hash_layers "$image_a_mtime")"
+  layers_b="$(hash_layers "$image_b")"
+  if [[ "$layers_a" != "$layers_a_mtime" ]]; then
+    diff -u <(printf '%s\n' "$layers_a") <(printf '%s\n' "$layers_a_mtime") >&2 || true
+    echo "$platform same-version image layers differ when only input mtimes change" >&2
+    exit 1
+  fi
+  printf '%s\n' "$layers_a" > "$RUN_ROOT/${arch}-rootfs-diffids.txt"
+
+  layer_count="$(printf '%s\n' "$layers_a" | sed '/^$/d' | wc -l | tr -d ' ')"
+  check_image_contract "$image_a" "$VERSION_A" "${CONTAINER_PREFIX}-${arch}-a"
+  check_image_contract "$image_b" "$VERSION_B" "${CONTAINER_PREFIX}-${arch}-b"
+  printf '| %s | %s | all RootFS diffIDs match | exactly main binary + frontend application |\n' \
+    "$platform" "$layer_count" >> "$REPORT_PATH"
+  analyze_changed_layers "$image_a" "$image_b" "$CHANGED_LAYER_REPORT" "$platform"
+  PLATFORM_RESULTS+=("$platform: $layer_count layers, mtime normalized, exactly two SemVer-changing layers")
+
+  if [[ -n "${IMAGE_B_ARCHIVE:-}" && "$arch" == "amd64" ]]; then
+    mkdir -p "$(dirname -- "$IMAGE_B_ARCHIVE")"
+    docker save "$image_b" | gzip -1 > "$IMAGE_B_ARCHIVE"
+    if [[ -n "$IMAGE_B_TAG_FILE" ]]; then
+      mkdir -p "$(dirname -- "$IMAGE_B_TAG_FILE")"
+      printf '%s\n' "$image_b" > "$IMAGE_B_TAG_FILE"
+    fi
+  fi
 done
 
-if [[ -n "${IMAGE_B_ARCHIVE:-}" ]]; then
-  mkdir -p "$(dirname -- "$IMAGE_B_ARCHIVE")"
-  docker save "$IMAGE_B" | gzip -1 > "$IMAGE_B_ARCHIVE"
-fi
+{
+  printf '\n## Same-version RootFS diffIDs\n\n'
+  printf '| Platform | Index | RootFS diffID |\n'
+  printf '| --- | ---: | --- |\n'
+  for platform in "${PLATFORM_LIST[@]}"; do
+    arch="${platform##*/}"
+    index=0
+    while IFS= read -r diff_id; do
+      [[ -n "$diff_id" ]] || continue
+      printf '| %s | %s | `%s` |\n' "$platform" "$index" "$diff_id"
+      index=$((index + 1))
+    done < "$RUN_ROOT/${arch}-rootfs-diffids.txt"
+  done
+  printf '\n## Changed layer compressed byte estimates\n\n'
+  printf '| Platform | RootFS diffID index | Layer payload | Compressed bytes | Content proof | Method |\n'
+  printf '| --- | ---: | --- | ---: | --- | --- |\n'
+  cat "$CHANGED_LAYER_REPORT"
+  echo
+  echo "## Invalid version input"
+  echo
+  cat "$INVALID_VERSION_REPORT"
+  printf '\n## Packaged CLI versions\n\n'
+  cat "$RUN_ROOT/cli-version-results.md"
+  printf '\n## Runtime and OCI version checks\n\n'
+  cat "$RUNTIME_VERSION_REPORT"
+} >> "$REPORT_PATH"
 
-echo "version layer reuse check passed for $VERSION_A and $VERSION_B"
+echo "OCI version/layer reuse acceptance passed: ${PLATFORM_RESULTS[*]}"
+echo "Acceptance report: $REPORT_PATH"

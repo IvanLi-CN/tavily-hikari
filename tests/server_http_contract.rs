@@ -875,6 +875,14 @@ async fn embedded_public_assets_are_served_without_static_dir() {
         .expect("admin request");
     assert_eq!(admin.status(), reqwest::StatusCode::FORBIDDEN);
 
+    let api_version: serde_json::Value = client
+        .get(format!("http://127.0.0.1:{port}/api/version"))
+        .send()
+        .await
+        .expect("api version request")
+        .json()
+        .await
+        .expect("api version json");
     let version = client
         .get(format!("http://127.0.0.1:{port}/version.json"))
         .send()
@@ -896,6 +904,11 @@ async fn embedded_public_assets_are_served_without_static_dir() {
             .and_then(|value| value.as_str())
             .is_some_and(|value| !value.is_empty()),
         "version.json should expose a version string"
+    );
+    assert_eq!(
+        version_json.get("version"),
+        api_version.get("frontend"),
+        "version.json and /api/version should report the same frontend version"
     );
 
     for (path, content_type_prefix) in [

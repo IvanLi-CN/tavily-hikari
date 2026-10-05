@@ -73,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -84,20 +86,36 @@ jobs:
 
       - name: Build and verify version layers
         env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           IMAGE_B_ARCHIVE: ${{ runner.temp }}/version-layer-image-b.tar.gz
+          IMAGE_B_TAG_FILE: ${{ runner.temp }}/version-layer-image-b.tag
+          LAYER_ACCEPTANCE_REPORT: ${{ runner.temp }}/version-layer-acceptance.md
+          PLATFORMS: linux/amd64
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
           cd web
           bun install --frozen-lockfile
           cd ..
-          bash scripts/check-version-layer-reuse.sh
+          bash scripts/check-version-layer-reuse.sh 2>&1 | tee "${RUNNER_TEMP}/version-layer-acceptance.log"
+
+      - name: Upload version layer acceptance evidence
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: version-layer-acceptance-evidence
+          path: |
+            ${{ runner.temp }}/version-layer-acceptance.md
+            ${{ runner.temp }}/version-layer-acceptance.log
+          if-no-files-found: ignore
 
       - name: Upload version layer B image
         uses: actions/upload-artifact@v7
         with:
           name: version-layer-image-b
-          path: ${{ runner.temp }}/version-layer-image-b.tar.gz
+          path: |
+            ${{ runner.temp }}/version-layer-image-b.tar.gz
+            ${{ runner.temp }}/version-layer-image-b.tag
           if-no-files-found: error
 
   brand-assets:
@@ -334,7 +352,6 @@ jobs:
       COMPOSE_FILE: examples/forwardauth-caddy/docker-compose.yml
       BASIC_AUTH_USER: admin
       BASIC_AUTH_PASS: password
-      IMAGE_TAG: tavily-hikari-version-layer-${{ github.run_id }}-b
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -359,7 +376,15 @@ jobs:
         run: |
           set -euo pipefail
           gzip -dc "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tar.gz" | docker load
+          IMAGE_TAG="$(cat "${RUNNER_TEMP}/version-layer-image-b/version-layer-image-b.tag")"
           docker image inspect "${IMAGE_TAG}" >/dev/null
+          IMAGE_VERSION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${IMAGE_TAG}")"
+          if [[ -z "${IMAGE_VERSION}" || "${IMAGE_VERSION}" == "<no value>" ]]; then
+            echo "Version layer B image is missing its OCI version label" >&2
+            exit 1
+          fi
+          printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$GITHUB_ENV"
+          printf 'IMAGE_VERSION=%s\n' "$IMAGE_VERSION" >> "$GITHUB_ENV"
 
       - name: Start compose stack
         shell: bash
@@ -429,7 +454,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected="ci-layer-b"
+          expected="${IMAGE_VERSION}"
           curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" "${BASE_URL}/api/version" | jq -e --arg expected "${expected}" \
             '.backend == $expected and .frontend == $expected'
 

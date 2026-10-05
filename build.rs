@@ -5,8 +5,31 @@ use std::{
 
 fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=APP_EFFECTIVE_VERSION");
     println!("cargo:rerun-if-env-changed=TAVILY_HIKARI_WEB_DIST_DIR");
     println!("cargo:rustc-check-cfg=cfg(web_assets_embedded)");
+
+    let effective_version = match env::var("APP_EFFECTIVE_VERSION") {
+        Ok(version) => {
+            semver::Version::parse(&version).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "APP_EFFECTIVE_VERSION must be a valid SemVer",
+                )
+            })?;
+            version
+        }
+        Err(env::VarError::NotPresent) => {
+            env::var("CARGO_PKG_VERSION").expect("Cargo provides CARGO_PKG_VERSION")
+        }
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "APP_EFFECTIVE_VERSION must be a valid UTF-8 SemVer",
+            ));
+        }
+    };
+    println!("cargo:rustc-env=APP_EFFECTIVE_VERSION={effective_version}");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set"));
     let generated_path = out_dir.join("embedded_web_assets.rs");
