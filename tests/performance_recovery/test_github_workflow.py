@@ -82,7 +82,7 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("Validate low-load recovery duration", gc_job)
         self.assertIn("LOW_SECONDS < 1800", gc_job)
         self.assertIn("LOW_SECONDS > 7200", gc_job)
-        self.assertIn('default: "7200"', gc_job)
+        self.assertIn('        default: "7200"', self.source)
         self.assertIn("timeout-minutes: 180", gc_job)
         self.assertIn("Test productive GC continuation turn retention", gc_job)
         self.assertIn("maintenance_bulk_retains_request_logs_gc_progress_continuation", gc_job)
