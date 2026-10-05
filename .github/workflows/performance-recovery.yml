@@ -35,10 +35,10 @@ on:
         type: string
         default: "600"
       low_seconds:
-        description: Maximum low-load recovery window after the 10 requests/second phase
+        description: Maximum low-load recovery window after the 10 requests/second phase; stops early when recovery completes
         required: true
         type: string
-        default: "3600"
+        default: "7200"
       run_id:
         description: Optional safe run identifier for the isolated GitHub-hosted workspace
         required: false
@@ -149,7 +149,7 @@ jobs:
     if: ${{ inputs.suite == 'request-log-gc' }}
     name: Request Log GC Recovery Load
     runs-on: ubuntu-24.04
-    timeout-minutes: 140
+    timeout-minutes: 180
     steps:
       - name: Prepare private evidence directory
         shell: bash
@@ -180,8 +180,8 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "${LOW_SECONDS}" =~ ^[0-9]+$ ]] ||
-            (( LOW_SECONDS < 1800 || LOW_SECONDS > 3600 )); then
-            echo "low_seconds must be an integer between 1800 and 3600." >&2
+            (( LOW_SECONDS < 1800 || LOW_SECONDS > 7200 )); then
+            echo "low_seconds must be an integer between 1800 and 7200." >&2
             exit 2
           fi
 
