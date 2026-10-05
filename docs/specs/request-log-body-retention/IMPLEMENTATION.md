@@ -8,18 +8,16 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
-- Dashboard integrity admission keeps its five-minute backoff only for sustained foreground pressure;
-  transient pool pressure and recent contention retry after thirty seconds so GC-blocking day audits
-  can continue while the admission guard still protects foreground capacity.
-- Request-log GC keeps the five-minute defer for foreground pressure, recent contention, no progress,
-  and errors; a transient pool-capacity defer retries after thirty seconds so productive cleanup can
-  resume between bounded dashboard-maintenance turns.
+- Dashboard integrity admission keeps its five-minute backoff under foreground pressure, pool pressure,
+  and recent SQLite contention; an occupied exclusive bulk-admission slot is rechecked after five seconds.
+- Request-log GC keeps the five-minute defer for admission pressure, contention, no progress, and errors
+  so cleanup resumes without repeatedly competing with foreground capacity.
 - A productive request-log GC slice registers its next maintenance turn before releasing the current
   permit, keeping the one-second continuation ahead of later rolling integrity work.
-- A newly created hot segment gets its first bounded page ahead of historical work. Once its fence
-  advances, a pending GC-blocking day can take over without waiting for the whole hot cursor backlog
-  to drain. Checkpointed hot continuation remains distinct from rolling hot pages, which a new hot
-  segment may still preempt.
+- An unqueued initial hot page or newly closed hot segment gets its bounded page ahead of GC-blocking
+  recovery. Once the hot page has a durable checkpoint, its continuation can yield to the blocking day
+  without losing progress. Checkpointed hot continuation remains distinct from rolling hot pages, which
+  a new hot segment may still preempt.
 - GC-blocking day re-audits advance in bounded two-hour source ranges; range-wide committed,
   cancelled, and in-flight mutation fences prevent a later five-minute source bucket from being
   missed while ordinary history work retains five-minute ranges.

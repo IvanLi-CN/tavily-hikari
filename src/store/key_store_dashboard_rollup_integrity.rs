@@ -711,11 +711,24 @@ impl KeyStore {
             .as_ref()
             .map(|row| row.get::<i64, _>("gc_blocking") != 0)
             .unwrap_or(false);
-        // Extend the hot fence once before yielding to a GC-blocking day. Waiting
-        // for the cursor to drain the whole hot backlog would starve retention
-        // recovery after an outage; the pending hot page still wins by priority.
+        // Materialize an unqueued hot page before a GC-blocking day. Once a page
+        // has a durable checkpoint, its continuation priority lets GC take a turn.
         let new_hot_segment_due = hot_fence < latest_closed;
-        let day_reaudit = if (gc_reaudit_due && !new_hot_segment_due)
+        let pending_hot_page: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                SELECT 1 FROM dashboard_rollup_integrity_work_items
+                WHERE status = 'pending' AND recovery = 0
+                  AND range_start >= ? AND range_end <= ?
+                  AND priority IN (0, 3, 4, 5)
+            )"#,
+        )
+        .bind(hot_start)
+        .bind(latest_closed)
+        .fetch_one(&self.pool)
+        .await?;
+        let initial_hot_page_due = hot_cursor < hot_fence && !pending_hot_page;
+        let hot_page_due = new_hot_segment_due || initial_hot_page_due;
+        let day_reaudit = if (gc_reaudit_due && !hot_page_due)
             || (day_reaudit_due && !hot_is_behind)
         {
             sealed_day_reaudit
