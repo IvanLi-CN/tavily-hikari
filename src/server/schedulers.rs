@@ -67,11 +67,20 @@ const RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS: i64 = 5;
 const HA_OUTBOX_GC_CONTINUATION_PERSIST_RETRY_DELAYS_MS: [u64; 5] =
     [100, 200, 400, 800, 1_600];
 const REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS: i64 = 1;
+const REQUEST_LOGS_GC_POOL_PRESSURE_RETRY_DELAY_SECS: i64 = 30;
 const DASHBOARD_ROLLUP_INTEGRITY_ADMISSION_PRESSURE_RETRY_DELAY_SECS: i64 = 30;
 
 fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
     if request_logs_gc_made_progress(report) {
         REQUEST_LOGS_GC_PROGRESS_CONTINUATION_DELAY_SECS
+    } else {
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    }
+}
+
+fn request_logs_gc_admission_retry_delay(reason: &str) -> i64 {
+    if reason == "pool_pressure" {
+        REQUEST_LOGS_GC_POOL_PRESSURE_RETRY_DELAY_SECS
     } else {
         REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
     }
@@ -113,6 +122,26 @@ mod dashboard_integrity_admission_tests {
         assert_eq!(
             dashboard_integrity_admission_retry_delay("bulk_busy"),
             SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+        );
+    }
+
+    #[test]
+    fn request_logs_gc_retries_transient_pool_pressure_before_full_backoff() {
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("pool_pressure"),
+            REQUEST_LOGS_GC_POOL_PRESSURE_RETRY_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("foreground_pressure"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("recent_contention"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        );
+        assert_eq!(
+            request_logs_gc_admission_retry_delay("bulk_busy"),
+            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
         );
     }
 }
@@ -1042,8 +1071,8 @@ async fn run_request_logs_gc_catchup_claimed_job(
     let bulk_admission = match state.proxy.admit_request_logs_gc() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
-            let msg = format!("deferred={reason}");
-            let continuation_delay_secs = REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS;
+            let continuation_delay_secs = request_logs_gc_admission_retry_delay(reason);
+            let msg = format!("deferred={reason} next_retry_secs={continuation_delay_secs}");
             tracing::debug!(
                 component = "request_logs_gc",
                 event = "deferred",

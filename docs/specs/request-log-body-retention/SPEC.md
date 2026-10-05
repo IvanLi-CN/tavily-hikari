@@ -69,8 +69,9 @@
 
 - Scheduled GC keeps its bounded 100-row batches, at most five batches and 20 seconds per pass.
 - Productive passes, including durable body-scan cursor advancement, continue after one second.
-  Zero progress, an integrity block without other progress, admission pressure, or an error retries
-  after 300 seconds; continuations retain the existing single-active-job claim fence.
+  Zero progress, an integrity block without other progress, foreground pressure, recent SQLite
+  contention, or an error retries after 300 seconds. A transient pool-capacity defer retries after
+  30 seconds; continuations retain the existing single-active-job claim fence.
 - Before releasing its bulk permit, an incomplete productive pass retains a fair maintenance turn for
   its one-second continuation. Earlier pending maintenance work remains ahead; later rolling work
   cannot repeatedly overtake the GC continuation. Foreground, pool, and contention admission checks

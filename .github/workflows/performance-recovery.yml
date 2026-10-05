@@ -213,6 +213,9 @@ jobs:
       - name: Test dashboard integrity admission retry policy
         run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_retry_keeps_transient_contention_short
 
+      - name: Test GC transient pool pressure retry policy
+        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_retries_transient_pool_pressure_before_full_backoff
+
       - name: Test hot-page yield to GC-blocking re-audit
         run: cargo test --locked --all-features --profile ci-test --lib integrity_prioritizes_new_hot_page_then_gc_blocking_day
 

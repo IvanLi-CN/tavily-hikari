@@ -11,6 +11,9 @@
 - Dashboard integrity admission keeps its five-minute backoff only for sustained foreground pressure;
   transient pool pressure and recent contention retry after thirty seconds so GC-blocking day audits
   can continue while the admission guard still protects foreground capacity.
+- Request-log GC keeps the five-minute defer for foreground pressure, recent contention, no progress,
+  and errors; a transient pool-capacity defer retries after thirty seconds so productive cleanup can
+  resume between bounded dashboard-maintenance turns.
 - A productive request-log GC slice registers its next maintenance turn before releasing the current
   permit, keeping the one-second continuation ahead of later rolling integrity work.
 - A newly created hot segment gets its first bounded page ahead of historical work. Once its fence

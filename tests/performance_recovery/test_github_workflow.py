@@ -82,6 +82,8 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("maintenance_bulk_retains_request_logs_gc_progress_continuation", gc_job)
         self.assertIn("Test dashboard integrity admission retry policy", gc_job)
         self.assertIn("dashboard_integrity_admission_retry_keeps_transient_contention_short", gc_job)
+        self.assertIn("Test GC transient pool pressure retry policy", gc_job)
+        self.assertIn("request_logs_gc_retries_transient_pool_pressure_before_full_backoff", gc_job)
         self.assertIn("scripts/gc_recovery_load.py", gc_job)
         self.assertIn("integrity_restarts_after_a_cancelled_existing_source_mutation", gc_job)
         self.assertIn("integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing", gc_job)
