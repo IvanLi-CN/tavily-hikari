@@ -302,7 +302,8 @@ analyze_changed_layers() {
 
   docker image save --output "$RUN_ROOT/layer-a.tar" "$image_a"
   docker image save --output "$RUN_ROOT/layer-b.tar" "$image_b"
-  python3 - "$RUN_ROOT/layer-a.tar" "$RUN_ROOT/layer-b.tar" "$report_file" "$platform" <<'PY'
+  python3 - "$RUN_ROOT/layer-a.tar" "$RUN_ROOT/layer-b.tar" \
+    "$report_file" "$platform" "$VERSION_A" "$VERSION_B" <<'PY'
 import gzip
 import hashlib
 import io
