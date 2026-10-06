@@ -66,6 +66,10 @@ fn positive_u64(value: &str) -> Result<u64, String> {
     }
 }
 
+fn exit_code_for_outcome(outcome: &str) -> i32 {
+    if outcome == "complete" { 0 } else { 1 }
+}
+
 #[derive(Debug, Serialize)]
 struct FailureReport {
     outcome: &'static str,
@@ -118,13 +122,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gc_max_batches: cli.gc_max_batches,
         gc_inter_batch_sleep_ms: cli.gc_inter_batch_sleep_ms,
     };
-    match run_request_statistics_recovery_once(&cli.db_path, options).await {
+    let exit_code = match run_request_statistics_recovery_once(&cli.db_path, options).await {
         Ok(report) => {
             if cli.json {
                 write_json(io::stdout().lock(), &report)?;
             } else {
                 write_plain_report(io::stdout().lock(), &report)?;
             }
+            exit_code_for_outcome(&report.outcome)
         }
         Err(err) => {
             let outcome = if err.to_string().contains("exclusive database ownership") {
@@ -146,7 +151,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     report.error
                 )?;
             }
+            1
         }
+    };
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exit_code_for_outcome;
+
+    #[test]
+    fn incomplete_recovery_outcomes_fail_the_cli() {
+        assert_eq!(exit_code_for_outcome("complete"), 0);
+        assert_eq!(exit_code_for_outcome("deferred"), 1);
+        assert_eq!(exit_code_for_outcome("budget-exhausted"), 1);
+        assert_eq!(exit_code_for_outcome("failed"), 1);
+    }
 }
