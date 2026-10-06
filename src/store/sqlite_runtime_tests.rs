@@ -1059,6 +1059,67 @@ async fn bounded_recovery_bulk_is_scoped_to_the_two_recovery_operations() {
             .expect_err("non-recovery maintenance cannot use the bounded exception"),
         SqliteAdmissionDeferReason::ForegroundPressure
     );
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        let pending = state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::AlertProjection)
+            .expect("non-recovery ticket is retained");
+        pending.first_requested_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+        pending.last_requested_at = pending.first_requested_at;
+    }
+    assert_eq!(
+        runtime
+            .try_admit_bounded_recovery_bulk(SqliteOperation::AlertProjection)
+            .expect_err("an aged non-recovery ticket still cannot bypass foreground pressure"),
+        SqliteAdmissionDeferReason::ForegroundPressure
+    );
+}
+
+#[tokio::test]
+async fn bounded_recovery_bulk_allows_both_recovery_operations_after_aging() {
+    for operation in [
+        SqliteOperation::DashboardIntegrityWrite,
+        SqliteOperation::RequestLogsGc,
+    ] {
+        let runtime = three_connection_runtime().await;
+        for _ in 0..6 {
+            runtime.record_foreground_activity();
+        }
+        assert_eq!(
+            runtime
+                .try_admit_bounded_recovery_bulk(operation)
+                .expect_err("foreground pressure defers an unaged recovery ticket"),
+            SqliteAdmissionDeferReason::ForegroundPressure
+        );
+        let class = operation
+            .maintenance_class()
+            .expect("recovery operation has a maintenance class");
+        {
+            let mut state = runtime
+                .inner
+                .maintenance_coordinator
+                .state
+                .lock()
+                .expect("maintenance coordinator state");
+            let pending = state
+                .pending
+                .get_mut(&class)
+                .expect("recovery ticket is retained");
+            let aged_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+            pending.first_requested_at = aged_at;
+            pending.last_requested_at = aged_at;
+        }
+        let permit = runtime
+            .try_admit_bounded_recovery_bulk(operation)
+            .expect("an aged recovery ticket receives a bounded turn");
+        drop(permit);
+    }
 }
 
 #[tokio::test]

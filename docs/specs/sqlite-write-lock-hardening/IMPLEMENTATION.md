@@ -22,6 +22,10 @@
   seconds. An aged coordinator turn may bypass class ordering and the ordinary pool-capacity
   precheck, but not the foreground-rate gate. Explicit research-drain and admin-cache liveness
   paths retain their separate bounded admission policies.
+- Aged bounded recovery is explicitly limited to `dashboard_integrity` and `request_logs_gc`: it
+  bypasses only the foreground-rate heuristic after ticket age, while preserving the single bulk
+  permit, pool reserve, recent-contention checks, and coordinator fairness. Focused coverage verifies
+  both recovery operations are admitted after aging and unrelated maintenance remains rate-limited.
 - The physical bulk permit is fronted by a fixed-size per-runtime coordinator. The ten maintenance
   classes (`admin_read`, `alert_projection`, `capacity_warm`, `dashboard_integrity`, `ha_outbox_gc`,
   `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,

@@ -716,6 +716,13 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
         key_store.backend_time.local_now(),
     );
     let target_day_end = next_local_day_start_utc_ts(options.target_day_start);
+    let now_ts = key_store.backend_time.now_ts();
+    let latest_closed = now_ts - now_ts.rem_euclid(SECS_PER_FIVE_MINUTES);
+    if target_day_end > latest_closed {
+        return Err(ProxyError::Other(
+            "request statistics recovery target day is not closed".to_string(),
+        ));
+    }
     let source_fence = key_store
         .prepare_request_statistics_recovery_target(options.target_day_start)
         .await?;
@@ -723,9 +730,7 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
         .backend_time
         .deadline_after(Duration::from_secs(options.max_runtime_secs.max(1)));
     let mut accepted_checkpoints = 0_i64;
-    let mut checkpoint = key_store
-        .request_statistics_recovery_target_checkpoint(options.target_day_start)
-        .await?;
+    let mut checkpoint = options.target_day_start;
     let mut integrity_slices = 0_i64;
     let mut gc_passes = 0_i64;
     let mut cleaned_request_log_bodies = 0_i64;
@@ -734,130 +739,216 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
     let mut last_defer_reason = None;
     let mut error = None;
     let mut last_progress_at = key_store.backend_time.instant_now();
-    let outcome;
+    let mut outcome = "budget-exhausted";
 
-    loop {
-        if key_store.backend_time.instant_now() >= deadline {
-            outcome = "budget-exhausted";
-            break;
-        }
-        let checkpoint_before = checkpoint;
-        match key_store
-            .run_request_statistics_recovery_integrity_slice(options.target_day_start, source_fence)
-            .await
-        {
-            Ok(crate::store::DashboardRollupIntegritySlice::Deferred { reason, .. }) => {
-                integrity_slices += 1;
-                last_defer_reason = Some(reason.to_string());
-            }
-            Ok(_) => integrity_slices += 1,
-            Err(err) => {
-                let transient = is_transient_sqlite_write_error(&err);
-                if transient {
-                    last_defer_reason = Some("transient_sqlite_resource_exhaustion".to_string());
-                    outcome = "deferred";
-                } else {
-                    error = Some(err.to_string());
-                    outcome = "failed";
-                }
-                break;
-            }
-        }
-        let next_checkpoint = key_store
-            .request_statistics_recovery_target_checkpoint(options.target_day_start)
-            .await?;
-        if next_checkpoint > checkpoint_before {
-            accepted_checkpoints += 1;
-            last_progress_at = key_store.backend_time.instant_now();
-        }
-        checkpoint = next_checkpoint;
-
-        if key_store.backend_time.instant_now() >= deadline {
-            outcome = "budget-exhausted";
-            break;
-        }
-        let remaining_secs = deadline
-            .saturating_duration_since(key_store.backend_time.instant_now())
-            .as_secs()
-            .max(1);
-        let gc_report = key_store
-            .delete_old_request_logs_bounded(
-                threshold,
-                RequestLogsGcOptions {
-                    batch_size: options.gc_batch_size.max(1),
-                    max_batches: options.gc_max_batches.max(1),
-                    max_runtime_secs: remaining_secs,
-                    inter_batch_sleep_ms: options.gc_inter_batch_sleep_ms,
-                },
-                retention_days,
-                &settings.request_log_retention,
-            )
-            .await;
-        let gc_report = match gc_report {
-            Ok(report) => report,
-            Err(err) => {
-                let transient = is_transient_sqlite_write_error(&err);
-                if transient {
-                    last_defer_reason = Some("transient_sqlite_resource_exhaustion".to_string());
-                    outcome = "deferred";
-                } else {
-                    error = Some(err.to_string());
-                    outcome = "failed";
-                }
-                break;
-            }
-        };
-        gc_passes += 1;
-        cleaned_request_log_bodies += gc_report.cleaned_request_log_bodies;
-        deleted_request_logs += gc_report.deleted_request_logs;
-        deleted_rollups += gc_report.deleted_rollups;
-        if gc_report.cleaned_request_log_bodies
-            + gc_report.deleted_request_logs
-            + gc_report.deleted_rollups
-            > 0
-            || gc_report.body_scan_cursor_advanced
-        {
-            last_progress_at = key_store.backend_time.instant_now();
-        }
-        if let Some(reason) = gc_report.blocked_reason {
-            last_defer_reason = Some(reason);
-        } else if !gc_report.completed {
-            last_defer_reason = Some(gc_report.progress_status);
-        }
-
-        let target_complete = key_store
-            .request_statistics_recovery_target_complete(options.target_day_start)
-            .await?;
-        let target_expired_rows_remaining = key_store
-            .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold)
-            .await?;
-        if target_complete && target_expired_rows_remaining == 0 {
-            outcome = "complete";
-            break;
-        }
-        if next_checkpoint == checkpoint_before
-            && gc_report.cleaned_request_log_bodies == 0
-            && gc_report.deleted_request_logs == 0
-            && gc_report.deleted_rollups == 0
-            && !gc_report.body_scan_cursor_advanced
-        {
-            last_defer_reason.get_or_insert_with(|| "no_effective_progress".to_string());
-            key_store
-                .backend_time
-                .sleep(Duration::from_millis(25))
-                .await;
+    match key_store
+        .request_statistics_recovery_target_checkpoint(options.target_day_start)
+        .await
+    {
+        Ok(value) => checkpoint = value,
+        Err(err) => {
+            error = Some(err.to_string());
+            outcome = "failed";
         }
     }
 
-    let target_complete = key_store
+    if error.is_none() {
+        loop {
+            if key_store.backend_time.instant_now() >= deadline {
+                outcome = "budget-exhausted";
+                break;
+            }
+            let checkpoint_before = checkpoint;
+            match key_store
+                .run_request_statistics_recovery_integrity_slice(
+                    options.target_day_start,
+                    source_fence,
+                    deadline,
+                )
+                .await
+            {
+                Ok(crate::store::DashboardRollupIntegritySlice::Deferred { reason, .. }) => {
+                    integrity_slices += 1;
+                    last_defer_reason = Some(reason.to_string());
+                    if reason == "recovery_budget" {
+                        outcome = "budget-exhausted";
+                        break;
+                    }
+                }
+                Ok(_) => integrity_slices += 1,
+                Err(err) => {
+                    let transient = is_transient_sqlite_write_error(&err);
+                    if transient {
+                        last_defer_reason =
+                            Some("transient_sqlite_resource_exhaustion".to_string());
+                        outcome = "deferred";
+                    } else {
+                        error = Some(err.to_string());
+                        outcome = "failed";
+                    }
+                    break;
+                }
+            }
+            if key_store.backend_time.instant_now() >= deadline {
+                outcome = "budget-exhausted";
+                break;
+            }
+            let next_checkpoint = match key_store
+                .request_statistics_recovery_target_checkpoint(options.target_day_start)
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    error = Some(err.to_string());
+                    outcome = "failed";
+                    break;
+                }
+            };
+            if next_checkpoint > checkpoint_before {
+                accepted_checkpoints += 1;
+                last_progress_at = key_store.backend_time.instant_now();
+            }
+            checkpoint = next_checkpoint;
+
+            if key_store.backend_time.instant_now() >= deadline {
+                outcome = "budget-exhausted";
+                break;
+            }
+            let remaining_secs = deadline
+                .saturating_duration_since(key_store.backend_time.instant_now())
+                .as_secs();
+            if remaining_secs == 0 {
+                outcome = "budget-exhausted";
+                break;
+            }
+            let gc_report = key_store
+                .delete_old_request_logs_bounded(
+                    threshold,
+                    RequestLogsGcOptions {
+                        batch_size: options.gc_batch_size.max(1),
+                        max_batches: options.gc_max_batches.max(1),
+                        max_runtime_secs: remaining_secs,
+                        inter_batch_sleep_ms: options.gc_inter_batch_sleep_ms,
+                    },
+                    retention_days,
+                    &settings.request_log_retention,
+                )
+                .await;
+            let gc_report = match gc_report {
+                Ok(report) => report,
+                Err(err) => {
+                    let transient = is_transient_sqlite_write_error(&err);
+                    if transient {
+                        last_defer_reason =
+                            Some("transient_sqlite_resource_exhaustion".to_string());
+                        outcome = "deferred";
+                    } else {
+                        error = Some(err.to_string());
+                        outcome = "failed";
+                    }
+                    break;
+                }
+            };
+            gc_passes += 1;
+            cleaned_request_log_bodies += gc_report.cleaned_request_log_bodies;
+            deleted_request_logs += gc_report.deleted_request_logs;
+            deleted_rollups += gc_report.deleted_rollups;
+            if gc_report.cleaned_request_log_bodies
+                + gc_report.deleted_request_logs
+                + gc_report.deleted_rollups
+                > 0
+                || gc_report.body_scan_cursor_advanced
+            {
+                last_progress_at = key_store.backend_time.instant_now();
+            }
+            if let Some(reason) = gc_report.blocked_reason {
+                last_defer_reason = Some(reason);
+            } else if !gc_report.completed {
+                last_defer_reason = Some(gc_report.progress_status);
+            }
+
+            let target_complete = match key_store
+                .request_statistics_recovery_target_complete(options.target_day_start)
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    error = Some(err.to_string());
+                    outcome = "failed";
+                    break;
+                }
+            };
+            let target_expired_rows_remaining = match key_store
+                .request_statistics_recovery_target_expired_rows(
+                    options.target_day_start,
+                    threshold,
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    error = Some(err.to_string());
+                    outcome = "failed";
+                    break;
+                }
+            };
+            if target_complete && target_expired_rows_remaining == 0 {
+                outcome = "complete";
+                break;
+            }
+            if next_checkpoint == checkpoint_before
+                && gc_report.cleaned_request_log_bodies == 0
+                && gc_report.deleted_request_logs == 0
+                && gc_report.deleted_rollups == 0
+                && !gc_report.body_scan_cursor_advanced
+            {
+                last_defer_reason.get_or_insert_with(|| "no_effective_progress".to_string());
+                key_store
+                    .backend_time
+                    .sleep(Duration::from_millis(25))
+                    .await;
+            }
+        }
+    }
+
+    let target_complete = match key_store
         .request_statistics_recovery_target_complete(options.target_day_start)
-        .await?;
-    let checkpoint = key_store
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            if error.is_none() {
+                error = Some(err.to_string());
+            }
+            outcome = "failed";
+            false
+        }
+    };
+    match key_store
         .request_statistics_recovery_target_checkpoint(options.target_day_start)
-        .await?;
-    let target_expired_rows_remaining = key_store
+        .await
+    {
+        Ok(value) => checkpoint = value,
+        Err(err) => {
+            if error.is_none() {
+                error = Some(err.to_string());
+            }
+            outcome = "failed";
+        }
+    }
+    let target_expired_rows_remaining = match key_store
         .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold)
-        .await?;
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            if error.is_none() {
+                error = Some(err.to_string());
+            }
+            outcome = "failed";
+            0
+        }
+    };
     let sealed_day = target_complete;
     Ok(RequestStatisticsRecoveryReport {
         outcome: outcome.to_string(),

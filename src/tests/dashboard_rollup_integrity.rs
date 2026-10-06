@@ -49,6 +49,145 @@ async fn joint_recovery_completes_an_empty_fixed_target_with_a_seal() {
 }
 
 #[tokio::test]
+async fn joint_recovery_rejects_an_open_local_day() {
+    let db_path = temp_db_path("request-statistics-recovery-open-target");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(Utc::now().timestamp());
+    let target_day_start = local_day_bucket_start_utc_ts(backend_time.now_ts());
+
+    let error = run_request_statistics_recovery_once_with_time(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 1,
+            ..RequestStatisticsRecoveryOptions::default()
+        },
+        backend_time,
+    )
+    .await
+    .expect_err("an open local day must not be sealed by recovery");
+    assert!(error.to_string().contains("target day is not closed"));
+}
+
+#[tokio::test]
+async fn joint_recovery_persists_and_reuses_the_target_source_fence() {
+    let db_path = temp_db_path("request-statistics-recovery-target-fence");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(Utc::now().timestamp());
+    let target_day_start = local_day_bucket_start_utc_ts(backend_time.now_ts()) - SECS_PER_DAY;
+    let store = crate::store::KeyStore::open_for_request_statistics_recovery_with_time(
+        &db_str,
+        backend_time,
+    )
+    .await
+    .expect("open exclusive recovery store");
+    let request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            method, path, result_status, request_kind_key, status_code,
+            tavily_status_code, visibility, created_at
+        ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', 200, 200, 'visible', ?)
+        RETURNING id
+        "#,
+    )
+    .bind(target_day_start + 60)
+    .fetch_one(&store.pool)
+    .await
+    .expect("insert target source row");
+
+    let source_fence = store
+        .prepare_request_statistics_recovery_target(target_day_start)
+        .await
+        .expect("prepare target");
+    let persisted_source_fence: i64 = sqlx::query_scalar(
+        "SELECT source_fence FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(target_day_start)
+    .fetch_one(&store.pool)
+    .await
+    .expect("read persisted target fence");
+    assert_eq!(source_fence, request_log_id);
+    assert_eq!(persisted_source_fence, source_fence);
+
+    sqlx::query("UPDATE request_logs SET business_credits = 9 WHERE id = ?")
+        .bind(request_log_id)
+        .execute(&store.pool)
+        .await
+        .expect("mutate source after target preparation");
+    let reused_source_fence = store
+        .prepare_request_statistics_recovery_target(target_day_start)
+        .await
+        .expect("reprepare target");
+    assert_eq!(reused_source_fence, source_fence);
+}
+
+#[tokio::test]
+async fn joint_recovery_reports_budget_exhaustion_and_resumes_from_checkpoint() {
+    let db_path = temp_db_path("request-statistics-recovery-budget-resume");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let target_day_start = shift_local_day_start_utc_ts(local_day_bucket_start_utc_ts(now), -2);
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 1;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("set short retention");
+    for offset in 0..501_i64 {
+        insert_visible_dashboard_log(&proxy, target_day_start + 60 + offset).await;
+    }
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("drain request stats coalescer");
+    let weak_store = Arc::downgrade(&proxy.key_store);
+    drop(proxy);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if weak_store.upgrade().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("release service owner before joint recovery");
+
+    let first = run_request_statistics_recovery_once(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 1,
+            gc_batch_size: 1,
+            gc_max_batches: 1,
+            gc_inter_batch_sleep_ms: 1_100,
+        },
+    )
+    .await
+    .expect("bounded recovery should report an incomplete pass");
+    assert_eq!(first.outcome, "budget-exhausted");
+    assert!(first.accepted_checkpoints > 0 || first.checkpoint > target_day_start);
+    assert!(first.target_expired_rows_remaining > 0);
+
+    let second = run_request_statistics_recovery_once(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 10,
+            ..RequestStatisticsRecoveryOptions::default()
+        },
+    )
+    .await
+    .expect("recovery should resume from its durable checkpoint");
+    assert_eq!(second.outcome, "complete", "report={second:?}");
+    assert_eq!(second.target_expired_rows_remaining, 0);
+    assert!(second.accepted_checkpoints >= first.accepted_checkpoints);
+}
+
+#[tokio::test]
 async fn joint_recovery_seals_and_deletes_an_expired_fixed_target() {
     let db_path = temp_db_path("request-statistics-recovery-expired-target");
     let db_str = db_path.to_string_lossy().to_string();
@@ -92,7 +231,7 @@ async fn joint_recovery_seals_and_deletes_an_expired_fixed_target() {
     )
     .await
     .expect("recover expired fixed target");
-    assert_eq!(report.outcome, "complete");
+    assert_eq!(report.outcome, "complete", "report={report:?}");
     assert!(report.target_complete);
     assert!(report.sealed_day);
     assert_eq!(report.target_expired_rows_remaining, 0);
@@ -592,7 +731,11 @@ async fn integrity_restarts_after_a_cancelled_existing_source_mutation() {
     .fetch_one(&proxy.key_store.pool)
     .await
     .expect("read restarted source version");
-    assert_eq!(restarted_version, cancelled_source_version);
+    assert_eq!(
+        restarted_version,
+        cancelled_source_version + 1,
+        "the durable source revision must be included after restart"
+    );
 }
 
 #[tokio::test]

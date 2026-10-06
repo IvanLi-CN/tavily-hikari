@@ -128,26 +128,6 @@ impl RequestStatsCoalescer {
         }
     }
 
-    pub(crate) async fn dashboard_rollup_source_version_is_stable(
-        &self,
-        range_start: i64,
-        range_end: i64,
-        expected_version: i64,
-    ) -> bool {
-        let state = self.state.lock().await;
-        let updates = self
-            .dashboard_rollup_source_updates
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::dashboard_rollup_source_version_for_range(
-            &state.dashboard_rollup_source_versions,
-            &updates.cancelled_versions,
-            range_start,
-            range_end,
-        ) == expected_version
-            && updates.in_flight.range(range_start..range_end).next().is_none()
-    }
-
     pub(crate) async fn dashboard_rollup_source_version(
         &self,
         range_start: i64,
@@ -164,6 +144,18 @@ impl RequestStatsCoalescer {
             range_start,
             range_end,
         )
+    }
+
+    pub(crate) fn dashboard_rollup_source_mutations_are_stable(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> bool {
+        let updates = self
+            .dashboard_rollup_source_updates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        updates.in_flight.range(range_start..range_end).next().is_none()
     }
 
     fn dashboard_rollup_source_version_for_range(

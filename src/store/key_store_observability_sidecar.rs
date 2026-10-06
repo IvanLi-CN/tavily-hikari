@@ -388,6 +388,7 @@ impl KeyStore {
         ] {
             sqlx::query(sql).execute(pool).await?;
         }
+        Self::ensure_dashboard_rollup_source_revision_schema_in_pool(pool).await?;
         let has_history_schedule_column: Option<i64> = sqlx::query_scalar(
             "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_integrity_state') WHERE name = 'last_history_attempt_at' LIMIT 1",
         )
@@ -605,6 +606,7 @@ impl KeyStore {
             cursor INTEGER NOT NULL,
             status TEXT NOT NULL,
             updated_at INTEGER NOT NULL,
+            source_fence INTEGER,
             gc_blocking INTEGER NOT NULL DEFAULT 0
         )"#).execute(pool).await?;
         let has_gc_blocking_column: Option<i64> = sqlx::query_scalar(
@@ -617,7 +619,77 @@ impl KeyStore {
                 "ALTER TABLE observability.dashboard_rollup_integrity_day_reaudits ADD COLUMN gc_blocking INTEGER NOT NULL DEFAULT 0",
             )
             .execute(pool)
+                .await?;
+        }
+        let has_source_fence_column: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_integrity_day_reaudits') WHERE name = 'source_fence' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_source_fence_column.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_integrity_day_reaudits ADD COLUMN source_fence INTEGER",
+            )
+            .execute(pool)
             .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_source_revision_schema_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
+        let request_logs_exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'request_logs' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if request_logs_exists.is_none() {
+            return Ok(());
+        }
+        for sql in [
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_source_revisions (
+                bucket_start INTEGER PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+            r#"
+            CREATE INDEX IF NOT EXISTS observability.idx_dashboard_rollup_source_revisions_time
+            ON dashboard_rollup_source_revisions(bucket_start)
+            "#,
+            r#"
+            CREATE TRIGGER IF NOT EXISTS observability.trg_dashboard_rollup_source_revision
+            AFTER UPDATE OF created_at, result_status, failure_kind, request_kind_key, request_body,
+                path, business_credits, counts_business_quota, visibility
+            ON request_logs
+            BEGIN
+                INSERT INTO dashboard_rollup_source_revisions (bucket_start, revision)
+                VALUES (OLD.created_at - (OLD.created_at % 300), 1)
+                ON CONFLICT(bucket_start) DO UPDATE SET revision = revision + excluded.revision;
+                INSERT INTO dashboard_rollup_source_revisions (bucket_start, revision)
+                VALUES (
+                    NEW.created_at - (NEW.created_at % 300),
+                    CASE
+                        WHEN OLD.created_at - (OLD.created_at % 300)
+                            = NEW.created_at - (NEW.created_at % 300)
+                        THEN 0
+                        ELSE 1
+                    END
+                )
+                ON CONFLICT(bucket_start) DO UPDATE SET revision = revision + excluded.revision;
+                UPDATE dashboard_rollup_integrity_day_reaudits
+                SET cursor = bucket_start, status = 'pending', updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE source_fence IS NOT NULL
+                  AND bucket_start <= OLD.created_at AND bucket_end > OLD.created_at;
+                UPDATE dashboard_rollup_integrity_day_reaudits
+                SET cursor = bucket_start, status = 'pending', updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE source_fence IS NOT NULL
+                  AND bucket_start <= NEW.created_at AND bucket_end > NEW.created_at;
+            END
+            "#,
+        ] {
+            sqlx::query(sql).execute(pool).await?;
         }
         Ok(())
     }

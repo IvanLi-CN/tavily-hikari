@@ -24,6 +24,10 @@
 - Aged dashboard-integrity and request-log-GC scheduler turns use the scoped bounded-recovery admission path; it bypasses only the foreground-rate heuristic after the existing ticket age, while retaining the single bulk permit, pool-capacity checks, recent-contention defer, and coordinator fairness.
 - Integrity completion checks only the target range for pending request-statistics work; pending and flushing dashboard buckets, repair barriers, and in-flight source mutations outside that range no longer block a valid historical checkpoint.
 - The joint recovery entrypoint acquires exclusive service ownership, fixes a local-day target and source fence, persists two-hour checkpoints, seals the day from source counts, and resumes through explicit `complete`, `deferred`, `budget-exhausted`, or `failed` outcomes without stopping an active service.
+- The recovery target fence is persisted atomically with the GC-blocking day reaudit and reused on later invocations; open local days are rejected before sealing.
+- Mutable source fields advance a durable sidecar revision trigger, so completed slices are rescanned after business-credit or classification updates across restart and retry boundaries.
+- Recovery source reads and work-delay probes have a 150ms timeout, and the joint runner checks its total deadline before repair and checkpoint writes.
+- The CLI returns a nonzero status for every incomplete outcome and emits the full post-target report for checkpoint, status, GC, and final-read failures.
 - Structured recovery diagnostics record lane, target range/day, source fence, checkpoint defer or acceptance reason, GC progress, deleted rows, blocked day, and time since effective progress without exposing request bodies or credentials.
 - Scan progress compares the retained cursor before and after the entire pass. A terminal page
   that clears the cursor, including repeated bodyless scans during an integrity block, does not
@@ -148,7 +152,7 @@ The policy and acceptance budgets are settled. The implementation is covered by 
 
 ## Validation
 
-- This round passed `cargo fmt --all -- --check`, `cargo clippy --locked -j 2 --all-targets -- -D warnings`, the dashboard-integrity module (31 tests), request-log-GC filters (25 tests), SQLite runtime filters (70 tests), and the performance workflow contract suite (19 tests).
+- This round passed `cargo fmt --all -- --check`, `cargo clippy --locked -j 2 --all-targets -- -D warnings`, `cargo check --locked --all-targets`, the dashboard-integrity module (34 tests), request-log-GC filters (25 tests), the joint recovery subset (6 tests), bounded recovery admission tests (3 tests), the CLI integration test, and the performance workflow contract suite (8 tests).
 - The Agent VM contract was exercised for the required heavy-validation route, but its guest has no `cargo` or `rustc` in `PATH`; no toolchain was installed, and the VM was released after recording that exact blocker.
 - The 100,000-row sustained 10 RPS fixture, full backend suite, frontend build, and production closeout were not run in this round; they remain CI or explicitly authorized operational evidence rather than inferred completion.
 - GC regression coverage includes legacy single-database initialization and source preservation;
@@ -163,8 +167,10 @@ The policy and acceptance budgets are settled. The implementation is covered by 
   rows inside the retention window. The suite also runs maintenance-ticket backoff, hot-page-yield,
   wide-range mutation-fence, and full-day seal-recovery regressions and records integrity cursors,
   blocking work items, priorities, and
-  scheduler messages in failure evidence. The high-phase result
-  is checkpointed independently so a slow recovery does not hide latency evidence. Only JSON
+  scheduler messages in failure evidence. The high phase now records effective cursor progress
+  and fails a runnable lane after five minutes without a marker change; final evidence independently
+  checks all source/minute/daily/seal rollup fields, retained-row identity, and a billing-ledger
+  anchor. Only JSON
   acceptance evidence is uploaded; fixture databases and service logs stay on the GitHub-hosted
   runner.
 
