@@ -86,6 +86,8 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 180", gc_job)
         self.assertIn("Test productive GC continuation turn retention", gc_job)
         self.assertIn("maintenance_bulk_retains_request_logs_gc_progress_continuation", gc_job)
+        self.assertIn("Test request-log GC survives process restart", gc_job)
+        self.assertIn("request_logs_gc_remains_queued_after_process_restart", gc_job)
         self.assertIn("Test dashboard integrity admission retry policy", gc_job)
         self.assertIn("dashboard_integrity_admission_pressure_uses_full_backoff", gc_job)
         self.assertIn("Test GC admission pressure retry policy", gc_job)
