@@ -89,6 +89,13 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
     }
 
+    pub(crate) fn try_admit_request_logs_gc_recovery(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_bounded_recovery_bulk(SqliteOperation::RequestLogsGc)
+    }
+
     pub(crate) fn request_logs_gc_continue_defer_reason(
         &self,
     ) -> Option<SqliteAdmissionDeferReason> {
@@ -908,6 +915,30 @@ impl KeyStore {
         let body_scan_cursor_advanced = self.get_request_log_body_gc_cursor().await?
             .is_some_and(|cursor| initial_body_cursor
                 .is_none_or(|initial| (cursor.created_at, cursor.id) > initial));
+        let progress_status = if !has_more {
+            "completed"
+        } else if blocked_by_integrity {
+            "incomplete_blocked_integrity"
+        } else if cleaned_request_log_bodies + deleted_request_logs + deleted_rollups > 0 {
+            "incomplete_progress"
+        } else {
+            "incomplete_zero_progress"
+        };
+        tracing::debug!(
+            component = "request_logs_gc",
+            event = "bounded_pass_completed",
+            lane = "request_log_gc",
+            target_threshold = threshold,
+            batches,
+            cleaned_request_log_bodies,
+            deleted_request_logs,
+            deleted_rollups,
+            blocked_day_start = ?blocked_day_start,
+            blocked_reason = ?blocked_reason,
+            body_scan_cursor_advanced,
+            progress_status,
+            "completed a bounded request-log GC pass"
+        );
         Ok(RequestLogsGcReport {
             retention_days,
             threshold,
@@ -930,16 +961,7 @@ impl KeyStore {
             body_write_elapsed_ms: body_gc_diagnostics.body_write_elapsed_ms,
             blocked_day_start,
             blocked_reason,
-            progress_status: if !has_more {
-                "completed"
-            } else if blocked_by_integrity {
-                "incomplete_blocked_integrity"
-            } else if cleaned_request_log_bodies + deleted_request_logs + deleted_rollups > 0 {
-                "incomplete_progress"
-            } else {
-                "incomplete_zero_progress"
-            }
-            .to_string(),
+            progress_status: progress_status.to_string(),
         })
     }
 

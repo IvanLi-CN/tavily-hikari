@@ -24,6 +24,19 @@
 - REQ-RETENTION: The service MUST apply the following retention policies without changing billing truth.
 - REQ-GC-RECOVERY: Automatic catch-up MUST obey the bounded progress, seal-recovery, and admission
   rules below; ordinary HTTP/MCP interfaces and CLI arguments remain compatible.
+- REQ-GC-ONLINE-RECOVERY: Aged request-log-GC debt MUST have bounded online recovery turns when
+  real database capacity permits, including during traffic above the ordinary maintenance-rate
+  threshold. Only that rate heuristic MAY be bypassed; the single bulk permit, actual capacity and
+  contention checks, bounded transactions, claim fences, billing truth, and source/seal guards MUST
+  remain enforced. Admission or a successful defer MUST NOT be counted as effective recovery progress.
+- REQ-GC-RECOVERY-ACCEPTANCE: Recovery MUST satisfy the fixed-target progress, sustained-traffic,
+  foreground latency/error, and source-preservation boundaries in Sustained-Traffic Recovery
+  Acceptance below. Genuine resource exhaustion MUST be reported separately from effective progress.
+- REQ-GC-JOINT-RECOVERY: A controlled joint recovery command MUST drive source-backed integrity,
+  required local-day sealing, and retention cleanup against an explicit fixed target. It MUST
+  establish exclusive database ownership, reject an active service or another recovery owner,
+  preserve accepted checkpoints on interruption, and distinguish complete, deferred, budget-exhausted,
+  and failed outcomes. It MUST NOT automatically stop services or claim completion with unfinished work.
 
 - `request_logs` 新增 body 元数据：request/response 原始字节数、SHA-256、清理原因、清理时间；
   同时保存 `counts_business_quota`，避免 `mcp:batch` 在 body 清理后丢失业务/非业务分类。
@@ -69,13 +82,17 @@
 
 - Scheduled GC keeps its bounded 100-row batches, at most five batches and 20 seconds per pass.
 - Productive passes, including durable body-scan cursor advancement, continue after one second.
-  Zero progress, an integrity block without other progress, foreground pressure, recent SQLite
-  contention, or an error retries after 300 seconds. A transient pool-capacity defer retries after
+  For ordinary admission, zero progress, an integrity block without other progress, foreground
+  pressure, recent SQLite contention, or an error retries after 300 seconds. A transient pool-capacity defer retries after
   30 seconds; continuations retain the existing single-active-job claim fence.
 - Before releasing its bulk permit, an incomplete productive pass retains a fair maintenance turn for
   its one-second continuation. Earlier pending maintenance work remains ahead; later rolling work
   cannot repeatedly overtake the GC continuation. Foreground, pool, and contention admission checks
-  still apply.
+  still apply; an aged bounded recovery turn may bypass only the foreground-rate heuristic.
+- Bounded recovery turns MUST use finite retry and slice budgets and preserve their debt age through
+  admission defers. Actual writer or foreground-capacity exhaustion still defers work without losing
+  its durable representative. Persistent source-scan progress, completed seals, and expired-row
+  deletions MUST remain separately observable.
 - Missing or inconsistent dashboard day seals enqueue source-backed day recovery before row
   deletion. Expired bodies outside the row-retention window are reclaimed with their source rows
   after recovery; daily summaries and the billing ledger remain intact.
@@ -91,6 +108,17 @@
   row/body expiration and independent summary retention.
 - VER-GC-RECOVERY: covers=REQ-GC-RECOVERY; tests MUST cover source-backed seal recovery, one-second
   productive continuations, 300-second defers, duplicate claims, and unchanged billing history.
+- VER-GC-ONLINE-RECOVERY: covers=REQ-GC-ONLINE-RECOVERY; sustained-traffic fixtures MUST demonstrate
+  progress in fixed expired-source debt above the ordinary rate threshold, while true resource
+  exhaustion defers safely, other maintenance policies remain scoped, and source/minute/daily/seal
+  counts and billing truth remain consistent across retries and restarts.
+- VER-GC-RECOVERY-ACCEPTANCE: covers=REQ-GC-RECOVERY-ACCEPTANCE; the sustained-traffic acceptance
+  fixture MUST meet every boundary below without relying on a later low-traffic phase. Separate
+  resource-exhaustion scenarios MUST verify explicit deferral and resumability rather than count
+  unavailable-capacity intervals as successful recovery.
+- VER-GC-JOINT-RECOVERY: covers=REQ-GC-JOINT-RECOVERY; tests MUST verify rejection of conflicting
+  database ownership, bounded interruption and resumption, source/seal correctness before deletion,
+  and truthful completion or incomplete outcomes for the fixed target.
 - VER-GC-FOREGROUND-KEY: under a saturated SQLite pool, authenticated HTTP primary-affinity
   selection MUST survive contention beyond the 100ms maintenance-read admission budget, avoid an
   active global cooldown, ignore unrelated cooldown scopes, and retain its established fallback.
@@ -116,6 +144,16 @@
   Then cooldown exclusion is evaluated with the key query, the cooled key is rebound through the
   existing fallback order, and a transient maintenance-read timeout does not become HTTP 500.
 
+### Sustained-Traffic Recovery Acceptance
+
+With actual database capacity available, each runnable dashboard-integrity or request-log-GC recovery lane MUST record at least one accepted checkpoint or target completion within every five-minute observation window. A lane is runnable when its source, seal, and claim prerequisites allow its next bounded slice; foreground RPS alone MUST NOT make it non-runnable. Prerequisite blocks and actual resource exhaustion MUST remain observable and MUST NOT count as progress.
+
+A generated 100,000-row source fixture, including 5,000 expired rows, MUST complete fixed-target historical verification, the blocking local-day seal, and all 5,000 eligible expired-row deletions within 30 minutes under continuous 10 RPS to a mock upstream. All 95,000 retained fixture rows and billing truth MUST remain intact, and source/minute/daily/seal counts MUST agree. New live traffic MUST be measured separately from the fixed fixture target.
+
+Foreground P95 latency with recovery enabled MUST exceed a same-build, same-load recovery-disabled baseline by no more than 250ms. Mock-upstream requests MUST have no failures; matched lock-pressure scenarios MUST introduce no additional recovery-caused request errors relative to their baseline.
+
+The 30-minute limit applies to this synthetic fixture, not the entire production database. Production recovery completion MUST be supported by observed completion of an explicit fixed historical target, restoration of its closed chart ranges, source-backed seals, cleanup of its eligible expired debt, and foreground latency/error evidence.
+
 ## Test Plan
 
 - Rust: settings 默认值、范围校验与 clamp；业务/非业务/非成功/mixed batch 分类；高频与共享调试匹配；body 元数据写入；GC 清 body 不删行、行到期删除、有界追赶。
@@ -138,4 +176,4 @@
 
 ## Related ADRs
 
-None
+- [ADR 0008: Bounded Online Recovery for Request Statistics](../../adr/0008-bounded-request-statistics-recovery.md)

@@ -184,8 +184,17 @@ durable claim fences, and the retention/recovery guards specified below.
   bulk slice must pass through
   one runtime admission coordinator in front of the physical bulk permit. The coordinator has one
   pending ticket per maintenance class, serves the oldest pending class first, and expires a class
-  after 120 seconds without a retry. Admission remains non-blocking and returns a typed defer; it
+  after six minutes without a retry, preserving its age across the five-minute pressure backoff.
+  Admission remains non-blocking and returns a typed defer; it
   must not create an unbounded async waiter queue or acquire a raw pool connection.
+- `REQ-BOUNDED-ONLINE-RECOVERY`: Aged dashboard-integrity and request-log-GC debt MUST be eligible
+  for scoped, bounded recovery turns that bypass only the ordinary foreground-rate heuristic when
+  actual database capacity permits. A turn MUST retain the single maintenance-bulk permit, real
+  capacity and contention protections, bounded acquisition, source reads and transactions, durable
+  claim fencing, and source/seal correctness. Other maintenance classes MUST NOT inherit this rate
+  exception. Effective progress MUST be distinguished from admitted or successfully deferred work.
+  These turns MUST meet the progress and foreground acceptance boundaries in
+  [the retention Spec](../request-log-body-retention/SPEC.md#sustained-traffic-recovery-acceptance).
 - Request-log GC catch-up must finish one bounded slice, persist its progress message, and requeue a
   fresh `queued` row when more backlog remains instead of keeping one long-lived `running` row while
   waiting for the next catch-up opportunity.
@@ -316,6 +325,11 @@ durable claim fences, and the retention/recovery guards specified below.
 - `VER-MAINTENANCE-FAIRNESS` (covers: REQ-MAINTENANCE-FAIRNESS): SQLite runtime tests verify
   oldest-first ordering, retained tickets, aged turns, ticket expiry, and permit cleanup. The
   isolated snapshot comparison records each exercised class's admission and pending-age telemetry.
+- `VER-BOUNDED-ONLINE-RECOVERY` (covers: REQ-BOUNDED-ONLINE-RECOVERY): Tests MUST demonstrate
+  effective historical recovery during sustained traffic above the ordinary rate threshold with
+  available capacity, safe deferral during actual resource exhaustion, scoped eligibility,
+  unchanged foreground correctness, resumable debt across retries and restarts, and the linked
+  five-minute progress and sustained-traffic foreground budgets.
 - `VER-DEFERRED-OBSERVABILITY` (covers: REQ-DEFERRED-OBSERVABILITY): Observability audit tests verify
   that foreground completion does not wait for the deferred writer and that later admitted flushes
   persist queued observations. The snapshot comparison records foreground transaction duration
@@ -583,3 +597,4 @@ these guards. Synthetic two-phase load verifies foreground deferral and subseque
 - [ADR 0002: Scoped SQLite and Remote Admission](../../adr/0002-scoped-sqlite-and-remote-admission.md)
 - [ADR 0004: Research Uses an Independent Durable Drain](../../adr/0004-reconciliation-research-drain.md)
 - [ADR 0005: Fair SQLite Maintenance Admission](../../adr/0005-fair-sqlite-maintenance-admission.md)
+- [ADR 0008: Bounded Online Recovery for Request Statistics](../../adr/0008-bounded-request-statistics-recovery.md)

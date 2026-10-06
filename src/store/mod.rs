@@ -89,6 +89,23 @@ pub(crate) fn acquire_observability_service_shared_lock(
     Ok(file)
 }
 
+pub(crate) fn acquire_observability_service_exclusive_lock(
+    database_path: &str,
+) -> Result<File, ProxyError> {
+    let lock_path = sqlite_lock_sidecar_path(database_path);
+    let file = open_observability_lock_file(&lock_path, true).map_err(|err| {
+        ProxyError::Other(format!(
+            "failed to open observability recovery lock file {lock_path}: {err}"
+        ))
+    })?;
+    flock_nonblocking(&file, libc::LOCK_EX).map_err(|err| {
+        ProxyError::Other(format!(
+            "request statistics recovery requires exclusive database ownership; could not acquire observability service lock {lock_path}: {err}"
+        ))
+    })?;
+    Ok(file)
+}
+
 pub(crate) fn acquire_schema_startup_lock(database_path: &str) -> Result<File, ProxyError> {
     let lock_path = schema_startup_lock_sidecar_path(database_path);
     let file = open_observability_lock_file(&lock_path, true).map_err(|err| {

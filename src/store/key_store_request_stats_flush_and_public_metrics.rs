@@ -227,12 +227,6 @@ impl KeyStore {
         }
     }
 
-    pub(crate) fn request_stats_durable_freshness_for_maintenance(
-        &self,
-    ) -> RequestStatsReadFreshness {
-        self.request_stats_read_freshness()
-    }
-
     async fn flush_request_stats_writes_with_wait_policy(
         &self,
         retry_budget: Duration,
@@ -261,6 +255,13 @@ impl KeyStore {
                     state.flushing = true;
                     state.flushing_oldest_created_at = state.oldest_pending_created_at.take();
                     state.flushing_newest_created_at = state.newest_pending_created_at.take();
+                    state.flushing_dashboard_rollup_ranges = state
+                        .pending_dashboard_rollups
+                        .keys()
+                        .map(|&(bucket_start, bucket_secs)| {
+                            (bucket_start, bucket_start.saturating_add(bucket_secs))
+                        })
+                        .collect();
                     Some(DrainedRequestStatsFlushBatch {
                         pending_dashboard_rollups: std::mem::take(&mut state.pending_dashboard_rollups),
                         pending_api_key_usage: std::mem::take(&mut state.pending_api_key_usage),
@@ -417,6 +418,7 @@ impl KeyStore {
             if let Err(err) = flush_result {
                 state.flushing_oldest_created_at = None;
                 state.flushing_newest_created_at = None;
+                state.flushing_dashboard_rollup_ranges.clear();
                 uncommitted.requeue_into(&mut state);
                 RequestStatsCoalescer::mark_flush_deadline_if_pending(&mut state);
                 request_stats_coalescer.flushed.notify_waiters();
@@ -424,6 +426,7 @@ impl KeyStore {
             }
             state.flushing_oldest_created_at = None;
             state.flushing_newest_created_at = None;
+            state.flushing_dashboard_rollup_ranges.clear();
             // A background admission owns a small, wall-clock-bounded group
             // of committed transactions. Return every remaining key before
             // releasing the coalescer so the next nominal tick can resume.

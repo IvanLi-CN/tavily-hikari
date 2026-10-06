@@ -1,6 +1,127 @@
 use super::*;
 
 #[tokio::test]
+async fn joint_recovery_rejects_an_active_service_owner() {
+    let db_path = temp_db_path("request-statistics-recovery-active-service");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let target_day_start =
+        local_day_bucket_start_utc_ts(proxy.backend_time().now_ts()) - SECS_PER_DAY;
+
+    let error = run_request_statistics_recovery_once(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 1,
+            ..RequestStatisticsRecoveryOptions::default()
+        },
+    )
+    .await
+    .expect_err("joint recovery must reject the active service lock");
+    assert!(error.to_string().contains("exclusive database ownership"));
+    drop(proxy);
+}
+
+#[tokio::test]
+async fn joint_recovery_completes_an_empty_fixed_target_with_a_seal() {
+    let db_path = temp_db_path("request-statistics-recovery-empty-target");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(Utc::now().timestamp());
+    let target_day_start = local_day_bucket_start_utc_ts(backend_time.now_ts()) - SECS_PER_DAY;
+
+    let report = run_request_statistics_recovery_once_with_time(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 10,
+            ..RequestStatisticsRecoveryOptions::default()
+        },
+        backend_time,
+    )
+    .await
+    .expect("empty fixed target recovery");
+    assert_eq!(report.outcome, "complete");
+    assert!(report.target_complete);
+    assert!(report.sealed_day);
+    assert_eq!(report.target_expired_rows_remaining, 0);
+}
+
+#[tokio::test]
+async fn joint_recovery_seals_and_deletes_an_expired_fixed_target() {
+    let db_path = temp_db_path("request-statistics-recovery-expired-target");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let now = proxy.backend_time().now_ts();
+    let current_day_start = local_day_bucket_start_utc_ts(now);
+    let target_day_start = shift_local_day_start_utc_ts(current_day_start, -2);
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.request_log_retention.max_log_retention_days = 1;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("set short request-log retention");
+    insert_visible_dashboard_log(&proxy, target_day_start + 60).await;
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("drain request stats coalescer");
+    let weak_store = Arc::downgrade(&proxy.key_store);
+    drop(proxy);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if weak_store.upgrade().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("request statistics recovery must wait for the service owner to release");
+
+    let report = run_request_statistics_recovery_once(
+        &db_str,
+        RequestStatisticsRecoveryOptions {
+            target_day_start,
+            max_runtime_secs: 10,
+            ..RequestStatisticsRecoveryOptions::default()
+        },
+    )
+    .await
+    .expect("recover expired fixed target");
+    assert_eq!(report.outcome, "complete");
+    assert!(report.target_complete);
+    assert!(report.sealed_day);
+    assert_eq!(report.target_expired_rows_remaining, 0);
+    assert_eq!(report.deleted_request_logs, 1);
+
+    let verify_store = crate::store::KeyStore::open_for_request_logs_gc(&db_str)
+        .await
+        .expect("open recovered database");
+    let remaining_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM request_logs WHERE created_at >= ? AND created_at < ?",
+    )
+    .bind(target_day_start)
+    .bind(next_local_day_start_utc_ts(target_day_start))
+    .fetch_one(&verify_store.pool)
+    .await
+    .expect("count recovered target rows");
+    let daily_requests: i64 = sqlx::query_scalar(
+        "SELECT total_requests FROM dashboard_request_rollup_buckets WHERE bucket_start = ? AND bucket_secs = ?",
+    )
+    .bind(target_day_start)
+    .bind(SECS_PER_DAY)
+    .fetch_one(&verify_store.pool)
+    .await
+    .expect("read recovered daily rollup");
+    assert_eq!(remaining_rows, 0);
+    assert_eq!(daily_requests, 1);
+}
+
+#[tokio::test]
 async fn request_stats_shutdown_drains_pending_rollups() {
     let db_path = temp_db_path("request-stats-shutdown-drain");
     let db_str = db_path.to_string_lossy().to_string();
@@ -98,6 +219,60 @@ async fn repair_barrier_discards_fenced_rollups_and_requeues_newer_changes() {
         .map(|value| value.total_requests)
         .sum();
     assert_eq!(pending_total, 2, "minute and day deltas must both requeue");
+}
+
+#[tokio::test]
+async fn dashboard_integrity_freshness_ignores_unrelated_pending_rollups() {
+    let coalescer = RequestStatsCoalescer::default();
+    let target_start = 1_700_000_000_i64 - 1_700_000_000_i64.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let target_end = target_start + SECS_PER_FIVE_MINUTES;
+    let counts = DashboardRequestRollupCounts {
+        total_requests: 1,
+        success_count: 1,
+        ..DashboardRequestRollupCounts::default()
+    };
+
+    coalescer
+        .enqueue_request_log_rollups(crate::store::RequestLogRollupInput {
+            api_key_id: None,
+            auth_token_id: "unrelated-auth-token",
+            request_user_id: None,
+            request_log_id: Some(1),
+            created_at: target_start - SECS_PER_DAY,
+            dashboard_counts: counts,
+            request_log_catalog_key: None,
+        })
+        .await;
+    assert!(
+        !coalescer
+            .dashboard_rollup_range_has_uncommitted_changes(target_start, target_end)
+            .await
+    );
+
+    let source_mutation = coalescer.begin_dashboard_rollup_source_mutation(target_start);
+    assert!(
+        coalescer
+            .dashboard_rollup_range_has_uncommitted_changes(target_start, target_end)
+            .await
+    );
+    source_mutation.commit().await;
+
+    coalescer
+        .enqueue_request_log_rollups(crate::store::RequestLogRollupInput {
+            api_key_id: None,
+            auth_token_id: "target-auth-token",
+            request_user_id: None,
+            request_log_id: Some(2),
+            created_at: target_start + 60,
+            dashboard_counts: counts,
+            request_log_catalog_key: None,
+        })
+        .await;
+    assert!(
+        coalescer
+            .dashboard_rollup_range_has_uncommitted_changes(target_start, target_end)
+            .await
+    );
 }
 
 #[tokio::test]

@@ -185,7 +185,10 @@ impl TavilyProxy {
             crate::store::DashboardRollupIntegritySlice::Verified { next_delay_secs } => {
                 ("verified", next_delay_secs)
             }
-            crate::store::DashboardRollupIntegritySlice::Deferred { next_delay_secs } => {
+            crate::store::DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                ..
+            } => {
                 ("deferred", next_delay_secs)
             }
             crate::store::DashboardRollupIntegritySlice::Repaired { next_delay_secs } => {
@@ -200,6 +203,20 @@ impl TavilyProxy {
 
     pub fn admit_dashboard_rollup_integrity(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_dashboard_rollup_integrity() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn admit_dashboard_rollup_integrity_recovery(&self) -> SqliteAdmissionOutcome {
+        match self
+            .key_store
+            .try_admit_dashboard_rollup_integrity_recovery()
+        {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
                 _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),
@@ -435,6 +452,17 @@ impl TavilyProxy {
 
     pub fn admit_request_logs_gc(&self) -> SqliteAdmissionOutcome {
         match self.key_store.try_admit_request_logs_gc() {
+            Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
+                _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
+            }),
+            Err(reason) => SqliteAdmissionOutcome::Deferred {
+                reason: reason.as_str(),
+            },
+        }
+    }
+
+    pub fn admit_request_logs_gc_recovery(&self) -> SqliteAdmissionOutcome {
+        match self.key_store.try_admit_request_logs_gc_recovery() {
             Ok(permit) => SqliteAdmissionOutcome::Admitted(SqliteMaintenanceAdmission {
                 _kind: SqliteMaintenanceAdmissionKind::Bulk { _permit: permit },
             }),

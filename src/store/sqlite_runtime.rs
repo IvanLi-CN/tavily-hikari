@@ -1262,6 +1262,89 @@ impl SqliteRuntime {
         self.try_admit_maintenance_bulk_with_policy(operation, false, false)
     }
 
+    /// Admit only the dashboard-integrity and request-log-GC recovery lanes
+    /// with a bounded foreground-pressure exception. The first attempt still
+    /// records a normal maintenance ticket; the exception is available only
+    /// after that ticket has aged through the coordinator turn window.
+    pub(crate) fn try_admit_bounded_recovery_bulk(
+        &self,
+        operation: SqliteOperation,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        if !matches!(
+            operation,
+            SqliteOperation::DashboardIntegrityWrite | SqliteOperation::RequestLogsGc
+        ) {
+            return self.try_admit_maintenance_bulk(operation);
+        }
+        if self
+            .inner
+            .maintenance_shutdown
+            .load(AtomicOrdering::Acquire)
+        {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        }
+        let class = operation
+            .maintenance_class()
+            .expect("bounded recovery operations must have a coordinator class");
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            aged_turn_bypass,
+            true,
+            false,
+            aged_turn_bypass,
+        );
+        if let Some(reason) = reason
+            && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+        {
+            self.inner.maintenance_coordinator.register_request(class);
+            if !SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+
+        self.inner.maintenance_coordinator.register_request(class);
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            aged_turn_bypass,
+            true,
+            true,
+            aged_turn_bypass,
+        );
+        if let Some(reason) = reason {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
+            }
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+        let Ok(permit) = self.inner.maintenance_bulk.clone().try_acquire_owned() else {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        let Some(lease) = SqliteMaintenanceCoordinator::try_start_shared(
+            &self.inner.maintenance_coordinator,
+            class,
+            aged_turn_bypass,
+        ) else {
+            drop(permit);
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        Ok(SqliteMaintenanceBulkPermit {
+            _permit: permit,
+            _lease: lease,
+        })
+    }
+
     /// Research drain has an aged-turn exception for the foreground-RPS
     /// heuristic, but it still owns the single bulk slot for its bounded
     /// source read. The permit is intentionally scoped by the caller to the

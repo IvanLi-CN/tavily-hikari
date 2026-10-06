@@ -509,6 +509,50 @@ pub struct RequestLogsGcReport {
     pub blocked_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RequestStatisticsRecoveryOptions {
+    pub target_day_start: i64,
+    pub max_runtime_secs: u64,
+    pub gc_batch_size: i64,
+    pub gc_max_batches: i64,
+    pub gc_inter_batch_sleep_ms: u64,
+}
+
+impl Default for RequestStatisticsRecoveryOptions {
+    fn default() -> Self {
+        Self {
+            target_day_start: 0,
+            max_runtime_secs: 300,
+            gc_batch_size: 100,
+            gc_max_batches: 5,
+            gc_inter_batch_sleep_ms: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestStatisticsRecoveryReport {
+    pub outcome: String,
+    pub target_day_start: i64,
+    pub target_day_end: i64,
+    pub source_fence: i64,
+    pub accepted_checkpoints: i64,
+    pub checkpoint: i64,
+    pub target_complete: bool,
+    pub target_expired_rows_remaining: i64,
+    pub integrity_slices: i64,
+    pub gc_passes: i64,
+    pub cleaned_request_log_bodies: i64,
+    pub deleted_request_logs: i64,
+    pub deleted_rollups: i64,
+    pub sealed_day: bool,
+    pub last_defer_reason: Option<String>,
+    pub error: Option<String>,
+    pub elapsed_ms: u128,
+    pub time_since_effective_progress_ms: u128,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbCompactionReport {
@@ -633,6 +677,208 @@ pub(crate) async fn run_request_logs_gc_once_with_time(
             &settings.request_log_retention,
         )
         .await
+}
+
+pub async fn run_request_statistics_recovery_once(
+    database_path: &str,
+    options: RequestStatisticsRecoveryOptions,
+) -> Result<RequestStatisticsRecoveryReport, ProxyError> {
+    run_request_statistics_recovery_once_with_time(database_path, options, BackendTime::system())
+        .await
+}
+
+pub(crate) async fn run_request_statistics_recovery_once_with_time(
+    database_path: &str,
+    options: RequestStatisticsRecoveryOptions,
+    backend_time: BackendTime,
+) -> Result<RequestStatisticsRecoveryReport, ProxyError> {
+    if options.target_day_start <= 0 {
+        return Err(ProxyError::Other(
+            "request statistics recovery requires a positive local-day start".to_string(),
+        ));
+    }
+    if local_day_bucket_start_utc_ts(options.target_day_start) != options.target_day_start {
+        return Err(ProxyError::Other(format!(
+            "request statistics recovery target must be a local-day boundary: {}",
+            options.target_day_start
+        )));
+    }
+    let started = backend_time.instant_now();
+    let key_store = crate::store::KeyStore::open_for_request_statistics_recovery_with_time(
+        database_path,
+        backend_time.clone(),
+    )
+    .await?;
+    let settings = key_store.get_system_settings().await?;
+    let retention_days = settings.request_log_retention.max_log_retention_days;
+    let threshold = configured_request_logs_retention_threshold_utc_ts_at(
+        retention_days,
+        key_store.backend_time.local_now(),
+    );
+    let target_day_end = next_local_day_start_utc_ts(options.target_day_start);
+    let source_fence = key_store
+        .prepare_request_statistics_recovery_target(options.target_day_start)
+        .await?;
+    let deadline = key_store
+        .backend_time
+        .deadline_after(Duration::from_secs(options.max_runtime_secs.max(1)));
+    let mut accepted_checkpoints = 0_i64;
+    let mut checkpoint = key_store
+        .request_statistics_recovery_target_checkpoint(options.target_day_start)
+        .await?;
+    let mut integrity_slices = 0_i64;
+    let mut gc_passes = 0_i64;
+    let mut cleaned_request_log_bodies = 0_i64;
+    let mut deleted_request_logs = 0_i64;
+    let mut deleted_rollups = 0_i64;
+    let mut last_defer_reason = None;
+    let mut error = None;
+    let mut last_progress_at = key_store.backend_time.instant_now();
+    let outcome;
+
+    loop {
+        if key_store.backend_time.instant_now() >= deadline {
+            outcome = "budget-exhausted";
+            break;
+        }
+        let checkpoint_before = checkpoint;
+        match key_store
+            .run_request_statistics_recovery_integrity_slice(options.target_day_start, source_fence)
+            .await
+        {
+            Ok(crate::store::DashboardRollupIntegritySlice::Deferred { reason, .. }) => {
+                integrity_slices += 1;
+                last_defer_reason = Some(reason.to_string());
+            }
+            Ok(_) => integrity_slices += 1,
+            Err(err) => {
+                let transient = is_transient_sqlite_write_error(&err);
+                if transient {
+                    last_defer_reason = Some("transient_sqlite_resource_exhaustion".to_string());
+                    outcome = "deferred";
+                } else {
+                    error = Some(err.to_string());
+                    outcome = "failed";
+                }
+                break;
+            }
+        }
+        let next_checkpoint = key_store
+            .request_statistics_recovery_target_checkpoint(options.target_day_start)
+            .await?;
+        if next_checkpoint > checkpoint_before {
+            accepted_checkpoints += 1;
+            last_progress_at = key_store.backend_time.instant_now();
+        }
+        checkpoint = next_checkpoint;
+
+        if key_store.backend_time.instant_now() >= deadline {
+            outcome = "budget-exhausted";
+            break;
+        }
+        let remaining_secs = deadline
+            .saturating_duration_since(key_store.backend_time.instant_now())
+            .as_secs()
+            .max(1);
+        let gc_report = key_store
+            .delete_old_request_logs_bounded(
+                threshold,
+                RequestLogsGcOptions {
+                    batch_size: options.gc_batch_size.max(1),
+                    max_batches: options.gc_max_batches.max(1),
+                    max_runtime_secs: remaining_secs,
+                    inter_batch_sleep_ms: options.gc_inter_batch_sleep_ms,
+                },
+                retention_days,
+                &settings.request_log_retention,
+            )
+            .await;
+        let gc_report = match gc_report {
+            Ok(report) => report,
+            Err(err) => {
+                let transient = is_transient_sqlite_write_error(&err);
+                if transient {
+                    last_defer_reason = Some("transient_sqlite_resource_exhaustion".to_string());
+                    outcome = "deferred";
+                } else {
+                    error = Some(err.to_string());
+                    outcome = "failed";
+                }
+                break;
+            }
+        };
+        gc_passes += 1;
+        cleaned_request_log_bodies += gc_report.cleaned_request_log_bodies;
+        deleted_request_logs += gc_report.deleted_request_logs;
+        deleted_rollups += gc_report.deleted_rollups;
+        if gc_report.cleaned_request_log_bodies
+            + gc_report.deleted_request_logs
+            + gc_report.deleted_rollups
+            > 0
+            || gc_report.body_scan_cursor_advanced
+        {
+            last_progress_at = key_store.backend_time.instant_now();
+        }
+        if let Some(reason) = gc_report.blocked_reason {
+            last_defer_reason = Some(reason);
+        } else if !gc_report.completed {
+            last_defer_reason = Some(gc_report.progress_status);
+        }
+
+        let target_complete = key_store
+            .request_statistics_recovery_target_complete(options.target_day_start)
+            .await?;
+        let target_expired_rows_remaining = key_store
+            .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold)
+            .await?;
+        if target_complete && target_expired_rows_remaining == 0 {
+            outcome = "complete";
+            break;
+        }
+        if next_checkpoint == checkpoint_before
+            && gc_report.cleaned_request_log_bodies == 0
+            && gc_report.deleted_request_logs == 0
+            && gc_report.deleted_rollups == 0
+            && !gc_report.body_scan_cursor_advanced
+        {
+            last_defer_reason.get_or_insert_with(|| "no_effective_progress".to_string());
+            key_store
+                .backend_time
+                .sleep(Duration::from_millis(25))
+                .await;
+        }
+    }
+
+    let target_complete = key_store
+        .request_statistics_recovery_target_complete(options.target_day_start)
+        .await?;
+    let checkpoint = key_store
+        .request_statistics_recovery_target_checkpoint(options.target_day_start)
+        .await?;
+    let target_expired_rows_remaining = key_store
+        .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold)
+        .await?;
+    let sealed_day = target_complete;
+    Ok(RequestStatisticsRecoveryReport {
+        outcome: outcome.to_string(),
+        target_day_start: options.target_day_start,
+        target_day_end,
+        source_fence,
+        accepted_checkpoints,
+        checkpoint,
+        target_complete,
+        target_expired_rows_remaining,
+        integrity_slices,
+        gc_passes,
+        cleaned_request_log_bodies,
+        deleted_request_logs,
+        deleted_rollups,
+        sealed_day,
+        last_defer_reason,
+        error,
+        elapsed_ms: started.elapsed().as_millis(),
+        time_since_effective_progress_ms: last_progress_at.elapsed().as_millis(),
+    })
 }
 
 pub const SQLITE_POOL_MAX_CONNECTIONS_DEFAULT: u32 = 3;

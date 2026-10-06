@@ -30,6 +30,12 @@
 - REQ-CHARTS: 仪表盘必须遵守下述数据契约、统计口径与展示约束。
 - REQ-INTEGRITY: 原始日志删除必须经过全日 source-backed 重审及 seal 校验；热窗口和
   GC 阻塞日必须按下述有界优先级推进，并保留断点与前台保护。
+- REQ-INTEGRITY-ONLINE-RECOVERY: 等待过久的完整性恢复工作在真实数据库容量允许时必须获得有界
+  在线恢复机会，持续超过普通维护 RPS 门槛的流量不得单独阻止其推进。仅可放宽 RPS 启发式门槛，
+  不得绕过真实资源压力、单 bulk permit、读取与短事务预算、源数据 fence 或删除前 seal 校验。
+- REQ-INTEGRITY-RECOVERY-BUDGET: 真实数据库有容量且恢复通道具备下一步操作所需的源数据与 claim 等前提时，
+  每个五分钟观察窗口必须至少接受一个持久化检查点或完成固定目标；成功 defer 不得算作进度。
+  完整性恢复必须满足日志保留 Spec 的持续流量联合验收边界。
 
 ## 数据契约
 
@@ -79,11 +85,15 @@
   5 分钟工作项标为待验证，不能把整段已验证热窗口重新显示为缺口。
 - 普通已封存日回审最多每 60 秒执行一次；阻塞日志 GC 的最早本地日使用持久化标记，在分页边界排在
   普通历史和滚动回审之前，但仍不得抢占新闭合或首次热窗口片。阻塞日有进展时每 1 秒续跑，慢写、
-  前台压力、连接池压力和近期 SQLite contention 的 admission defer 退避 300 秒；独占 bulk admission
+  普通前台压力、连接池压力和近期 SQLite contention 的 admission defer 退避 300 秒；独占 bulk admission
   被占用时按 5 秒重查，不扩大单片预算。重复登记保留游标与累计结果。源行更新
   guard 被取消时必须使对应片的版本失效，强制重新读取，不能将可能已提交的旧行改动标为已验证。
 - 不完整且有进展的 GC 片必须在释放 bulk permit 前保留一次公平续跑票据；已有更早维护票据仍先执行，
-  后续滚动工作不得反复越过 GC 的 1 秒续跑。前台、连接池与 SQLite contention admission 检查继续生效。
+  后续滚动工作不得反复越过 GC 的 1 秒续跑。前台、连接池与 SQLite contention admission 检查继续生效；
+  等待过久的有界恢复机会仅可例外放宽前台 RPS 启发式门槛。
+- 有界恢复机会必须保留真实资源压力下的延迟、持久化进度与公平调度。实际进展必须按固定历史范围
+  的已接受扫描断点、完成校验或日级 seal 判断，不得只凭一次 `verified`、任务 `success`、
+  `lastVerifiedAt` 更新或滚动窗口缺口数量宣告恢复完成。
 - 热窗口游标落后超过当前窗口时，使用实际扫描起点计算下一片终点，保证区间非空，历史工作保持可恢复。
   GC 候选日缺失 seal 或汇总不一致时自动登记全日重审；全日完成后重建日级汇总与 seal，再放行 GC。
   日末游标已持久化但收尾中断的工作必须在重启后完成封存，不得永久占住队列。
@@ -160,6 +170,12 @@
 - VER-CHARTS: covers=REQ-CHARTS；下列图表场景必须满足相应数据和展示契约。
 - VER-INTEGRITY: covers=REQ-INTEGRITY；过期热游标、缺失或差异 seal、重复登记、分页中断、
   日末重启以及新热片抢占均必须完成有界恢复；真实账本保持不变，重审未完成时不得删除源日志。
+- VER-INTEGRITY-ONLINE-RECOVERY: covers=REQ-INTEGRITY-ONLINE-RECOVERY；持续高于普通维护 RPS
+  门槛且数据库有余量时，固定历史范围和 GC 阻塞日必须能推进；真实资源耗尽、迟到写入与重启时必须
+  保留安全延迟和有效 fence，不得发布部分统计、重复累计或提前删除源日志。
+- VER-INTEGRITY-RECOVERY-BUDGET: covers=REQ-INTEGRITY-RECOVERY-BUDGET；联合验收必须按每个
+  可推进通道验证五分钟有效进度，完成固定历史目标并保持源数据、minute/daily 汇总和 seal 一致；
+  数值门槛遵守[日志保留 Spec](../request-log-body-retention/SPEC.md#sustained-traffic-recovery-acceptance)。
 
 - 管理员仪表盘首页能直接看到请求趋势图表，不再显示旧 sparkline 卡片。
 - `/api/dashboard/overview` 与 `/api/events` snapshot 都包含 `hourlyRequestWindow`，且 dashboard 切到该路由后可实时刷新。
@@ -196,7 +212,6 @@
   story_id_or_title: `admin-components-dashboardoverview--integrity-repairing`
   state: `repairing`
   evidence_note: 未验证的 5 分钟槽在小时聚合后仍为空缺；同时显示统计修复状态和最后验证时间，未将缺口伪装为零流量。
-  PR: include
   image:
   ![管理员仪表盘统计修复中趋势图](./assets/dashboard-rollup-integrity-repairing.png)
 
@@ -212,7 +227,6 @@
   story_id_or_title: `admin-components-dashboardoverview--credits-mode`
   state: `credits`
   evidence_note: 验证“积分”使用滚动 25 个小时槽，本地估算与上游实扣按每小时两根独立柱并排展示，tooltip 只列出两项原值。
-  PR: include
   image:
   ![管理员仪表盘积分并排柱状图](./assets/dashboard-hourly-credits.png)
 
@@ -228,10 +242,9 @@
   story_id_or_title: `admin-components-dashboardoverview--credits-area-mode`
   state: `credits-area`
   evidence_note: 验证“面积图 · 积分”使用最近 6 小时、73 个 5 分钟槽；两项从零基线半透明重叠，上游未采样区间保持断线。
-  PR: include
   image:
   ![管理员仪表盘积分重叠面积图](./assets/dashboard-hourly-credits-area.png)
 
 ## Related ADRs
 
-None
+- [ADR 0008: Bounded Online Recovery for Request Statistics](../../adr/0008-bounded-request-statistics-recovery.md)

@@ -1010,6 +1010,58 @@ async fn maintenance_bulk_age_does_not_bypass_foreground_pressure() {
 }
 
 #[tokio::test]
+async fn bounded_recovery_bulk_allows_foreground_pressure_after_ticket_ages() {
+    let runtime = three_connection_runtime().await;
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+    assert_eq!(
+        runtime
+            .try_admit_bounded_recovery_bulk(SqliteOperation::RequestLogsGc)
+            .expect_err("foreground pressure defers an unaged recovery ticket"),
+        SqliteAdmissionDeferReason::ForegroundPressure
+    );
+    {
+        let mut state = runtime
+            .inner
+            .maintenance_coordinator
+            .state
+            .lock()
+            .expect("maintenance coordinator state");
+        let aged_at = Instant::now() - MAINTENANCE_BULK_TURN_BYPASS_AGE;
+        let pending = state
+            .pending
+            .get_mut(&SqliteMaintenanceClass::RequestLogsGc)
+            .expect("recovery ticket is retained");
+        pending.first_requested_at = aged_at;
+        pending.last_requested_at = aged_at;
+    }
+
+    let permit = runtime
+        .try_admit_bounded_recovery_bulk(SqliteOperation::RequestLogsGc)
+        .expect("an aged recovery ticket receives a bounded turn");
+    assert_eq!(
+        runtime.inner.maintenance_coordinator.active_class(),
+        Some(SqliteMaintenanceClass::RequestLogsGc)
+    );
+    drop(permit);
+}
+
+#[tokio::test]
+async fn bounded_recovery_bulk_is_scoped_to_the_two_recovery_operations() {
+    let runtime = three_connection_runtime().await;
+    for _ in 0..6 {
+        runtime.record_foreground_activity();
+    }
+    assert_eq!(
+        runtime
+            .try_admit_bounded_recovery_bulk(SqliteOperation::AlertProjection)
+            .expect_err("non-recovery maintenance cannot use the bounded exception"),
+        SqliteAdmissionDeferReason::ForegroundPressure
+    );
+}
+
+#[tokio::test]
 async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
     for _ in 0..6 {

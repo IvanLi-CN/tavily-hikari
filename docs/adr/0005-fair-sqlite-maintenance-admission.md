@@ -30,7 +30,9 @@ contention policy. Add one instance-local coordinator in front of that semaphore
   freshness bound.
 - Ordinary admission still reserves two foreground pool slots. Aging changes maintenance-class
   ordering and can let an eligible turn reach its bounded pool acquire even when all currently-open
-  connections are checked out, but it never bypasses the foreground-rate gate. The 100ms acquire
+  connections are checked out, but ordinary admission never bypasses the foreground-rate gate.
+  [ADR 0008](./0008-bounded-request-statistics-recovery.md) defines the scoped exception for aged
+  dashboard-integrity and request-log-GC recovery turns. The 100ms acquire
   budget is the safety boundary, so a full pool cannot starve an aged ticket behind a pre-admission
   `pool_pressure` check. Pools at or below the two-slot foreground reserve remain foreground-only.
 - Admission is non-blocking. A caller either receives the physical permit plus a coordinator lease
@@ -41,8 +43,9 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Reconciliation preflight owns a drop guard: if claim validation or a controlled retry exits before
   the real bulk admission, the unused ticket is cancelled; only the path entering that admission
   explicitly transfers the ticket to the bulk admission retry loop.
-- A pending class expires after 120 seconds without another retry. This bounds abandoned work and
-  leaves durable scheduled-job state responsible for work that must survive process lifetime.
+- A pending class expires after six minutes without another retry. This preserves its age across
+  the five-minute pressure backoff while bounding abandoned work; durable scheduled-job state
+  remains responsible for work that must survive process lifetime.
 - The lease is held only for the local SQLite slice. Remote requests and their response handling
   are outside the lease, and foreground request work, billing truth, and control-plane writes do
   not become eventual.
