@@ -687,6 +687,86 @@ pub async fn run_request_statistics_recovery_once(
         .await
 }
 
+const REQUEST_STATISTICS_RECOVERY_OBSERVATION_BUDGET: Duration = Duration::from_millis(150);
+
+async fn request_statistics_recovery_observation<T, F>(
+    deadline: Instant,
+    future: F,
+) -> Result<Option<T>, ProxyError>
+where
+    F: Future<Output = Result<T, ProxyError>>,
+{
+    let budget = REQUEST_STATISTICS_RECOVERY_OBSERVATION_BUDGET
+        .min(deadline.saturating_duration_since(Instant::now()));
+    if budget.is_zero() {
+        return Ok(None);
+    }
+    match tokio::time::timeout(budget, future).await {
+        Ok(result) => result.map(Some),
+        Err(_) => {
+            crate::store::wait_for_owned_finishes(&[
+                crate::store::SqliteOperation::DashboardIntegrityWrite,
+                crate::store::SqliteOperation::RequestLogsGc,
+            ])
+            .await;
+            Ok(None)
+        }
+    }
+}
+
+async fn request_statistics_recovery_phase<T, F>(
+    deadline: Instant,
+    future: F,
+) -> Result<Option<T>, ProxyError>
+where
+    F: Future<Output = Result<T, ProxyError>>,
+{
+    let budget = deadline.saturating_duration_since(Instant::now());
+    if budget.is_zero() {
+        return Ok(None);
+    }
+    match tokio::time::timeout(budget, future).await {
+        Ok(result) => result.map(Some),
+        Err(_) => {
+            crate::store::wait_for_owned_finishes(&[
+                crate::store::SqliteOperation::DashboardIntegrityWrite,
+                crate::store::SqliteOperation::RequestLogsGc,
+            ])
+            .await;
+            Ok(None)
+        }
+    }
+}
+
+fn request_statistics_recovery_budget_report(
+    target_day_start: i64,
+    target_day_end: i64,
+    source_fence: i64,
+    started: Instant,
+    reason: &'static str,
+) -> RequestStatisticsRecoveryReport {
+    RequestStatisticsRecoveryReport {
+        outcome: "budget-exhausted".to_string(),
+        target_day_start,
+        target_day_end,
+        source_fence,
+        accepted_checkpoints: 0,
+        checkpoint: target_day_start,
+        target_complete: false,
+        target_expired_rows_remaining: 0,
+        integrity_slices: 0,
+        gc_passes: 0,
+        cleaned_request_log_bodies: 0,
+        deleted_request_logs: 0,
+        deleted_rollups: 0,
+        sealed_day: false,
+        last_defer_reason: Some(reason.to_string()),
+        error: None,
+        elapsed_ms: started.elapsed().as_millis(),
+        time_since_effective_progress_ms: started.elapsed().as_millis(),
+    }
+}
+
 pub(crate) async fn run_request_statistics_recovery_once_with_time(
     database_path: &str,
     options: RequestStatisticsRecoveryOptions,
@@ -704,18 +784,36 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
         )));
     }
     let started = backend_time.instant_now();
-    let key_store = crate::store::KeyStore::open_for_request_statistics_recovery_with_time(
-        database_path,
-        backend_time.clone(),
+    let deadline =
+        backend_time.deadline_after(Duration::from_secs(options.max_runtime_secs.max(1)));
+    let target_day_end = next_local_day_start_utc_ts(options.target_day_start);
+    let key_store = tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        crate::store::KeyStore::open_for_request_statistics_recovery_with_time(
+            database_path,
+            backend_time.clone(),
+        ),
     )
-    .await?;
-    let settings = key_store.get_system_settings().await?;
+    .await
+    .map_err(|_| {
+        ProxyError::Other("request statistics recovery bootstrap exceeded its budget".to_string())
+    })??;
+    let Some(settings) =
+        request_statistics_recovery_observation(deadline, key_store.get_system_settings()).await?
+    else {
+        return Ok(request_statistics_recovery_budget_report(
+            options.target_day_start,
+            target_day_end,
+            0,
+            started,
+            "recovery_budget",
+        ));
+    };
     let retention_days = settings.request_log_retention.max_log_retention_days;
     let threshold = configured_request_logs_retention_threshold_utc_ts_at(
         retention_days,
         key_store.backend_time.local_now(),
     );
-    let target_day_end = next_local_day_start_utc_ts(options.target_day_start);
     let now_ts = key_store.backend_time.now_ts();
     let latest_closed = now_ts - now_ts.rem_euclid(SECS_PER_FIVE_MINUTES);
     if target_day_end > latest_closed {
@@ -723,12 +821,29 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
             "request statistics recovery target day is not closed".to_string(),
         ));
     }
-    let source_fence = key_store
-        .prepare_request_statistics_recovery_target(options.target_day_start)
-        .await?;
-    let deadline = key_store
-        .backend_time
-        .deadline_after(Duration::from_secs(options.max_runtime_secs.max(1)));
+    let recovery_permit = key_store
+        .try_admit_dashboard_rollup_integrity_exclusive_recovery()
+        .map_err(|reason| {
+            ProxyError::Other(format!(
+                "request statistics recovery admission deferred: {}",
+                reason.as_str()
+            ))
+        })?;
+    let Some(source_fence) = request_statistics_recovery_phase(
+        deadline,
+        key_store.prepare_request_statistics_recovery_target(options.target_day_start),
+    )
+    .await?
+    else {
+        return Ok(request_statistics_recovery_budget_report(
+            options.target_day_start,
+            target_day_end,
+            0,
+            started,
+            "recovery_budget",
+        ));
+    };
+    let mut prepared_integrity_permit = Some(recovery_permit);
     let mut accepted_checkpoints = 0_i64;
     let mut checkpoint = options.target_day_start;
     let mut integrity_slices = 0_i64;
@@ -740,33 +855,53 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
     let mut error = None;
     let mut last_progress_at = key_store.backend_time.instant_now();
     let mut outcome = "budget-exhausted";
+    let mut setup_budget_exhausted = false;
+    let mut target_complete = false;
+    let mut target_expired_rows_remaining = 0_i64;
 
-    match key_store
-        .request_statistics_recovery_target_checkpoint(options.target_day_start)
-        .await
+    match request_statistics_recovery_observation(
+        deadline,
+        key_store.request_statistics_recovery_target_checkpoint(options.target_day_start),
+    )
+    .await?
     {
-        Ok(value) => checkpoint = value,
-        Err(err) => {
-            error = Some(err.to_string());
-            outcome = "failed";
+        Some(value) => checkpoint = value,
+        None => {
+            setup_budget_exhausted = true;
+            last_defer_reason = Some("recovery_budget".to_string());
         }
     }
 
-    if error.is_none() {
+    if error.is_none() && !setup_budget_exhausted {
         loop {
             if key_store.backend_time.instant_now() >= deadline {
                 outcome = "budget-exhausted";
                 break;
             }
             let checkpoint_before = checkpoint;
-            match key_store
-                .run_request_statistics_recovery_integrity_slice(
-                    options.target_day_start,
-                    source_fence,
-                    deadline,
-                )
-                .await
-            {
+            let integrity_permit = match prepared_integrity_permit.take() {
+                Some(permit) => Ok(permit),
+                None => key_store.try_admit_dashboard_rollup_integrity_exclusive_recovery(),
+            };
+            let integrity_result = match integrity_permit {
+                Ok(_permit) => {
+                    let result = key_store
+                        .run_request_statistics_recovery_integrity_slice(
+                            options.target_day_start,
+                            source_fence,
+                            deadline,
+                        )
+                        .await;
+                    drop(_permit);
+                    result
+                }
+                Err(reason) => {
+                    last_defer_reason = Some(format!("admission_{}", reason.as_str()));
+                    outcome = "deferred";
+                    break;
+                }
+            };
+            let integrity_effective_progress = match integrity_result {
                 Ok(crate::store::DashboardRollupIntegritySlice::Deferred { reason, .. }) => {
                     integrity_slices += 1;
                     last_defer_reason = Some(reason.to_string());
@@ -774,8 +909,16 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
                         outcome = "budget-exhausted";
                         break;
                     }
+                    matches!(
+                        reason,
+                        "source_page_limit" | "read_budget" | "relevant_unflushed_statistics"
+                    )
                 }
-                Ok(_) => integrity_slices += 1,
+                Ok(crate::store::DashboardRollupIntegritySlice::Verified { .. })
+                | Ok(crate::store::DashboardRollupIntegritySlice::Repaired { .. }) => {
+                    integrity_slices += 1;
+                    true
+                }
                 Err(err) => {
                     let transient = is_transient_sqlite_write_error(&err);
                     if transient {
@@ -788,23 +931,25 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
                     }
                     break;
                 }
-            }
+            };
             if key_store.backend_time.instant_now() >= deadline {
                 outcome = "budget-exhausted";
                 break;
             }
-            let next_checkpoint = match key_store
-                .request_statistics_recovery_target_checkpoint(options.target_day_start)
-                .await
+            let next_checkpoint = match request_statistics_recovery_observation(
+                deadline,
+                key_store.request_statistics_recovery_target_checkpoint(options.target_day_start),
+            )
+            .await?
             {
-                Ok(value) => value,
-                Err(err) => {
-                    error = Some(err.to_string());
-                    outcome = "failed";
+                Some(value) => value,
+                None => {
+                    last_defer_reason = Some("recovery_budget".to_string());
+                    outcome = "budget-exhausted";
                     break;
                 }
             };
-            if next_checkpoint > checkpoint_before {
+            if integrity_effective_progress && next_checkpoint > checkpoint_before {
                 accepted_checkpoints += 1;
                 last_progress_at = key_store.backend_time.instant_now();
             }
@@ -821,19 +966,31 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
                 outcome = "budget-exhausted";
                 break;
             }
-            let gc_report = key_store
-                .delete_old_request_logs_bounded(
-                    threshold,
-                    RequestLogsGcOptions {
-                        batch_size: options.gc_batch_size.max(1),
-                        max_batches: options.gc_max_batches.max(1),
-                        max_runtime_secs: remaining_secs,
-                        inter_batch_sleep_ms: options.gc_inter_batch_sleep_ms,
-                    },
-                    retention_days,
-                    &settings.request_log_retention,
-                )
-                .await;
+            let gc_report = match key_store.try_admit_request_logs_gc_exclusive_recovery() {
+                Ok(_permit) => {
+                    key_store
+                        .delete_old_request_logs_bounded_for_recovery_target_with_deadline(
+                            threshold,
+                            RequestLogsGcOptions {
+                                batch_size: options.gc_batch_size.max(1),
+                                max_batches: options.gc_max_batches.max(1),
+                                max_runtime_secs: remaining_secs,
+                                inter_batch_sleep_ms: options.gc_inter_batch_sleep_ms,
+                            },
+                            retention_days,
+                            &settings.request_log_retention,
+                            options.target_day_start,
+                            target_day_end,
+                            Some(deadline),
+                        )
+                        .await
+                }
+                Err(reason) => {
+                    last_defer_reason = Some(format!("admission_{}", reason.as_str()));
+                    outcome = "deferred";
+                    break;
+                }
+            };
             let gc_report = match gc_report {
                 Ok(report) => report,
                 Err(err) => {
@@ -867,31 +1024,38 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
                 last_defer_reason = Some(gc_report.progress_status);
             }
 
-            let target_complete = match key_store
-                .request_statistics_recovery_target_complete(options.target_day_start)
-                .await
+            let current_target_complete = match request_statistics_recovery_observation(
+                deadline,
+                key_store.request_statistics_recovery_target_complete(options.target_day_start),
+            )
+            .await?
             {
-                Ok(value) => value,
-                Err(err) => {
-                    error = Some(err.to_string());
-                    outcome = "failed";
+                Some(value) => value,
+                None => {
+                    last_defer_reason = Some("recovery_budget".to_string());
+                    outcome = "budget-exhausted";
                     break;
                 }
             };
-            let target_expired_rows_remaining = match key_store
-                .request_statistics_recovery_target_expired_rows(
-                    options.target_day_start,
-                    threshold,
+            let current_target_expired_rows_remaining =
+                match request_statistics_recovery_observation(
+                    deadline,
+                    key_store.request_statistics_recovery_target_expired_rows(
+                        options.target_day_start,
+                        threshold,
+                    ),
                 )
-                .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    error = Some(err.to_string());
-                    outcome = "failed";
-                    break;
-                }
-            };
+                .await?
+                {
+                    Some(value) => value,
+                    None => {
+                        last_defer_reason = Some("recovery_budget".to_string());
+                        outcome = "budget-exhausted";
+                        break;
+                    }
+                };
+            target_complete = current_target_complete;
+            target_expired_rows_remaining = current_target_expired_rows_remaining;
             if target_complete && target_expired_rows_remaining == 0 {
                 outcome = "complete";
                 break;
@@ -903,52 +1067,70 @@ pub(crate) async fn run_request_statistics_recovery_once_with_time(
                 && !gc_report.body_scan_cursor_advanced
             {
                 last_defer_reason.get_or_insert_with(|| "no_effective_progress".to_string());
-                key_store
-                    .backend_time
-                    .sleep(Duration::from_millis(25))
-                    .await;
+                let sleep_for = Duration::from_millis(25);
+                if deadline.saturating_duration_since(key_store.backend_time.instant_now())
+                    <= sleep_for
+                {
+                    outcome = "budget-exhausted";
+                    break;
+                }
+                key_store.backend_time.sleep(sleep_for).await;
             }
         }
     }
 
-    let target_complete = match key_store
-        .request_statistics_recovery_target_complete(options.target_day_start)
-        .await
+    match request_statistics_recovery_observation(
+        deadline,
+        key_store.request_statistics_recovery_target_complete(options.target_day_start),
+    )
+    .await
     {
-        Ok(value) => value,
-        Err(err) => {
-            if error.is_none() {
-                error = Some(err.to_string());
-            }
-            outcome = "failed";
-            false
+        Ok(Some(value)) => target_complete = value,
+        Ok(None) if error.is_none() && key_store.backend_time.instant_now() >= deadline => {
+            last_defer_reason.get_or_insert_with(|| "recovery_budget".to_string());
+            outcome = "budget-exhausted";
         }
-    };
-    match key_store
-        .request_statistics_recovery_target_checkpoint(options.target_day_start)
-        .await
-    {
-        Ok(value) => checkpoint = value,
+        Ok(None) => {}
         Err(err) => {
-            if error.is_none() {
-                error = Some(err.to_string());
-            }
+            error.get_or_insert_with(|| err.to_string());
             outcome = "failed";
         }
     }
-    let target_expired_rows_remaining = match key_store
-        .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold)
-        .await
+    match request_statistics_recovery_observation(
+        deadline,
+        key_store.request_statistics_recovery_target_checkpoint(options.target_day_start),
+    )
+    .await
     {
-        Ok(value) => value,
-        Err(err) => {
-            if error.is_none() {
-                error = Some(err.to_string());
-            }
-            outcome = "failed";
-            0
+        Ok(Some(value)) => checkpoint = value,
+        Ok(None) if error.is_none() && key_store.backend_time.instant_now() >= deadline => {
+            last_defer_reason.get_or_insert_with(|| "recovery_budget".to_string());
+            outcome = "budget-exhausted";
         }
-    };
+        Ok(None) => {}
+        Err(err) => {
+            error.get_or_insert_with(|| err.to_string());
+            outcome = "failed";
+        }
+    }
+    match request_statistics_recovery_observation(
+        deadline,
+        key_store
+            .request_statistics_recovery_target_expired_rows(options.target_day_start, threshold),
+    )
+    .await
+    {
+        Ok(Some(value)) => target_expired_rows_remaining = value,
+        Ok(None) if error.is_none() && key_store.backend_time.instant_now() >= deadline => {
+            last_defer_reason.get_or_insert_with(|| "recovery_budget".to_string());
+            outcome = "budget-exhausted";
+        }
+        Ok(None) => {}
+        Err(err) => {
+            error.get_or_insert_with(|| err.to_string());
+            outcome = "failed";
+        }
+    }
     let sealed_day = target_complete;
     Ok(RequestStatisticsRecoveryReport {
         outcome: outcome.to_string(),

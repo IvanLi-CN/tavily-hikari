@@ -136,45 +136,79 @@ def validate_recovery_consistency(state, expected_counts, expected_billing, expe
     assert state["retained_fixture_rows"] == expected_retained_identity[0], state
 
 
-def progress_marker(state):
-    return json.dumps(
-        {
+def lane_is_active(state, lane, expected_counts):
+    if lane == "gc":
+        return state["expired"] > 0 or state["active_gc"] or any(
+            row[1] in ("queued", "running") for row in state["gc_jobs"]
+        )
+    if lane == "integrity":
+        return not (
+            state["target_seal"] == expected_counts
+            and state["target_minute_rollup"] == expected_counts
+            and state["target_daily_rollup"] == expected_counts
+        ) or bool(
+            state["pending_days"]
+            or state["blocking_work"]
+            or state["integrity_work"]
+            or any(row[1] in ("queued", "running") for row in state["integrity_jobs"])
+        )
+    raise ValueError(f"unknown recovery lane: {lane}")
+
+
+def progress_marker(state, lane):
+    if lane == "gc":
+        marker = {
             "expired": state["expired"],
+            "target_source_rows": state["target_source_rows"],
+            "body_cursor": state["body_cursor"],
+        }
+    elif lane == "integrity":
+        marker = {
             "pending_days": state["pending_days"],
             "blocking_work": state["blocking_work"],
             "integrity_work": state["integrity_work"],
             "target_seal": state["target_seal"],
             "target_minute_rollup": state["target_minute_rollup"],
             "target_daily_rollup": state["target_daily_rollup"],
-        },
-        sort_keys=True,
-    )
+        }
+    else:
+        raise ValueError(f"unknown recovery lane: {lane}")
+    return json.dumps(marker, sort_keys=True)
 
 
-def progress_block_reason(state):
-    if state["active_gc"] or any(row[1] in ("queued", "running") for row in state["gc_jobs"]):
-        return "gc_jobs_not_advancing"
-    if state["blocking_work"] or state["pending_days"] or any(row[1] in ("queued", "running") for row in state["integrity_jobs"]):
-        return "integrity_jobs_not_advancing"
-    return "no_runnable_recovery_lane"
+def progress_block_reason(state, lane):
+    if lane == "gc":
+        if state["active_gc"] or any(row[1] in ("queued", "running") for row in state["gc_jobs"]):
+            return "gc_jobs_not_advancing"
+        return "gc_lane_not_advancing"
+    if lane == "integrity":
+        if state["blocking_work"] or state["pending_days"] or any(row[1] in ("queued", "running") for row in state["integrity_jobs"]):
+            return "integrity_jobs_not_advancing"
+        return "integrity_lane_not_advancing"
+    raise ValueError(f"unknown recovery lane: {lane}")
 
 
 class EffectiveProgressTracker:
-    def __init__(self, state):
-        self.marker = progress_marker(state)
-        self.last_progress_elapsed = 0
+    def __init__(self, state, lane, expected_counts, elapsed=0):
+        self.lane = lane
+        self.expected_counts = expected_counts
+        self.marker = progress_marker(state, lane)
+        self.last_progress_elapsed = elapsed
         self.effective_progress_checks = 0
 
-    def observe(self, elapsed, state, recovered):
-        marker = progress_marker(state)
+    def observe(self, elapsed, state):
+        if not lane_is_active(state, self.lane, self.expected_counts):
+            return
+        marker = progress_marker(state, self.lane)
         if marker != self.marker:
             self.marker = marker
             self.last_progress_elapsed = elapsed
             self.effective_progress_checks += 1
-        elif not recovered and elapsed - self.last_progress_elapsed >= 300:
+        elif elapsed - self.last_progress_elapsed >= 300:
             raise AssertionError(
                 {
-                    "reason": progress_block_reason(state),
+                    "lane": self.lane,
+                    "reason": progress_block_reason(state, self.lane),
                     "elapsed": elapsed,
                     "last_progress_elapsed": self.last_progress_elapsed,
                     "state": state,
@@ -199,11 +233,14 @@ def snapshot(core, sidecar, threshold, retained_start, retained_end):
         retained_identity = fixture_identity(conn, retained_start, retained_end)
         target_source_rows = conn.execute("SELECT COUNT(*) FROM request_logs WHERE created_at >= ? AND created_at < ?", (target_day, target_day + 86400)).fetchone()[0]
     with sqlite3.connect(core, timeout=1) as conn:
+        body_cursor = conn.execute(
+            "SELECT value FROM meta WHERE key='request_log_body_gc_cursor_v1'"
+        ).fetchone()
         active = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND status IN ('queued','running')").fetchone()[0]
         messages = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='request_logs_gc' ORDER BY id DESC LIMIT 3").fetchall()
         integrity_jobs = conn.execute("SELECT id,status,message FROM scheduled_jobs WHERE job_type='dashboard_rollup_integrity' ORDER BY id DESC LIMIT 3").fetchall()
         truth = billing_truth(conn)
-    return {"expired": old, "retained_fixture_rows": retained, "retained_fixture_identity": retained_identity, "target_source_rows": target_source_rows, "pending_days": pending, "hot": hot, "target_seal": seal, "target_minute_rollup": minute, "target_daily_rollup": daily, "integrity_work": integrity_work, "blocking_work": blocking_work, "work_priority_counts": work_priority_counts, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs, "billing_truth": truth}
+    return {"expired": old, "retained_fixture_rows": retained, "retained_fixture_identity": retained_identity, "target_source_rows": target_source_rows, "body_cursor": body_cursor, "pending_days": pending, "hot": hot, "target_seal": seal, "target_minute_rollup": minute, "target_daily_rollup": daily, "integrity_work": integrity_work, "blocking_work": blocking_work, "work_priority_counts": work_priority_counts, "active_gc": active, "gc_jobs": messages, "integrity_jobs": integrity_jobs, "billing_truth": truth}
 
 
 def load(origin, token, seconds, rps, on_tick=None, stop_when=None):
@@ -302,7 +339,18 @@ def main():
             conn.execute("INSERT OR REPLACE INTO dashboard_rollup_integrity_state (id,hot_cursor,hot_fence,history_cursor,hot_reaudit_cursor,last_history_attempt_at,last_seal_attempt_at,updated_at) VALUES (1,?,?,?,?,?,?,?)", (closed, closed, closed - 86400, closed - 86400, now, now, now))
             bad = dict.fromkeys(COUNT_FIELDS, 0)
             bad.update(total_requests=5000, success_count=5000, valuable_success_count=5000, api_billable=5000, local_estimated_credits=4999)
-            conn.execute("INSERT INTO dashboard_rollup_daily_seals VALUES (?,?,?)", (day, json.dumps(bad), now))
+            source_fence = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility='visible' AND created_at >= ? AND created_at < ?",
+                (day, day + 86400),
+            ).fetchone()[0]
+            source_version = conn.execute(
+                "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+                (day, day + 86400),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO dashboard_rollup_daily_seals (bucket_start,counts_json,verified_at,source_fence,source_version) VALUES (?,?,?,?,?)",
+                (day, json.dumps(bad), now, source_fence, source_version),
+            )
         with sqlite3.connect(core) as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO billing_ledger (auth_token_log_id,token_id,billing_state,business_credits,result_status,created_at,updated_at) VALUES (?, 'synthetic-recovery-billing', 'charged', 1, 'success', ?, ?)",
@@ -325,22 +373,31 @@ def main():
         assert high_start["retained_fixture_rows"] == 95000, high_start
         expected_billing = high_start["billing_truth"]
         expected_retained_identity = high_start["retained_fixture_identity"]
-        progress_tracker = None
+        gc_progress_tracker = None
+        integrity_progress_tracker = None
 
         def high_tick(elapsed):
-            nonlocal triggered, recovered, recovery_elapsed, progress_tracker
+            nonlocal triggered, recovered, recovery_elapsed, gc_progress_tracker, integrity_progress_tracker
             if elapsed >= 60 and not triggered:
                 status, _, body = request(origin, "/api/jobs/trigger", {"jobType": "request_logs_gc"})
                 assert status in (200, 202), (status, body)
                 triggered = True
             state = snapshot(core, sidecar, threshold, retained_day, retained_day + 86400)
-            if triggered and progress_tracker is None:
-                progress_tracker = EffectiveProgressTracker(state)
+            if triggered and gc_progress_tracker is None:
+                gc_progress_tracker = EffectiveProgressTracker(
+                    state, "gc", expected_counts, elapsed
+                )
+            if triggered and integrity_progress_tracker is None:
+                integrity_progress_tracker = EffectiveProgressTracker(
+                    state, "integrity", expected_counts, elapsed
+                )
             recovered = recovery_complete(state, expected_counts)
             if recovered and recovery_elapsed is None:
                 recovery_elapsed = elapsed
-            if progress_tracker is not None:
-                progress_tracker.observe(elapsed, state, recovered)
+            if gc_progress_tracker is not None:
+                gc_progress_tracker.observe(elapsed, state)
+            if integrity_progress_tracker is not None:
+                integrity_progress_tracker.observe(elapsed, state)
             print(json.dumps({"phase": "high", "elapsed": elapsed, **state}), flush=True)
 
         high = load(origin, token, args.high_seconds, 10, high_tick, lambda: recovered)
@@ -361,7 +418,7 @@ def main():
         with sqlite3.connect(core) as conn:
             defers = conn.execute("SELECT COUNT(*) FROM scheduled_jobs WHERE job_type='request_logs_gc' AND message LIKE '%foreground_pressure%' AND status='success'").fetchone()[0]
         assert defers > 0, "foreground pressure must cause a durable GC defer"
-        high_evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers, "recovery_elapsed_secs": recovery_elapsed, "high_target_recovered": recovered, "effective_progress_checks": progress_tracker.effective_progress_checks if progress_tracker else 0, "last_progress_elapsed": progress_tracker.last_progress_elapsed if progress_tracker else None}
+        high_evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers, "recovery_elapsed_secs": recovery_elapsed, "high_target_recovered": recovered, "gc_effective_progress_checks": gc_progress_tracker.effective_progress_checks if gc_progress_tracker else 0, "gc_last_progress_elapsed": gc_progress_tracker.last_progress_elapsed if gc_progress_tracker else None, "integrity_effective_progress_checks": integrity_progress_tracker.effective_progress_checks if integrity_progress_tracker else 0, "integrity_last_progress_elapsed": integrity_progress_tracker.last_progress_elapsed if integrity_progress_tracker else None}
         (run_dir / "high-evidence.json").write_text(json.dumps(high_evidence, indent=2) + "\n")
         print(json.dumps({"phase": "high-complete", **high_evidence}), flush=True)
 
@@ -385,7 +442,7 @@ def main():
             expected_billing,
             expected_retained_identity,
         )
-        evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers, "low": low, "deleted_expired": initial_expired - final["expired"], "final": final, "recovered_seal": final["target_seal"], "expected_target_counts": expected_counts, "billing_truth": final["billing_truth"], "effective_progress_checks": progress_tracker.effective_progress_checks if progress_tracker else 0, "last_progress_elapsed": progress_tracker.last_progress_elapsed if progress_tracker else None, "passed": True}
+        evidence = {"candidate_sha": args.candidate_sha, "fixture_rows": 100000, "expired_fixture_rows": initial_expired, "retained_fixture_rows": high_start["retained_fixture_rows"], "baseline": baseline, "high": high, "foreground_defers": defers, "low": low, "deleted_expired": initial_expired - final["expired"], "final": final, "recovered_seal": final["target_seal"], "expected_target_counts": expected_counts, "billing_truth": final["billing_truth"], "gc_effective_progress_checks": gc_progress_tracker.effective_progress_checks if gc_progress_tracker else 0, "gc_last_progress_elapsed": gc_progress_tracker.last_progress_elapsed if gc_progress_tracker else None, "integrity_effective_progress_checks": integrity_progress_tracker.effective_progress_checks if integrity_progress_tracker else 0, "integrity_last_progress_elapsed": integrity_progress_tracker.last_progress_elapsed if integrity_progress_tracker else None, "passed": True}
         (run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print(json.dumps({"evidence": str(run_dir / "evidence.json"), **evidence}), flush=True)
     finally:

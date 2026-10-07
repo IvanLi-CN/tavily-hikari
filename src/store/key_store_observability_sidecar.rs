@@ -38,6 +38,47 @@ struct ObservabilitySidecarMigrationState {
     child_reference_checks_passed: bool,
 }
 
+enum DashboardRollupSourceRevisionTransaction {
+    Immediate(ImmediateSqliteTransaction),
+    LegacySavepoint(SavepointSqliteTransaction),
+}
+
+impl DashboardRollupSourceRevisionTransaction {
+    async fn commit(self) -> Result<(), ProxyError> {
+        match self {
+            Self::Immediate(transaction) => transaction.commit().await,
+            Self::LegacySavepoint(transaction) => transaction.commit().await,
+        }
+    }
+
+    async fn rollback(self) -> Result<(), ProxyError> {
+        match self {
+            Self::Immediate(transaction) => transaction.rollback().await,
+            Self::LegacySavepoint(transaction) => transaction.rollback().await,
+        }
+    }
+}
+
+impl std::ops::Deref for DashboardRollupSourceRevisionTransaction {
+    type Target = SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Immediate(transaction) => transaction,
+            Self::LegacySavepoint(transaction) => transaction,
+        }
+    }
+}
+
+impl std::ops::DerefMut for DashboardRollupSourceRevisionTransaction {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Immediate(transaction) => transaction,
+            Self::LegacySavepoint(transaction) => transaction,
+        }
+    }
+}
+
 impl KeyStore {
     async fn rebuild_request_log_soft_reference_tables_if_needed(
         &self,
@@ -340,6 +381,7 @@ impl KeyStore {
                 range_end INTEGER NOT NULL,
                 source_fence INTEGER NOT NULL,
                 source_version INTEGER NOT NULL DEFAULT 0,
+                durable_source_version INTEGER NOT NULL DEFAULT 0,
                 cursor_created_at INTEGER,
                 cursor_id INTEGER,
                 counts_json TEXT NOT NULL,
@@ -362,7 +404,17 @@ impl KeyStore {
             CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_daily_seals (
                 bucket_start INTEGER PRIMARY KEY,
                 counts_json TEXT NOT NULL,
-                verified_at INTEGER NOT NULL
+                verified_at INTEGER NOT NULL,
+                source_fence INTEGER,
+                source_version INTEGER NOT NULL DEFAULT 0,
+                durable_source_version INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+            r#"
+            CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_gc_deleted_source_contributions (
+                bucket_start INTEGER PRIMARY KEY,
+                counts_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             )
             "#,
             r#"
@@ -387,6 +439,56 @@ impl KeyStore {
                ON dashboard_rollup_integrity_day_reaudits(status, updated_at ASC, bucket_start ASC)"#,
         ] {
             sqlx::query(sql).execute(pool).await?;
+        }
+        let has_daily_seal_source_fence: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_daily_seals') WHERE name = 'source_fence' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_daily_seal_source_fence.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_daily_seals ADD COLUMN source_fence INTEGER",
+            )
+            .execute(pool)
+            .await?;
+        }
+        let has_daily_seal_source_version: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_daily_seals') WHERE name = 'source_version' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_daily_seal_source_version.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_daily_seals ADD COLUMN source_version INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        let has_daily_seal_durable_source_version: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_daily_seals') WHERE name = 'durable_source_version' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_daily_seal_durable_source_version.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_daily_seals ADD COLUMN durable_source_version INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        // The recovery opener does not run the full startup migration path, so
+        // it must still repair the one derived column used by recovery writes.
+        let has_rollup_429_column: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_request_rollup_buckets') WHERE name = 'valuable_failure_429_count' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_rollup_429_column.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_request_rollup_buckets ADD COLUMN valuable_failure_429_count INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
         }
         Self::ensure_dashboard_rollup_source_revision_schema_in_pool(pool).await?;
         let has_history_schedule_column: Option<i64> = sqlx::query_scalar(
@@ -445,6 +547,18 @@ impl KeyStore {
         if has_source_version_column.is_none() {
             sqlx::query(
                 "ALTER TABLE observability.dashboard_rollup_integrity_work_items ADD COLUMN source_version INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(pool)
+            .await?;
+        }
+        let has_durable_source_version_column: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM observability.pragma_table_info('dashboard_rollup_integrity_work_items') WHERE name = 'durable_source_version' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_durable_source_version_column.is_none() {
+            sqlx::query(
+                "ALTER TABLE observability.dashboard_rollup_integrity_work_items ADD COLUMN durable_source_version INTEGER NOT NULL DEFAULT 0",
             )
             .execute(pool)
             .await?;
@@ -659,6 +773,52 @@ impl KeyStore {
             ON dashboard_rollup_source_revisions(bucket_start)
             "#,
             r#"
+            CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_gc_delete_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                active INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        ] {
+            sqlx::query(sql).execute(pool).await?;
+        }
+        sqlx::query("INSERT INTO observability.dashboard_rollup_gc_delete_state (id, active) VALUES (1, 0) ON CONFLICT(id) DO NOTHING")
+            .execute(pool)
+            .await?;
+        // Replacing both triggers must be one SQLite write transaction. A
+        // shared-lock opener can otherwise observe the gap between DROP and
+        // CREATE and mutate request_logs without recording a source revision.
+        // SQLite rejects BEGIN IMMEDIATE when the legacy layout attaches the
+        // same file as both main and observability, so that compatibility path
+        // uses a connection-owned savepoint instead.
+        let legacy_single_db = match (
+            attached_database_path(pool, "main").await?,
+            attached_database_path(pool, "observability").await?,
+        ) {
+            (Some(main_path), Some(observability_path)) => {
+                sqlite_paths_match(&main_path, &observability_path)
+            }
+            _ => false,
+        };
+        let mut trigger_tx = if legacy_single_db {
+            DashboardRollupSourceRevisionTransaction::LegacySavepoint(
+                SavepointSqliteTransaction::begin(pool.acquire().await?).await?,
+            )
+        } else {
+            DashboardRollupSourceRevisionTransaction::Immediate(
+                ImmediateSqliteTransaction::begin(pool.acquire().await?).await?,
+            )
+        };
+        let trigger_result = async {
+            sqlx::query("DROP TRIGGER IF EXISTS observability.trg_dashboard_rollup_source_revision")
+                .execute(&mut *trigger_tx)
+                .await?;
+            sqlx::query(
+                "DROP TRIGGER IF EXISTS observability.trg_dashboard_rollup_source_revision_delete",
+            )
+            .execute(&mut *trigger_tx)
+            .await?;
+            for sql in [
+            r#"
             CREATE TRIGGER IF NOT EXISTS observability.trg_dashboard_rollup_source_revision
             AFTER UPDATE OF created_at, result_status, failure_kind, request_kind_key, request_body,
                 path, business_credits, counts_business_quota, visibility
@@ -678,18 +838,95 @@ impl KeyStore {
                     END
                 )
                 ON CONFLICT(bucket_start) DO UPDATE SET revision = revision + excluded.revision;
+                INSERT OR IGNORE INTO dashboard_rollup_integrity_day_reaudits (
+                    bucket_start, bucket_end, cursor, status, updated_at, source_fence, gc_blocking
+                )
+                SELECT bucket_start,
+                       CAST(strftime(
+                           '%s',
+                           date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                           'utc'
+                       ) AS INTEGER),
+                       bucket_start, 'pending',
+                       CAST(strftime('%s', 'now') AS INTEGER), NULL, 1
+                FROM dashboard_rollup_daily_seals
+                WHERE bucket_start <= OLD.created_at
+                  AND CAST(strftime(
+                      '%s',
+                      date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                      'utc'
+                  ) AS INTEGER) > OLD.created_at;
+                INSERT OR IGNORE INTO dashboard_rollup_integrity_day_reaudits (
+                    bucket_start, bucket_end, cursor, status, updated_at, source_fence, gc_blocking
+                )
+                SELECT bucket_start,
+                       CAST(strftime(
+                           '%s',
+                           date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                           'utc'
+                       ) AS INTEGER),
+                       bucket_start, 'pending',
+                       CAST(strftime('%s', 'now') AS INTEGER), NULL, 1
+                FROM dashboard_rollup_daily_seals
+                WHERE bucket_start <= NEW.created_at
+                  AND CAST(strftime(
+                      '%s',
+                      date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                      'utc'
+                  ) AS INTEGER) > NEW.created_at;
                 UPDATE dashboard_rollup_integrity_day_reaudits
                 SET cursor = bucket_start, status = 'pending', updated_at = CAST(strftime('%s', 'now') AS INTEGER)
-                WHERE source_fence IS NOT NULL
-                  AND bucket_start <= OLD.created_at AND bucket_end > OLD.created_at;
+                WHERE bucket_start <= OLD.created_at AND bucket_end > OLD.created_at;
                 UPDATE dashboard_rollup_integrity_day_reaudits
                 SET cursor = bucket_start, status = 'pending', updated_at = CAST(strftime('%s', 'now') AS INTEGER)
-                WHERE source_fence IS NOT NULL
-                  AND bucket_start <= NEW.created_at AND bucket_end > NEW.created_at;
+                WHERE bucket_start <= NEW.created_at AND bucket_end > NEW.created_at;
             END
             "#,
-        ] {
-            sqlx::query(sql).execute(pool).await?;
+            r#"
+            CREATE TRIGGER IF NOT EXISTS observability.trg_dashboard_rollup_source_revision_delete
+            AFTER DELETE ON request_logs
+            WHEN NOT EXISTS (
+                SELECT 1 FROM dashboard_rollup_gc_delete_state WHERE id = 1 AND active = 1
+            )
+            BEGIN
+                INSERT INTO dashboard_rollup_source_revisions (bucket_start, revision)
+                VALUES (OLD.created_at - (OLD.created_at % 300), 1)
+                ON CONFLICT(bucket_start) DO UPDATE SET revision = revision + excluded.revision;
+                INSERT OR IGNORE INTO dashboard_rollup_integrity_day_reaudits (
+                    bucket_start, bucket_end, cursor, status, updated_at, source_fence, gc_blocking
+                )
+                SELECT bucket_start,
+                       CAST(strftime(
+                           '%s',
+                           date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                           'utc'
+                       ) AS INTEGER),
+                       bucket_start, 'pending',
+                       CAST(strftime('%s', 'now') AS INTEGER), NULL, 1
+                FROM dashboard_rollup_daily_seals
+                WHERE bucket_start <= OLD.created_at
+                  AND CAST(strftime(
+                      '%s',
+                      date(bucket_start, 'unixepoch', 'localtime', '+1 day') || ' 00:00:00',
+                      'utc'
+                  ) AS INTEGER) > OLD.created_at;
+                UPDATE dashboard_rollup_integrity_day_reaudits
+                SET cursor = bucket_start, status = 'pending', updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE bucket_start <= OLD.created_at AND bucket_end > OLD.created_at;
+            END
+            "#,
+            ] {
+                sqlx::query(sql).execute(&mut *trigger_tx).await?;
+            }
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+        match trigger_result {
+            Ok(()) => trigger_tx.commit().await?,
+            Err(err) => {
+                let _ = trigger_tx.rollback().await;
+                return Err(err);
+            }
         }
         Ok(())
     }

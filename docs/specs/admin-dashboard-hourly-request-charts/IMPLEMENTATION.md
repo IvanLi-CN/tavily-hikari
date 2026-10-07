@@ -35,6 +35,11 @@
 - 已验证本地日封存 JSON seal。保留期内的迟到数据修复会刷新 daily rollup 与 seal；GC 删除原始日志前
   检查最早可见候选日的 seal 及分钟、日级 rollup 一致性，已过期日的 daily rollup 可以由 seal 校验并恢复。
   仅含被抑制 retry shadow 的日期不属于 dashboard 事实源，不会无故阻塞日志 GC。
+- 日级 seal 现在同时保存 source fence 与 durable source version；已完成日期的外部更新/删除会创建或重置 GC-blocking re-audit，fenced GC 则在同一短事务内复核并抑制自身删除 trigger。晚到可见 INSERT 会推进目标 fence 并重新打开已完成的固定目标。
+- 已封存日经过授权 GC 后，可见源的 `MAX(id)` 下降不会被误判为外部变化；新增或更新使 fence/version 前移仍会阻塞并触发回审。
+- 固定目标恢复通过目标日范围调用 GC，普通在线 GC 仍按全局最早候选日运行；目标过期计数包含可见和被抑制的源日志，避免只删可见行后留下目标债务。
+- 旧库若缺少已删除源贡献基线，恢复不会用保留行重建较小的 daily rollup，而是保持 GC 阻塞并等待可验证的来源。
+- recovery bootstrap 会为旧版 rollup 表补齐 recovery 依赖的 `valuable_failure_429_count` 列；本地日边界由 SQLite local-time 日期计算下一次零点，覆盖 DST 边界。
 - 请求统计 coalescer 现在有可等待的关闭协议；服务在 graceful shutdown 返回后最多等待 20 秒 drain，
   Compose 给出 30 秒容器终止宽限。
 

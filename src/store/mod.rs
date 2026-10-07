@@ -19,13 +19,15 @@ use tracing::{error, info, warn};
 mod immediate_transaction;
 mod key_store_alert_event_projection;
 mod sqlite_runtime;
-pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
+pub(crate) use immediate_transaction::{
+    ImmediateSqliteTransaction, SavepointSqliteTransaction, SqliteTransaction,
+};
 #[cfg(test)]
 pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
     SqliteMaintenanceBulkPermit, SqliteMaintenancePreflightLease, SqliteOperation,
-    SqliteReadSnapshot, SqliteRuntime,
+    SqliteReadSnapshot, SqliteRuntime, wait_for_owned_finishes,
 };
 
 pub(crate) struct ObservabilityOfflineGuard {

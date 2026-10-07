@@ -6,6 +6,7 @@
 - Request-log GC blocking-day registration uses the existing scoped write budget. In the legacy
   same-file attachment layout it uses a single atomic UPSERT, preserving the fail-closed source
   guard without requesting two immediate locks on the same SQLite file.
+- Joint recovery keeps one total deadline across bootstrap, integrity, GC, catalog cleanup, and final observations; each recovery lane uses the scoped bounded admission path, and GC tail reads or writes are cancelled or reported incomplete when the deadline expires.
 - Continuation uses the cursor retained at the end of a bounded pass; a terminal scan that clears
   the cursor does not create a one-second no-progress loop during a seal or source-recovery block.
 - Startup recovery keeps a running automatic `request_logs_gc` representative queued after a

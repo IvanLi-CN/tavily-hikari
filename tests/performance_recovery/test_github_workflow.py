@@ -92,12 +92,14 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
                 state["retained_fixture_identity"],
             )
 
-    def test_recovery_progress_tracker_rejects_a_stalled_lane(self) -> None:
+    def test_recovery_progress_trackers_reject_their_own_stalled_lane(self) -> None:
         spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
         harness = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(harness)
         state = {
-            "expired": 5000,
+            "expired": 0,
+            "target_source_rows": 0,
+            "body_cursor": None,
             "pending_days": [(1, 2, 1)],
             "blocking_work": [(1, 2, None, None, 3, "pending")],
             "integrity_work": [],
@@ -108,9 +110,65 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
             "gc_jobs": [(1, "success", "")],
             "integrity_jobs": [(1, "success", "")],
         }
-        tracker = harness.EffectiveProgressTracker(state)
+        tracker = harness.EffectiveProgressTracker(state, "integrity", harness.expected_target_counts())
         with self.assertRaises(AssertionError):
-            tracker.observe(300, state, False)
+            tracker.observe(300, state)
+        gc_tracker = harness.EffectiveProgressTracker(state, "gc", harness.expected_target_counts())
+        gc_tracker.observe(300, state)
+
+    def test_recovery_progress_trackers_do_not_share_lane_markers(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        expected = harness.expected_target_counts()
+        state = {
+            "expired": 5000,
+            "target_source_rows": 5000,
+            "body_cursor": None,
+            "pending_days": [(1, 2, 1)],
+            "blocking_work": [(1, 2, None, None, 3, "pending")],
+            "integrity_work": [],
+            "target_seal": {},
+            "target_minute_rollup": {},
+            "target_daily_rollup": {},
+            "active_gc": 1,
+            "gc_jobs": [(1, "running", "")],
+            "integrity_jobs": [(1, "running", "")],
+        }
+        gc_tracker = harness.EffectiveProgressTracker(state, "gc", expected)
+        integrity_tracker = harness.EffectiveProgressTracker(state, "integrity", expected)
+        progressed = dict(state, expired=4999)
+        gc_tracker.observe(100, progressed)
+        integrity_tracker.observe(100, progressed)
+        gc_tracker.observe(300, progressed)
+        with self.assertRaises(AssertionError):
+            integrity_tracker.observe(300, progressed)
+        self.assertEqual(gc_tracker.effective_progress_checks, 1)
+        self.assertEqual(integrity_tracker.effective_progress_checks, 0)
+
+    def test_recovery_progress_tracker_anchors_delayed_start(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        expected = harness.expected_target_counts()
+        state = {
+            "expired": 5000,
+            "target_source_rows": 5000,
+            "body_cursor": None,
+            "pending_days": [],
+            "blocking_work": [],
+            "integrity_work": [],
+            "target_seal": expected.copy(),
+            "target_minute_rollup": expected.copy(),
+            "target_daily_rollup": expected.copy(),
+            "active_gc": 1,
+            "gc_jobs": [(1, "running", "")],
+            "integrity_jobs": [],
+        }
+        tracker = harness.EffectiveProgressTracker(state, "gc", expected, elapsed=60)
+        tracker.observe(359, state)
+        with self.assertRaises(AssertionError):
+            tracker.observe(360, state)
 
     def test_fixture_container_preserves_host_mount_ownership(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")

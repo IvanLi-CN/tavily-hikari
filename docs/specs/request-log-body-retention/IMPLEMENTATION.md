@@ -25,6 +25,10 @@
 - Integrity completion checks only the target range for pending request-statistics work; pending and flushing dashboard buckets, repair barriers, and in-flight source mutations outside that range no longer block a valid historical checkpoint.
 - The joint recovery entrypoint acquires exclusive service ownership, fixes a local-day target and source fence, persists two-hour checkpoints, seals the day from source counts, and resumes through explicit `complete`, `deferred`, `budget-exhausted`, or `failed` outcomes without stopping an active service.
 - The recovery target fence is persisted atomically with the GC-blocking day reaudit and reused on later invocations; open local days are rejected before sealing.
+- Completed seals persist both the visible source fence and durable mutation version; late target inserts reopen a completed fixed target, while sealed-day updates or deletes create a pending re-audit even when no prior pending row remains. Fenced raw deletion rechecks those values in the same transaction as reference unlinking and row deletion.
+- Fixed-target recovery passes the target local-day range into GC; ordinary online GC retains its global earliest-day selection, while target deletion counts include suppressed source rows as well as visible rows.
+- Legacy seals without a deleted-source contribution baseline fail closed instead of reconstructing a smaller daily rollup from the rows that happen to remain.
+- Recovery bootstrap repairs the legacy `valuable_failure_429_count` rollup column before recovery writes, and the mock load harness tracks GC and dashboard-integrity progress with independent five-minute clocks.
 - Mutable source fields advance a durable sidecar revision trigger, so completed slices are rescanned after business-credit or classification updates across restart and retry boundaries.
 - Recovery source reads and work-delay probes have a 150ms timeout, and the joint runner checks its total deadline before repair and checkpoint writes.
 - The CLI returns a nonzero status for every incomplete outcome and emits the full post-target report for checkpoint, status, GC, and final-read failures.
@@ -152,7 +156,7 @@ The policy and acceptance budgets are settled. The implementation is covered by 
 
 ## Validation
 
-- This round passed `cargo fmt --all -- --check`, `cargo clippy --locked -j 2 --all-targets -- -D warnings`, `cargo check --locked --all-targets`, the dashboard-integrity module (34 tests), request-log-GC filters (25 tests), the joint recovery subset (6 tests), bounded recovery admission tests (3 tests), the CLI integration test, and the performance workflow contract suite (8 tests).
+- This round passed `cargo fmt --all -- --check`, `cargo clippy --locked -j 2 --all-targets -- -D warnings`, `cargo check --locked --all-targets`, the dashboard-integrity module (41 tests), request-log-GC filters (25 tests), the joint recovery subset (6 tests), bounded recovery admission tests (3 tests), the CLI integration test, and the performance workflow contract suite (10 tests).
 - The Agent VM contract was exercised for the required heavy-validation route, but its guest has no `cargo` or `rustc` in `PATH`; no toolchain was installed, and the VM was released after recording that exact blocker.
 - The 100,000-row sustained 10 RPS fixture, full backend suite, frontend build, and production closeout were not run in this round; they remain CI or explicitly authorized operational evidence rather than inferred completion.
 - GC regression coverage includes legacy single-database initialization and source preservation;

@@ -899,15 +899,16 @@ impl KeyStore {
                     CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_daily_seals (
                         bucket_start INTEGER PRIMARY KEY,
                         counts_json TEXT NOT NULL,
-                        verified_at INTEGER NOT NULL
+                        verified_at INTEGER NOT NULL,
+                        source_fence INTEGER,
+                        source_version INTEGER NOT NULL DEFAULT 0,
+                        durable_source_version INTEGER NOT NULL DEFAULT 0
                     )
                     "#,
                 )
                 .execute(&store.pool)
                 .await?;
-                if exclusive {
-                    Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
-                }
+                Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
                 Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&store.pool).await?;
                 Ok(())
             },
