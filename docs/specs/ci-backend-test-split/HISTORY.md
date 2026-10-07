@@ -4,6 +4,7 @@
 
 ## Decision Trace
 
+- 2026-10-07：request-statistics recovery CLI 增加独立 integration shard 后，固定十六 lane 的总估算超过原 120 秒容量 6 秒；将单 lane 估算预算校准为 125 秒，保留所有测试估算的 headroom 与既有并发拓扑。
 - 2026-06-07：建立新 spec，锁定“两段 stacked PR、先 CI 拓扑提速、后 job/matrix 并行、不减少测试数量”的实施边界。
 - 2026-06-07：确认当前 `main` 无 GitHub branch protection，但 reviewer 仍依赖 `Backend Tests` 作为 owner-facing 总体 backend gate，因此拆分时必须保留稳定 aggregate check。
 - 2026-06-07：确认当前 `cargo test --lib` / `cargo test --bins` 中的大量测试仍集中在共享命名空间；PR2 优先使用 shard manifest + coverage verifier，而不是先引入新 runner。

@@ -1,4 +1,6 @@
-use super::{ImmediateSqliteTransaction, KeyStore, ProxyError, is_transient_sqlite_write_error};
+use super::{
+    KeyStore, ProxyError, SqliteTransaction, is_transient_sqlite_write_error, sqlite_paths_match,
+};
 use sqlx::{Connection, Sqlite, SqliteConnection, SqlitePool};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -6,12 +8,11 @@ use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::pin::Pin;
-#[cfg(test)]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, warn};
 
 #[path = "sqlite_runtime_cooperative.rs"]
@@ -65,6 +66,66 @@ impl OwnedFinishPause {
 
 #[cfg(test)]
 static OWNED_FINISH_PAUSE: OnceLock<Mutex<Option<OwnedFinishPause>>> = OnceLock::new();
+
+static OWNED_FINISHES: OnceLock<(Mutex<BTreeMap<SqliteOperation, usize>>, Notify)> =
+    OnceLock::new();
+
+fn owned_finishes() -> &'static (Mutex<BTreeMap<SqliteOperation, usize>>, Notify) {
+    OWNED_FINISHES.get_or_init(|| (Mutex::new(BTreeMap::new()), Notify::new()))
+}
+
+fn register_owned_finish(operation: SqliteOperation) {
+    let mut counts = owned_finishes()
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *counts.entry(operation).or_default() += 1;
+}
+
+fn complete_owned_finish(operation: SqliteOperation) {
+    let mut counts = owned_finishes()
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let count = counts
+        .get_mut(&operation)
+        .expect("owned SQLite finish count");
+    *count -= 1;
+    if *count == 0 {
+        counts.remove(&operation);
+    }
+    drop(counts);
+    owned_finishes().1.notify_waiters();
+}
+
+pub(crate) async fn wait_for_owned_finishes(operations: &[SqliteOperation]) {
+    loop {
+        let notified = owned_finishes().1.notified();
+        let pending = {
+            let counts = owned_finishes()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            operations
+                .iter()
+                .any(|operation| counts.get(operation).copied().unwrap_or_default() > 0)
+        };
+        if !pending {
+            return;
+        }
+        notified.await;
+    }
+}
+
+struct OwnedFinishCompletion {
+    operation: SqliteOperation,
+}
+
+impl Drop for OwnedFinishCompletion {
+    fn drop(&mut self) {
+        complete_owned_finish(self.operation);
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn install_owned_finish_pause_for_test() -> OwnedFinishPause {
@@ -1262,6 +1323,112 @@ impl SqliteRuntime {
         self.try_admit_maintenance_bulk_with_policy(operation, false, false)
     }
 
+    /// Admit only the dashboard-integrity and request-log-GC recovery lanes
+    /// with a bounded foreground-pressure exception. The first attempt still
+    /// records a normal maintenance ticket; the exception is available only
+    /// after that ticket has aged through the coordinator turn window.
+    pub(crate) fn try_admit_bounded_recovery_bulk(
+        &self,
+        operation: SqliteOperation,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_bounded_recovery_bulk_with_policy(operation, false)
+    }
+
+    /// Admit a recovery slice while the caller owns the exclusive recovery
+    /// lock. Only this path may probe through the foreground pool reserve after
+    /// its coordinator ticket ages; online recovery keeps the reserve intact.
+    pub(crate) fn try_admit_exclusive_recovery_bulk(
+        &self,
+        operation: SqliteOperation,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.try_admit_bounded_recovery_bulk_with_policy(operation, true)
+    }
+
+    fn try_admit_bounded_recovery_bulk_with_policy(
+        &self,
+        operation: SqliteOperation,
+        allow_aged_pool_probe: bool,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        if !matches!(
+            operation,
+            SqliteOperation::DashboardIntegrityWrite | SqliteOperation::RequestLogsGc
+        ) {
+            return self.try_admit_maintenance_bulk(operation);
+        }
+        if self
+            .inner
+            .maintenance_shutdown
+            .load(AtomicOrdering::Acquire)
+        {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        }
+        let class = operation
+            .maintenance_class()
+            .expect("bounded recovery operations must have a coordinator class");
+        // Both online and exclusive recovery retain coordinator fairness and a
+        // bounded connection acquire. Only the exclusive opener may probe
+        // through bootstrap-held idle accounting after its ticket ages.
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_pool_policy(
+            operation,
+            aged_turn_bypass,
+            true,
+            false,
+            aged_turn_bypass,
+            allow_aged_pool_probe,
+        );
+        if let Some(reason) = reason
+            && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
+        {
+            self.inner.maintenance_coordinator.register_request(class);
+            if !SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                self.inner.maintenance_coordinator.cancel_request(class);
+            }
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+
+        self.inner.maintenance_coordinator.register_request(class);
+        let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
+        let reason = self.maintenance_bulk_defer_reason_for_with_pool_policy(
+            operation,
+            aged_turn_bypass,
+            true,
+            true,
+            aged_turn_bypass,
+            allow_aged_pool_probe,
+        );
+        if let Some(reason) = reason {
+            if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
+                if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
+                    self.inner.maintenance_coordinator.register_request(class);
+                } else {
+                    self.inner.maintenance_coordinator.cancel_request(class);
+                }
+            }
+            self.record_deferred(operation, reason);
+            return Err(reason);
+        }
+        let Ok(permit) = self.inner.maintenance_bulk.clone().try_acquire_owned() else {
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        let Some(lease) = SqliteMaintenanceCoordinator::try_start_shared(
+            &self.inner.maintenance_coordinator,
+            class,
+            aged_turn_bypass,
+        ) else {
+            drop(permit);
+            self.record_deferred(operation, SqliteAdmissionDeferReason::BulkBusy);
+            return Err(SqliteAdmissionDeferReason::BulkBusy);
+        };
+        Ok(SqliteMaintenanceBulkPermit {
+            _permit: permit,
+            _lease: lease,
+        })
+    }
+
     /// Research drain has an aged-turn exception for the foreground-RPS
     /// heuristic, but it still owns the single bulk slot for its bounded
     /// source read. The permit is intentionally scoped by the caller to the
@@ -1711,6 +1878,25 @@ impl SqliteRuntime {
         check_coordinator: bool,
         allow_aged_coordinator_turn: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
+        self.maintenance_bulk_defer_reason_for_with_pool_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            check_coordinator,
+            allow_aged_coordinator_turn,
+            allow_aged_coordinator_turn,
+        )
+    }
+
+    fn maintenance_bulk_defer_reason_for_with_pool_policy(
+        &self,
+        operation: SqliteOperation,
+        bypass_foreground_pressure: bool,
+        force_recent_contention_defer: bool,
+        check_coordinator: bool,
+        allow_aged_coordinator_turn: bool,
+        allow_aged_pool_probe: bool,
+    ) -> Option<SqliteAdmissionDeferReason> {
         let foreground_rps = self.foreground_activity_rps();
         if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
@@ -1718,7 +1904,7 @@ impl SqliteRuntime {
             && (force_recent_contention_defer || !operation.probes_recent_contention())
         {
             Some(SqliteAdmissionDeferReason::RecentContention)
-        } else if !self.has_maintenance_pool_capacity(allow_aged_coordinator_turn) {
+        } else if !self.has_maintenance_pool_capacity(allow_aged_pool_probe) {
             Some(SqliteAdmissionDeferReason::PoolPressure)
         } else if self.inner.maintenance_bulk.available_permits() == 0
             || (check_coordinator
@@ -2032,7 +2218,7 @@ impl SqliteRuntime {
         operation: SqliteOperation,
     ) -> Result<SqliteImmediateTransaction, ProxyError> {
         let (conn, pool_wait) = self.acquire_pool_connection(operation).await?;
-        let (conn, restore_busy_timeout) =
+        let (mut conn, restore_busy_timeout) =
             match configure_operation_connection(conn, operation).await {
                 Ok(configured) => configured,
                 Err(err) => {
@@ -2041,10 +2227,20 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
+        let use_savepoint =
+            match connection_uses_legacy_single_db_observability_compatibility(&mut conn).await {
+                Ok(value) => value,
+                Err(err) => {
+                    drop(conn.detach());
+                    let err = ProxyError::Database(err);
+                    self.record_error(operation, pool_wait, Duration::ZERO, &err);
+                    return Err(err);
+                }
+            };
         let begin_started = Instant::now();
         let mut transaction = match tokio::time::timeout(
             operation.begin_budget(),
-            ImmediateSqliteTransaction::begin(conn),
+            SqliteTransaction::begin(conn, use_savepoint),
         )
         .await
         {
@@ -2082,6 +2278,7 @@ impl SqliteRuntime {
             start_total_changes,
             restore_busy_timeout,
             cache_write_pages_start,
+            cancel_safe_drop: false,
         })
     }
 
@@ -2937,10 +3134,25 @@ impl SqliteOperationConnection {
         &mut self,
     ) -> Result<SqliteOperationTransaction<'_>, ProxyError> {
         let begin_started = Instant::now();
-        let conn = self.conn.take().expect("SQLite operation connection");
+        let mut conn = self.conn.take().expect("SQLite operation connection");
+        let use_savepoint =
+            match connection_uses_legacy_single_db_observability_compatibility(&mut conn).await {
+                Ok(value) => value,
+                Err(err) => {
+                    drop(conn.detach());
+                    let err = ProxyError::Database(err);
+                    self.runtime.record_error(
+                        self.operation,
+                        self.pool_wait,
+                        begin_started.elapsed(),
+                        &err,
+                    );
+                    return Err(err);
+                }
+            };
         match tokio::time::timeout(
             self.operation.begin_budget(),
-            ImmediateSqliteTransaction::begin(conn),
+            SqliteTransaction::begin(conn, use_savepoint),
         )
         .await
         {
@@ -3040,7 +3252,7 @@ impl SqliteOperationConnection {
 }
 
 pub(crate) struct SqliteOperationTransaction<'connection> {
-    transaction: Option<ImmediateSqliteTransaction>,
+    transaction: Option<SqliteTransaction>,
     connection: &'connection mut SqliteOperationConnection,
 }
 
@@ -3594,7 +3806,7 @@ impl Drop for SqliteReadSnapshot {
 
 #[derive(Debug)]
 pub(crate) struct SqliteImmediateTransaction {
-    transaction: Option<ImmediateSqliteTransaction>,
+    transaction: Option<SqliteTransaction>,
     runtime: SqliteRuntime,
     operation: SqliteOperation,
     pool_wait: Duration,
@@ -3603,6 +3815,7 @@ pub(crate) struct SqliteImmediateTransaction {
     start_total_changes: u64,
     restore_busy_timeout: bool,
     cache_write_pages_start: Option<u64>,
+    cancel_safe_drop: bool,
 }
 
 async fn connection_cache_write_pages(connection: &mut SqliteConnection) -> Option<u64> {
@@ -3652,6 +3865,32 @@ async fn configure_operation_connection(
         .configure(busy_timeout_ms)
         .await
         .map(|conn| (conn, true))
+}
+
+async fn connection_uses_legacy_single_db_observability_compatibility(
+    conn: &mut SqliteConnection,
+) -> Result<bool, sqlx::Error> {
+    let attached: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, file FROM pragma_database_list WHERE name IN ('main', 'observability')",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let main_path = attached
+        .iter()
+        .find(|(name, _)| name == "main")
+        .map(|(_, path)| path.as_str());
+    let observability_path = attached
+        .iter()
+        .find(|(name, _)| name == "observability")
+        .map(|(_, path)| path.as_str());
+    Ok(match (main_path, observability_path) {
+        (Some(main_path), Some(observability_path))
+            if !main_path.is_empty() && !observability_path.is_empty() =>
+        {
+            sqlite_paths_match(main_path, observability_path)
+        }
+        _ => false,
+    })
 }
 
 fn sqlite_query_interrupted(error: &sqlx::Error) -> bool {
@@ -3732,6 +3971,10 @@ impl Drop for BusyTimeoutResetGuard {
 }
 
 impl SqliteImmediateTransaction {
+    pub(crate) fn make_cancel_safe_on_drop(&mut self) {
+        self.cancel_safe_drop = true;
+    }
+
     pub(crate) async fn rollback(mut self) -> Result<(), ProxyError> {
         let transaction = self
             .transaction
@@ -3744,7 +3987,9 @@ impl SqliteImmediateTransaction {
         let started_at = self.started_at;
         let restore_busy_timeout = self.restore_busy_timeout;
         let cache_write_pages_start = self.cache_write_pages_start;
+        register_owned_finish(operation);
         tokio::spawn(async move {
+            let _completion = OwnedFinishCompletion { operation };
             complete_immediate_transaction_rollback(
                 transaction,
                 runtime,
@@ -3787,7 +4032,74 @@ impl SqliteImmediateTransaction {
         let started_at = self.started_at;
         let restore_busy_timeout = self.restore_busy_timeout;
         let cache_write_pages_start = self.cache_write_pages_start;
+        register_owned_finish(operation);
         tokio::spawn(async move {
+            let _completion = OwnedFinishCompletion { operation };
+            match write_result {
+                Ok(()) => {
+                    complete_immediate_transaction_commit(
+                        transaction,
+                        runtime,
+                        operation,
+                        pool_wait,
+                        begin_wait,
+                        started_at,
+                        restore_busy_timeout,
+                        cache_write_pages_start,
+                        rows_affected,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    complete_immediate_transaction_rollback(
+                        transaction,
+                        runtime,
+                        operation,
+                        pool_wait,
+                        begin_wait,
+                        started_at,
+                        restore_busy_timeout,
+                        cache_write_pages_start,
+                        Some(error),
+                    )
+                    .await
+                }
+            }
+        })
+        .await
+        .map_err(|error| ProxyError::Other(format!("owned SQLite finish task failed: {error}")))?
+    }
+
+    /// Finish through an owned task tracked by the recovery deadline boundary.
+    /// Timeout handlers wait for this task before releasing recovery ownership.
+    pub(crate) async fn finish_in_place(
+        &mut self,
+        write_result: Result<(), ProxyError>,
+    ) -> Result<(), ProxyError> {
+        let mut transaction = self
+            .transaction
+            .take()
+            .expect("SQLite immediate transaction");
+        let rows_affected = if write_result.is_ok() {
+            let total_changes = sqlx::query_scalar::<_, i64>("SELECT total_changes()")
+                .fetch_one(&mut *transaction)
+                .await
+                .unwrap_or_default()
+                .max(0) as u64;
+            total_changes.saturating_sub(self.start_total_changes)
+        } else {
+            0
+        };
+        let runtime = self.runtime.clone();
+        let operation = self.operation;
+        let pool_wait = self.pool_wait;
+        let begin_wait = self.begin_wait;
+        let started_at = self.started_at;
+        let restore_busy_timeout = self.restore_busy_timeout;
+        let cache_write_pages_start = self.cache_write_pages_start;
+        register_owned_finish(operation);
+        tokio::spawn(async move {
+            let _completion = OwnedFinishCompletion { operation };
             match write_result {
                 Ok(()) => {
                     complete_immediate_transaction_commit(
@@ -3826,7 +4138,7 @@ impl SqliteImmediateTransaction {
 
 #[allow(clippy::too_many_arguments)]
 async fn complete_immediate_transaction_commit(
-    transaction: ImmediateSqliteTransaction,
+    transaction: SqliteTransaction,
     runtime: SqliteRuntime,
     operation: SqliteOperation,
     pool_wait: Duration,
@@ -3875,7 +4187,7 @@ async fn complete_immediate_transaction_commit(
 
 #[allow(clippy::too_many_arguments)]
 async fn complete_immediate_transaction_rollback(
-    transaction: ImmediateSqliteTransaction,
+    transaction: SqliteTransaction,
     runtime: SqliteRuntime,
     operation: SqliteOperation,
     pool_wait: Duration,
@@ -3921,7 +4233,7 @@ async fn complete_immediate_transaction_rollback(
 
 #[allow(clippy::too_many_arguments)]
 async fn rollback_abandoned_immediate_transaction(
-    transaction: ImmediateSqliteTransaction,
+    transaction: SqliteTransaction,
     runtime: SqliteRuntime,
     operation: SqliteOperation,
     pool_wait: Duration,
@@ -3999,6 +4311,16 @@ impl Drop for SqliteImmediateTransaction {
         let started_at = self.started_at;
         let restore_busy_timeout = self.restore_busy_timeout;
         let cache_write_pages_start = self.cache_write_pages_start;
+        if self.cancel_safe_drop {
+            self.runtime.record_discard(
+                self.operation,
+                self.pool_wait,
+                self.begin_wait,
+                self.started_at.elapsed(),
+            );
+            drop(transaction);
+            return;
+        }
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(rollback_abandoned_immediate_transaction(
                 transaction,

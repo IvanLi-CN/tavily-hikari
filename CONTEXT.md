@@ -24,11 +24,12 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   changes the database busy-timeout pragma, and never carries scans or remote I/O. A transient
   completion failure leaves its fenced claim running for type-specific stale recovery rather than
   dropping durable work or retrying indefinitely in the background.
-- `maintenance bulk`: rebuilds, rollup persistence, GC, and local reconciliation projection. It
-  obtains one instance-local admission permit only when two foreground pool slots are either idle
-  or immediately allocatable within the configured pool maximum, foreground activity is at most
-  five requests per second, and there was no recent SQLite contention. Request-stats flush is the
-  bounded recovery exception: each nominal wake owns at
+- `maintenance bulk`: rebuilds, rollup persistence, GC, and local reconciliation projection.
+  Ordinary work obtains one instance-local admission permit only when two foreground pool slots
+  are either idle or immediately allocatable within the configured pool maximum, foreground activity is at most
+  five requests per second, and there was no recent SQLite contention. A bounded recovery turn is
+  the scoped exception to the rate heuristic; it retains real resource and writer safeguards.
+  Request-stats flush retains its bounded recovery exception: each nominal wake owns at
   most four adaptive `25..250` logical-key transactions within one 50ms retry budget, atomically
   restoring every uncommitted delta before yielding. The budget decides whether to acquire a
   connection and start another `BEGIN IMMEDIATE`; once a transaction starts, its runtime-owned
@@ -272,6 +273,27 @@ Tavily Hikari is a single-product service with one owner-facing admin surface, o
   quota-charge read model. A new sample advances only a bounded background slice and patches the
   immutable last-good snapshot; it does not trigger a full overview rebuild or make HTTP wait for
   backfill.
+
+## Dashboard Integrity Terms
+
+**Verified slice**:
+A completed source-backed check of one bounded request-statistics range. It says nothing about the verification status of other ranges or completion of a whole local day.
+_Avoid_: recovered dashboard, completed recovery
+
+**Local-day seal**:
+A recovery baseline for one server-local day whose minute and daily request summaries have been reconciled with the retained source. It protects the summaries when their source logs expire.
+
+**Recovery progress**:
+An accepted advance in a source-scan checkpoint, verified range, local-day seal, or expired-row cleanup. Executing or successfully deferring a job is not recovery progress.
+_Avoid_: successful job, latest job timestamp
+
+**Bounded recovery turn**:
+A limited opportunity for aged dashboard-integrity or request-log-GC debt to advance during live traffic. It relaxes the ordinary rate heuristic while retaining actual capacity, contention, and foreground-correctness protections.
+_Avoid_: unrestricted maintenance, writer bypass
+
+**Recovery convergence**:
+Completion of a finite recovery debt set identified by a fixed source boundary and time range. New live traffic is separate debt, so a moving chart's total gap count alone does not establish convergence or stagnation.
+_Avoid_: worker is running, last slice was verified
 
 ## HA Terms
 

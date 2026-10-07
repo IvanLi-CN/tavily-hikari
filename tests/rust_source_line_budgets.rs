@@ -20,6 +20,16 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "Request-log retention and scheduled-job regression coverage still lives in the consolidated jobs/request-log suite while the remaining extraction work lands in follow-up slices.",
     ),
     (
+        "src/lib.rs",
+        3300,
+        "Recovery admission, timeout ownership, and online dashboard/request-log maintenance now share the root lifecycle wiring while extracting recovery orchestration remains a separate behavior-preserving change.",
+    ),
+    (
+        "src/store/key_store_dashboard_rollup_integrity.rs",
+        3500,
+        "Bounded dashboard integrity recovery now carries seal/version fencing, target-scoped GC, deleted-source baselines, and recovery work-item reconciliation while extraction remains a separate behavior-preserving change.",
+    ),
+    (
         "src/store/key_store_request_logs_and_dashboard.rs",
         3160,
         "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending.",
@@ -66,8 +76,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/sqlite_runtime.rs",
-        4200,
-        "The runtime owns the shared pool, operation budgeting, transaction guards, fair maintenance admission coordinator, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
+        4550,
+        "The runtime owns the shared pool, operation budgeting, transaction guards, fair maintenance admission coordinator, operation-scoped owned-finish tracking, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
     ),
 ];
 

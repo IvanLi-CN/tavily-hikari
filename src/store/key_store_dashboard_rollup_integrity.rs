@@ -15,7 +15,10 @@ const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardRollupIntegritySlice {
     Verified { next_delay_secs: i64 },
-    Deferred { next_delay_secs: i64 },
+    Deferred {
+        next_delay_secs: i64,
+        reason: &'static str,
+    },
     Repaired { next_delay_secs: i64 },
 }
 
@@ -43,8 +46,20 @@ impl DashboardRollupIntegrityWorkKind {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DashboardRollupRequestLogGcGuard {
+    pub(crate) day_start: i64,
+    pub(crate) day_end: i64,
+    pub(crate) source_fence: i64,
+    pub(crate) source_version: i64,
+    pub(crate) durable_source_version: i64,
+}
+
 pub(crate) enum DashboardRollupRequestLogGcDecision {
-    Allowed(i64),
+    Allowed {
+        cutoff: i64,
+        guard: Option<DashboardRollupRequestLogGcGuard>,
+    },
     Blocked {
         day_start: i64,
         reason: &'static str,
@@ -57,6 +72,7 @@ struct DashboardRollupIntegrityWorkItem {
     range_end: i64,
     source_fence_id: i64,
     source_version: i64,
+    durable_source_version: i64,
     cursor_created_at: Option<i64>,
     cursor_id: Option<i64>,
     counts: BTreeMap<i64, DashboardRequestRollupCounts>,
@@ -77,6 +93,7 @@ impl DashboardRollupIntegrityWorkItem {
         range_start: i64,
         range_end: i64,
         source_fence_id: i64,
+        durable_source_version: i64,
         source_version: i64,
     ) -> Self {
         Self {
@@ -84,6 +101,7 @@ impl DashboardRollupIntegrityWorkItem {
             range_end,
             source_fence_id,
             source_version,
+            durable_source_version,
             cursor_created_at: None,
             cursor_id: None,
             counts: BTreeMap::new(),
@@ -103,6 +121,20 @@ impl KeyStore {
             .try_admit_maintenance_bulk(SqliteOperation::DashboardIntegrityWrite)
     }
 
+    pub(crate) fn try_admit_dashboard_rollup_integrity_recovery(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_bounded_recovery_bulk(SqliteOperation::DashboardIntegrityWrite)
+    }
+
+    pub(crate) fn try_admit_dashboard_rollup_integrity_exclusive_recovery(
+        &self,
+    ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
+        self.sqlite_runtime
+            .try_admit_exclusive_recovery_bulk(SqliteOperation::DashboardIntegrityWrite)
+    }
+
     pub(crate) async fn reset_dashboard_rollup_integrity_pending_work_on_startup(
         &self,
     ) -> Result<(), ProxyError> {
@@ -116,7 +148,18 @@ impl KeyStore {
         sqlx::query(
             r#"
             UPDATE dashboard_rollup_integrity_work_items
-            SET source_fence = ?, source_version = 0, cursor_created_at = NULL, cursor_id = NULL,
+            SET source_fence = ?,
+                durable_source_version = (
+                    SELECT COALESCE(SUM(revision), 0)
+                    FROM dashboard_rollup_source_revisions
+                    WHERE bucket_start >= range_start AND bucket_start < range_end
+                ),
+                source_version = (
+                    SELECT COALESCE(SUM(revision), 0)
+                    FROM dashboard_rollup_source_revisions
+                    WHERE bucket_start >= range_start AND bucket_start < range_end
+                ),
+                cursor_created_at = NULL, cursor_id = NULL,
                 counts_json = ?, status = 'pending', updated_at = ?
             WHERE status = 'pending' AND recovery = 0
             "#,
@@ -265,26 +308,34 @@ impl KeyStore {
                 .await?;
         }
         if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
-            return self.process_dashboard_rollup_integrity_work_item(item, now).await;
+            return self
+                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .await;
         }
         if self.dashboard_rollup_integrity_seal_verification_due(now).await? {
             self.verify_next_dashboard_rollup_daily_seal(now).await?;
             self.mark_dashboard_rollup_integrity_seal_attempt(now).await?;
             if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
-                return self.process_dashboard_rollup_integrity_work_item(item, now).await;
+                return self
+                    .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                    .await;
             }
         }
         if let Some(item) = self
             .create_next_dashboard_rollup_integrity_work_item(now)
             .await?
         {
-            return self.process_dashboard_rollup_integrity_work_item(item, now).await;
+            return self
+                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .await;
         }
         if let Some(item) = self
             .create_next_dashboard_rollup_rebalance_recovery_work_item(now)
             .await?
         {
-            return self.process_dashboard_rollup_integrity_work_item(item, now).await;
+            return self
+                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .await;
         }
         self.complete_dashboard_rollup_rebalance_recovery_if_ready(now)
             .await?;
@@ -292,6 +343,580 @@ impl KeyStore {
         Ok(DashboardRollupIntegritySlice::Verified {
             next_delay_secs: 60,
         })
+    }
+
+    pub(crate) async fn prepare_request_statistics_recovery_target(
+        &self,
+        day_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let now = self.backend_time.now_ts();
+        self.ensure_dashboard_rollup_integrity_state(now).await?;
+        self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
+        if day_end > latest_closed {
+            return Err(ProxyError::Other(
+                "request statistics recovery target day is not closed".to_string(),
+            ));
+        }
+        let mut fixed_source_fence = 0_i64;
+        let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
+        let write_result = async {
+            let persisted_target: Option<(Option<i64>, i64)> = sqlx::query_as(
+                "SELECT source_fence, cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let current_day_source_fence: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            let candidate_source_fence = if let Some((Some(source_fence), cursor)) = persisted_target
+                && cursor < day_end
+            {
+                source_fence
+            } else if let Some(source_fence) = sqlx::query_scalar::<_, Option<i64>>(
+                r#"
+                SELECT MIN(source_fence)
+                FROM dashboard_rollup_integrity_work_items
+                WHERE recovery = 1 AND range_start >= ? AND range_end <= ?
+                "#,
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?
+            {
+                source_fence
+            } else {
+                sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
+                    .fetch_one(&mut *conn)
+                    .await?
+            };
+            fixed_source_fence = if current_day_source_fence > candidate_source_fence {
+                sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
+                    .fetch_one(&mut *conn)
+                    .await?
+            } else {
+                candidate_source_fence
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO dashboard_rollup_integrity_day_reaudits (
+                    bucket_start, bucket_end, cursor, status, updated_at, source_fence, gc_blocking
+                ) VALUES (?, ?, ?, 'pending', ?, ?, 1)
+                ON CONFLICT(bucket_start) DO UPDATE SET
+                    bucket_end = excluded.bucket_end,
+                    cursor = CASE
+                        WHEN dashboard_rollup_integrity_day_reaudits.cursor >= excluded.bucket_end
+                            OR excluded.source_fence > COALESCE(
+                                dashboard_rollup_integrity_day_reaudits.source_fence,
+                                -1
+                            )
+                        THEN excluded.cursor
+                        ELSE dashboard_rollup_integrity_day_reaudits.cursor
+                    END,
+                    status = 'pending',
+                    updated_at = excluded.updated_at,
+                    source_fence = CASE
+                        WHEN excluded.source_fence > COALESCE(
+                            dashboard_rollup_integrity_day_reaudits.source_fence,
+                            -1
+                        )
+                        THEN excluded.source_fence
+                        ELSE dashboard_rollup_integrity_day_reaudits.source_fence
+                    END,
+                    gc_blocking = MAX(
+                        dashboard_rollup_integrity_day_reaudits.gc_blocking,
+                        excluded.gc_blocking
+                    )
+                "#,
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .bind(day_start)
+            .bind(now)
+            .bind(fixed_source_fence)
+            .execute(&mut *conn)
+            .await?;
+            Ok::<_, ProxyError>(())
+        }
+        .await;
+        self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
+            .await?;
+        tracing::info!(
+            component = "request_statistics_recovery",
+            event = "target_prepared",
+            target_day_start = day_start,
+            target_day_end = day_end,
+            source_fence = fixed_source_fence,
+            "prepared a fixed source-backed recovery target"
+        );
+        Ok(fixed_source_fence)
+    }
+
+    async fn dashboard_rollup_integrity_durable_source_version(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<i64, ProxyError> {
+        sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(SUM(revision), 0)
+            FROM dashboard_rollup_source_revisions
+            WHERE bucket_start >= ? AND bucket_start < ?
+            "#,
+        )
+        .bind(range_start)
+        .bind(range_end)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn dashboard_rollup_integrity_source_versions(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<(i64, i64), ProxyError> {
+        let durable_source_version = self
+            .dashboard_rollup_integrity_durable_source_version(range_start, range_end)
+            .await?;
+        let coalescer_source_version = self
+            .request_stats_coalescer
+            .dashboard_rollup_source_version(range_start, range_end)
+            .await;
+        Ok((
+            durable_source_version,
+            durable_source_version.saturating_add(coalescer_source_version),
+        ))
+    }
+
+    pub(crate) async fn run_request_statistics_recovery_integrity_slice(
+        &self,
+        day_start: i64,
+        source_fence_id: i64,
+        deadline: tokio::time::Instant,
+    ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs: 1,
+                reason: "recovery_budget",
+            });
+        }
+        let setup_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let setup = tokio::time::timeout(setup_budget, async {
+            let now = self.backend_time.now_ts();
+            self.ensure_dashboard_rollup_integrity_state(now).await?;
+            self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
+            let source_fence_id = self
+                .request_statistics_recovery_source_fence(day_start, source_fence_id)
+                .await?;
+            let mut item = if let Some(item) = self
+                .load_request_statistics_recovery_work_item(day_start)
+                .await?
+            {
+                Some(item)
+            } else {
+                self.create_request_statistics_recovery_work_item(
+                    day_start,
+                    source_fence_id,
+                    now,
+                )
+                .await?
+            };
+            if item.is_none()
+                && !self
+                    .request_statistics_recovery_target_complete(day_start)
+                    .await?
+            {
+                let refreshed_source_fence = self
+                    .prepare_request_statistics_recovery_target(day_start)
+                    .await?;
+                item = self
+                    .create_request_statistics_recovery_work_item(
+                        day_start,
+                        refreshed_source_fence,
+                        now,
+                    )
+                    .await?;
+            }
+            Ok::<_, ProxyError>((now, item))
+        })
+        .await;
+        let (now, item) = match setup {
+            Ok(result) => result?,
+            Err(_) => {
+                crate::store::wait_for_owned_finishes(&[
+                    crate::store::SqliteOperation::DashboardIntegrityWrite,
+                ])
+                .await;
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs: 1,
+                    reason: "recovery_budget",
+                });
+            }
+        };
+        if let Some(item) = item {
+            return self
+                .process_dashboard_rollup_integrity_work_item(
+                    item,
+                    now,
+                    Some(deadline),
+                    true,
+                )
+                .await;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs: 1,
+                reason: "recovery_budget",
+            });
+        }
+        match tokio::time::timeout(remaining, async {
+            self.complete_dashboard_rollup_integrity_day_reaudit_if_ready(day_start, now)
+                .await?;
+            self.mark_dashboard_rollup_integrity_success(now, 60).await?;
+            Ok::<_, ProxyError>(())
+        })
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                crate::store::wait_for_owned_finishes(&[
+                    crate::store::SqliteOperation::DashboardIntegrityWrite,
+                ])
+                .await;
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs: 1,
+                    reason: "recovery_budget",
+                });
+            }
+        }
+        Ok(DashboardRollupIntegritySlice::Verified { next_delay_secs: 60 })
+    }
+
+    async fn request_statistics_recovery_source_fence(
+        &self,
+        day_start: i64,
+        fallback: i64,
+    ) -> Result<i64, ProxyError> {
+        let persisted: Option<Option<i64>> = sqlx::query(
+            "SELECT source_fence FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending'",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| row.try_get("source_fence"))
+        .transpose()?;
+        match persisted {
+            Some(Some(source_fence)) => Ok(source_fence),
+            Some(None) => sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(Into::into),
+            None => Ok(fallback),
+        }
+    }
+
+    pub(crate) async fn request_statistics_recovery_target_checkpoint(
+        &self,
+        day_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let cursor: Option<i64> = sqlx::query_scalar(
+            "SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending'",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(cursor) = cursor {
+            return Ok(cursor);
+        }
+        let sealed: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(sealed.map(|_| day_end).unwrap_or(day_start))
+    }
+
+    pub(crate) async fn request_statistics_recovery_target_complete(
+        &self,
+        day_start: i64,
+    ) -> Result<bool, ProxyError> {
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let sealed: Option<(Option<i64>, i64, i64)> = sqlx::query_as(
+            "SELECT source_fence, source_version, durable_source_version FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((sealed_fence, sealed_version, sealed_durable_source_version)) = sealed else {
+            return Ok(false);
+        };
+        let current_fence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        let (current_durable_source_version, current_version) = self
+            .dashboard_rollup_integrity_source_versions(day_start, day_end)
+            .await?;
+        if !self
+            .request_stats_coalescer
+            .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+        {
+            return Ok(false);
+        }
+        // A successful fenced GC pass may remove the final raw rows from the
+        // A fenced GC pass may lower MAX(id) without changing the durable
+        // source revision. Treat that as the valid post-GC representation of
+        // the seal; a fence that moves forward still indicates a late insert.
+        let source_fence_advanced = match sealed_fence {
+            Some(sealed_fence) => current_fence > sealed_fence,
+            None => current_fence != 0,
+        };
+        if source_fence_advanced
+            || sealed_version != current_version
+            || sealed_durable_source_version != current_durable_source_version
+        {
+            return Ok(false);
+        }
+        if self
+            .dashboard_rollup_gc_deleted_source_baseline_missing(day_start, day_end)
+            .await?
+        {
+            return Ok(false);
+        }
+        let pending_work: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM dashboard_rollup_integrity_work_items
+            WHERE status = 'pending' AND recovery = 1
+              AND range_start < ? AND range_end > ?
+            "#,
+        )
+        .bind(day_end)
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        let pending_reaudit: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending' AND bucket_start = ?",
+        )
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(pending_work == 0 && pending_reaudit == 0)
+    }
+
+    pub(crate) async fn request_statistics_recovery_target_expired_rows(
+        &self,
+        day_start: i64,
+        threshold: i64,
+    ) -> Result<i64, ProxyError> {
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let source_fence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE((SELECT source_fence FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?), (SELECT MAX(id) FROM request_logs), 0)",
+        )
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM request_logs WHERE created_at >= ? AND created_at < ? AND created_at < ? AND id <= ?",
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .bind(threshold)
+        .bind(source_fence)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn load_request_statistics_recovery_work_item(
+        &self,
+        day_start: i64,
+    ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let row = sqlx::query(
+            r#"
+            SELECT range_start, range_end, source_fence, source_version, durable_source_version,
+                   cursor_created_at, cursor_id, counts_json
+            FROM dashboard_rollup_integrity_work_items
+            WHERE status = 'pending' AND recovery = 1
+              AND range_start >= ? AND range_end <= ?
+            ORDER BY range_start ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let counts_json: String = row.try_get("counts_json")?;
+            let counts = serde_json::from_str(&counts_json).map_err(|err| {
+                sqlx::Error::Protocol(format!(
+                    "invalid request statistics recovery work item: {err}"
+                ))
+            })?;
+            Ok::<DashboardRollupIntegrityWorkItem, sqlx::Error>(DashboardRollupIntegrityWorkItem {
+                range_start: row.try_get("range_start")?,
+                range_end: row.try_get("range_end")?,
+                source_fence_id: row.try_get("source_fence")?,
+                source_version: row.try_get("source_version")?,
+                durable_source_version: row.try_get("durable_source_version")?,
+                cursor_created_at: row.try_get("cursor_created_at")?,
+                cursor_id: row.try_get("cursor_id")?,
+                counts,
+            })
+        })
+        .transpose()
+        .map_err(Into::into)
+    }
+
+    async fn create_request_statistics_recovery_work_item(
+        &self,
+        day_start: i64,
+        source_fence_id: i64,
+        now: i64,
+    ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
+        let Some(row) = sqlx::query(
+            "SELECT bucket_end, cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending'",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let day_end: i64 = row.try_get("bucket_end")?;
+        let cursor: i64 = row.try_get("cursor")?;
+        if cursor >= day_end {
+            return Ok(None);
+        }
+        let range_end = (cursor + DASHBOARD_ROLLUP_INTEGRITY_GC_BLOCKING_WORK_SECS).min(day_end);
+        let (durable_source_version, source_version) = self
+            .dashboard_rollup_integrity_source_versions(cursor, range_end)
+            .await?;
+        if let Some(existing) = sqlx::query(
+            "SELECT status, recovery, range_end, source_fence, source_version, durable_source_version FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
+        )
+        .bind(cursor)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            let status: String = existing.try_get("status")?;
+            let existing_recovery: i64 = existing.try_get("recovery")?;
+            let existing_range_end: i64 = existing.try_get("range_end")?;
+            let existing_fence: i64 = existing.try_get("source_fence")?;
+            let existing_source_version: i64 = existing.try_get("source_version")?;
+            let existing_durable_source_version: i64 =
+                existing.try_get("durable_source_version")?;
+            if existing_recovery == 1
+                && status == "pending"
+                && existing_range_end == range_end
+                && existing_fence == source_fence_id
+                && existing_source_version == source_version
+                && existing_durable_source_version == durable_source_version
+            {
+                return Ok(None);
+            }
+            if existing_recovery == 1
+                && status == "done"
+                && existing_range_end == range_end
+                && existing_fence == source_fence_id
+                && existing_source_version == source_version
+                && existing_durable_source_version == durable_source_version
+            {
+                let next_cursor = (cursor + DASHBOARD_ROLLUP_INTEGRITY_GC_BLOCKING_WORK_SECS)
+                    .min(day_end);
+                sqlx::query(
+                    "UPDATE dashboard_rollup_integrity_day_reaudits SET cursor = ?, updated_at = ? WHERE bucket_start = ? AND status = 'pending'",
+                )
+                .bind(next_cursor)
+                .bind(now)
+                .bind(day_start)
+                .execute(&self.pool)
+                .await?;
+                return Ok(None);
+            }
+        }
+        let item = DashboardRollupIntegrityWorkItem::empty(
+            cursor,
+            range_end,
+            source_fence_id,
+            durable_source_version,
+            source_version,
+        );
+        let counts_json = serde_json::to_string(&item.counts).map_err(|err| {
+            ProxyError::Other(format!("serialize request statistics recovery work item: {err}"))
+        })?;
+        let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
+        let write_result = async {
+            sqlx::query(
+                r#"
+                INSERT INTO dashboard_rollup_integrity_work_items (
+                    range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at,
+                    cursor_id, counts_json, status, priority, recovery, updated_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'pending', 3, 1, ?)
+                ON CONFLICT(range_start) DO UPDATE SET
+                    range_end = excluded.range_end,
+                    source_fence = excluded.source_fence,
+                    source_version = excluded.source_version,
+                    durable_source_version = excluded.durable_source_version,
+                    cursor_created_at = NULL,
+                    cursor_id = NULL,
+                    counts_json = excluded.counts_json,
+                    status = 'pending',
+                    priority = 3,
+                    recovery = 1,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(item.range_start)
+            .bind(item.range_end)
+            .bind(item.source_fence_id)
+            .bind(item.source_version)
+            .bind(item.durable_source_version)
+            .bind(counts_json)
+            .bind(now)
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                "UPDATE dashboard_rollup_integrity_day_reaudits SET cursor = ?, updated_at = ? WHERE bucket_start = ? AND status = 'pending'",
+            )
+            .bind(range_end)
+            .bind(now)
+            .bind(day_start)
+            .execute(&mut *conn)
+            .await?;
+            Ok::<_, ProxyError>(())
+        }
+        .await;
+        self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
+            .await?;
+        tracing::info!(
+            component = "request_statistics_recovery",
+            event = "target_checkpoint_accepted",
+            target_day_start = day_start,
+            range_start = item.range_start,
+            range_end = item.range_end,
+            source_fence = source_fence_id,
+            "materialized a bounded target checkpoint"
+        );
+        Ok(Some(item))
     }
 
     async fn dashboard_rollup_integrity_hot_work_due(&self, now: i64) -> Result<bool, ProxyError> {
@@ -492,14 +1117,14 @@ impl KeyStore {
         }
 
         let range_end_for_item = (cursor + DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS).min(range_end);
-        let source_version = self
-            .request_stats_coalescer
-            .dashboard_rollup_source_version(cursor, range_end_for_item)
-            .await;
+        let (durable_source_version, source_version) = self
+            .dashboard_rollup_integrity_source_versions(cursor, range_end_for_item)
+            .await?;
         let item = DashboardRollupIntegrityWorkItem::empty(
             cursor,
             range_end_for_item,
             source_fence_id,
+            durable_source_version,
             source_version,
         );
         let counts_json = serde_json::to_string(&item.counts)
@@ -508,13 +1133,14 @@ impl KeyStore {
         let write_result = sqlx::query(
             r#"
             INSERT INTO dashboard_rollup_integrity_work_items (
-                range_start, range_end, source_fence, source_version, cursor_created_at,
+                range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at,
                 cursor_id, counts_json, status, priority, recovery, updated_at
-            ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 'pending', 0, 1, ?)
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'pending', 0, 1, ?)
             ON CONFLICT(range_start) DO UPDATE SET
                 range_end = excluded.range_end,
                 source_fence = excluded.source_fence,
                 source_version = excluded.source_version,
+                durable_source_version = excluded.durable_source_version,
                 cursor_created_at = NULL,
                 cursor_id = NULL,
                 counts_json = excluded.counts_json,
@@ -528,6 +1154,7 @@ impl KeyStore {
         .bind(item.range_end)
         .bind(item.source_fence_id)
         .bind(item.source_version)
+        .bind(item.durable_source_version)
         .bind(counts_json)
         .bind(now)
         .execute(&mut *conn)
@@ -606,7 +1233,7 @@ impl KeyStore {
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
         let row = sqlx::query(
             r#"
-            SELECT range_start, range_end, source_fence, source_version, cursor_created_at, cursor_id, counts_json
+            SELECT range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, counts_json
             FROM dashboard_rollup_integrity_work_items
             WHERE status = 'pending'
               AND (
@@ -641,6 +1268,7 @@ impl KeyStore {
                 range_end: row.try_get("range_end")?,
                 source_fence_id: row.try_get("source_fence")?,
                 source_version: row.try_get("source_version")?,
+                durable_source_version: row.try_get("durable_source_version")?,
                 cursor_created_at: row.try_get("cursor_created_at")?,
                 cursor_id: row.try_get("cursor_id")?,
                 counts,
@@ -803,14 +1431,14 @@ impl KeyStore {
             sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
                 .fetch_one(&self.pool)
                 .await?;
-        let source_version = self
-            .request_stats_coalescer
-            .dashboard_rollup_source_version(range_start, range_end)
-            .await;
+        let (durable_source_version, source_version) = self
+            .dashboard_rollup_integrity_source_versions(range_start, range_end)
+            .await?;
         let item = DashboardRollupIntegrityWorkItem::empty(
             range_start,
             range_end,
             source_fence_id,
+            durable_source_version,
             source_version,
         );
         let counts_json = serde_json::to_string(&item.counts)
@@ -820,12 +1448,13 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 INSERT INTO dashboard_rollup_integrity_work_items (
-                    range_start, range_end, source_fence, source_version, cursor_created_at, cursor_id, counts_json, status, priority, recovery, updated_at
-                ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 'pending', ?, 0, ?)
+                    range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, counts_json, status, priority, recovery, updated_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'pending', ?, 0, ?)
                 ON CONFLICT(range_start) DO UPDATE SET
                     range_end = excluded.range_end,
                     source_fence = excluded.source_fence,
                     source_version = excluded.source_version,
+                    durable_source_version = excluded.durable_source_version,
                     cursor_created_at = NULL,
                     cursor_id = NULL,
                     counts_json = excluded.counts_json,
@@ -839,6 +1468,7 @@ impl KeyStore {
             .bind(item.range_end)
             .bind(item.source_fence_id)
             .bind(item.source_version)
+            .bind(item.durable_source_version)
             .bind(counts_json)
             .bind(kind.priority())
             .bind(now)
@@ -896,14 +1526,162 @@ impl KeyStore {
 
     async fn process_dashboard_rollup_integrity_work_item(
         &self,
+        item: DashboardRollupIntegrityWorkItem,
+        now: i64,
+        deadline: Option<tokio::time::Instant>,
+        recovery_target: bool,
+    ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
+        let Some(deadline) = deadline else {
+            return self
+                .process_dashboard_rollup_integrity_work_item_inner(
+                    item,
+                    now,
+                    None,
+                    recovery_target,
+                )
+                .await;
+        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs: 1,
+                reason: "recovery_budget",
+            });
+        }
+        let range_start = item.range_start;
+        match tokio::time::timeout(
+            remaining,
+            self.process_dashboard_rollup_integrity_work_item_inner(
+                item,
+                now,
+                Some(deadline),
+                recovery_target,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                crate::store::wait_for_owned_finishes(&[
+                    crate::store::SqliteOperation::DashboardIntegrityWrite,
+                ])
+                .await;
+                // The inner path may have installed a coalescer repair barrier
+                // before its final database observation. Cancellation is safe
+                // for the immediate transaction, but the in-memory barrier
+                // still needs an explicit rollback marker before the next turn.
+                self.request_stats_coalescer
+                    .finish_dashboard_rollup_repair(range_start, false)
+                    .await;
+                Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs: 1,
+                    reason: "recovery_budget",
+                })
+            }
+        }
+    }
+
+    async fn process_dashboard_rollup_integrity_work_item_inner(
+        &self,
         mut item: DashboardRollupIntegrityWorkItem,
         now: i64,
+        deadline: Option<tokio::time::Instant>,
+        recovery_target: bool,
     ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
-        let next_delay_secs = self
-            .dashboard_rollup_integrity_work_delay(item.range_start)
-            .await?;
+        if deadline
+            .map(|deadline| tokio::time::Instant::now() >= deadline)
+            .unwrap_or(false)
+        {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs: 1,
+                reason: "recovery_budget",
+            });
+        }
+        let work_delay_budget = deadline
+            .map(|deadline| {
+                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+            })
+            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        if work_delay_budget.is_zero() {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs: 1,
+                reason: "recovery_budget",
+            });
+        }
+        let next_delay_secs = match tokio::time::timeout(
+            work_delay_budget,
+            self.dashboard_rollup_integrity_work_delay(item.range_start),
+        )
+        .await
+        {
+            Ok(value) => value?,
+            Err(_) => {
+                let reason = if deadline
+                    .map(|deadline| tokio::time::Instant::now() >= deadline)
+                    .unwrap_or(false)
+                {
+                    "recovery_budget"
+                } else {
+                    "read_budget"
+                };
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs: 1,
+                    reason,
+                });
+            }
+        };
+        let day_start = local_day_bucket_start_utc_ts(item.range_start);
+        let day_end = next_local_day_start_utc_ts(day_start);
+        if self
+            .dashboard_rollup_gc_deleted_source_baseline_missing(day_start, day_end)
+            .await?
+        {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "deleted_source_baseline_unavailable",
+            });
+        }
+        tracing::debug!(
+            component = "dashboard_rollup_integrity",
+            event = "slice_started",
+            lane = "dashboard_integrity",
+            target_range_start = item.range_start,
+            target_range_end = item.range_end,
+            source_fence = item.source_fence_id,
+            checkpoint_created_at = ?item.cursor_created_at,
+            checkpoint_id = ?item.cursor_id,
+            "started a source-backed bounded integrity slice"
+        );
         let read_started = StdInstant::now();
-        let rows = sqlx::query(
+        let read_budget = deadline
+            .map(|deadline| {
+                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+            })
+            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        if read_budget.is_zero() {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "recovery_budget",
+            });
+        }
+        if item.cursor_created_at.is_none()
+            && item.cursor_id.is_none()
+            && item.counts.is_empty()
+        {
+            for (minute_start, counts) in self
+                .load_dashboard_rollup_gc_deleted_source_counts(item.range_start, item.range_end)
+                .await?
+            {
+                item.counts.entry(minute_start).or_default().add(counts);
+            }
+        }
+        let rows = match tokio::time::timeout(
+            read_budget,
+            sqlx::query(
             r#"
             SELECT id, created_at, result_status, failure_kind, request_kind_key, request_body,
                    path, business_credits, counts_business_quota
@@ -923,11 +1701,29 @@ impl KeyStore {
         .bind(item.source_fence_id)
         .bind(item.cursor_created_at)
         .bind(item.cursor_created_at)
-        .bind(item.cursor_created_at)
-        .bind(item.cursor_id)
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
-        .fetch_all(&self.pool)
-        .await?;
+            .bind(item.cursor_created_at)
+            .bind(item.cursor_id)
+            .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
+                .fetch_all(&self.pool),
+        )
+        .await
+        {
+            Ok(rows) => rows?,
+            Err(_) => {
+                let reason = if deadline
+                    .map(|deadline| tokio::time::Instant::now() >= deadline)
+                    .unwrap_or(false)
+                {
+                    "recovery_budget"
+                } else {
+                    "read_budget"
+                };
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason,
+                });
+            }
+        };
         for row in &rows {
             let created_at: i64 = row.try_get("created_at")?;
             let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
@@ -970,31 +1766,106 @@ impl KeyStore {
         if rows.len() as i64 >= DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS
             || read_started.elapsed() >= DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET
         {
+            if deadline
+                .map(|deadline| tokio::time::Instant::now() >= deadline)
+                .unwrap_or(false)
+            {
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason: "recovery_budget",
+                });
+            }
             self.persist_dashboard_rollup_integrity_work_item(&item, now).await?;
+            let defer_reason = if rows.len() as i64 >= DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS {
+                "source_page_limit"
+            } else {
+                "read_budget"
+            };
+            tracing::debug!(
+                component = "dashboard_rollup_integrity",
+                event = "checkpoint_deferred",
+                lane = "dashboard_integrity",
+                target_range_start = item.range_start,
+                target_range_end = item.range_end,
+                source_fence = item.source_fence_id,
+                checkpoint_created_at = ?item.cursor_created_at,
+                checkpoint_id = ?item.cursor_id,
+                defer_reason,
+                "persisted a bounded source-scan checkpoint"
+            );
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
+                reason: defer_reason,
             });
         }
 
-        if self.request_stats_durable_freshness_for_maintenance()
-            != RequestStatsReadFreshness::Fresh
+        if self
+            .request_stats_coalescer
+            .dashboard_rollup_range_has_uncommitted_changes(item.range_start, item.range_end)
+            .await
         {
+            if deadline
+                .map(|deadline| tokio::time::Instant::now() >= deadline)
+                .unwrap_or(false)
+            {
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason: "recovery_budget",
+                });
+            }
             self.persist_dashboard_rollup_integrity_work_item(&item, now).await?;
+            tracing::debug!(
+                component = "dashboard_rollup_integrity",
+                event = "checkpoint_deferred",
+                lane = "dashboard_integrity",
+                target_range_start = item.range_start,
+                target_range_end = item.range_end,
+                source_fence = item.source_fence_id,
+                checkpoint_created_at = ?item.cursor_created_at,
+                checkpoint_id = ?item.cursor_id,
+                defer_reason = "relevant_unflushed_statistics",
+                "relevant dashboard statistics remain unflushed"
+            );
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
+                reason: "relevant_unflushed_statistics",
             });
         }
         if self
             .dashboard_rollup_integrity_source_changed_since_fence(&item)
             .await?
         {
-            self.restart_dashboard_rollup_integrity_work_item(&item, now)
+            tracing::debug!(
+                component = "dashboard_rollup_integrity",
+                event = "checkpoint_deferred",
+                lane = "dashboard_integrity",
+                target_range_start = item.range_start,
+                target_range_end = item.range_end,
+                source_fence = item.source_fence_id,
+                defer_reason = "source_fence_changed",
+                "source data changed before repair began"
+            );
+            self.restart_dashboard_rollup_integrity_work_item(
+                &item,
+                now,
+                recovery_target,
+            )
                 .await?;
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
+                reason: "source_fence_changed",
             });
         }
 
+        if deadline
+            .map(|deadline| tokio::time::Instant::now() >= deadline)
+            .unwrap_or(false)
+        {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "recovery_budget",
+            });
+        }
         self.request_stats_coalescer
             .begin_dashboard_rollup_repair(item.range_start, item.range_end, item.source_fence_id)
             .await;
@@ -1011,13 +1882,28 @@ impl KeyStore {
             }
         };
         if source_changed_after_barrier {
+            tracing::debug!(
+                component = "dashboard_rollup_integrity",
+                event = "checkpoint_deferred",
+                lane = "dashboard_integrity",
+                target_range_start = item.range_start,
+                target_range_end = item.range_end,
+                source_fence = item.source_fence_id,
+                defer_reason = "source_fence_changed_after_barrier",
+                "source data changed after the repair barrier"
+            );
             self.request_stats_coalescer
                 .finish_dashboard_rollup_repair(item.range_start, false)
                 .await;
-            self.restart_dashboard_rollup_integrity_work_item(&item, now)
+            self.restart_dashboard_rollup_integrity_work_item(
+                &item,
+                now,
+                recovery_target,
+            )
                 .await?;
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
+                reason: "source_fence_changed_after_barrier",
             });
         }
 
@@ -1044,6 +1930,18 @@ impl KeyStore {
             }
         }
         if mismatch {
+            if deadline
+                .map(|deadline| tokio::time::Instant::now() >= deadline)
+                .unwrap_or(false)
+            {
+                self.request_stats_coalescer
+                    .finish_dashboard_rollup_repair(item.range_start, false)
+                    .await;
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason: "recovery_budget",
+                });
+            }
             if let Err(err) = self.record_dashboard_rollup_integrity_gap(&item, now).await {
                 self.request_stats_coalescer
                     .finish_dashboard_rollup_repair(item.range_start, false)
@@ -1059,6 +1957,18 @@ impl KeyStore {
                     return Err(err);
                 }
             };
+        }
+        if deadline
+            .map(|deadline| tokio::time::Instant::now() >= deadline)
+            .unwrap_or(false)
+        {
+            self.request_stats_coalescer
+                .finish_dashboard_rollup_repair(item.range_start, false)
+                .await;
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "recovery_budget",
+            });
         }
         let source_changed = match self
             .dashboard_rollup_integrity_source_changed_since_fence(&item)
@@ -1078,26 +1988,43 @@ impl KeyStore {
             .await;
         if source_changed || has_post_fence_changes {
             self.record_dashboard_rollup_integrity_gap(&item, now).await?;
-            self.restart_dashboard_rollup_integrity_work_item(&item, now)
+            self.restart_dashboard_rollup_integrity_work_item(
+                &item,
+                now,
+                recovery_target,
+            )
                 .await?;
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
+                reason: "source_fence_changed_after_repair",
+            });
+        }
+        if deadline
+            .map(|deadline| tokio::time::Instant::now() >= deadline)
+            .unwrap_or(false)
+        {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "recovery_budget",
             });
         }
         self.clear_dashboard_rollup_integrity_gap(item.range_start).await?;
         self.finish_dashboard_rollup_integrity_work_item(&item, now).await?;
         let day_start = local_day_bucket_start_utc_ts(item.range_start);
-        if self
+        let day_recovery_sealed = if self
             .complete_dashboard_rollup_integrity_day_reaudit_if_ready(day_start, now)
             .await?
         {
             // The final source-backed minute slice recreated the day rollup and seal.
+            true
         } else if mismatch {
             self.refresh_dashboard_rollup_daily_seal_after_repair(day_start, now)
                 .await?;
+            false
         } else {
             self.maybe_seal_dashboard_rollup_day(day_start, now).await?;
-        }
+            false
+        };
         let next_delay_secs = if slow_repair_write {
             next_delay_secs.max(60)
         } else {
@@ -1105,6 +2032,20 @@ impl KeyStore {
         };
         self.mark_dashboard_rollup_integrity_success(now, next_delay_secs)
             .await?;
+        tracing::info!(
+            component = "dashboard_rollup_integrity",
+            event = "checkpoint_accepted",
+            lane = "dashboard_integrity",
+            target_range_start = item.range_start,
+            target_range_end = item.range_end,
+            source_fence = item.source_fence_id,
+            checkpoint_created_at = ?item.cursor_created_at,
+            checkpoint_id = ?item.cursor_id,
+            mismatch,
+            day_start,
+            sealed_day = day_recovery_sealed,
+            "accepted a source-backed integrity checkpoint"
+        );
         Ok(if mismatch {
             DashboardRollupIntegritySlice::Repaired {
                 next_delay_secs,
@@ -1131,51 +2072,65 @@ impl KeyStore {
         .bind(item.range_end)
         .fetch_one(&self.pool)
         .await?;
+        let (durable_source_version, source_version) = self
+            .dashboard_rollup_integrity_source_versions(item.range_start, item.range_end)
+            .await?;
         Ok(latest_source_id > item.source_fence_id
+            || source_version != item.source_version
+            || durable_source_version != item.durable_source_version
             || !self
                 .request_stats_coalescer
-                .dashboard_rollup_source_version_is_stable(
-                    item.range_start,
-                    item.range_end,
-                    item.source_version,
-                )
-                .await)
+                .dashboard_rollup_source_mutations_are_stable(item.range_start, item.range_end))
     }
 
     async fn restart_dashboard_rollup_integrity_work_item(
         &self,
         item: &DashboardRollupIntegrityWorkItem,
         now: i64,
+        recovery_target: bool,
     ) -> Result<(), ProxyError> {
         let source_fence_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM request_logs")
             .fetch_one(&self.pool)
             .await?;
-        let source_version = self
-            .request_stats_coalescer
-            .dashboard_rollup_source_version(item.range_start, item.range_end)
-            .await;
+        let (durable_source_version, source_version) = self
+            .dashboard_rollup_integrity_source_versions(item.range_start, item.range_end)
+            .await?;
         let counts_json = serde_json::to_string(&BTreeMap::<i64, DashboardRequestRollupCounts>::new())
             .map_err(|err| {
                 ProxyError::Other(format!("serialize restarted integrity work item: {err}"))
             })?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            r#"
-            UPDATE dashboard_rollup_integrity_work_items
-            SET source_fence = ?, source_version = ?, cursor_created_at = NULL, cursor_id = NULL, counts_json = ?,
-                status = 'pending', updated_at = ?
-            WHERE range_start = ?
-            "#,
-        )
-        .bind(source_fence_id)
-        .bind(source_version)
-        .bind(counts_json)
-        .bind(now)
-        .bind(item.range_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        let write_result = async {
+            sqlx::query(
+                r#"
+                UPDATE dashboard_rollup_integrity_work_items
+                SET source_fence = ?, source_version = ?, durable_source_version = ?, cursor_created_at = NULL, cursor_id = NULL, counts_json = ?,
+                    status = 'pending', updated_at = ?
+                WHERE range_start = ?
+                "#,
+            )
+            .bind(source_fence_id)
+            .bind(source_version)
+            .bind(durable_source_version)
+            .bind(counts_json)
+            .bind(now)
+            .bind(item.range_start)
+            .execute(&mut *conn)
+            .await?;
+            if recovery_target {
+                let day_start = local_day_bucket_start_utc_ts(item.range_start);
+                sqlx::query(
+                    "UPDATE dashboard_rollup_integrity_day_reaudits SET source_fence = ?, cursor = bucket_start, status = 'pending', updated_at = ? WHERE bucket_start = ?",
+                )
+                .bind(source_fence_id)
+                .bind(now)
+                .bind(day_start)
+                .execute(&mut *conn)
+                .await?;
+            }
+            Ok::<_, ProxyError>(())
+        }
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await
     }
@@ -1258,6 +2213,74 @@ impl KeyStore {
             .map(|row| Ok((row.try_get("bucket_start")?, Self::dashboard_rollup_counts_from_row(&row)?)))
             .collect::<Result<_, sqlx::Error>>()
             .map_err(Into::into)
+    }
+
+    async fn load_dashboard_rollup_gc_deleted_source_counts(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<BTreeMap<i64, DashboardRequestRollupCounts>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT bucket_start, counts_json
+            FROM dashboard_rollup_gc_deleted_source_contributions
+            WHERE bucket_start >= ? AND bucket_start < ?
+            ORDER BY bucket_start ASC
+            "#,
+        )
+        .bind(range_start)
+        .bind(range_end)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let bucket_start: i64 = row.try_get("bucket_start")?;
+                let counts_json: String = row.try_get("counts_json")?;
+                let counts = serde_json::from_str(&counts_json).map_err(|err| {
+                    ProxyError::Other(format!(
+                        "invalid deleted dashboard source contribution: {err}"
+                    ))
+                })?;
+                Ok((bucket_start, counts))
+            })
+            .collect()
+    }
+
+    async fn dashboard_rollup_gc_deleted_source_baseline_missing(
+        &self,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<bool, ProxyError> {
+        let Some(counts_json): Option<String> = sqlx::query_scalar(
+            "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(false);
+        };
+        let sealed_counts: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
+            .map_err(|err| ProxyError::Other(format!("invalid dashboard day seal: {err}")))?;
+        if sealed_counts.total_requests <= 0 {
+            return Ok(false);
+        }
+        let retained_source_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        let deleted_source_rows: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(retained_source_rows.saturating_add(deleted_source_rows) < sealed_counts.total_requests)
     }
 
     fn dashboard_rollup_counts_from_row(
@@ -1419,9 +2442,12 @@ impl KeyStore {
     async fn begin_dashboard_rollup_integrity_short_write(
         &self,
     ) -> Result<SqliteImmediateTransaction, ProxyError> {
-        self.sqlite_runtime
+        let mut transaction = self
+            .sqlite_runtime
             .begin_immediate(SqliteOperation::DashboardIntegrityWrite)
-            .await
+            .await?;
+        transaction.make_cancel_safe_on_drop();
+        Ok(transaction)
     }
 
     async fn finish_dashboard_rollup_integrity_short_write(
@@ -1429,7 +2455,7 @@ impl KeyStore {
         conn: &mut SqliteImmediateTransaction,
         write_result: Result<(), ProxyError>,
     ) -> Result<(), ProxyError> {
-        conn.finish(write_result).await
+        conn.finish_in_place(write_result).await
     }
 
     async fn finish_dashboard_rollup_integrity_work_item(
@@ -1518,16 +2544,36 @@ impl KeyStore {
         now: i64,
         gc_blocking: bool,
     ) -> Result<(), ProxyError> {
+        self.enqueue_dashboard_rollup_integrity_day_reaudit_with_source_fence(
+            day_start,
+            now,
+            gc_blocking,
+            None,
+        )
+        .await
+    }
+
+    async fn enqueue_dashboard_rollup_integrity_day_reaudit_with_source_fence(
+        &self,
+        day_start: i64,
+        now: i64,
+        gc_blocking: bool,
+        source_fence: Option<i64>,
+    ) -> Result<(), ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
         let registration = sqlx::query(
             r#"
             INSERT INTO dashboard_rollup_integrity_day_reaudits (
-                bucket_start, bucket_end, cursor, status, updated_at, gc_blocking
-            ) VALUES (?, ?, ?, 'pending', ?, ?)
+                bucket_start, bucket_end, cursor, status, updated_at, source_fence, gc_blocking
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
             ON CONFLICT(bucket_start) DO UPDATE SET
                 bucket_end = excluded.bucket_end,
                 status = 'pending',
                 updated_at = excluded.updated_at,
+                source_fence = COALESCE(
+                    dashboard_rollup_integrity_day_reaudits.source_fence,
+                    excluded.source_fence
+                ),
                 gc_blocking = MAX(dashboard_rollup_integrity_day_reaudits.gc_blocking, excluded.gc_blocking)
             "#,
         )
@@ -1535,6 +2581,7 @@ impl KeyStore {
         .bind(day_end)
         .bind(day_start)
         .bind(now)
+        .bind(source_fence)
         .bind(i64::from(gc_blocking));
         if self.uses_legacy_single_db_observability_compatibility() {
             // The compatibility layout attaches the same file twice. BEGIN IMMEDIATE
@@ -1573,6 +2620,10 @@ impl KeyStore {
         };
         let day_end: i64 = reauditing.try_get("bucket_end")?;
         let cursor: i64 = reauditing.try_get("cursor")?;
+        let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
+        if day_end > latest_closed {
+            return Ok(false);
+        }
         if cursor < day_end {
             return Ok(false);
         }
@@ -1591,14 +2642,59 @@ impl KeyStore {
         }
         self.seal_dashboard_rollup_day(day_start, now).await?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
-        let write_result = sqlx::query(
-            "DELETE FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+        let write_result = async {
+            let seal: (Option<i64>, i64, i64) = sqlx::query_as(
+                "SELECT source_fence, source_version, durable_source_version FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+            .fetch_one(&mut *conn)
+            .await?;
+            let current_fence: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            let current_durable_source_version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+                .bind(day_end)
+                .fetch_one(&mut *conn)
+                .await?;
+            let current_source_version = current_durable_source_version.saturating_add(
+                self.request_stats_coalescer
+                    .dashboard_rollup_source_version(day_start, day_end)
+                    .await,
+            );
+            if !self
+                .request_stats_coalescer
+                .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+            {
+                return Err(ProxyError::Other(
+                    "dashboard rollup source mutation is still in flight".to_string(),
+                ));
+            }
+            if seal != (
+                Some(current_fence),
+                current_source_version,
+                current_durable_source_version,
+            ) {
+                return Err(ProxyError::Other(
+                    "dashboard rollup source changed while finalizing the day seal".to_string(),
+                ));
+            }
+            sqlx::query(
+                "DELETE FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+            .execute(&mut *conn)
+            .await?;
+            Ok::<_, ProxyError>(())
+        }
+        .await;
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
             .await?;
         Ok(true)
@@ -1606,6 +2702,37 @@ impl KeyStore {
 
     async fn seal_dashboard_rollup_day(&self, day_start: i64, now: i64) -> Result<(), ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
+        let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
+        if day_end > latest_closed {
+            return Err(ProxyError::Other(
+                "dashboard rollup day seal requires a closed local day".to_string(),
+            ));
+        }
+        let gc_blocking_recovery: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending' AND gc_blocking = 1)",
+        )
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        let source_fence_before: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        if !self
+            .request_stats_coalescer
+            .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+        {
+            return Err(ProxyError::Other(
+                "dashboard rollup source mutation is still in flight".to_string(),
+            ));
+        }
+        let (durable_source_version_before, source_version_before) = self
+            .dashboard_rollup_integrity_source_versions(day_start, day_end)
+            .await?;
         let source_counts = self
             .load_dashboard_rollup_counts(day_start, day_end)
             .await?
@@ -1614,10 +2741,133 @@ impl KeyStore {
                 total.add(value);
                 total
             });
+        let source_fence_after: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        let (durable_source_version_after, source_version_after) = self
+            .dashboard_rollup_integrity_source_versions(day_start, day_end)
+            .await?;
+        if source_fence_before != source_fence_after
+            || durable_source_version_before != durable_source_version_after
+            || source_version_before != source_version_after
+            || !self
+                .request_stats_coalescer
+                .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+        {
+            return Err(ProxyError::Other(
+                "dashboard rollup source changed while sealing the day".to_string(),
+            ));
+        }
         let counts_json = serde_json::to_string(&source_counts)
             .map_err(|err| ProxyError::Other(format!("serialize dashboard day seal: {err}")))?;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
         let write_result = async {
+            let current_fence: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            let current_durable_source_version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+                .fetch_one(&mut *conn)
+                .await?;
+            let current_source_version = current_durable_source_version.saturating_add(
+                self.request_stats_coalescer
+                    .dashboard_rollup_source_version(day_start, day_end)
+                    .await,
+            );
+            if !self
+                .request_stats_coalescer
+                .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+            {
+                return Err(ProxyError::Other(
+                    "dashboard rollup source mutation is still in flight".to_string(),
+                ));
+            }
+            let revision_rows = sqlx::query(
+                "SELECT bucket_start, revision FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_all(&mut *conn)
+            .await?;
+            let revisions = revision_rows.into_iter().try_fold(
+                BTreeMap::<i64, i64>::new(),
+                |mut revisions, row| {
+                    revisions.insert(row.try_get("bucket_start")?, row.try_get("revision")?);
+                    Ok::<_, sqlx::Error>(revisions)
+                },
+            )?;
+            let done_work_items = sqlx::query(
+                r#"
+                SELECT item.range_start, item.range_end, item.source_fence, item.source_version,
+                       item.durable_source_version,
+                       COALESCE(
+                           (
+                               SELECT MAX(id)
+                               FROM request_logs
+                               WHERE visibility = ?
+                                 AND created_at >= item.range_start
+                                 AND created_at < item.range_end
+                           ),
+                           0
+                       ) AS current_source_fence
+                FROM dashboard_rollup_integrity_work_items
+                AS item
+                WHERE status = 'done'
+                  AND range_start >= ? AND range_end <= ?
+                  AND (? = 1 OR item.priority = 3 OR item.recovery = 1)
+                "#,
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .bind(i64::from(!gc_blocking_recovery))
+            .fetch_all(&mut *conn)
+            .await?;
+            let mut stale_work_item = false;
+            for item in done_work_items {
+                let item_range_start: i64 = item.try_get("range_start")?;
+                let item_range_end: i64 = item.try_get("range_end")?;
+                let item_durable_source_version = revisions
+                    .range(item_range_start..item_range_end)
+                    .map(|(_, revision)| *revision)
+                    .fold(0_i64, i64::saturating_add);
+                let item_source_version = item_durable_source_version.saturating_add(
+                    self.request_stats_coalescer
+                        .dashboard_rollup_source_version(item_range_start, item_range_end)
+                        .await,
+                );
+                if item.try_get::<i64, _>("source_fence")?
+                    < item.try_get::<i64, _>("current_source_fence")?
+                    || item.try_get::<i64, _>("source_version")? != item_source_version
+                    || item.try_get::<i64, _>("durable_source_version")?
+                        != item_durable_source_version
+                {
+                    stale_work_item = true;
+                    break;
+                }
+            }
+            if current_fence != source_fence_before
+                || current_durable_source_version != durable_source_version_before
+                || current_source_version != source_version_before
+                || stale_work_item
+            {
+                return Err(ProxyError::Other(
+                    "dashboard rollup source changed while sealing the day".to_string(),
+                ));
+            }
             sqlx::query(
                 "DELETE FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?",
             )
@@ -1635,14 +2885,23 @@ impl KeyStore {
             .await?;
             sqlx::query(
                 r#"
-                INSERT INTO dashboard_rollup_daily_seals (bucket_start, counts_json, verified_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(bucket_start) DO UPDATE SET counts_json = excluded.counts_json, verified_at = excluded.verified_at
+                INSERT INTO dashboard_rollup_daily_seals (
+                    bucket_start, counts_json, verified_at, source_fence, source_version, durable_source_version
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bucket_start) DO UPDATE SET
+                    counts_json = excluded.counts_json,
+                    verified_at = excluded.verified_at,
+                    source_fence = excluded.source_fence,
+                    source_version = excluded.source_version,
+                    durable_source_version = excluded.durable_source_version
                 "#,
             )
             .bind(day_start)
             .bind(counts_json)
             .bind(now)
+            .bind(source_fence_before)
+            .bind(source_version_before)
+            .bind(durable_source_version_before)
             .execute(&mut *conn)
             .await?;
             Ok::<_, ProxyError>(())
@@ -1868,7 +3127,7 @@ impl KeyStore {
                 .dashboard_rollup_integrity_request_log_gc_decision(threshold)
                 .await?
             {
-                DashboardRollupRequestLogGcDecision::Allowed(cutoff) => Some(cutoff),
+                DashboardRollupRequestLogGcDecision::Allowed { cutoff, .. } => Some(cutoff),
                 DashboardRollupRequestLogGcDecision::Blocked { .. } => None,
             },
         )
@@ -1892,23 +3151,54 @@ impl KeyStore {
         &self,
         threshold: i64,
     ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(threshold, None)
+            .await
+    }
+
+    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision_for_day(
+        &self,
+        threshold: i64,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
+            threshold,
+            Some((day_start, day_end)),
+        )
+        .await
+    }
+
+    async fn dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
+        &self,
+        threshold: i64,
+        target_day: Option<(i64, i64)>,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
             .await?;
         let result: Result<DashboardRollupRequestLogGcDecision, ProxyError> = async {
-            let oldest: Option<i64> = sqlx::query_scalar(
-                "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(threshold)
-            .fetch_one(&mut *conn)
-            .await?;
-            let Some(oldest) = oldest else {
-                return Ok(DashboardRollupRequestLogGcDecision::Allowed(threshold));
+            let day = if let Some((day_start, day_end)) = target_day {
+                Some((day_start, day_end))
+            } else {
+                sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT MIN(created_at) FROM request_logs WHERE visibility = ? AND created_at < ?",
+                )
+                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+                .bind(threshold)
+                .fetch_one(&mut *conn)
+                .await?
+                .map(|oldest| {
+                    let day_start = local_day_bucket_start_utc_ts(oldest);
+                    (day_start, next_local_day_start_utc_ts(day_start))
+                })
             };
-            let day_start = local_day_bucket_start_utc_ts(oldest);
-            let day_end = next_local_day_start_utc_ts(day_start);
+            let Some((day_start, day_end)) = day else {
+                return Ok(DashboardRollupRequestLogGcDecision::Allowed {
+                    cutoff: threshold,
+                    guard: None,
+                });
+            };
             if day_end > threshold {
                 return Ok(DashboardRollupRequestLogGcDecision::Blocked {
                     day_start,
@@ -1927,20 +3217,89 @@ impl KeyStore {
                     reason: "reaudit_pending",
                 });
             }
-            let sealed: Option<String> = sqlx::query_scalar(
-                "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+            let sealed: Option<(String, Option<i64>, i64, i64)> = sqlx::query_as(
+                "SELECT counts_json, source_fence, source_version, durable_source_version FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
             )
             .bind(day_start)
             .fetch_optional(&mut *conn)
             .await?;
-            let Some(counts_json) = sealed else {
+            let Some((counts_json, sealed_fence, sealed_version, sealed_durable_source_version)) = sealed else {
                 return Ok(DashboardRollupRequestLogGcDecision::Blocked {
                     day_start,
                     reason: "missing_seal",
                 });
             };
+            let current_fence: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            let current_durable_source_version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+                .fetch_one(&mut *conn)
+                .await?;
+            let current_version = current_durable_source_version.saturating_add(
+                self.request_stats_coalescer
+                    .dashboard_rollup_source_version(day_start, day_end)
+                    .await,
+            );
+            if !self
+                .request_stats_coalescer
+                .dashboard_rollup_source_mutations_are_stable(day_start, day_end)
+            {
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: "source_changed",
+                });
+            }
+            // A fenced GC pass may lower MAX(id) without changing the durable
+            // source revision. A fence that moves forward still indicates a
+            // late insert; the deleted-source baseline below covers missing
+            // rows from legacy or untracked deletion paths.
+            let source_fence_advanced = match sealed_fence {
+                Some(sealed_fence) => current_fence > sealed_fence,
+                None => current_fence != 0,
+            };
+            if source_fence_advanced
+                || sealed_version != current_version
+                || sealed_durable_source_version != current_durable_source_version
+            {
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: "source_changed",
+                });
+            }
             let expected: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
                 .map_err(|err| ProxyError::Other(format!("invalid dashboard day seal: {err}")))?;
+            let retained_source_rows: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            let deleted_source_rows: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *conn)
+            .await?;
+            if retained_source_rows.saturating_add(deleted_source_rows)
+                < expected.total_requests
+            {
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: "deleted_source_baseline_unavailable",
+                });
+            }
             let minute_rows = sqlx::query(
                 r#"
             SELECT bucket_start, total_requests, success_count, error_count, quota_exhausted_count,
@@ -2022,7 +3381,16 @@ impl KeyStore {
                     }
                 }
             }
-            Ok(DashboardRollupRequestLogGcDecision::Allowed(day_end))
+            Ok(DashboardRollupRequestLogGcDecision::Allowed {
+                cutoff: day_end,
+                guard: Some(DashboardRollupRequestLogGcGuard {
+                    day_start,
+                    day_end,
+                    source_fence: current_fence,
+                    source_version: current_version,
+                    durable_source_version: current_durable_source_version,
+                }),
+            })
         }
         .await;
         let close = conn.close_and_discard().await;
@@ -2034,7 +3402,11 @@ impl KeyStore {
         match decision {
             DashboardRollupRequestLogGcDecision::Blocked {
                 day_start,
-                reason: reason @ ("reaudit_pending" | "missing_seal" | "rollup_mismatch"),
+                reason: reason @ ("reaudit_pending"
+                | "missing_seal"
+                | "rollup_mismatch"
+                | "source_changed"
+                | "deleted_source_baseline_unavailable"),
             } => self.block_request_log_gc_for_day(day_start, reason).await,
             decision => Ok(decision),
         }

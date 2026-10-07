@@ -236,6 +236,15 @@ jobs:
       - name: Test GC admission pressure retry policy
         run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_admission_pressure_uses_full_backoff
 
+      - name: Test aged recovery admission stays scoped to two lanes
+        run: cargo test --locked --all-features --profile ci-test --lib bounded_recovery_bulk
+
+      - name: Test unrelated statistics do not block historical integrity
+        run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_freshness_ignores_unrelated_pending_rollups
+
+      - name: Test joint recovery ownership and empty-target completion
+        run: cargo test --locked --all-features --profile ci-test --lib joint_recovery
+
       - name: Test pending hot cursor page before GC-blocking re-audit
         run: cargo test --locked --all-features --profile ci-test --lib integrity_new_hot_work_preempts_a_pending_gc_reaudit_page
 

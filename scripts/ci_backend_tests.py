@@ -26,7 +26,7 @@ DEFAULT_BENCHMARK_WORKERS = max(1, os.cpu_count() or 1)
 DEFAULT_LOW_RESOURCE_CARGO_JOBS = 2
 DEFAULT_LOW_RESOURCE_FILTERED_PROCESS_WORKERS = 1
 DEFAULT_LOW_RESOURCE_FILTERED_TEST_THREADS = 2
-LANE_ESTIMATE_BUDGET_SECONDS = 120
+LANE_ESTIMATE_BUDGET_SECONDS = 125
 DIAGNOSTIC_CARGO_JOBS = 1
 DIAGNOSTIC_FILTERED_PROCESS_WORKERS = 1
 DIAGNOSTIC_FILTERED_TEST_THREADS = 1
@@ -170,6 +170,9 @@ SUPPORT_BINARIES_BY_TARGET = {
     },
     "integration:request_kind_canonical_backfill": {
         "REQUEST_KIND_CANONICAL_BACKFILL_TEST_BIN": "request_kind_canonical_backfill",
+    },
+    "integration:request_statistics_recovery_cli": {
+        "REQUEST_STATISTICS_RECOVERY_TEST_BIN": "request_statistics_recovery_once",
     },
     "integration:server_http_contract": {
         "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",

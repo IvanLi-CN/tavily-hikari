@@ -737,16 +737,43 @@ impl KeyStore {
         database_path: &str,
         backend_time: BackendTime,
     ) -> Result<Self, ProxyError> {
+        Self::open_for_request_logs_gc_with_lock(database_path, backend_time, false).await
+    }
+
+    pub(crate) async fn open_for_request_statistics_recovery_with_time(
+        database_path: &str,
+        backend_time: BackendTime,
+    ) -> Result<Self, ProxyError> {
+        Self::open_for_request_logs_gc_with_lock(database_path, backend_time, true).await
+    }
+
+    async fn open_for_request_logs_gc_with_lock(
+        database_path: &str,
+        backend_time: BackendTime,
+        exclusive: bool,
+    ) -> Result<Self, ProxyError> {
         #[cfg(test)]
         let _schema_init_guard = Self::acquire_test_schema_init_guard().await;
         let layout = SqliteDatabaseLayout::from_database_path(database_path);
         let _schema_startup_lock = acquire_schema_startup_lock(&layout.core_database_path)?;
-        let observability_lock =
-            acquire_observability_service_shared_lock(&layout.core_database_path)?;
+        let observability_lock = if exclusive {
+            acquire_observability_service_exclusive_lock(&layout.core_database_path)?
+        } else {
+            acquire_observability_service_shared_lock(&layout.core_database_path)?
+        };
+        let operation_name = if exclusive {
+            "request-statistics-recovery"
+        } else {
+            "request-logs-gc"
+        };
         let gc_context =
-            sqlite_runtime_log_context(&layout.core_database_path, "request-logs-gc", false, true);
+            sqlite_runtime_log_context(&layout.core_database_path, operation_name, false, true);
         let pool = instrument_db_operation(
-            "sqlite request logs gc open pool",
+            if exclusive {
+                "sqlite request statistics recovery open pool"
+            } else {
+                "sqlite request logs gc open pool"
+            },
             Some(gc_context.as_str()),
             open_sqlite_pool_with_observability(
                 &layout.core_database_path,
@@ -797,7 +824,11 @@ impl KeyStore {
             store.observability_database_path.as_deref(),
         );
         instrument_db_operation(
-            "sqlite request logs gc bootstrap schema",
+            if exclusive {
+                "sqlite request statistics recovery bootstrap schema"
+            } else {
+                "sqlite request logs gc bootstrap schema"
+            },
             Some(gc_context.as_str()),
             async {
                 sqlx::query(
@@ -868,12 +899,16 @@ impl KeyStore {
                     CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_daily_seals (
                         bucket_start INTEGER PRIMARY KEY,
                         counts_json TEXT NOT NULL,
-                        verified_at INTEGER NOT NULL
+                        verified_at INTEGER NOT NULL,
+                        source_fence INTEGER,
+                        source_version INTEGER NOT NULL DEFAULT 0,
+                        durable_source_version INTEGER NOT NULL DEFAULT 0
                     )
                     "#,
                 )
                 .execute(&store.pool)
                 .await?;
+                Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
                 Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&store.pool).await?;
                 Ok(())
             },

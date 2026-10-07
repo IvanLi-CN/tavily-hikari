@@ -19,13 +19,15 @@ use tracing::{error, info, warn};
 mod immediate_transaction;
 mod key_store_alert_event_projection;
 mod sqlite_runtime;
-pub(crate) use immediate_transaction::ImmediateSqliteTransaction;
+pub(crate) use immediate_transaction::{
+    ImmediateSqliteTransaction, SavepointSqliteTransaction, SqliteTransaction,
+};
 #[cfg(test)]
 pub(crate) use sqlite_runtime::install_owned_finish_pause_for_test;
 pub(crate) use sqlite_runtime::{
     AdminAlertsReadSession, SqliteAdmissionDeferReason, SqliteImmediateTransaction,
     SqliteMaintenanceBulkPermit, SqliteMaintenancePreflightLease, SqliteOperation,
-    SqliteReadSnapshot, SqliteRuntime,
+    SqliteReadSnapshot, SqliteRuntime, wait_for_owned_finishes,
 };
 
 pub(crate) struct ObservabilityOfflineGuard {
@@ -84,6 +86,23 @@ pub(crate) fn acquire_observability_service_shared_lock(
     flock_nonblocking(&file, libc::LOCK_SH).map_err(|err| {
         ProxyError::Other(format!(
             "failed to acquire shared observability service lock {lock_path}: {err}"
+        ))
+    })?;
+    Ok(file)
+}
+
+pub(crate) fn acquire_observability_service_exclusive_lock(
+    database_path: &str,
+) -> Result<File, ProxyError> {
+    let lock_path = sqlite_lock_sidecar_path(database_path);
+    let file = open_observability_lock_file(&lock_path, true).map_err(|err| {
+        ProxyError::Other(format!(
+            "failed to open observability recovery lock file {lock_path}: {err}"
+        ))
+    })?;
+    flock_nonblocking(&file, libc::LOCK_EX).map_err(|err| {
+        ProxyError::Other(format!(
+            "request statistics recovery requires exclusive database ownership; could not acquire observability service lock {lock_path}: {err}"
         ))
     })?;
     Ok(file)

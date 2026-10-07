@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 import unittest
 
 
@@ -63,6 +64,112 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertNotIn("192.168.31.11", runner)
         self.assertNotIn("codex-testbox", runner)
 
+    def test_recovery_consistency_rejects_rollup_and_billing_corruption(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        expected = harness.expected_target_counts()
+        state = {
+            "target_seal": expected.copy(),
+            "target_daily_rollup": expected.copy(),
+            "target_minute_rollup": expected.copy(),
+            "billing_truth": (5000, 5000, 5000),
+            "retained_fixture_identity": (95000, 1, 95000, 4512547500),
+            "retained_fixture_rows": 95000,
+        }
+        harness.validate_recovery_consistency(
+            state,
+            expected,
+            state["billing_truth"],
+            state["retained_fixture_identity"],
+        )
+        state["target_minute_rollup"]["local_estimated_credits"] -= 1
+        with self.assertRaises(AssertionError):
+            harness.validate_recovery_consistency(
+                state,
+                expected,
+                (5000, 4999, 5000),
+                state["retained_fixture_identity"],
+            )
+
+    def test_recovery_progress_trackers_reject_their_own_stalled_lane(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        state = {
+            "expired": 0,
+            "target_source_rows": 0,
+            "body_cursor": None,
+            "pending_days": [(1, 2, 1)],
+            "blocking_work": [(1, 2, None, None, 3, "pending")],
+            "integrity_work": [],
+            "target_seal": None,
+            "target_minute_rollup": {},
+            "target_daily_rollup": {},
+            "active_gc": 0,
+            "gc_jobs": [(1, "success", "")],
+            "integrity_jobs": [(1, "success", "")],
+        }
+        tracker = harness.EffectiveProgressTracker(state, "integrity", harness.expected_target_counts())
+        with self.assertRaises(AssertionError):
+            tracker.observe(300, state)
+        gc_tracker = harness.EffectiveProgressTracker(state, "gc", harness.expected_target_counts())
+        gc_tracker.observe(300, state)
+
+    def test_recovery_progress_trackers_do_not_share_lane_markers(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        expected = harness.expected_target_counts()
+        state = {
+            "expired": 5000,
+            "target_source_rows": 5000,
+            "body_cursor": None,
+            "pending_days": [(1, 2, 1)],
+            "blocking_work": [(1, 2, None, None, 3, "pending")],
+            "integrity_work": [],
+            "target_seal": {},
+            "target_minute_rollup": {},
+            "target_daily_rollup": {},
+            "active_gc": 1,
+            "gc_jobs": [(1, "running", "")],
+            "integrity_jobs": [(1, "running", "")],
+        }
+        gc_tracker = harness.EffectiveProgressTracker(state, "gc", expected)
+        integrity_tracker = harness.EffectiveProgressTracker(state, "integrity", expected)
+        progressed = dict(state, expired=4999)
+        gc_tracker.observe(100, progressed)
+        integrity_tracker.observe(100, progressed)
+        gc_tracker.observe(300, progressed)
+        with self.assertRaises(AssertionError):
+            integrity_tracker.observe(300, progressed)
+        self.assertEqual(gc_tracker.effective_progress_checks, 1)
+        self.assertEqual(integrity_tracker.effective_progress_checks, 0)
+
+    def test_recovery_progress_tracker_anchors_delayed_start(self) -> None:
+        spec = importlib.util.spec_from_file_location("gc_recovery_load", ROOT / "scripts" / "gc_recovery_load.py")
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        expected = harness.expected_target_counts()
+        state = {
+            "expired": 5000,
+            "target_source_rows": 5000,
+            "body_cursor": None,
+            "pending_days": [],
+            "blocking_work": [],
+            "integrity_work": [],
+            "target_seal": expected.copy(),
+            "target_minute_rollup": expected.copy(),
+            "target_daily_rollup": expected.copy(),
+            "active_gc": 1,
+            "gc_jobs": [(1, "running", "")],
+            "integrity_jobs": [],
+        }
+        tracker = harness.EffectiveProgressTracker(state, "gc", expected, elapsed=60)
+        tracker.observe(359, state)
+        with self.assertRaises(AssertionError):
+            tracker.observe(360, state)
+
     def test_fixture_container_preserves_host_mount_ownership(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")
         self.assertIn('RUNNER_UID="$(id -u)"', runner)
@@ -95,6 +202,14 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("Test pending hot cursor page before GC-blocking re-audit", gc_job)
         self.assertIn("integrity_new_hot_work_preempts_a_pending_gc_reaudit_page", gc_job)
         self.assertIn("scripts/gc_recovery_load.py", gc_job)
+        self.assertIn("continuous ten requests/second", harness)
+        self.assertIn("fixed-target recovery must complete during continuous 10 RPS traffic", harness)
+        self.assertIn('"high_target_recovered": recovered', harness)
+        self.assertIn("EffectiveProgressTracker", harness)
+        self.assertIn("effective_progress_checks", harness)
+        self.assertIn("validate_recovery_consistency", harness)
+        self.assertIn("synthetic-recovery-billing", harness)
+        self.assertNotIn('assert high_end["expired"] == initial_expired', harness)
         self.assertIn("integrity_restarts_after_a_cancelled_existing_source_mutation", gc_job)
         self.assertIn("integrity_gc_recovers_missing_and_divergent_seals_without_touching_billing", gc_job)
         self.assertIn("--high-seconds 1800", gc_job)

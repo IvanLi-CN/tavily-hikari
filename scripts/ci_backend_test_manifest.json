@@ -36,6 +36,8 @@
         "--bin",
         "request_logs_gc_once",
         "--bin",
+        "request_statistics_recovery_once",
+        "--bin",
         "request_user_id_backfill"
       ]
     },
@@ -55,6 +57,12 @@
       "list_args": [
         "--test",
         "request_kind_canonical_backfill"
+      ]
+    },
+    "integration:request_statistics_recovery_cli": {
+      "list_args": [
+        "--test",
+        "request_statistics_recovery_cli"
       ]
     },
     "integration:rust_source_line_budgets": {
@@ -619,6 +627,8 @@
         "--bin",
         "request_logs_gc_once",
         "--bin",
+        "request_statistics_recovery_once",
+        "--bin",
         "request_user_id_backfill"
       ]
     },
@@ -1069,6 +1079,17 @@
       "run_args": [
         "--test",
         "request_kind_canonical_backfill"
+      ]
+    },
+    {
+      "id": "integration-request-statistics-recovery-cli",
+      "kind": "integration",
+      "name": "Integration Request Statistics Recovery CLI",
+      "estimated_seconds": 8,
+      "coverage_target": "integration:request_statistics_recovery_cli",
+      "run_args": [
+        "--test",
+        "request_statistics_recovery_cli"
       ]
     },
     {

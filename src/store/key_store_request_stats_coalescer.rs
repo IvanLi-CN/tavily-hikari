@@ -13,6 +13,7 @@ pub(crate) struct RequestStatsCoalescerState {
     pub(crate) newest_pending_created_at: Option<i64>,
     pub(crate) flushing_oldest_created_at: Option<i64>,
     pub(crate) flushing_newest_created_at: Option<i64>,
+    pub(crate) flushing_dashboard_rollup_ranges: Vec<(i64, i64)>,
     pub(crate) flush_deadline: Option<Instant>,
     pub(crate) flushing: bool,
     pub(crate) shutdown: bool,
@@ -127,26 +128,6 @@ impl RequestStatsCoalescer {
         }
     }
 
-    pub(crate) async fn dashboard_rollup_source_version_is_stable(
-        &self,
-        range_start: i64,
-        range_end: i64,
-        expected_version: i64,
-    ) -> bool {
-        let state = self.state.lock().await;
-        let updates = self
-            .dashboard_rollup_source_updates
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::dashboard_rollup_source_version_for_range(
-            &state.dashboard_rollup_source_versions,
-            &updates.cancelled_versions,
-            range_start,
-            range_end,
-        ) == expected_version
-            && updates.in_flight.range(range_start..range_end).next().is_none()
-    }
-
     pub(crate) async fn dashboard_rollup_source_version(
         &self,
         range_start: i64,
@@ -163,6 +144,18 @@ impl RequestStatsCoalescer {
             range_start,
             range_end,
         )
+    }
+
+    pub(crate) fn dashboard_rollup_source_mutations_are_stable(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> bool {
+        let updates = self
+            .dashboard_rollup_source_updates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        updates.in_flight.range(range_start..range_end).next().is_none()
     }
 
     fn dashboard_rollup_source_version_for_range(
@@ -500,6 +493,36 @@ impl RequestStatsCoalescer {
         }
 
         signature
+    }
+
+    pub(crate) async fn dashboard_rollup_range_has_uncommitted_changes(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let source_updates = self
+            .dashboard_rollup_source_updates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let bucket_overlaps = |bucket_start: i64, bucket_secs: i64| {
+            bucket_start < range_end && bucket_start.saturating_add(bucket_secs) > range_start
+        };
+        state
+            .pending_dashboard_rollups
+            .keys()
+            .any(|&(bucket_start, bucket_secs)| bucket_overlaps(bucket_start, bucket_secs))
+            || state.flushing_dashboard_rollup_ranges.iter().any(|&(start, end)| {
+                start < range_end && end > range_start
+            })
+            || state.dashboard_rollup_repairs.iter().any(|(&start, repair)| {
+                start < range_end && repair.range_end > range_start
+            })
+            || source_updates
+                .in_flight
+                .range(range_start..range_end)
+                .next()
+                .is_some()
     }
 
     pub(crate) async fn wait_until_not_flushing(&self) {

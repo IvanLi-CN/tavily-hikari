@@ -6,6 +6,7 @@
 - Request-log GC blocking-day registration uses the existing scoped write budget. In the legacy
   same-file attachment layout it uses a single atomic UPSERT, preserving the fail-closed source
   guard without requesting two immediate locks on the same SQLite file.
+- Joint recovery keeps one total deadline across bootstrap, integrity, GC, catalog cleanup, and final observations; each recovery lane uses the scoped bounded admission path, and GC tail reads or writes are cancelled or reported incomplete when the deadline expires.
 - Continuation uses the cursor retained at the end of a bounded pass; a terminal scan that clears
   the cursor does not create a one-second no-progress loop during a seal or source-recovery block.
 - Startup recovery keeps a running automatic `request_logs_gc` representative queued after a
@@ -22,6 +23,10 @@
   seconds. An aged coordinator turn may bypass class ordering and the ordinary pool-capacity
   precheck, but not the foreground-rate gate. Explicit research-drain and admin-cache liveness
   paths retain their separate bounded admission policies.
+- Aged bounded recovery is explicitly limited to `dashboard_integrity` and `request_logs_gc`: it
+  bypasses only the foreground-rate heuristic after ticket age, while preserving the single bulk
+  permit, pool reserve, recent-contention checks, and coordinator fairness. Focused coverage verifies
+  both recovery operations are admitted after aging and unrelated maintenance remains rate-limited.
 - The physical bulk permit is fronted by a fixed-size per-runtime coordinator. The ten maintenance
   classes (`admin_read`, `alert_projection`, `capacity_warm`, `dashboard_integrity`, `ha_outbox_gc`,
   `observability_write`, `reconciliation_projection`, `request_logs_gc`, `request_stats_flush`,

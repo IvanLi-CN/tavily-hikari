@@ -85,7 +85,7 @@
     headroom. Request-log retention is divided into GC maintenance and serial policy groups, so
     its two long prefixes are independently packed while the policy process remains serial.
     Affinity, reconciliation, LinuxDo, reporting, and server HTTP contract retain enough weight
-    to keep the sixteen-lane LPT output within the 120-second lane budget after semantic splits.
+    to keep the sixteen-lane LPT output within the 125-second lane budget after semantic splits.
   - HA lifecycle coverage is divided into mutually exclusive lifecycle, lifecycle-state base, HA-event, and
     HA-recovery groups. The event and recovery groups preserve separate test processes, so the long HA family
     cannot become one atomic lane tail.

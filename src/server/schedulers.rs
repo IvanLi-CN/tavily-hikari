@@ -600,7 +600,7 @@ async fn run_dashboard_rollup_integrity_claimed_job(
     } = claimed_job;
     drop(existing_gate);
     let now = state.proxy.backend_time().now_ts();
-    let _bulk_admission = match state.proxy.admit_dashboard_rollup_integrity() {
+    let _bulk_admission = match state.proxy.admit_dashboard_rollup_integrity_recovery() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
             let retry_delay_secs = dashboard_integrity_admission_retry_delay(reason);
@@ -1061,7 +1061,7 @@ async fn run_request_logs_gc_catchup_claimed_job(
         _job_execution_gate,
     } = claimed_job;
     drop(_job_execution_gate);
-    let bulk_admission = match state.proxy.admit_request_logs_gc() {
+    let bulk_admission = match state.proxy.admit_request_logs_gc_recovery() {
         tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
         tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
             let continuation_delay_secs = request_logs_gc_admission_retry_delay(reason);

@@ -592,17 +592,44 @@ pub(super) async fn hold_sqlite_write_lock_for_test_for_with_release(
 pub(super) async fn seal_request_log_day_for_gc(pool: &SqlitePool, created_at: i64) {
     let empty_seal = serde_json::to_string(&DashboardRequestRollupCounts::default())
         .expect("serialize empty day seal");
+    let day_start = local_day_bucket_start_utc_ts(created_at);
+    let day_end = next_local_day_start_utc_ts(day_start);
+    let source_fence: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(id), 0) FROM request_logs WHERE visibility = 'visible' AND created_at >= ? AND created_at < ?",
+    )
+    .bind(day_start)
+    .bind(day_end)
+    .fetch_one(pool)
+    .await
+    .expect("read request-log source fence for GC seal");
+    let source_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+    )
+    .bind(day_start)
+    .bind(day_end)
+    .fetch_one(pool)
+    .await
+    .expect("read request-log source version for GC seal");
     sqlx::query(
         r#"
-        INSERT INTO dashboard_rollup_daily_seals (bucket_start, counts_json, verified_at)
-        VALUES (?, ?, ?)
+        INSERT INTO dashboard_rollup_daily_seals (
+            bucket_start, counts_json, verified_at, source_fence, source_version, durable_source_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(bucket_start) DO UPDATE SET
-            counts_json = excluded.counts_json, verified_at = excluded.verified_at
+            counts_json = excluded.counts_json,
+            verified_at = excluded.verified_at,
+            source_fence = excluded.source_fence,
+            source_version = excluded.source_version,
+            durable_source_version = excluded.durable_source_version
         "#,
     )
-    .bind(local_day_bucket_start_utc_ts(created_at))
+    .bind(day_start)
     .bind(empty_seal)
     .bind(created_at)
+    .bind(source_fence)
+    .bind(source_version)
+    .bind(source_version)
     .execute(pool)
     .await
     .expect("seal request-log day for GC");
