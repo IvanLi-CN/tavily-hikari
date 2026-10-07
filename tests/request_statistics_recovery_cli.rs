@@ -28,7 +28,7 @@ async fn recovery_cli_reports_deferred_json_and_nonzero_status_when_service_is_a
         .timestamp();
 
     let output = Command::new(support_binaries::resolve_support_binary(
-        "CARGO_BIN_EXE_request_statistics_recovery_once",
+        "REQUEST_STATISTICS_RECOVERY_TEST_BIN",
         env!("CARGO_BIN_EXE_request_statistics_recovery_once"),
     ))
     .args([

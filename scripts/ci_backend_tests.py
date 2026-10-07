@@ -171,6 +171,9 @@ SUPPORT_BINARIES_BY_TARGET = {
     "integration:request_kind_canonical_backfill": {
         "REQUEST_KIND_CANONICAL_BACKFILL_TEST_BIN": "request_kind_canonical_backfill",
     },
+    "integration:request_statistics_recovery_cli": {
+        "REQUEST_STATISTICS_RECOVERY_TEST_BIN": "request_statistics_recovery_once",
+    },
     "integration:server_http_contract": {
         "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
     },
