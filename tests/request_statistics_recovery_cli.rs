@@ -6,6 +6,9 @@ use nanoid::nanoid;
 use serde_json::Value;
 use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
 
+#[path = "common/support_binaries.rs"]
+mod support_binaries;
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}-{}.db", std::process::id(), nanoid!(8)))
 }
@@ -24,18 +27,21 @@ async fn recovery_cli_reports_deferred_json_and_nonzero_status_when_service_is_a
         .expect("unambiguous local midnight")
         .timestamp();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_request_statistics_recovery_once"))
-        .args([
-            "--db-path",
-            &db_str,
-            "--target-day-start",
-            &target_day_start.to_string(),
-            "--max-runtime-secs",
-            "1",
-            "--json",
-        ])
-        .output()
-        .expect("run recovery CLI");
+    let output = Command::new(support_binaries::resolve_support_binary(
+        "CARGO_BIN_EXE_request_statistics_recovery_once",
+        env!("CARGO_BIN_EXE_request_statistics_recovery_once"),
+    ))
+    .args([
+        "--db-path",
+        &db_str,
+        "--target-day-start",
+        &target_day_start.to_string(),
+        "--max-runtime-secs",
+        "1",
+        "--json",
+    ])
+    .output()
+    .expect("run recovery CLI");
     assert!(
         !output.status.success(),
         "incomplete recovery must fail the CLI"
