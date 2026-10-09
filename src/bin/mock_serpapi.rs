@@ -38,6 +38,11 @@ struct Cli {
         default_value = "2026-10-23"
     )]
     plan_renewal_date: String,
+    /// Additive /account knob (plan todo 19): override the reported
+    /// account_status so the maintenance-note path ("Suspended" etc.) is
+    /// QA-testable. Default keeps every pre-existing response byte-identical.
+    #[arg(long, env = "MOCK_SERPAPI_ACCOUNT_STATUS", default_value = "Active")]
+    account_status: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,10 +66,26 @@ struct MockState {
     tavily_slot_seen: AtomicU64,
     last_authorization: Mutex<Option<String>>,
     last_session_header: Mutex<Option<String>>,
+    // Additive /account observability + status knob (plan todo 19): counter
+    // and last-seen api_key prove WHICH secret the sync lane fetched with;
+    // account_status defaults to "Active" (byte-identical legacy behavior).
+    account_requests: AtomicU64,
+    last_account_api_key: Mutex<Option<String>>,
+    account_status: String,
 }
 
 impl MockState {
+    #[cfg(test)]
     fn new(keys: Vec<String>, plan_renewal_date: String, sse_errors: bool) -> Self {
+        Self::with_account_status(keys, plan_renewal_date, sse_errors, "Active".to_string())
+    }
+
+    fn with_account_status(
+        keys: Vec<String>,
+        plan_renewal_date: String,
+        sse_errors: bool,
+        account_status: String,
+    ) -> Self {
         Self {
             keys,
             searches_left: AtomicU64::new(MONTHLY_SEARCHES),
@@ -76,6 +97,9 @@ impl MockState {
             tavily_slot_seen: AtomicU64::new(0),
             last_authorization: Mutex::new(None),
             last_session_header: Mutex::new(None),
+            account_requests: AtomicU64::new(0),
+            last_account_api_key: Mutex::new(None),
+            account_status,
         }
     }
 
@@ -206,10 +230,23 @@ async fn handle_search(
     Json(search_success_body()).into_response()
 }
 
-async fn handle_account(State(state): State<Arc<MockState>>) -> Json<Value> {
+/// Additive /account query observation (plan todo 19): the sync lane proves
+/// WHICH secret arrived via the native `api_key` slot; absent knob keeps the
+/// response byte-identical.
+#[derive(Deserialize)]
+struct AccountQuery {
+    api_key: Option<String>,
+}
+
+async fn handle_account(
+    State(state): State<Arc<MockState>>,
+    Query(query): Query<AccountQuery>,
+) -> Json<Value> {
+    state.account_requests.fetch_add(1, Ordering::Relaxed);
+    *state.last_account_api_key.lock().expect("account key lock") = query.api_key;
     let remaining = state.searches_left.load(Ordering::Relaxed);
     Json(json!({
-        "account_status": "Active",
+        "account_status": state.account_status,
         "plan_id": "bigdata",
         "searches_per_month": MONTHLY_SEARCHES,
         "total_searches_left": remaining,
@@ -352,6 +389,13 @@ async fn handle_mock_metrics(State(state): State<Arc<MockState>>) -> Json<Value>
             .lock()
             .expect("session lock")
             .clone(),
+        // Additive /account observability (plan todo 19).
+        "account_requests": state.account_requests.load(Ordering::Relaxed),
+        "last_account_api_key": state
+            .last_account_api_key
+            .lock()
+            .expect("account key lock")
+            .clone(),
     }))
 }
 
@@ -368,7 +412,12 @@ fn build_router(state: Arc<MockState>) -> Router {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let sse_errors = std::env::var("MOCK_SERPAPI_SSE_ERRORS").is_ok_and(|value| value == "1");
-    let state = Arc::new(MockState::new(cli.keys, cli.plan_renewal_date, sse_errors));
+    let state = Arc::new(MockState::with_account_status(
+        cli.keys,
+        cli.plan_renewal_date,
+        sse_errors,
+        cli.account_status,
+    ));
     let app = build_router(state);
     println!("Mock SerpAPI upstream listening on http://{}", cli.bind);
     axum::serve(tokio::net::TcpListener::bind(cli.bind).await?, app).await?;
@@ -604,5 +653,55 @@ mod tests {
             .expect("result is a json string");
         let inner: Value = serde_json::from_str(encoded).expect("inner json decodes");
         assert_eq!(inner, search_success_body());
+    }
+
+    /// Plan todo 19 (additive knob): the default /account response keeps
+    /// account_status "Active" and every other field byte-identical, while
+    /// the new metrics keys observe exactly one fetch and the secret slot.
+    #[tokio::test]
+    async fn account_defaults_active_and_metrics_observe_api_key_slot() {
+        let base = spawn_mock(test_state()).await;
+        let response = reqwest::get(format!("{base}/account?api_key=mock-serpapi-key"))
+            .await
+            .expect("request completes");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.expect("json body");
+        assert_eq!(body["account_status"], json!("Active"));
+        assert_eq!(body["plan_id"], json!("bigdata"));
+        assert_eq!(body["searches_per_month"], json!(MONTHLY_SEARCHES));
+        assert_eq!(body["total_searches_left"], json!(MONTHLY_SEARCHES));
+        assert_eq!(body["plan_renewal_date"], json!("2026-10-23"));
+
+        let metrics: Value = reqwest::get(format!("{base}/mock-metrics"))
+            .await
+            .expect("metrics request completes")
+            .json()
+            .await
+            .expect("metrics json");
+        assert_eq!(metrics["account_requests"], json!(1));
+        assert_eq!(metrics["last_account_api_key"], json!("mock-serpapi-key"));
+    }
+
+    /// Plan todo 19 (additive knob): MOCK_SERPAPI_ACCOUNT_STATUS surfaces
+    /// verbatim so the maintenance-note path is QA-testable; all other
+    /// fields stay byte-identical.
+    #[tokio::test]
+    async fn account_status_knob_emits_configured_status() {
+        let state = Arc::new(MockState::with_account_status(
+            vec!["mock-serpapi-key".to_string()],
+            "2026-10-23".to_string(),
+            false,
+            "Suspended".to_string(),
+        ));
+        let base = spawn_mock(state).await;
+        let body: Value = reqwest::get(format!("{base}/account?api_key=mock-serpapi-key"))
+            .await
+            .expect("request completes")
+            .json()
+            .await
+            .expect("json body");
+        assert_eq!(body["account_status"], json!("Suspended"));
+        assert_eq!(body["plan_id"], json!("bigdata"));
+        assert_eq!(body["plan_renewal_date"], json!("2026-10-23"));
     }
 }

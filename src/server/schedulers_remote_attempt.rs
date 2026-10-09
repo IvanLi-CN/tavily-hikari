@@ -12,10 +12,24 @@ async fn sync_key_quota_with_db_job_gate(
     source: &str,
     manual_remote_attempt: bool,
 ) -> Result<(i64, i64), ProxyError> {
-    let secret = {
+    let (secret, provider) = {
         let _maintenance = acquire_db_maintenance_read_gate().await;
-        state.proxy.quota_sync_api_key_secret(key_id).await?
+        let secret = state.proxy.quota_sync_api_key_secret(key_id).await?;
+        let provider = state.proxy.quota_sync_key_provider(key_id).await?;
+        (secret, provider)
     };
+    // M4 hard guard (plan todo 19): the Tavily quota_sync family
+    // (quota_sync | quota_sync/manual | quota_sync/hot) FAILS CLOSED on any
+    // stored non-Tavily key BEFORE admission/egress — a third-party secret
+    // can never reach TAVILY_USAGE_BASE /usage even if a job was enqueued
+    // against it by hand. Missing key rows keep the legacy RowNotFound path.
+    if let Some(provider) = provider
+        && provider != tavily_hikari::providers::ProviderId::Tavily
+    {
+        return Err(ProxyError::Other(format!(
+            "provider_guard_rejected: tavily quota_sync lane is tavily-only, key provider is {provider}"
+        )));
+    }
     let admission = remote_attempt_admission_for_state(state);
     let result = tokio::time::timeout(
         Duration::from_secs(QUOTA_SYNC_JOB_TIMEOUT_SECS),

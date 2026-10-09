@@ -76,6 +76,16 @@ pub(crate) struct ReconciliationWorkFence {
     pub(crate) claimed_job: Option<(i64, i64)>,
 }
 
+/// Tavily-only machinery gate (plan todo 19 / M4): the segmented
+/// reconciliation stack settles Tavily X-Project-ID (accessToken) usage and
+/// therefore only ever applies to Tavily upstreams. This gate is
+/// settings-scoped by design; the explicit provider guards live at the
+/// key-enumeration seams that feed the engine and the research drain
+/// (`reconciliation_key_ids_batch`, the research candidate/cooled-due
+/// queries, and the drain/continuation wake calcs — each carries a
+/// `NOT EXISTS (... api_keys ... provider <> 'tavily')` guard) so a
+/// non-Tavily key can never enter the machinery even if bug- or hand-seeded
+/// usage/research rows referenced one.
 fn upstream_reconciliation_shadow_ready(settings: &SystemSettings) -> bool {
     settings.upstream_project_id_mode == UpstreamProjectIdMode::AccessToken
         && settings.api_rebalance_enabled
@@ -664,6 +674,11 @@ impl KeyStore {
                           WHERE u.token_id = w.token_id
                             AND u.period_code = w.period_code
                             AND u.key_id = b.key_id
+                            AND NOT EXISTS (
+                                SELECT 1 FROM api_keys ak_guard
+                                 WHERE ak_guard.id = u.key_id
+                                   AND ak_guard.provider <> 'tavily'
+                            )
                       )
                 ), 0)
             ))
@@ -780,6 +795,8 @@ impl KeyStore {
              AND b.cooldown_until > ?), 0))) \
              FROM upstream_reconciliation_research r WHERE r.terminal_at IS NULL \
              AND r.poll_resolution = 'pollable' \
+             AND NOT EXISTS (SELECT 1 FROM api_keys ak_guard \
+             WHERE ak_guard.id = r.key_id AND ak_guard.provider <> 'tavily') \
              AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage u \
              WHERE u.token_id = r.token_id AND u.period_code = r.period_code \
              AND u.period_end <= ?)",
@@ -1698,7 +1715,7 @@ impl KeyStore {
             return Ok(std::collections::HashMap::new());
         }
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT token_id, period_code, key_id FROM upstream_reconciliation_usage WHERE ",
+            "SELECT token_id, period_code, key_id FROM upstream_reconciliation_usage WHERE (",
         );
         for (index, (token_id, period_code)) in candidates.iter().enumerate() {
             if index > 0 {
@@ -1711,6 +1728,18 @@ impl KeyStore {
                 .push_bind(period_code)
                 .push(")");
         }
+        // M4 zero-leak guard (plan todo 19): keys with a KNOWN non-tavily
+        // api_keys row never feed fetch_upstream_project_usage (Bearer
+        // secret -> TAVILY /usage). The NOT-EXISTS shape keeps legacy rows
+        // whose key id has NO api_keys row (historical fixtures, pre-v45
+        // data) selectable exactly as before.
+        query.push(
+            ") AND NOT EXISTS (
+                SELECT 1 FROM api_keys ak_guard
+                 WHERE ak_guard.id = upstream_reconciliation_usage.key_id
+                   AND ak_guard.provider <> 'tavily'
+            )",
+        );
         query.push(" ORDER BY token_id ASC, period_code ASC, key_id ASC");
         let mut session = self
             .sqlite_runtime

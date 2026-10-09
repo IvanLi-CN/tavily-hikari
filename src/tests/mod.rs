@@ -42,6 +42,7 @@ mod observability_sidecar_provider;
 mod provider_config_bootstrap;
 mod provider_health_matrix;
 mod provider_pool_scoping;
+mod provider_quota_sync_adapters;
 mod proxy_affinity_and_summary;
 mod proxy_affinity_runtime_geo;
 mod reconciliation_controller;

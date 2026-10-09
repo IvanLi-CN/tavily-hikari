@@ -164,10 +164,15 @@ impl KeyStore {
                 r#"
                 SELECT r.request_id, r.token_id, r.key_id, r.period_code,
                        r.next_poll_at, r.poll_attempt_count
-                 FROM upstream_reconciliation_research r
-                 WHERE r.terminal_at IS NULL
-                   AND r.poll_resolution = 'pollable'
-                   AND r.next_poll_at <= ?
+                  FROM upstream_reconciliation_research r
+                  WHERE r.terminal_at IS NULL
+                    AND r.poll_resolution = 'pollable'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM api_keys ak_guard
+                         WHERE ak_guard.id = r.key_id
+                           AND ak_guard.provider <> 'tavily'
+                    )
+                    AND r.next_poll_at <= ?
                    AND EXISTS (
                        SELECT 1 FROM upstream_reconciliation_usage eligible_u
                         INDEXED BY idx_upstream_reconciliation_usage_window_mode
@@ -310,10 +315,12 @@ impl KeyStore {
                           AND b.cooldown_until > ?
                         GROUP BY b.key_id
                    ) c
-                  WHERE EXISTS (
-                      SELECT 1 FROM upstream_reconciliation_research r
-                       WHERE r.key_id = c.key_id AND r.terminal_at IS NULL AND r.poll_resolution = 'pollable'
-                         AND r.next_poll_at <= ?
+                   WHERE EXISTS (
+                       SELECT 1 FROM upstream_reconciliation_research r
+                        WHERE r.key_id = c.key_id AND r.terminal_at IS NULL AND r.poll_resolution = 'pollable'
+                          AND NOT EXISTS (SELECT 1 FROM api_keys ak_guard
+                                          WHERE ak_guard.id = r.key_id AND ak_guard.provider <> 'tavily')
+                          AND r.next_poll_at <= ?
                          AND EXISTS (SELECT 1 FROM upstream_reconciliation_usage eligible_u
                                      INDEXED BY idx_upstream_reconciliation_usage_window_mode
                                      WHERE eligible_u.token_id = r.token_id

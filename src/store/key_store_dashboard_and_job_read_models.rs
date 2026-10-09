@@ -1,4 +1,9 @@
 impl KeyStore {
+    /// Tavily cold-lane pending selection. M4 HARD GUARD (plan todo 19):
+    /// the `provider = 'tavily'` predicate runs FIRST — the Tavily lane can
+    /// never enumerate (and thus never send to TAVILY_USAGE_BASE /usage) a
+    /// non-Tavily key. api_keys.provider is NOT NULL DEFAULT 'tavily'
+    /// (v45 DDL), so legacy rows are selected exactly as before.
     pub(crate) async fn list_keys_pending_quota_sync(
         &self,
         older_than_secs: i64,
@@ -11,6 +16,7 @@ impl KeyStore {
             FROM api_keys
             WHERE deleted_at IS NULL
               AND status <> ?
+              AND provider = ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines aq
@@ -23,12 +29,15 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(crate::providers::ProviderId::Tavily.as_str())
         .bind(threshold)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
     }
 
+    /// Tavily hot-lane pending selection — same M4 `provider = 'tavily'`
+    /// FIRST filter as the cold lane (plan todo 19).
     pub(crate) async fn list_keys_pending_hot_quota_sync(
         &self,
         active_within_secs: i64,
@@ -43,6 +52,7 @@ impl KeyStore {
             FROM api_keys
             WHERE deleted_at IS NULL
               AND status <> ?
+              AND provider = ?
               AND last_used_at >= ?
               AND NOT EXISTS (
                   SELECT 1
@@ -56,11 +66,107 @@ impl KeyStore {
             "#,
         )
         .bind(STATUS_EXHAUSTED)
+        .bind(crate::providers::ProviderId::Tavily.as_str())
         .bind(active_since)
         .bind(stale_before)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Provider-scoped cold-lane pending list (plan todo 19; M4). A
+    /// non-Tavily quota-sync lane enumerates ONLY its own provider's rows,
+    /// so third-party secrets can never be selected for a Tavily /usage
+    /// fetch. `api_keys.provider` is NOT NULL DEFAULT 'tavily' (v45 DDL),
+    /// so legacy rows are unaffected.
+    pub(crate) async fn list_keys_pending_provider_quota_sync(
+        &self,
+        provider: crate::providers::ProviderId,
+        older_than_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let threshold = now - older_than_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE deleted_at IS NULL
+              AND status <> ?
+              AND provider = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+            )
+            ORDER BY CASE WHEN quota_synced_at IS NULL OR quota_synced_at = 0 THEN 0 ELSE 1 END, quota_synced_at ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(provider.as_str())
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Provider-scoped hot-lane pending list (plan todo 19; M4), mirroring
+    /// `list_keys_pending_hot_quota_sync` for non-Tavily providers.
+    pub(crate) async fn list_keys_pending_hot_provider_quota_sync(
+        &self,
+        provider: crate::providers::ProviderId,
+        active_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let active_since = now - active_within_secs;
+        let stale_before = now - stale_after_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE deleted_at IS NULL
+              AND status <> ?
+              AND provider = ?
+              AND last_used_at >= ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+              )
+            ORDER BY last_used_at DESC, quota_synced_at ASC, id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(provider.as_str())
+        .bind(active_since)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Provider stamp of a key row by id (plan todo 19 M4 dispatch-guard
+    /// seam). `None` when the row does not exist. Mirrors the by-value
+    /// variant; the defensive Tavily fallback keeps legacy reads infallible.
+    pub(crate) async fn fetch_api_key_provider_by_id(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<crate::providers::ProviderId>, ProxyError> {
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT provider FROM api_keys WHERE id = ? LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(stored.map(|value| {
+            crate::providers::ProviderId::from_sql_text(&value)
+                .unwrap_or(crate::providers::ProviderId::Tavily)
+        }))
     }
 
     pub(crate) async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {

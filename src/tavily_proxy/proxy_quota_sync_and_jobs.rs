@@ -2,6 +2,7 @@ static LAST_RECONCILIATION_SUMMARY_LOG_AT: AtomicI64 = AtomicI64::new(0);
 
 include!("reconciliation_engine.rs");
 include!("reconciliation_research_drain.rs");
+include!("proxy_quota_sync_provider_adapters.rs");
 
 fn should_emit_reconciliation_summary(now: i64) -> bool {
     should_emit_reconciliation_summary_at(&LAST_RECONCILIATION_SUMMARY_LOG_AT, now)
@@ -2460,6 +2461,9 @@ impl TavilyProxy {
         api_key: &str,
         usage_base: &str,
     ) -> Result<(i64, i64), ProxyError> {
+        // M4 hard guard (plan todo 19): a stored non-Tavily secret never
+        // reaches TAVILY_USAGE_BASE /usage through the probe seam.
+        self.guard_tavily_probe_secret(api_key).await?;
         self.fetch_usage_quota_for_secret(
             api_key,
             usage_base,
@@ -2479,6 +2483,10 @@ impl TavilyProxy {
         registration_region: Option<&str>,
         geo_origin: &str,
     ) -> Result<(i64, i64, Option<ForwardProxyAssignmentPreview>), ProxyError> {
+        // M4 hard guard (plan todo 19): same Tavily-only probe seam
+        // protection as probe_api_key_quota (registration flows validate
+        // UNSTORED candidate keys, which the guard passes through).
+        self.guard_tavily_probe_secret(api_key).await?;
         let (proxy_affinity, assigned_proxy) =
             if registration_ip.is_some() || registration_region.is_some() {
                 let (record, preview) = self

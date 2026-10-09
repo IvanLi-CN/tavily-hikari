@@ -20,6 +20,7 @@ use std::sync::atomic::Ordering;
 use tokio::time::Instant;
 
 include!("schedulers_remote_attempt.rs");
+include!("schedulers_provider_quota_sync.rs");
 fn random_delay_secs(max_inclusive: u64) -> u64 {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -412,10 +413,11 @@ fn duration_until_next_local_daily_run(now: DateTime<Local>, hour: u32, minute: 
     tavily_hikari::duration_until_next_local_daily_run(now, hour, minute)
 }
 
-const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 8] = [
+const REMOTE_IO_SCHEDULED_JOB_TYPES: [&str; 9] = [
     "quota_sync",
     "quota_sync/manual",
     "quota_sync/hot",
+    "quota_sync/serpapi",
     LINUXDO_USER_STATUS_SYNC_JOB_TYPE,
     LINUXDO_CREDIT_RECHARGE_LIFECYCLE_JOB_TYPE,
     "upstream_reconciliation",
@@ -820,6 +822,10 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 };
             }
 
+            // Plan todo 19 (M4): serpapi /account lane riding the SAME cold
+            // sweep (24h pending threshold) — never a new loop or interval.
+            run_serpapi_pending_quota_sync_lane(cold_state.as_ref(), true).await;
+
             cold_state
                 .proxy
                 .backend_time()
@@ -870,6 +876,10 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                     continue;
                 };
             }
+
+            // Plan todo 19 (M4): serpapi /account lane riding the SAME hot
+            // sweep (2h-active/15m-stale thresholds).
+            run_serpapi_pending_quota_sync_lane(hot_state.as_ref(), false).await;
 
             hot_state
                 .proxy
@@ -2593,6 +2603,19 @@ async fn run_manual_claimed_job(
                     finish(state, "error", err.to_string()).await
                 }
             }
+        }
+        // Plan todo 19 (M4): the ONE dispatch arm for the serpapi /account
+        // lane; body lives in schedulers_provider_quota_sync.rs.
+        "quota_sync/serpapi" => {
+            drop(_job_execution_gate);
+            run_serpapi_quota_sync_claimed_job(
+                &state,
+                key_id,
+                job_id,
+                claim_generation,
+                manual_remote_attempt,
+            )
+            .await
         }
         "token_usage_rollup" | "usage_aggregation" => {
             let _maintenance = acquire_db_maintenance_read_gate().await;

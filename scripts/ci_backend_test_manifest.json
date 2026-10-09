@@ -107,7 +107,7 @@
       "id": "lib-core",
       "kind": "lib",
       "name": "Lib Core",
-      "estimated_seconds": 49,
+      "estimated_seconds": 79,
       "coverage_target": "lib",
       "run_args": [
         "--lib"
@@ -144,6 +144,7 @@
         "tests::provider_config_bootstrap::",
         "tests::provider_health_matrix::",
         "tests::provider_pool_scoping::",
+        "tests::provider_quota_sync_adapters::",
         "tests::observability_sidecar_provider::",
         "providers::tests::",
         "tests::request_kind_and_core::normalize_",
@@ -640,7 +641,7 @@
       "id": "bin-support",
       "kind": "bin",
       "name": "Bin Support",
-      "estimated_seconds": 11,
+      "estimated_seconds": 13,
       "coverage_target": "bin-support",
       "run_args": [
         "--bin",
@@ -799,7 +800,7 @@
       "id": "bin-tavily-http",
       "kind": "bin",
       "name": "Bin Tavily HTTP",
-      "estimated_seconds": 98,
+      "estimated_seconds": 120,
       "coverage_target": "bin-main",
       "run_args": [
         "--bin",
@@ -823,6 +824,7 @@
         "server::tests::provider_privacy_redaction::",
         "server::tests::provider_facade_routing::",
         "server::tests::provider_read_surface::",
+        "server::tests::provider_quota_sync_dispatch::",
         "server::provider_facade::exa_post_body_tests::"
       ]
     },
