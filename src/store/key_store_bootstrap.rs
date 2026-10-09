@@ -716,6 +716,13 @@ impl KeyStore {
                 .await?;
                 store.finish_new_database_schema_migrations().await?;
             } else {
+                // Warm startup must converge the observability sidecar exactly
+                // like the fresh path: `initialize_schema` (fresh only) is the
+                // sole other caller of the guarded sidecar request_logs column
+                // upgrades. The sidecar upgrade runs BEFORE any legacy
+                // observability copy/migrate path so the canonical column list
+                // (which now includes provider) is in place first (T8 rule).
+                store.upgrade_request_logs_schema().await?;
                 store.run_warm_schema_semantic_maintenance().await?;
             }
         }
