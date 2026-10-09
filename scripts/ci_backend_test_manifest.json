@@ -77,6 +77,12 @@
         "provider_mcp_e2e"
       ]
     },
+    "integration:provider_matrix_e2e": {
+      "list_args": [
+        "--test",
+        "provider_matrix_e2e"
+      ]
+    },
     "integration:request_kind_canonical_backfill": {
       "list_args": [
         "--test",
@@ -1153,6 +1159,17 @@
       "run_args": [
         "--test",
         "provider_mcp_e2e"
+      ]
+    },
+    {
+      "id": "integration-provider-matrix-e2e",
+      "kind": "integration",
+      "name": "Integration Provider Matrix E2E",
+      "estimated_seconds": 120,
+      "coverage_target": "integration:provider_matrix_e2e",
+      "run_args": [
+        "--test",
+        "provider_matrix_e2e"
       ]
     },
     {
