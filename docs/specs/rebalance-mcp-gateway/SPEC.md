@@ -265,3 +265,32 @@
 - 风险：research usage-diff 仍依赖 `/usage` 上游限流，无法承诺零 429。
 - 假设：默认 `rebalanceMcpSessionPercent=100` 仅在功能开启时生效；默认关闭仍然是安全上线姿态。
 - 开放问题：None。
+
+## Amendment 2026-10-09: provider-scoped enum values（additive；multi-provider search integration）
+
+- 本节是纯增量修订（additive amendment）：上文的既有行**不删除、不改写**；仅追加
+  multi-provider 接入（`docs/specs/multi-provider-search-integration/SPEC.md`）落地后在
+  已提交代码中实际使用的 provider-scoped 取值。
+- `gateway_mode`：不新增字面量。`upstream_mcp` 由 provider-scoped 默认函数
+  （`src/tavily_proxy/proxy_provider_facade.rs:393-398`，`mcp_gateway_mode_default`）
+  扩展适用于 `/serpapi/mcp`、`/exa/mcp`、`/brave/mcp`；hosted 直通（SerpApi）的
+  request_logs 与 `mcp_sessions` 行显式记录 `upstream_mcp`
+  （`src/tavily_proxy/proxy_provider_facade_serpapi_mcp.rs:362,436,549`）。
+  `rebalance_http` 仍为 Tavily 专属。本地 facade（Exa/Brave）当前不写独立 gateway_mode
+  （provider 行为 NULL）；其独立词表的引入待后续 ratification（见本主题 HISTORY FU-8）。
+- `experiment_variant`：不新增字面量。provider hosted 直通行复用 `control`
+  （`proxy_provider_facade_serpapi_mcp.rs:363,437,550`）；`rebalance` 仍为 Tavily 专属。
+- `upstream_operation` 追加以下 provider-scoped 取值（既有 `mcp` / `http_*` /
+  `http_research*` 行保持不变，仍是 Tavily 词表）：
+  - `serpapi_mcp`（SerpApi hosted MCP 直通；`proxy_provider_facade_serpapi_mcp.rs:42-49`）
+  - `serpapi_http_search`（SerpApi REST 搜索）
+  - `exa_http_search`、`exa_http_contents`、`exa_http_answer`（Exa REST；
+    本地 `/exa/mcp` 的 tools/call 复用同一词表，见 `src/server/provider_mcp_exa.rs:218,230,240`）
+  - `brave_http_web_search`、`brave_http_news_search`、`brave_http_llm_context`（Brave REST；
+    本地 `/brave/mcp` 复用同一词表，见 `src/server/provider_mcp_brave.rs:185,195,205`）
+  - REST 词表定义处：`src/tavily_proxy/proxy_provider_facade.rs:409-437`；
+    路由表线上值：`src/server/provider_facade.rs:88-159`。
+- 诊断列语义不变：`request_logs` / `auth_token_logs` / `mcp_sessions` 继续使用上述三列，
+  provider 维度由各自新增的 `provider` 列承载（主账本 v45 与 sidecar ALTER 路径）。
+- 验收影响：本修订只扩容枚举词表，不改变任何既有行的含义；Tavily 行写入的
+  `gateway_mode` / `experiment_variant` / `upstream_operation` 值字节不变。
