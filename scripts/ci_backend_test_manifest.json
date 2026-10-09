@@ -83,6 +83,12 @@
         "provider_matrix_e2e"
       ]
     },
+    "integration:provider_migration_hardening": {
+      "list_args": [
+        "--test",
+        "provider_migration_hardening"
+      ]
+    },
     "integration:request_kind_canonical_backfill": {
       "list_args": [
         "--test",
@@ -1170,6 +1176,17 @@
       "run_args": [
         "--test",
         "provider_matrix_e2e"
+      ]
+    },
+    {
+      "id": "integration-provider-migration-hardening",
+      "kind": "integration",
+      "name": "Integration Provider Migration Hardening",
+      "estimated_seconds": 180,
+      "coverage_target": "integration:provider_migration_hardening",
+      "run_args": [
+        "--test",
+        "provider_migration_hardening"
       ]
     },
     {
