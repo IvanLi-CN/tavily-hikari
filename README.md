@@ -43,6 +43,23 @@ Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes m
 - **Repo-local Relay Mesh brand assets** – the favicon, touch icons, public/admin PWA icons, and docs-site logo all derive from checked-in approved Relay Mesh lockup/icon assets, so the brand layer stays consistent without runtime image/CDN dependencies.
 - **CI + Release** – GitHub Actions runs lint/tests; releases are driven by PR intent labels and publish `ghcr.io/ivanli-cn/tavily-hikari:<tag>` with prebuilt web assets.
 
+## Search providers
+
+Tavily Hikari started as a Tavily proxy and now fronts four search providers behind one token, one
+key pool, and one shared credit wallet. Each provider keeps its native request shape, its own
+upstream key pool, and its own exhaustion semantics, while quota checks, audit logging, and key
+rotation stay inside Hikari.
+
+- **Tavily** — `/mcp` and `/api/tavily/*` (search, extract, crawl, map, research, usage)
+- **SerpApi** — `/serpapi/mcp` and `/api/serpapi/search` (synchronous search family)
+- **Exa** — `/exa/mcp`, `/api/exa/search`, `/api/exa/contents`, `/api/exa/answer`
+- **Brave** — `/brave/mcp`, `/api/brave/res/v1/web/search`, `/api/brave/res/v1/news/search`, and
+  `/api/brave/res/v1/llm/context`
+
+All four accept Hikari access tokens (`th-<id>-<secret>`) in their native auth slots. See the
+[HTTP API Guide](https://ivanli-cn.github.io/tavily-hikari/http-api-guide) for slots, credits, and
+per-provider boundaries.
+
 ## Architecture Snapshot
 
 ```
@@ -120,7 +137,14 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | Flag / Env                                                                          | Description                                                                                                          |
 | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `--keys` / `TAVILY_API_KEYS`                                                        | Optional helper for bootstrapping or local experiments. In production, prefer the admin API/UI to manage keys.       |
+| `--serpapi-keys` / `SERPAPI_API_KEYS`                                               | Optional SerpApi bootstrap list (comma-separated); prefer the admin API/UI in production.                            |
+| `--exa-keys` / `EXA_API_KEYS`                                                       | Same bootstrap semantics as `SERPAPI_API_KEYS`, scoped to Exa keys.                                                  |
+| `--brave-keys` / `BRAVE_API_KEYS`                                                   | Same bootstrap semantics as `SERPAPI_API_KEYS`, scoped to Brave keys.                                                |
 | `--upstream` / `TAVILY_UPSTREAM`                                                    | Tavily MCP upstream endpoint (default `https://mcp.tavily.com/mcp`); path-prefixed reverse-proxy URLs are supported. |
+| `--serpapi-upstream` / `SERPAPI_UPSTREAM`                                           | SerpApi REST upstream base URL (default `https://serpapi.com`); path-prefixed reverse-proxy URLs are supported.      |
+| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM`                                   | SerpApi hosted MCP endpoint (default `https://mcp.serpapi.com/mcp`); path prefixes are supported.                    |
+| `--exa-upstream` / `EXA_UPSTREAM`                                                   | Exa REST upstream base URL (default `https://api.exa.ai`); path-prefixed reverse-proxy URLs are supported.           |
+| `--brave-upstream` / `BRAVE_UPSTREAM`                                               | Brave REST upstream base URL (default `https://api.search.brave.com`); path prefixes are supported.                  |
 | `--bind` / `PROXY_BIND`                                                             | Listen address (default `127.0.0.1`).                                                                                |
 | `--port` / `PROXY_PORT`                                                             | Listen port (default `8787`).                                                                                        |
 | `--db-path` / `PROXY_DB_PATH`                                                       | SQLite file path (default `tavily_proxy.db`).                                                                        |
@@ -162,6 +186,9 @@ If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or reviv
 
 - `TAVILY_UPSTREAM` is interpreted as the full MCP endpoint. If your reverse proxy keeps Tavily under a path prefix, include the final `/mcp` path in the configured URL.
 - `TAVILY_USAGE_BASE` may include a path prefix. Hikari appends `/search`, `/extract`, `/crawl`, `/map`, `/research`, `/research/{id}`, and `/usage` under that prefix.
+- `SERPAPI_UPSTREAM`, `EXA_UPSTREAM`, and `BRAVE_UPSTREAM` may include a path prefix; Hikari appends each provider's native paths (`/search`, `/res/v1/...`) under it.
+- `SERPAPI_MCP_UPSTREAM` is the full hosted MCP endpoint; include the final `/mcp` path when your reverse proxy keeps a path prefix.
+- `SERPAPI_API_KEYS`, `EXA_API_KEYS`, and `BRAVE_API_KEYS` sync only their own provider: listed keys are added or revived and that provider's unlisted keys are soft-deleted, while an unset variable leaves the provider untouched.
 
 ## HTTP API Cheat Sheet
 
@@ -432,6 +459,26 @@ Then set the token and verify:
 export TAVILY_HIKARI_TOKEN="<token>"
 codex mcp list | grep tavily_hikari
 ```
+
+The same token connects the dedicated provider MCP endpoints:
+
+```
+[mcp_servers.serpapi_hikari]
+url = "https://<your-host>/serpapi/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+
+[mcp_servers.exa_hikari]
+url = "https://<your-host>/exa/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+
+[mcp_servers.brave_hikari]
+url = "https://<your-host>/brave/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+```
+
+All four servers accept `Authorization: Bearer th-<id>-<secret>`; Exa and Brave additionally
+accept their native auth headers. Credits settle from the shared wallet, so one token works across
+providers.
 
 ## Development
 

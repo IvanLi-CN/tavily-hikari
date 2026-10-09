@@ -104,11 +104,11 @@ The repository uses a single-context domain layout. See `docs/agents/domain.md`.
 
 **IMPORTANT**
 
-- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. Testing is now restricted to stub or sandbox upstreams only. Never point this project at the production Tavily endpoint unless explicitly approved.
+- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. Testing is now restricted to stub or sandbox upstreams only. Never point this project at the production Tavily/SerpApi/Exa/Brave endpoints unless explicitly approved.
 
 ### Project-Specific Notes
 
-- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. All future tests must target a local/mock upstream. Never hit production Tavily without explicit approval.
+- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. All future tests must target a local/mock upstream. Never hit production Tavily/SerpApi/Exa/Brave without explicit approval.
 
 ## Local Service Review
 

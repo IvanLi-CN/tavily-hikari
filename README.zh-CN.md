@@ -37,6 +37,17 @@ Tavily Hikari 是一个面向 MCP (Model Context Protocol) 的 Tavily 代理层�
 - **完整审计**：`request_logs` 表保留 method/path/query、状态码、错误信息、透传/丢弃头部等字段，方便回溯配额损耗与异常请求。
 - **生产级 CI/CD**：GitHub Actions 对代码格式、lint、单元测试把关；发版由 PR intent label 驱动（打 tag + GitHub Release + 推送 `ghcr.io` 镜像）。
 
+## 搜索供应商
+
+Tavily Hikari 从 Tavily 代理起步，现在是四家搜索供应商的统一入口：一枚 token、一套密钥池、一个共享 credit 钱包。每家供应商保留自己的原生请求形态、独立的上游密钥池与耗尽语义，配额判断、审计日志与密钥轮换都留在 Hikari 内部。
+
+- **Tavily** —— `/mcp` 与 `/api/tavily/*`（search、extract、crawl、map、research、usage）
+- **SerpApi** —— `/serpapi/mcp` 与 `/api/serpapi/search`（同步搜索族）
+- **Exa** —— `/exa/mcp`、`/api/exa/search`、`/api/exa/contents`、`/api/exa/answer`
+- **Brave** —— `/brave/mcp`、`/api/brave/res/v1/web/search`、`/api/brave/res/v1/news/search` 与 `/api/brave/res/v1/llm/context`
+
+四条链路都接受 Hikari 访问令牌（`th-<id>-<secret>`）放入各自的原生鉴权槽；槽位、credit 与各供应商边界详见 [HTTP API 指南](https://ivanli-cn.github.io/tavily-hikari/zh/http-api-guide)。
+
 ## 组件与数据流
 
 ```
@@ -111,7 +122,14 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | Flag / Env                                                                          | 说明                                                                                                                         |
 | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--keys` / `TAVILY_API_KEYS`                                                        | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
+| `--serpapi-keys` / `SERPAPI_API_KEYS`                                               | 可选的 SerpApi key 引导导入列表（逗号分隔）。未设置时不动 SerpApi 已有 key 行；生产环境优先走管理员 API/控制台。             |
+| `--exa-keys` / `EXA_API_KEYS`                                                       | 与 `SERPAPI_API_KEYS` 相同的引导语义，只作用于 Exa key。                                                                     |
+| `--brave-keys` / `BRAVE_API_KEYS`                                                   | 与 `SERPAPI_API_KEYS` 相同的引导语义，只作用于 Brave key。                                                                   |
 | `--upstream` / `TAVILY_UPSTREAM`                                                    | Tavily MCP 上游端点，默认 `https://mcp.tavily.com/mcp`；支持带 path prefix 的反代 URL。                                      |
+| `--serpapi-upstream` / `SERPAPI_UPSTREAM`                                           | SerpApi REST 上游基地址，默认 `https://serpapi.com`；支持带 path prefix 的反代 URL。                                         |
+| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM`                                   | SerpApi 托管 MCP 上游端点，默认 `https://mcp.serpapi.com/mcp`；支持带 path prefix 的反代 URL。                               |
+| `--exa-upstream` / `EXA_UPSTREAM`                                                   | Exa REST 上游基地址，默认 `https://api.exa.ai`；支持带 path prefix 的反代 URL。                                              |
+| `--brave-upstream` / `BRAVE_UPSTREAM`                                               | Brave REST 上游基地址，默认 `https://api.search.brave.com`；支持带 path prefix 的反代 URL。                                  |
 | `--bind` / `PROXY_BIND`                                                             | 监听地址，默认 `127.0.0.1`。                                                                                                 |
 | `--port` / `PROXY_PORT`                                                             | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
 | `--db-path` / `PROXY_DB_PATH`                                                       | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
@@ -152,6 +170,9 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 
 - `TAVILY_UPSTREAM` 按完整的 MCP 端点解释；如果反代保留了 path prefix，配置值里需要包含最终的 `/mcp` 路径。
 - `TAVILY_USAGE_BASE` 可以带 path prefix；Hikari 会在这个 prefix 后继续追加 `/search`、`/extract`、`/crawl`、`/map`、`/research`、`/research/{id}` 与 `/usage`。
+- `SERPAPI_UPSTREAM`、`EXA_UPSTREAM`、`BRAVE_UPSTREAM` 都可以带 path prefix；Hikari 会在该 prefix 后继续拼接各供应商的原生路径（`/search`、`/res/v1/...` 等）。
+- `SERPAPI_MCP_UPSTREAM` 是完整的托管 MCP 端点；反代保留 path prefix 时，配置值里要包含最终的 `/mcp` 路径。
+- `SERPAPI_API_KEYS`、`EXA_API_KEYS`、`BRAVE_API_KEYS` 只同步各自供应商的 key 集合：列表内 key 会被新增或恢复，该供应商不在列表中的 key 会被软删除；未设置时完全不动该供应商的 key 行。
 
 ## HTTP API 速览
 
@@ -410,6 +431,24 @@ bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
 export TAVILY_HIKARI_TOKEN="<token>"
 codex mcp list | grep tavily_hikari
 ```
+
+同一枚 token 也可以连接三个供应商专属 MCP 入口：
+
+```
+[mcp_servers.serpapi_hikari]
+url = "https://<your-host>/serpapi/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+
+[mcp_servers.exa_hikari]
+url = "https://<your-host>/exa/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+
+[mcp_servers.brave_hikari]
+url = "https://<your-host>/brave/mcp"
+bearer_token_env_var = "TAVILY_HIKARI_TOKEN"
+```
+
+四个入口都接受 `Authorization: Bearer th-<id>-<secret>`；Exa 与 Brave 还额外接受各自的 native 鉴权头。所有供应商共用同一个 credit 钱包，一枚 token 即可跨供应商使用。
 
 ## 开发与测试
 

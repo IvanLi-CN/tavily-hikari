@@ -24,17 +24,24 @@ Recommended defaults:
 
 No matter which access model you choose, these settings are the main runtime contract:
 
-| Flag / Env                        | Usually matters | Purpose                                    |
-| --------------------------------- | --------------- | ------------------------------------------ |
-| `--upstream` / `TAVILY_UPSTREAM`  | yes             | Tavily MCP upstream URL                    |
-| `TAVILY_USAGE_BASE`               | yes             | Tavily HTTP / usage base URL               |
-| `--bind` / `PROXY_BIND`           | yes             | listen address                             |
-| `--port` / `PROXY_PORT`           | yes             | listen port                                |
-| `--db-path` / `PROXY_DB_PATH`     | yes             | SQLite database path                       |
-| `LOW_QUOTA_DEPLETION_THRESHOLD`   | optional        | low-balance 432 key threshold              |
-| `PUBLIC_METRICS_CORS_ORIGINS`     | optional        | browser origins for the public metrics API |
-| `--static-dir` / `WEB_STATIC_DIR` | depends         | frontend static asset directory            |
-| `--keys` / `TAVILY_API_KEYS`      | optional        | one-time key bootstrap helper              |
+| Flag / Env                                        | Usually matters | Purpose                                    |
+| ------------------------------------------------- | --------------- | ------------------------------------------ |
+| `--upstream` / `TAVILY_UPSTREAM`                  | yes             | Tavily MCP upstream URL                    |
+| `TAVILY_USAGE_BASE`                               | yes             | Tavily HTTP / usage base URL               |
+| `--serpapi-upstream` / `SERPAPI_UPSTREAM`         | optional        | SerpApi REST upstream base URL             |
+| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM` | optional        | SerpApi hosted MCP upstream URL            |
+| `--exa-upstream` / `EXA_UPSTREAM`                 | optional        | Exa REST upstream base URL                 |
+| `--brave-upstream` / `BRAVE_UPSTREAM`             | optional        | Brave REST upstream base URL               |
+| `--bind` / `PROXY_BIND`                           | yes             | listen address                             |
+| `--port` / `PROXY_PORT`                           | yes             | listen port                                |
+| `--db-path` / `PROXY_DB_PATH`                     | yes             | SQLite database path                       |
+| `LOW_QUOTA_DEPLETION_THRESHOLD`                   | optional        | low-balance 432 key threshold              |
+| `PUBLIC_METRICS_CORS_ORIGINS`                     | optional        | browser origins for the public metrics API |
+| `--static-dir` / `WEB_STATIC_DIR`                 | depends         | frontend static asset directory            |
+| `--keys` / `TAVILY_API_KEYS`                      | optional        | one-time Tavily key bootstrap helper       |
+| `--serpapi-keys` / `SERPAPI_API_KEYS`             | optional        | one-time SerpApi key bootstrap helper      |
+| `--exa-keys` / `EXA_API_KEYS`                     | optional        | one-time Exa key bootstrap helper          |
+| `--brave-keys` / `BRAVE_API_KEYS`                 | optional        | one-time Brave key bootstrap helper        |
 
 Notes:
 
@@ -55,6 +62,16 @@ Notes:
 - `PUBLIC_METRICS_CORS_ORIGINS` is a comma-separated explicit origin list for
   `/api/public/metrics/v1/tavily-hikari`. It defaults to `https://ivanli.cc` and
   `http://127.0.0.1:12620`; wildcard origins are rejected.
+- `SERPAPI_UPSTREAM`, `EXA_UPSTREAM`, and `BRAVE_UPSTREAM` default to the official API bases
+  (`https://serpapi.com`, `https://api.exa.ai`, `https://api.search.brave.com`). All three accept
+  a path prefix when a reverse proxy keeps the provider under one.
+- `SERPAPI_MCP_UPSTREAM` defaults to `https://mcp.serpapi.com/mcp` and is treated as the full MCP
+  endpoint. If your reverse proxy preserves a path prefix, include the final `/mcp` path in the
+  configured URL.
+- `SERPAPI_API_KEYS`, `EXA_API_KEYS`, and `BRAVE_API_KEYS` are comma-separated bootstrap lists
+  scoped to their own provider. When one is unset, Hikari leaves that provider's key rows
+  untouched; when set, listed keys are added or revived and that provider's unlisted keys are
+  soft-deleted. In production, prefer the admin API/UI for long-term key management.
 
 ## Minimum config by deployment shape
 

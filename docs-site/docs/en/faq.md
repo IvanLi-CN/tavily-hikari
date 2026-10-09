@@ -84,6 +84,45 @@ records, so persistence should be part of your deployment plan.
 
 Use the docs site to deploy or integrate the product. Use Storybook to inspect the interface.
 
+### Why does SerpApi sometimes return 429 right after another 429
+
+SerpApi uses the same status code for two different conditions, and Hikari splits them apart:
+
+- `429` with a `"run out of searches"` message means the upstream key's plan searches are used up.
+  Hikari marks that key `exhausted`, and it only revives at the plan renewal date or after a manual
+  recovery.
+- any other `429` means hourly throughput throttling. Hikari applies a short transient backoff
+  (honoring `Retry-After` between 30 and 3600 seconds), and the key recovers on its own.
+
+If clients keep hitting `429` long after a backoff window, check the admin key health view instead
+of retrying harder.
+
+### Why does Exa return 402, and can I check an Exa balance
+
+Exa bills from prepaid credits, so `402` with one of the budget tags (`NO_MORE_CREDITS`,
+`API_KEY_BUDGET_EXCEEDED`, `TEAM_BUDGET_EXCEEDED`) means the key or the team budget is out. Hikari
+marks the key `exhausted` until the next successful call or a manual restore; other `402` tags and
+`403` pass through without penalizing the key.
+
+Exa exposes no live remaining-balance API, so Hikari cannot sync a balance: admin `sync-usage`
+returns a typed `409 unsupported`, and quota is tracked by local counting. Plan for one more
+limit: the Exa team QPS ceiling (about 10 QPS for search/answer) is shared by every key in the
+team, so pooling more keys does not raise it.
+
+### Why does Brave return 422 for an invalid key, and how do monthly limits work
+
+Brave reports an invalid key as `422` (not `401`):
+
+- `422 SUBSCRIPTION_TOKEN_INVALID`, or a `VALIDATION` error pointing at `x-subscription-token`,
+  means the key is invalid, and Hikari quarantines it.
+- other `422 VALIDATION` errors are client parameter mistakes and pass through unchanged.
+
+A Brave plan allows at most 10 keys upstream. Hikari harvests `X-RateLimit-*` response headers
+passively: the month window (`w=2592000`) is paired with `Limit`/`Remaining`/`Reset`, and only
+changed material is stored. A `402 QUOTA_LIMITED` (or bare `402`) exhausts the key for the
+advertised window, while `429` is a short second-scale throttle (default 2s backoff, clamped to
+1..=30s).
+
 ## Troubleshooting
 
 ### `/admin` does not open, or `/api/keys` returns 401

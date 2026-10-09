@@ -98,6 +98,73 @@ curl -H "Authorization: Bearer th-<id>-<secret>" \
   http://127.0.0.1:58087/api/tavily/research/<request_id>
 ```
 
+## SerpApi, Exa, and Brave facades
+
+Besides `/api/tavily/*`, Hikari exposes native REST facades for three more search providers. Each
+facade accepts the same Hikari token (`th-<id>-<secret>`) in its provider-native auth slot, strips
+it before the upstream call, and injects a pooled upstream key internally. Credits for all four
+providers settle from the same shared wallet.
+
+### SerpApi
+
+| Method | Path                  | Notes                                 | Auth                                        |
+| ------ | --------------------- | ------------------------------------- | ------------------------------------------- |
+| `GET`  | `/api/serpapi/search` | SerpApi `/search` (query passthrough) | `Authorization: Bearer` or `api_key=th-...` |
+| `POST` | `/api/serpapi/search` | JSON body mapped to query parameters  | `Authorization: Bearer` or `api_key=th-...` |
+
+MCP endpoint: `https://<your-host>/serpapi/mcp` (hosted passthrough, `Authorization: Bearer th-...`).
+
+```bash
+curl "https://<your-host>/api/serpapi/search?engine=google&q=rust+async+runtime&api_key=th-<id>-<secret>"
+```
+
+For POST requests the token must ride the `Authorization` header or the query string; a JSON
+`api_key` body field is discarded. `search` costs 1 credit. Boundaries: synchronous search JSON
+only; async searches, search-archive, `locations`, and `output=html` are not proxied.
+
+### Exa
+
+| Method | Path                | Notes                | Auth                                           |
+| ------ | ------------------- | -------------------- | ---------------------------------------------- |
+| `POST` | `/api/exa/search`   | Exa `/search`        | `x-api-key: th-...` or `Authorization: Bearer` |
+| `POST` | `/api/exa/contents` | URL content extract  | `x-api-key: th-...` or `Authorization: Bearer` |
+| `POST` | `/api/exa/answer`   | Non-streaming answer | `x-api-key: th-...` or `Authorization: Bearer` |
+
+MCP endpoint: `https://<your-host>/exa/mcp` (local facade; `x-api-key: th-...`,
+`exaApiKey=th-...` query, or `Authorization: Bearer th-...`).
+
+```bash
+curl -X POST "https://<your-host>/api/exa/search" \
+  -H "x-api-key: th-<id>-<secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "rust async runtime", "numResults": 3}'
+```
+
+Credits: `search` and `contents` cost 1, `answer` costs 2. Boundaries: streaming is rejected
+locally with a typed `400` (`streaming not supported; omit stream or set false`). `findSimilar`,
+the agent/monitors/batches/websets surfaces, `chat/completions` compatibility, and hosted MCP
+passthrough are not proxied.
+
+### Brave
+
+| Method | Path                            | Notes                  | Auth                                     |
+| ------ | ------------------------------- | ---------------------- | ---------------------------------------- |
+| `GET`  | `/api/brave/res/v1/web/search`  | Web search             | `X-Subscription-Token: th-...` or Bearer |
+| `GET`  | `/api/brave/res/v1/news/search` | News search            | `X-Subscription-Token: th-...` or Bearer |
+| `GET`  | `/api/brave/res/v1/llm/context` | LLM grounding snippets | `X-Subscription-Token: th-...` or Bearer |
+
+MCP endpoint: `https://<your-host>/brave/mcp` (local facade; `X-Subscription-Token: th-...` or
+`Authorization: Bearer th-...`).
+
+```bash
+curl "https://<your-host>/api/brave/res/v1/web/search?q=rust+async+runtime" \
+  -H "X-Subscription-Token: th-<id>-<secret>"
+```
+
+Credits: `web` and `news` cost 1, `llm_context` costs 2. Boundaries: only web search, news search,
+and LLM Context are proxied; URL extraction/crawl, images, videos, local/place, suggest,
+spellcheck, summarizer, and Answers are not.
+
 ## Cherry Studio setup
 
 1. Create a Tavily Hikari access token from the user dashboard.

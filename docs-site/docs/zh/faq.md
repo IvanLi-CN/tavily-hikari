@@ -79,6 +79,39 @@ Linux DO OAuth 主要解决的是“终端用户登录并自动绑定 Hikari tok
 
 如果你要接客户端或部署服务，看文档站；如果你要核页面表现，看 Storybook。
 
+### SerpApi 连续返回 429，两种 429 分别代表什么
+
+SerpApi 用同一个状态码表达两种不同情况，Hikari 会把它们分开处理：
+
+- 带 `"run out of searches"` 消息的 `429` 表示上游 key 的套餐搜索额度已用尽。Hikari 会把该 key
+  标记为 `exhausted`，只能在套餐续费日或管理员手动恢复后重新启用。
+- 其他 `429` 表示小时级吞吐限速。Hikari 会做短时瞬态退避（遵守 `Retry-After`，钳制在 30 到
+  3600 秒），key 随后会自行恢复。
+
+如果客户端在退避窗口之后仍持续看到 `429`，请先查看管理端的 key 健康视图，而不是继续加强重试。
+
+### Exa 为什么返回 402，能查余额吗
+
+Exa 按预付 credit 计费，因此带预算标签的 `402`（`NO_MORE_CREDITS`、`API_KEY_BUDGET_EXCEEDED`、
+`TEAM_BUDGET_EXCEEDED`）意味着该 key 或团队预算已耗尽。Hikari 会把 key 标记为 `exhausted`，直到
+下一次成功调用或管理员手动恢复；其他 `402` 标签与 `403` 会原样透传，不惩罚 key。
+
+Exa 没有实时余额 API，Hikari 无法同步余额：管理端 `sync-usage` 会返回 typed `409 unsupported`，
+额度按本地计数管理。另有一个上限需要提前规划：Exa 团队级 QPS 上限（search/answer 约 10 QPS）
+由团队内所有 key 共享，池化更多 key 并不会放大它。
+
+### Brave 为什么无效 key 返回 422，月窗口限制怎么工作
+
+Brave 把无效 key 报为 `422`（不是 `401`）：
+
+- `422 SUBSCRIPTION_TOKEN_INVALID`，或 `VALIDATION` 错误指向 `x-subscription-token`，表示 key
+  无效，Hikari 会将其 quarantine。
+- 其他 `422 VALIDATION` 是客户端参数错误，原样透传。
+
+一个 Brave 套餐最多允许 10 把 key。Hikari 会被动采集 `X-RateLimit-*` 响应头：月窗口（`w=2592000`）
+与 `Limit`/`Remaining`/`Reset` 按位置配对，只有材料发生变化时才落库。`402 QUOTA_LIMITED`（或裸
+`402`）会让 key 在公告的窗口内耗尽；`429` 是秒级短限速（默认 2 秒退避，钳制 1..=30 秒）。
+
 ## 排障
 
 ### `/admin` 打不开，或 `/api/keys` 返回 401

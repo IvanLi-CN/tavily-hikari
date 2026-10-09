@@ -24,17 +24,24 @@ Tavily Hikari 至少有两层访问要分清：
 
 无论你采用哪种访问模型，下面这组参数都是最核心的：
 
-| Flag / Env                        | 是否通常要关心 | 作用                            |
-| --------------------------------- | -------------- | ------------------------------- |
-| `--upstream` / `TAVILY_UPSTREAM`  | 是             | Tavily MCP 上游地址             |
-| `TAVILY_USAGE_BASE`               | 是             | Tavily HTTP / usage 上游基地址  |
-| `--bind` / `PROXY_BIND`           | 是             | 监听地址                        |
-| `--port` / `PROXY_PORT`           | 是             | 监听端口                        |
-| `--db-path` / `PROXY_DB_PATH`     | 是             | SQLite 数据库路径               |
-| `LOW_QUOTA_DEPLETION_THRESHOLD`   | 可选           | 低余额 432 key 阈值             |
-| `PUBLIC_METRICS_CORS_ORIGINS`     | 可选           | 公开指标 API 的浏览器来源白名单 |
-| `--static-dir` / `WEB_STATIC_DIR` | 视情况         | 静态前端目录                    |
-| `--keys` / `TAVILY_API_KEYS`      | 可选           | 启动时一次性导入 key            |
+| Flag / Env                                        | 是否通常要关心 | 作用                           |
+| ------------------------------------------------- | -------------- | ------------------------------ |
+| `--upstream` / `TAVILY_UPSTREAM`                  | 是             | Tavily MCP 上游地址            |
+| `TAVILY_USAGE_BASE`                               | 是             | Tavily HTTP / usage 上游基地址 |
+| `--serpapi-upstream` / `SERPAPI_UPSTREAM`         | 可选           | SerpApi REST 上游基地址        |
+| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM` | 可选           | SerpApi 托管 MCP 上游地址      |
+| `--exa-upstream` / `EXA_UPSTREAM`                 | 可选           | Exa REST 上游基地址            |
+| `--brave-upstream` / `BRAVE_UPSTREAM`             | 可选           | Brave REST 上游基地址          |
+| `--bind` / `PROXY_BIND`                           | 是             | 监听地址                       |
+| `--port` / `PROXY_PORT`                           | 是             | 监听端口                       |
+| `--db-path` / `PROXY_DB_PATH`                     | 是             | SQLite 数据库路径              |
+| `LOW_QUOTA_DEPLETION_THRESHOLD`                   | 可选           | 低余额 432 key 阈值            |
+| `PUBLIC_METRICS_CORS_ORIGINS`                     | 可选           | 公开指标 API 的浏览器来源白名单 |
+| `--static-dir` / `WEB_STATIC_DIR`                 | 视情况         | 静态前端目录                   |
+| `--keys` / `TAVILY_API_KEYS`                      | 可选           | 启动时一次性导入 Tavily key    |
+| `--serpapi-keys` / `SERPAPI_API_KEYS`             | 可选           | 启动时一次性导入 SerpApi key   |
+| `--exa-keys` / `EXA_API_KEYS`                     | 可选           | 启动时一次性导入 Exa key       |
+| `--brave-keys` / `BRAVE_API_KEYS`                 | 可选           | 启动时一次性导入 Brave key     |
 
 补充说明：
 
@@ -48,6 +55,13 @@ Tavily Hikari 至少有两层访问要分清：
 - `PUBLIC_METRICS_CORS_ORIGINS` 用逗号分隔显式来源，仅作用于
   `/api/public/metrics/v1/tavily-hikari`。默认值是 `https://ivanli.cc` 和
   `http://127.0.0.1:12620`；不接受通配符来源。
+- `SERPAPI_UPSTREAM`、`EXA_UPSTREAM`、`BRAVE_UPSTREAM` 默认分别为 `https://serpapi.com`、
+  `https://api.exa.ai`、`https://api.search.brave.com`；三者都支持带 path prefix 的反代地址。
+- `SERPAPI_MCP_UPSTREAM` 默认是 `https://mcp.serpapi.com/mcp`，按完整 MCP 端点解释；反代保留
+  path prefix 时，配置值里要包含最终的 `/mcp` 路径。
+- `SERPAPI_API_KEYS`、`EXA_API_KEYS`、`BRAVE_API_KEYS` 是以逗号分隔的引导导入列表，且只作用于各自
+  供应商：未设置时完全不动该供应商已有 key 行；设置后列表内 key 会被新增或恢复，该供应商不在列表中的
+  key 会被软删除。生产环境的长期 key 管理仍应交给管理员后台或管理员 API。
 
 ## 不同部署形态的最小配置
 

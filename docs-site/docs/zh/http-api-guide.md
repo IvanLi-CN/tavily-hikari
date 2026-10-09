@@ -96,6 +96,70 @@ curl -H "Authorization: Bearer th-<id>-<secret>" \
   http://127.0.0.1:58087/api/tavily/research/<request_id>
 ```
 
+## SerpApi、Exa 与 Brave facade
+
+除 `/api/tavily/*` 之外，Hikari 还为另外三家搜索供应商提供原生 REST facade。每个 facade 都接受同一枚
+Hikari token（`th-<id>-<secret>`），放在该供应商的原生鉴权槽里；Hikari 会在出站前剥离它，并在内部注入
+池内真实上游 key。四家供应商的 credit 都从同一个共享钱包结算。
+
+### SerpApi
+
+| Method | Path                  | 说明                            | 认证                                        |
+| ------ | --------------------- | ------------------------------- | ------------------------------------------- |
+| `GET`  | `/api/serpapi/search` | SerpApi `/search`（query 透传） | `Authorization: Bearer` 或 `api_key=th-...` |
+| `POST` | `/api/serpapi/search` | JSON body 映射为 query 参数     | `Authorization: Bearer` 或 `api_key=th-...` |
+
+MCP 入口：`https://<your-host>/serpapi/mcp`（托管直通，`Authorization: Bearer th-...`）。
+
+```bash
+curl "https://<your-host>/api/serpapi/search?engine=google&q=rust+async+runtime&api_key=th-<id>-<secret>"
+```
+
+POST 请求的 token 必须放在 `Authorization` 头或 query string 里；JSON body 中的 `api_key` 字段会被丢弃。
+`search` 计 1 credit。边界：只支持同步搜索 JSON；async 搜索、search-archive、`locations` 与
+`output=html` 都不代理。
+
+### Exa
+
+| Method | Path                | 说明          | 认证                                           |
+| ------ | ------------------- | ------------- | ---------------------------------------------- |
+| `POST` | `/api/exa/search`   | Exa `/search` | `x-api-key: th-...` 或 `Authorization: Bearer` |
+| `POST` | `/api/exa/contents` | URL 内容提取  | `x-api-key: th-...` 或 `Authorization: Bearer` |
+| `POST` | `/api/exa/answer`   | 非流式回答    | `x-api-key: th-...` 或 `Authorization: Bearer` |
+
+MCP 入口：`https://<your-host>/exa/mcp`（本地 facade；支持 `x-api-key: th-...`、
+`exaApiKey=th-...` query 或 `Authorization: Bearer th-...`）。
+
+```bash
+curl -X POST "https://<your-host>/api/exa/search" \
+  -H "x-api-key: th-<id>-<secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "rust async runtime", "numResults": 3}'
+```
+
+Credit：`search` 与 `contents` 各计 1，`answer` 计 2。边界：流式请求会被本地以 typed `400` 拒绝
+（`streaming not supported; omit stream or set false`）；`findSimilar`、agent/monitors/batches/websets
+系列、`chat/completions` 兼容面与托管 MCP 直通都不代理。
+
+### Brave
+
+| Method | Path                            | 说明           | 认证                                     |
+| ------ | ------------------------------- | -------------- | ---------------------------------------- |
+| `GET`  | `/api/brave/res/v1/web/search`  | Web 搜索       | `X-Subscription-Token: th-...` 或 Bearer |
+| `GET`  | `/api/brave/res/v1/news/search` | 新闻搜索       | `X-Subscription-Token: th-...` 或 Bearer |
+| `GET`  | `/api/brave/res/v1/llm/context` | LLM 上下文片段 | `X-Subscription-Token: th-...` 或 Bearer |
+
+MCP 入口：`https://<your-host>/brave/mcp`（本地 facade；支持 `X-Subscription-Token: th-...` 或
+`Authorization: Bearer th-...`）。
+
+```bash
+curl "https://<your-host>/api/brave/res/v1/web/search?q=rust+async+runtime" \
+  -H "X-Subscription-Token: th-<id>-<secret>"
+```
+
+Credit：`web` 与 `news` 各计 1，`llm_context` 计 2。边界：仅代理 web 搜索、news 搜索与 LLM Context；
+URL 提取/爬取、images、videos、local/place、suggest、spellcheck、summarizer 与 Answers 都不支持。
+
 ## Cherry Studio 接入
 
 1. 在用户控制台创建 Tavily Hikari access token。
