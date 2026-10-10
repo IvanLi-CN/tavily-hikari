@@ -118,7 +118,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
             )
 
             completed = subprocess.run(
-                [sys.executable, str(runtime_runner), "lane-matrix", "--lane-count", "16"],
+                [sys.executable, str(runtime_runner), "lane-matrix", "--lane-count", "20"],
                 cwd=root,
                 check=True,
                 capture_output=True,
@@ -362,7 +362,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         )
 
         self.assertEqual(len(lanes), 12)
-        self.assertLessEqual(len(lanes), 16)
+        self.assertLessEqual(len(lanes), 20)
 
     def test_low_resource_environment_is_explicit(self):
         environment = RUNNER.cargo_environment(cargo_jobs=2, web_assets_dir="/tmp/assets")
@@ -800,6 +800,13 @@ class BackendTestRunnerContractTests(unittest.TestCase):
             max(lane["estimated_seconds"] for lane in lanes),
             15,
         )
+
+    def test_manifest_lpt_stays_within_the_lane_budget(self):
+        _targets, shards = RUNNER.load_manifest()
+        lanes = RUNNER.build_lane_matrix(shards, 20)
+
+        self.assertEqual(len(lanes), 20)
+        self.assertLessEqual(max(lane["estimated_seconds"] for lane in lanes), 120)
 
 
 if __name__ == "__main__":
