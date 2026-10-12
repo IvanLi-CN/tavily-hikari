@@ -468,8 +468,7 @@ pub(crate) fn sanitize_mcp_headers_inner(
 /// `extract_token_from_query_slot`), so all of them are absent by design.
 /// The hosted SerpApi MCP passthrough intentionally reuses
 /// [`sanitize_mcp_headers_inner`] UNCHANGED instead of this list.
-// Wired into live routing by the SerpApi REST facade (plan todo 12).
-#[allow(dead_code)]
+// Consumed by the SerpApi REST facade sanitizer dispatch (plan todo 12).
 pub(crate) fn sanitize_serpapi_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
     const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type"];
 
@@ -497,8 +496,7 @@ pub(crate) fn sanitize_serpapi_http_headers_inner(headers: &HeaderMap) -> Saniti
 /// Outbound header allowlist for the Exa REST facade (plan todo 4). The Exa
 /// client key slot (`x-api-key`) is a client credential Hikari must never
 /// forward; the pooled upstream key is injected at the facade.
-// Wired into live routing by the Exa REST facade (plan todo 13/17).
-#[allow(dead_code)]
+// Consumed by the Exa REST facade sanitizer dispatch (plan todo 13/17).
 pub(crate) fn sanitize_exa_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
     const ALLOWED_HEADERS: &[&str] = &["accept", "accept-encoding", "content-type"];
 
@@ -527,8 +525,7 @@ pub(crate) fn sanitize_exa_http_headers_inner(headers: &HeaderMap) -> SanitizedH
 /// `cache-control`/`api-version` because the Brave API documents them as
 /// caller-tunable; the Brave client key slot (`x-subscription-token`) is
 /// dropped here and the pooled key is injected at the facade.
-// Wired into live routing by the Brave REST facade (plan todo 14/16).
-#[allow(dead_code)]
+// Consumed by the Brave REST facade sanitizer dispatch (plan todo 14/16).
 pub(crate) fn sanitize_brave_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
     const ALLOWED_HEADERS: &[&str] = &[
         "accept",

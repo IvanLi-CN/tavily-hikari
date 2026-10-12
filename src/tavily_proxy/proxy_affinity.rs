@@ -1,12 +1,8 @@
 /// Brave RATE_LIMITED is second-scale (w=1 window): short default backoff with
 /// a wider clamp than the minute-scale MCP-init ladder (plan todo 3). Consumed
-/// by the provider transient-backoff lane (plan todos 11-16); test-covered
-/// until wired, hence the allows (T4 precedent).
-#[allow(dead_code)]
+/// by the provider transient-backoff lane (plan todos 11-16; wired).
 const BRAVE_RATE_LIMITED_BACKOFF_DEFAULT_SECS: i64 = 2;
-#[allow(dead_code)]
 const BRAVE_RATE_LIMITED_BACKOFF_MIN_SECS: i64 = 1;
-#[allow(dead_code)]
 const BRAVE_RATE_LIMITED_BACKOFF_MAX_SECS: i64 = 30;
 /// SerpApi's hourly-flavor 429 ("exceeded its hourly throughput limit") is
 /// hour-scale (draft D6 "hour scope"; plan todo 18): the throughput window
@@ -296,7 +292,6 @@ impl TavilyProxy {
     /// failure_kind-driven via `transient_backoff_retry_after_secs` above.
     /// Arms land on the shared `http_global` scope whose column values the
     /// goldens pin (todo 18, evidence decision D1).
-    #[allow(dead_code)]
     pub(crate) fn effective_provider_rate_limited_backoff_secs(
         provider: providers::ProviderId,
         signal: ProviderFailureSignal,
@@ -433,7 +428,6 @@ impl TavilyProxy {
         Err(ProxyError::NoAvailableKeys)
     }
 
-    #[allow(dead_code)]
     async fn resolve_http_project_affinity_context(
         &self,
         auth_token_id: Option<&str>,
@@ -484,7 +478,6 @@ impl TavilyProxy {
         }))
     }
 
-    #[allow(dead_code)]
     async fn rank_http_project_affinity_candidate_keys(
         &self,
         provider: providers::ProviderId,
@@ -533,7 +526,6 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
-    #[allow(dead_code)]
     async fn build_http_project_affinity_candidates(
         &self,
         ranked: &[String],
@@ -641,7 +633,6 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
-    #[allow(dead_code)]
     async fn maybe_arm_http_project_affinity_backoff(
         &self,
         key_id: &str,
@@ -736,7 +727,6 @@ impl TavilyProxy {
             .is_some())
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn acquire_key_for_http_project(
         &self,
         auth_token_id: Option<&str>,
@@ -755,7 +745,6 @@ impl TavilyProxy {
     /// HTTP-project affinity acquisition scoped to the REQUESTED provider
     /// (plan todo 9): existing bindings pointing at a foreign provider's key
     /// fail the provider predicate and the flow re-ranks within the provider.
-    #[allow(dead_code)]
     pub(crate) async fn acquire_key_for_http_project_provider(
         &self,
         provider: providers::ProviderId,
@@ -1516,7 +1505,7 @@ impl TavilyProxy {
                 // depletion recording stays Tavily-432-ONLY — new providers'
                 // exhaustion signals drive MarkExhausted but NEVER write
                 // api_key_low_quota_depletions. Leases are Tavily-only until
-                // provider-scoped acquisition lands (plan todo 9).
+                // provider-scoped acquisition landed (plan todo 9).
                 if low_quota_depletion_applies(
                     providers::ProviderId::Tavily,
                     analysis.tavily_status_code,

@@ -1439,12 +1439,7 @@ impl KeyStore {
         &self,
         provider: crate::providers::ProviderId,
     ) -> Result<(), ProxyError> {
-        let recovery = match provider {
-            crate::providers::ProviderId::Tavily => crate::providers::TAVILY.recovery,
-            crate::providers::ProviderId::Serpapi => crate::providers::SERPAPI.recovery,
-            crate::providers::ProviderId::Exa => crate::providers::EXA.recovery,
-            crate::providers::ProviderId::Brave => crate::providers::BRAVE.recovery,
-        };
+        let recovery = crate::providers::spec_for(provider).recovery;
 
         let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();

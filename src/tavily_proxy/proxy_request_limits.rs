@@ -1732,8 +1732,7 @@ impl TavilyProxy {
     /// The match is exhaustive over [`ProviderId`] on purpose: adding a new
     /// provider fails to compile here until its X-Project-ID stance is
     /// decided explicitly.
-    // Consumed by the non-Tavily provider facades as they land (plan todos 12-17).
-    #[allow(dead_code)]
+    // Consumed by the provider facades and MCP passthrough (plan todos 11-17).
     pub(crate) async fn apply_upstream_project_id_header_for_provider(
         &self,
         provider: crate::providers::ProviderId,

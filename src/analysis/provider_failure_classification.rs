@@ -3,8 +3,7 @@ use crate::models::*;
 use crate::providers::ProviderId;
 use crate::*;
 
-// Provider failure signals (plan todo 3); wired by todos 11-16 (allows: T4 precedent).
-#[allow(dead_code)]
+// Provider failure signals (plan todo 3); consumed by the provider facades and health wiring (todos 11-18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderFailureSignal {
     Ok,
@@ -16,7 +15,6 @@ pub(crate) enum ProviderFailureSignal {
 }
 
 impl ProviderFailureSignal {
-    #[allow(dead_code)]
     pub(crate) fn failure_kind(self) -> Option<&'static str> {
         match self {
             Self::Ok | Self::Exhausted => None,
@@ -29,7 +27,7 @@ impl ProviderFailureSignal {
 }
 
 /// Exhaustion depletion gate (M8): Tavily-432 ONLY; new providers never write
-/// depletion rows (todo 9 threads provider-scoped leases).
+/// depletion rows (todo 9 threaded provider-scoped leases).
 pub(crate) fn low_quota_depletion_applies(
     provider: ProviderId,
     tavily_status_code: Option<i64>,
@@ -37,7 +35,6 @@ pub(crate) fn low_quota_depletion_applies(
     provider == ProviderId::Tavily && tavily_status_code == Some(432)
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProviderFailureEvidence<'a> {
     pub(crate) status: u16,
@@ -45,7 +42,6 @@ pub(crate) struct ProviderFailureEvidence<'a> {
     pub(crate) body: &'a [u8],
 }
 
-#[allow(dead_code)]
 pub(crate) fn classify_provider_failure(
     provider: ProviderId,
     evidence: &ProviderFailureEvidence<'_>,
@@ -58,7 +54,6 @@ pub(crate) fn classify_provider_failure(
     }
 }
 
-#[allow(dead_code)]
 fn default_provider_failure_signal(status: u16) -> ProviderFailureSignal {
     if (200..300).contains(&status) {
         ProviderFailureSignal::Ok
@@ -69,19 +64,20 @@ fn default_provider_failure_signal(status: u16) -> ProviderFailureSignal {
     }
 }
 
-#[allow(dead_code)]
 fn retry_after_header_secs(headers: Option<&HeaderMap>) -> Option<u64> {
     let value = headers?.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
     value.trim().parse::<u64>().ok()
 }
 
+/// Test-only helper: the production Brave harvest parses the month window
+/// via `parse_brave_rate_limit_month_window` (positional X-RateLimit-Policy
+/// pairing). Kept for header-format unit pins; not wired into facades.
 #[allow(dead_code)]
 pub(crate) fn brave_rate_limit_reset_secs(headers: Option<&HeaderMap>) -> Option<i64> {
     let value = headers?.get("x-ratelimit-reset")?.to_str().ok()?;
     value.trim().parse::<i64>().ok()
 }
 
-#[allow(dead_code)]
 fn classify_tavily_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
     match evidence.status {
         432 => ProviderFailureSignal::Exhausted,
@@ -95,7 +91,6 @@ fn classify_tavily_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFa
 
 /// SerpApi 429 DUAL-semantic: "run out of searches" (raw JSON or SSE frame)
 /// exhausts; any other message is transient throughput, NEVER exhaustion.
-#[allow(dead_code)]
 fn classify_serpapi_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
     match evidence.status {
         401 | 403 => ProviderFailureSignal::AuthFailed,
@@ -115,7 +110,6 @@ fn classify_serpapi_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderF
     }
 }
 
-#[allow(dead_code)]
 fn upstream_error_texts(body: &[u8]) -> Vec<String> {
     let mut messages = Vec::new();
     if let Ok(parsed) = serde_json::from_slice::<Value>(body) {
@@ -131,7 +125,6 @@ fn upstream_error_texts(body: &[u8]) -> Vec<String> {
     texts
 }
 
-#[allow(dead_code)]
 fn push_upstream_error_texts(value: &Value, out: &mut Vec<String>) {
     match value.get("error") {
         Some(Value::String(message)) => out.push(message.clone()),
@@ -150,7 +143,6 @@ fn push_upstream_error_texts(value: &Value, out: &mut Vec<String>) {
     }
 }
 
-#[allow(dead_code)]
 fn classify_exa_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
     match evidence.status {
         401 => ProviderFailureSignal::AuthFailed,
@@ -174,7 +166,6 @@ fn classify_exa_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailu
     }
 }
 
-#[allow(dead_code)]
 fn json_string_field(body: &[u8], path: &[&str]) -> Option<String> {
     let parsed = serde_json::from_slice::<Value>(body).ok()?;
     let (last, parents) = path.split_last()?;
@@ -192,7 +183,6 @@ fn json_string_field(body: &[u8], path: &[&str]) -> Option<String> {
 /// Brave envelope `{error:{code,...}}`. Live-probed: INVALID token = 422
 /// SUBSCRIPTION_TOKEN_INVALID (NOT 401); VALIDATION promotes to AuthFailed
 /// only when meta.errors loc = ["header","x-subscription-token"].
-#[allow(dead_code)]
 fn classify_brave_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFailureSignal {
     let rate_limited = || ProviderFailureSignal::RateLimited {
         retry_after_secs: retry_after_header_secs(evidence.headers),
@@ -220,7 +210,6 @@ fn classify_brave_failure(evidence: &ProviderFailureEvidence<'_>) -> ProviderFai
     }
 }
 
-#[allow(dead_code)]
 fn brave_validation_flags_subscription_token(body: &[u8]) -> bool {
     let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
         return false;
