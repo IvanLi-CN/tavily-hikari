@@ -18,6 +18,9 @@
 - 2026-09-30 / 10-01: T21-T26 控制台、demo、技能包落地。T19（SerpApi `/account` 车道 +
   provider 守卫）代码完成、G1-G4 green，因 WSL 验证通道（hikari-f）主机故障
   （REGDB_E_CLASSNOTREG，需管理员修复）停在 G5/G6，按“never commit red/unverified”契约**未提交**。
+- 2026-10-01: WSL 验证通道经管理员修复（VirtualMachinePlatform 重装 + ext4.vhdx 原地重注册）；T19 G5/G6 全绿并提交；T28 公共文档落地。
+- 2026-10-09/12: T29 跨商 E2E 矩阵、T30 迁移/HA/sidecar 加固（发现并修复 warm-startup sidecar provider 列缺失的生产缺陷，fix(db) 独立提交）、T31 前端加固（no-fix run）、T32 CI 面（契约套件 27/27；实测校准权重 + lane-count 16→20，owner 授权）完成；endgame 合并补救提交为 35 提交 one-per-todo 栈（树同一性证明）；F1-F4 终审全部 APPROVE（F3 覆盖 A1-A8/B/C/D 全矩阵，31 PNG + demo smoke 12/12）。
+- 2026-10-12: F-wave 后卫生提交：清理已接线代码上的陈旧 dead_code 标记（17 处），reset_monthly 恢复策略收敛到 spec_for(provider).recovery。
 - 2026-10-09: T27 交付设计文档 `docs/multi-provider-search-proxy.md` 与本 spec 主题；
   `rebalance-mcp-gateway/SPEC.md` 追加 additive amendment，把已提交代码里的 provider-scoped
   `upstream_operation` 词表纳入既有 closed enum 契约。
@@ -61,10 +64,9 @@
 
 ## Status of pending lanes
 
-- `quota_sync/serpapi`（T19）: 设计冻结、代码完成；G1 RED→GREEN、G2 goldens、G3 clippy、
-  G4 budgets green；G5 verify/shards 因测试搬移未重跑、G6 QA 未开始；未提交。
+- `quota_sync/serpapi`（T19）: 已提交；G1-G6 全绿（G5 = verify 零未匹配 + 11 shards 753 tests 0 fail；G6 = 调度器驱动 QA + Suspended 维护记录不 disabling）。
   证据：`.omo/evidence/task-19-serpapi-exa-brave-providers.txt`。
-- 公共 docs-site（T28）与最终验证波（T29-T32、F1-F4）: 未完成，属本主题后续。
+- 公共 docs-site（T28）与最终验证波（T29-T32、F1-F4）: 全部完成；F1-F4 四路终审全部 APPROVE。
 
 ## References
 

@@ -24,7 +24,7 @@
 - CI five-minute backend path
   - `Backend Shard Plan` no longer waits for `web-assets`; it creates the minimal embedded-web
     fixture, compiles all backend targets with `ci-test`, verifies coverage, uploads one backend
-    bundle, and exports a sixteen-lane matrix within the fixed maximum.
+    bundle, and exports a twenty-lane matrix within the fixed maximum (16 -> 20 after the multi-provider suites; see multi-provider-search-integration).
   - The plan first restores an exact v2 backend bundle keyed by all compilation and sharding inputs. A hit
     skips system and Rust setup plus Cargo compilation, but still runs the existing checksum and coverage
     verifier before uploading a per-run artifact. A miss uses `target/ci-test` only as a cold-build
@@ -37,7 +37,7 @@
   - `Backend Tests` remains the stable aggregate check. The target is the native Actions interval
     from plan start to aggregate completion, with no new required performance check.
   - Unrelated heavy jobs keep their existing commands but wait for the backend aggregate, leaving
-    the hosted runner concurrency available for the fixed sixteen backend lanes. This changes only
+    the hosted runner concurrency available for the fixed twenty backend lanes. This changes only
     job ordering; it does not alter release, lint, or version-layer validation semantics.
 - Artifact and lane contracts
   - `ci-test` inherits `test` while disabling debug information and incremental compilation.
@@ -85,7 +85,7 @@
     headroom. Request-log retention is divided into GC maintenance and serial policy groups, so
     its two long prefixes are independently packed while the policy process remains serial.
     Affinity, reconciliation, LinuxDo, reporting, and server HTTP contract retain enough weight
-    to keep the sixteen-lane LPT output within the 125-second lane budget after semantic splits.
+    to keep the twenty-lane LPT output within the 120-second lane budget after semantic splits.
   - HA lifecycle coverage is divided into mutually exclusive lifecycle, lifecycle-state base, HA-event, and
     HA-recovery groups. The event and recovery groups preserve separate test processes, so the long HA family
     cannot become one atomic lane tail.
