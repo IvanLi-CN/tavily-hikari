@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7.1
 
 ########## Stage 1: compile the Rust binary ##########
-FROM rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS builder
+FROM rust:1.99-bookworm@sha256:59037199c44290f2befcdd58dcc540164763fc296950255aaefeef096a1866b0 AS builder
 WORKDIR /app
 
 RUN apt-get update \
