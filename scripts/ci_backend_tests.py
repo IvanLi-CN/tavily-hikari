@@ -168,6 +168,38 @@ SUPPORT_BINARIES_BY_TARGET = {
     "integration:mcp_session_affinity_e2e": {
         "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
     },
+    "integration:provider_facades_contract": {
+        "MOCK_BRAVE_TEST_BIN": "mock_brave",
+        "MOCK_EXA_TEST_BIN": "mock_exa",
+        "MOCK_SERPAPI_TEST_BIN": "mock_serpapi",
+        "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
+    },
+    "integration:provider_health_matrix_e2e": {
+        "MOCK_BRAVE_TEST_BIN": "mock_brave",
+        "MOCK_EXA_TEST_BIN": "mock_exa",
+        "MOCK_SERPAPI_TEST_BIN": "mock_serpapi",
+        "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
+    },
+    "integration:provider_matrix_e2e": {
+        "MOCK_BRAVE_TEST_BIN": "mock_brave",
+        "MOCK_EXA_TEST_BIN": "mock_exa",
+        "MOCK_SERPAPI_TEST_BIN": "mock_serpapi",
+        "MOCK_TAVILY_TEST_BIN": "mock_tavily",
+        "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
+    },
+    "integration:provider_mcp_e2e": {
+        "MOCK_BRAVE_TEST_BIN": "mock_brave",
+        "MOCK_EXA_TEST_BIN": "mock_exa",
+        "MOCK_SERPAPI_TEST_BIN": "mock_serpapi",
+        "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
+    },
+    "integration:provider_migration_hardening": {
+        "MOCK_BRAVE_TEST_BIN": "mock_brave",
+        "MOCK_EXA_TEST_BIN": "mock_exa",
+        "MOCK_SERPAPI_TEST_BIN": "mock_serpapi",
+        "MOCK_TAVILY_TEST_BIN": "mock_tavily",
+        "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
+    },
     "integration:request_kind_canonical_backfill": {
         "REQUEST_KIND_CANONICAL_BACKFILL_TEST_BIN": "request_kind_canonical_backfill",
     },
