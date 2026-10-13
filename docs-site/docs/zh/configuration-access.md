@@ -24,24 +24,24 @@ Tavily Hikari 至少有两层访问要分清：
 
 无论你采用哪种访问模型，下面这组参数都是最核心的：
 
-| Flag / Env                                        | 是否通常要关心 | 作用                           |
-| ------------------------------------------------- | -------------- | ------------------------------ |
-| `--upstream` / `TAVILY_UPSTREAM`                  | 是             | Tavily MCP 上游地址            |
-| `TAVILY_USAGE_BASE`                               | 是             | Tavily HTTP / usage 上游基地址 |
-| `--serpapi-upstream` / `SERPAPI_UPSTREAM`         | 可选           | SerpApi REST 上游基地址        |
-| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM` | 可选           | SerpApi 托管 MCP 上游地址      |
-| `--exa-upstream` / `EXA_UPSTREAM`                 | 可选           | Exa REST 上游基地址            |
-| `--brave-upstream` / `BRAVE_UPSTREAM`             | 可选           | Brave REST 上游基地址          |
-| `--bind` / `PROXY_BIND`                           | 是             | 监听地址                       |
-| `--port` / `PROXY_PORT`                           | 是             | 监听端口                       |
-| `--db-path` / `PROXY_DB_PATH`                     | 是             | SQLite 数据库路径              |
-| `LOW_QUOTA_DEPLETION_THRESHOLD`                   | 可选           | 低余额 432 key 阈值            |
+| Flag / Env                                        | 是否通常要关心 | 作用                            |
+| ------------------------------------------------- | -------------- | ------------------------------- |
+| `--upstream` / `TAVILY_UPSTREAM`                  | 是             | Tavily MCP 上游地址             |
+| `TAVILY_USAGE_BASE`                               | 是             | Tavily HTTP / usage 上游基地址  |
+| `--serpapi-upstream` / `SERPAPI_UPSTREAM`         | 可选           | SerpApi REST 上游基地址         |
+| `--serpapi-mcp-upstream` / `SERPAPI_MCP_UPSTREAM` | 可选           | SerpApi 托管 MCP 上游地址       |
+| `--exa-upstream` / `EXA_UPSTREAM`                 | 可选           | Exa REST 上游基地址             |
+| `--brave-upstream` / `BRAVE_UPSTREAM`             | 可选           | Brave REST 上游基地址           |
+| `--bind` / `PROXY_BIND`                           | 是             | 监听地址                        |
+| `--port` / `PROXY_PORT`                           | 是             | 监听端口                        |
+| `--db-path` / `PROXY_DB_PATH`                     | 是             | SQLite 数据库路径               |
+| `LOW_QUOTA_DEPLETION_THRESHOLD`                   | 可选           | 低余额 432 key 阈值             |
 | `PUBLIC_METRICS_CORS_ORIGINS`                     | 可选           | 公开指标 API 的浏览器来源白名单 |
-| `--static-dir` / `WEB_STATIC_DIR`                 | 视情况         | 静态前端目录                   |
-| `--keys` / `TAVILY_API_KEYS`                      | 可选           | 启动时一次性导入 Tavily key    |
-| `--serpapi-keys` / `SERPAPI_API_KEYS`             | 可选           | 启动时一次性导入 SerpApi key   |
-| `--exa-keys` / `EXA_API_KEYS`                     | 可选           | 启动时一次性导入 Exa key       |
-| `--brave-keys` / `BRAVE_API_KEYS`                 | 可选           | 启动时一次性导入 Brave key     |
+| `--static-dir` / `WEB_STATIC_DIR`                 | 视情况         | 静态前端目录                    |
+| `--keys` / `TAVILY_API_KEYS`                      | 可选           | 启动时一次性导入 Tavily key     |
+| `--serpapi-keys` / `SERPAPI_API_KEYS`             | 可选           | 启动时一次性导入 SerpApi key    |
+| `--exa-keys` / `EXA_API_KEYS`                     | 可选           | 启动时一次性导入 Exa key        |
+| `--brave-keys` / `BRAVE_API_KEYS`                 | 可选           | 启动时一次性导入 Brave key      |
 
 补充说明：
 
