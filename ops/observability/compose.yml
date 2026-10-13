@@ -1,0 +1,29 @@
+services:
+  prometheus:
+    image: ${HIKARI_PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./recording-rules.yml:/etc/prometheus/rules/hikari-recording-rules.yml:ro
+      - ./file_sd:/etc/prometheus/file_sd:ro
+      - ./secrets:/etc/prometheus/secrets:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: ${HIKARI_GRAFANA_IMAGE:-grafana/grafana:11.2.0}
+    profiles: [observability]
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards/hikari:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:

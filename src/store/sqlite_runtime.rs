@@ -2787,6 +2787,24 @@ impl SqliteRuntime {
                 metrics.hold_histogram[hold_bucket].saturating_add(1);
         }
         metrics.rows_affected = metrics.rows_affected.saturating_add(rows_affected);
+        let outcome = if deferred.is_some() {
+            "degraded"
+        } else if error {
+            "error"
+        } else {
+            "success"
+        };
+        let reason = deferred
+            .map(SqliteAdmissionDeferReason::as_str)
+            .unwrap_or(if error { "database" } else { "none" });
+        crate::observability::global_metrics().record_sqlite(
+            operation.workload_class(),
+            operation.as_str(),
+            pool_wait,
+            begin_wait,
+            outcome,
+            reason,
+        );
         let idle_connections = self.inner.pool.num_idle().min(u32::MAX as usize) as u32;
         let in_use_connections = self.inner.pool.size().saturating_sub(idle_connections);
         window.minimum_idle_connections = Some(

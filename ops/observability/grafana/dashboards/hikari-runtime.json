@@ -1,0 +1,18 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "rate(hikari_process_cpu_seconds_total[5m])", "refId": "A"}], "title": "Process CPU", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "hikari_process_memory_bytes", "refId": "A"}], "title": "Process memory", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "sum by (reason) (rate(hikari_observability_dropped_total[5m]))", "refId": "A"}], "title": "Dropped observability samples", "type": "timeseries"}
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "runtime"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Hikari Runtime",
+  "uid": "hikari-runtime",
+  "version": 1
+}

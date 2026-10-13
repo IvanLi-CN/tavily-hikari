@@ -8,6 +8,7 @@ mod forward_proxy;
 mod ha;
 mod linuxdo_credit_recharge;
 mod models;
+pub mod observability;
 mod remote_attempt_admission;
 mod store;
 mod tavily_proxy;

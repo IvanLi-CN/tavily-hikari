@@ -23,7 +23,7 @@
 
 ## Non-goals
 
-- 不新增 Prometheus/OTel/owner-facing metrics 页面。
+- 本 spec 不定义 Prometheus/OTel/owner-facing metrics 页面；exporter、Prometheus/Grafana provisioning 和 operational dashboard 由 [`monitoring-dashboard/SPEC.md`](../monitoring-dashboard/SPEC.md) 负责。
 - 不改变 HA、dashboard、request logs、forward-proxy startup 的公开业务 contract。
 - 不把秘密、header/body 明文或全量 SQL debug 输出进默认日志。
 

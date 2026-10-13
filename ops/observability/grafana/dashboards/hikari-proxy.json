@@ -1,0 +1,18 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "sum by (upstream_class, operation) (rate(hikari_upstream_requests_total[5m]))", "refId": "A"}], "title": "Upstream attempt rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "sum(rate(hikari_upstream_requests_total{outcome=~\"error|timeout|upstream_exhausted\"}[5m])) / clamp_min(sum(rate(hikari_upstream_requests_total[5m])), 0.001)", "refId": "A"}], "title": "Upstream error rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "hikari:upstream_p95_seconds5m", "refId": "A"}], "title": "Upstream P95", "type": "timeseries"}
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "proxy"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Hikari Proxy",
+  "uid": "hikari-proxy",
+  "version": 1
+}

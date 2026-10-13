@@ -1,0 +1,6 @@
+- targets:
+    - 127.0.0.1:9091
+  labels:
+    service: tavily-hikari
+    environment: example
+    instance: replace-me

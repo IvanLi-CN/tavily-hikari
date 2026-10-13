@@ -620,6 +620,11 @@ async fn serve_with_shutdown(
         "tavily proxy listening"
     );
 
+    let mut metrics_exporter = tavily_hikari::observability::start_exporter(
+        tavily_hikari::observability::global_metrics(),
+    )
+    .await;
+
     #[cfg(test)]
     if let Some((prewarm_blocked, prewarm_gate)) = prewarm_gate {
         let _ = prewarm_blocked.send(state.clone());
@@ -649,12 +654,17 @@ async fn serve_with_shutdown(
     let shutdown_proxy = state.proxy.clone();
     let shutdown_state = state.clone();
     let post_shutdown_state = state.clone();
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
         router
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 db_maintenance_http_gate,
+            ))
+            // Keep operational request metrics on the complete business router,
+            // including fallback and maintenance-gated terminal responses.
+            .layer(axum::middleware::from_fn(
+                tavily_hikari::observability::http_metrics_middleware,
             ))
             .with_state(state)
             .into_make_service_with_connect_info::<SocketAddr>(),
@@ -666,7 +676,11 @@ async fn serve_with_shutdown(
         shutdown_proxy.begin_sqlite_maintenance_run_shutdown();
         shutdown_proxy.nudge_request_stats_flush().await;
     })
-    .await?;
+    .await;
+    if let Some(exporter) = metrics_exporter.take() {
+        exporter.shutdown().await;
+    }
+    serve_result?;
     shutdown_admin_privacy_status_refresh(post_shutdown_state.as_ref()).await;
     shutdown_admin_alerts_workers(post_shutdown_state.as_ref()).await;
     if let Err(err) = post_shutdown_state
@@ -1632,6 +1646,11 @@ async fn run_ha_sync_once_for_peer(
 }
 
 fn spawn_business_background_tasks(state: Arc<AppState>) {
+    tavily_hikari::observability::global_metrics().record_background(
+        "background_tasks",
+        "success",
+        "started",
+    );
     spawn_maintenance_worker(state.clone());
     spawn_upstream_reconciliation_startup_resume(state.clone());
     spawn_scheduled_job_stale_reaper(state.clone());

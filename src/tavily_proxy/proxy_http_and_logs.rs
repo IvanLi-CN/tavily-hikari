@@ -112,6 +112,7 @@ impl TavilyProxy {
         let request_body = request.body.clone();
         let request_url = url.clone();
         let tavily_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, "mcp", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -126,6 +127,15 @@ impl TavilyProxy {
                     .body(request_body.clone())
             })
             .await;
+        crate::observability::global_metrics().record_upstream(
+            "tavily_mcp",
+            upstream_operation.unwrap_or("mcp"),
+            response
+                .as_ref()
+                .map(|(response, _)| response.status())
+                .map_err(|_| ()),
+            upstream_started.elapsed(),
+        );
 
         match response {
             Ok((response, _relay_lease)) => {
@@ -368,6 +378,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -384,6 +395,15 @@ impl TavilyProxy {
                 builder.body(request_body.clone())
             })
             .await;
+        crate::observability::global_metrics().record_upstream(
+            "tavily_http",
+            upstream_operation.unwrap_or(upstream_path.trim_start_matches('/')),
+            response
+                .as_ref()
+                .map(|(response, _)| response.status())
+                .map_err(|_| ()),
+            upstream_started.elapsed(),
+        );
 
         match response {
             Ok((response, _relay_lease)) => {

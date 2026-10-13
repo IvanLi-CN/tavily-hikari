@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "hikari:request_rate5m", "refId": "A"}], "title": "Request rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "hikari:error_rate5m", "refId": "A"}], "title": "Error rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "hikari:request_p95_seconds5m", "refId": "A"}], "title": "Request P95", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "id": 4, "targets": [{"expr": "hikari:memory_headroom_bytes", "refId": "A"}], "title": "Memory headroom", "type": "timeseries"}
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "overview"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Hikari Overview",
+  "uid": "hikari-overview",
+  "version": 1
+}

@@ -1,0 +1,18 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "targets": [{"expr": "hikari:sqlite_wait_p95_seconds5m", "refId": "A"}], "title": "SQLite wait P95", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "targets": [{"expr": "sum by (workload_class, outcome) (rate(hikari_sqlite_transactions_total[5m]))", "refId": "A"}], "title": "SQLite transactions", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}, "id": 3, "targets": [{"expr": "sum by (operation, outcome) (rate(hikari_background_tasks_total[5m]))", "refId": "A"}], "title": "Background task outcomes", "type": "timeseries"}
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "storage"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "Hikari Storage",
+  "uid": "hikari-storage",
+  "version": 1
+}

@@ -1,0 +1,26 @@
+groups:
+  - name: hikari-recording
+    interval: 30s
+    rules:
+      - record: hikari:request_rate5m
+        expr: sum(rate(hikari_http_requests_total[5m]))
+      - record: hikari:error_rate5m
+        expr: |
+          sum(rate(hikari_http_requests_total{outcome=~"error|timeout|upstream_exhausted"}[5m]))
+          / clamp_min(sum(rate(hikari_http_requests_total[5m])), 0.001)
+      - record: hikari:request_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(hikari_http_duration_seconds_bucket{phase="none"}[5m])))
+      - record: hikari:upstream_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(hikari_upstream_duration_seconds_bucket[5m])))
+      - record: hikari:sqlite_wait_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(hikari_sqlite_wait_duration_seconds_bucket[5m])))
+      - record: hikari:sample_count5m
+        expr: sum(increase(hikari_http_requests_total[5m]))
+      - record: hikari:memory_headroom_bytes
+        expr: max(hikari_process_memory_bytes{reason="headroom"})
