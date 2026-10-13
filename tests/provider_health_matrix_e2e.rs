@@ -382,17 +382,40 @@ async fn wait_for_provider_keys(db_str: &str, provider: &str, expected: i64) {
 }
 
 async fn create_test_token(base_url: &str) -> String {
-    let payload = Client::new()
-        .post(format!("{base_url}/api/tokens"))
-        .json(&json!({}))
-        .send()
-        .await
-        .expect("create token request")
-        .error_for_status()
-        .expect("create token status")
-        .json::<Value>()
-        .await
-        .expect("decode token payload");
+    // Same documented transient as provider_mcp_e2e and
+    // provider_facades_contract: the post-listen maintenance burst can
+    // saturate the small SQLite pool, so admin mutations answer 503
+    // (Retry-After when set). Ride it out with a bounded retry instead of
+    // a single-shot panic; see .omo/evidence/e5-regression-debug.log for
+    // the upstream byte-identity proof and flake-rate measurements.
+    let client = Client::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let payload = loop {
+        let response = client
+            .post(format!("{base_url}/api/tokens"))
+            .json(&json!({}))
+            .send()
+            .await
+            .expect("create token request");
+        let status = response.status();
+        if status.as_u16() == 503 && Instant::now() < deadline {
+            let wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|secs| secs.parse::<u64>().ok())
+                .map(|secs| Duration::from_secs(secs.min(2)))
+                .unwrap_or(Duration::from_millis(400));
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+        break response
+            .error_for_status()
+            .expect("create token status")
+            .json::<Value>()
+            .await
+            .expect("decode token payload");
+    };
     payload["token"].as_str().expect("token secret").to_string()
 }
 
