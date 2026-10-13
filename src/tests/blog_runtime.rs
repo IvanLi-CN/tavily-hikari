@@ -424,12 +424,15 @@ async fn public_blog_runtime_tracks_key_reimport_membership_intervals() {
 
     proxy
         .key_store
-        .sync_keys(&[])
+        .sync_keys(crate::providers::ProviderId::Tavily, &[])
         .await
         .expect("soft-delete missing key");
     proxy
         .key_store
-        .sync_keys(std::slice::from_ref(&key))
+        .sync_keys(
+            crate::providers::ProviderId::Tavily,
+            std::slice::from_ref(&key),
+        )
         .await
         .expect("reimport key");
     let key_id = sqlx::query_scalar::<_, String>("SELECT id FROM api_keys WHERE api_key = ?")
