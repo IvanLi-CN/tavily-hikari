@@ -1026,18 +1026,12 @@ mod exa {
         .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
         .env("EXA_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
         .env("EXA_API_KEYS", pool_keys.join(","))
-        .env(
-            "SERPAPI_UPSTREAM",
-            format!("http://127.0.0.1:{dead_port}"),
-        )
+        .env("SERPAPI_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
         .env(
             "SERPAPI_MCP_UPSTREAM",
             format!("http://127.0.0.1:{dead_port}/mcp"),
         )
-        .env(
-            "BRAVE_UPSTREAM",
-            format!("http://127.0.0.1:{dead_port}"),
-        )
+        .env("BRAVE_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
         .env("PROXY_BIND", "127.0.0.1")
         .env("PROXY_PORT", port.to_string())
         .env("PROXY_DB_PATH", &db_str)
@@ -1084,8 +1078,7 @@ mod exa {
             path: &str,
             body: &Value,
         ) -> (reqwest::StatusCode, reqwest::header::HeaderMap, Value) {
-            self.post_facade_with_token(path, &self.token, body)
-                .await
+            self.post_facade_with_token(path, &self.token, body).await
         }
 
         async fn post_facade_with_token(
@@ -1190,7 +1183,8 @@ mod exa {
             assert_eq!(row.get::<i64, _>("tavily_status_code"), 200, "{path}");
             assert_eq!(row.get::<String, _>("result_status"), "success", "{path}");
             assert_eq!(
-                row.get::<Option<String>, _>("upstream_operation").as_deref(),
+                row.get::<Option<String>, _>("upstream_operation")
+                    .as_deref(),
                 Some(operation),
                 "{path}"
             );
@@ -1212,7 +1206,11 @@ mod exa {
             .fetch_one(&pool)
             .await
             .expect("billing ledger row");
-            assert_eq!(ledger.get::<String, _>("billing_state"), "charged", "{path}");
+            assert_eq!(
+                ledger.get::<String, _>("billing_state"),
+                "charged",
+                "{path}"
+            );
             assert_eq!(
                 ledger.get::<Option<i64>, _>("business_credits"),
                 Some(credits),
@@ -1251,18 +1249,28 @@ mod exa {
     /// an omitted stream pass through verbatim.
     #[tokio::test]
     async fn exa_truthy_stream_gets_typed_400_with_zero_upstream_cost() {
-        let harness =
-            spawn_harness("facades-exa-stream", &["ex-pool-stream"], &["ex-pool-stream"]).await;
+        let harness = spawn_harness(
+            "facades-exa-stream",
+            &["ex-pool-stream"],
+            &["ex-pool-stream"],
+        )
+        .await;
 
         let before = harness.mock_metrics().await;
         assert_eq!(before, json!({ "search": 0, "contents": 0, "answer": 0 }));
 
         for (path, body) in [
             ("/api/exa/answer", json!({ "query": "x", "stream": true })),
-            ("/api/exa/answer", json!({ "query": "x", "stream": "always" })),
+            (
+                "/api/exa/answer",
+                json!({ "query": "x", "stream": "always" }),
+            ),
             ("/api/exa/answer", json!({ "query": "x", "stream": 1 })),
             ("/api/exa/search", json!({ "query": "y", "stream": "auto" })),
-            ("/api/exa/contents", json!({ "urls": ["u"], "stream": true })),
+            (
+                "/api/exa/contents",
+                json!({ "urls": ["u"], "stream": true }),
+            ),
         ] {
             let (status, _headers, response_body) = harness.post_facade(path, &body).await;
             assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{path} {body}");
@@ -1303,10 +1311,7 @@ mod exa {
 
         // Explicit stream:false is NOT truthy: verbatim passthrough.
         let (status, _headers, body) = harness
-            .post_facade(
-                "/api/exa/answer",
-                &json!({ "query": "x", "stream": false }),
-            )
+            .post_facade("/api/exa/answer", &json!({ "query": "x", "stream": false }))
             .await;
         assert_eq!(status, reqwest::StatusCode::OK);
         assert_eq!(body, mock_answer_body());
@@ -1322,8 +1327,7 @@ mod exa {
     /// the th- token appears on no persisted surface.
     #[tokio::test]
     async fn exa_client_key_slots_stripped_and_th_token_never_persisted() {
-        let harness =
-            spawn_harness("facades-exa-redact", &["ex-pool-3"], &["ex-pool-3"]).await;
+        let harness = spawn_harness("facades-exa-redact", &["ex-pool-3"], &["ex-pool-3"]).await;
 
         // Forged native header + body key slots alongside the Bearer token:
         // 200 is positive proof the POOLED key arrived in x-api-key (the
@@ -1526,7 +1530,11 @@ mod exa {
 
         // Next request on the SAME token rebinds off the exhausted key.
         let (status2, _headers, body2) = harness
-            .post_facade_with_token("/api/exa/search", &budget_token, &json!({ "query": "budget" }))
+            .post_facade_with_token(
+                "/api/exa/search",
+                &budget_token,
+                &json!({ "query": "budget" }),
+            )
             .await;
         assert_eq!(status2, reqwest::StatusCode::OK);
         assert_eq!(body2, mock_search_body());
@@ -1562,8 +1570,7 @@ mod exa {
     /// shared HTTP scope; the key stays active and nothing bills.
     #[tokio::test]
     async fn exa_429_retry_after_passes_through_and_arms_transient_backoff() {
-        let harness =
-            spawn_harness("facades-exa-429", &["key-throttled"], &["ex-x"]).await;
+        let harness = spawn_harness("facades-exa-429", &["key-throttled"], &["ex-x"]).await;
 
         let (status, headers, body) = harness
             .post_facade("/api/exa/search", &json!({ "query": "throttle" }))
@@ -1832,10 +1839,7 @@ mod brave {
         .env("TAVILY_USAGE_BASE", format!("http://127.0.0.1:{dead_port}"))
         .env("BRAVE_UPSTREAM", format!("http://127.0.0.1:{mock_port}"))
         .env("BRAVE_API_KEYS", pool_keys.join(","))
-        .env(
-            "SERPAPI_UPSTREAM",
-            format!("http://127.0.0.1:{dead_port}"),
-        )
+        .env("SERPAPI_UPSTREAM", format!("http://127.0.0.1:{dead_port}"))
         .env(
             "SERPAPI_MCP_UPSTREAM",
             format!("http://127.0.0.1:{dead_port}/mcp"),
@@ -2016,9 +2020,7 @@ mod brave {
         {
             // Fresh token per endpoint so the ledger/quota asserts are exact.
             let (token, token_id) = create_test_token(&harness.base_url).await;
-            let (status, headers, body) = harness
-                .get_facade_with_token(path, &token, query)
-                .await;
+            let (status, headers, body) = harness.get_facade_with_token(path, &token, query).await;
             assert_eq!(status, reqwest::StatusCode::OK, "{path}");
             // Field-identical to the mock response (verbatim passthrough, no
             // transformation; M22 forbids response inspection).
@@ -2075,7 +2077,8 @@ mod brave {
             assert_eq!(row.get::<i64, _>("tavily_status_code"), 200, "{path}");
             assert_eq!(row.get::<String, _>("result_status"), "success", "{path}");
             assert_eq!(
-                row.get::<Option<String>, _>("upstream_operation").as_deref(),
+                row.get::<Option<String>, _>("upstream_operation")
+                    .as_deref(),
                 Some(operation),
                 "{path}"
             );
@@ -2085,7 +2088,10 @@ mod brave {
             // persisted stripped query proves the passthrough text).
             let persisted_query = row.get::<Option<String>, _>("query").unwrap_or_default();
             assert!(persisted_query.contains("q="), "{path}: {persisted_query}");
-            assert!(!persisted_query.contains("th-"), "{path}: {persisted_query}");
+            assert!(
+                !persisted_query.contains("th-"),
+                "{path}: {persisted_query}"
+            );
             assert!(
                 !persisted_query.contains("X-Subscription-Token"),
                 "{path}: {persisted_query}"
@@ -2106,7 +2112,11 @@ mod brave {
             .fetch_one(&pool)
             .await
             .expect("billing ledger row");
-            assert_eq!(ledger.get::<String, _>("billing_state"), "charged", "{path}");
+            assert_eq!(
+                ledger.get::<String, _>("billing_state"),
+                "charged",
+                "{path}"
+            );
             assert_eq!(
                 ledger.get::<Option<i64>, _>("business_credits"),
                 Some(credits),
@@ -2135,8 +2145,7 @@ mod brave {
     /// pooled key, and neither the th-token nor the pooled key ever persists.
     #[tokio::test]
     async fn brave_native_slot_auth_strips_client_key_and_never_persists_secrets() {
-        let harness =
-            spawn_harness("facades-brave-redact", &["br-pool-3"], &["br-pool-3"]).await;
+        let harness = spawn_harness("facades-brave-redact", &["br-pool-3"], &["br-pool-3"]).await;
 
         let url = format!("{}{WEB_PATH}?q=native-slot", harness.base_url);
         let response = Client::new()
@@ -2228,7 +2237,11 @@ mod brave {
         // so the harvest parses nothing and writes nothing (bounded write).
         let (s3, _h3, _b3) = harness.get_facade(NEWS_PATH, "q=nomaterial").await;
         assert_eq!(s3, reqwest::StatusCode::OK);
-        assert_eq!(harness.brave_passive_sample_count().await, 2, "no new sample");
+        assert_eq!(
+            harness.brave_passive_sample_count().await,
+            2,
+            "no new sample"
+        );
         let (limit3, remaining3, synced3) = harness.key_quota("br-harvest").await;
         assert_eq!(limit3, Some(1000));
         assert_eq!(remaining3, Some(998));
@@ -2285,7 +2298,10 @@ mod brave {
         .fetch_one(&pool)
         .await
         .expect("quarantine scan");
-        assert_eq!(quarantined, 1, "422 auth-fail must quarantine the pooled key");
+        assert_eq!(
+            quarantined, 1,
+            "422 auth-fail must quarantine the pooled key"
+        );
 
         let charged: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM billing_ledger WHERE token_id = ? AND billing_state = 'charged'",
@@ -2318,8 +2334,9 @@ mod brave {
         let mut quota_token: Option<(String, String)> = None;
         for _ in 0..3 {
             let (token, token_id) = create_test_token(&harness.base_url).await;
-            let (status, _headers, body) =
-                harness.get_facade_with_token(WEB_PATH, &token, "q=quota").await;
+            let (status, _headers, body) = harness
+                .get_facade_with_token(WEB_PATH, &token, "q=quota")
+                .await;
             if status == reqwest::StatusCode::PAYMENT_REQUIRED {
                 assert_eq!(body, mock_quota_limited_body(), "402 body verbatim");
                 quota_token = Some((token, token_id));
@@ -2378,8 +2395,7 @@ mod brave {
     /// active and nothing bills.
     #[tokio::test]
     async fn brave_429_rate_limited_arms_second_scale_backoff_without_exhaustion() {
-        let harness =
-            spawn_harness("facades-brave-429", &["key-throttled"], &["br-x"]).await;
+        let harness = spawn_harness("facades-brave-429", &["key-throttled"], &["br-x"]).await;
 
         let (status, _headers, body) = harness.get_facade(WEB_PATH, "q=throttle").await;
         assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
@@ -2462,4 +2478,3 @@ mod brave {
         );
     }
 }
-

@@ -227,7 +227,7 @@ async fn handle_metrics(State(state): State<Arc<MockState>>) -> Response {
         "news": state.counters.news.load(Ordering::Relaxed),
         "llm_context": state.counters.llm_context.load(Ordering::Relaxed),
     }))
-        .into_response()
+    .into_response()
 }
 
 fn build_router(state: Arc<MockState>) -> Router {

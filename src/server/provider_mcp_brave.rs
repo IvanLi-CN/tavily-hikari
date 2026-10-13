@@ -42,8 +42,7 @@ fn brave_validate_required_query(
     };
     match map.get(tool.required_field) {
         Some(value)
-            if value.is_string()
-                && !value.as_str().unwrap_or_default().trim().is_empty() =>
+            if value.is_string() && !value.as_str().unwrap_or_default().trim().is_empty() =>
         {
             // The guard matched a present object, so returning the cloned
             // arguments object is exact (avoids `.map(clone)` lint noise).
@@ -64,7 +63,11 @@ fn brave_validate_required_query(
 fn brave_scalar_to_param(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
-        Value::Bool(flag) => Some(if *flag { "true".to_string() } else { "false".to_string() }),
+        Value::Bool(flag) => Some(if *flag {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        }),
         Value::Number(number) => Some(number.to_string()),
         _ => None,
     }

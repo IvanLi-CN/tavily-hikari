@@ -365,7 +365,6 @@ pub fn should_append_solution_guidance(kind: &str) -> bool {
     )
 }
 
-
 pub(crate) fn sanitize_headers_inner(
     headers: &HeaderMap,
     _upstream: &Url,
@@ -899,7 +898,10 @@ pub(crate) const PROVIDER_REQUEST_KINDS: &[(&str, &str)] = &[
     ("api:brave/llm-context", "API | brave/llm-context"),
     ("mcp:serpapi/search", "MCP | serpapi/search"),
     ("mcp:serpapi/search_table", "MCP | serpapi/search_table"),
-    ("mcp:serpapi/search_dashboard", "MCP | serpapi/search_dashboard"),
+    (
+        "mcp:serpapi/search_dashboard",
+        "MCP | serpapi/search_dashboard",
+    ),
     ("mcp:brave/web_search", "MCP | brave/web_search"),
     ("mcp:brave/news_search", "MCP | brave/news_search"),
     ("mcp:brave/llm_context", "MCP | brave/llm_context"),

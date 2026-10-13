@@ -219,7 +219,9 @@ async fn tavily_search(base: &str, token: &str, query: &str) -> (StatusCode, Val
 
 async fn serpapi_search(base: &str, token: &str, query: &str) -> (StatusCode, Value) {
     let response = Client::new()
-        .get(format!("{base}/api/serpapi/search?api_key={token}&q={query}"))
+        .get(format!(
+            "{base}/api/serpapi/search?api_key={token}&q={query}"
+        ))
         .send()
         .await
         .expect("serpapi search request");
@@ -316,7 +318,12 @@ fn spawn_mock(env_var: &str, compile_time: &str, port: u16, key: &str) -> Child 
         .unwrap_or_else(|err| panic!("spawn mock {compile_time}: {err}"))
 }
 
-fn base_server_command(db_str: &str, port: u16, tavily_upstream: &str, tavily_usage: &str) -> Command {
+fn base_server_command(
+    db_str: &str,
+    port: u16,
+    tavily_upstream: &str,
+    tavily_usage: &str,
+) -> Command {
     let mut command = Command::new(support_binaries::resolve_support_binary(
         "TAVILY_HIKARI_TEST_BIN",
         env!("CARGO_BIN_EXE_tavily-hikari"),
@@ -441,7 +448,10 @@ async fn downgrade_and_seed_v44(db_str: &str) {
         .fetch_one(&pool)
         .await
         .expect("count v44 ledger rows");
-    assert_eq!(ledger_rows, 44, "fixture must present exactly 44 ledger rows");
+    assert_eq!(
+        ledger_rows, 44,
+        "fixture must present exactly 44 ledger rows"
+    );
     let v45_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 45")
             .fetch_one(&pool)
@@ -454,7 +464,10 @@ async fn downgrade_and_seed_v44(db_str: &str) {
     .fetch_one(&pool)
     .await
     .expect("probe fixture api_keys.provider");
-    assert_eq!(api_keys_provider, 0, "fixture api_keys must be provider-less");
+    assert_eq!(
+        api_keys_provider, 0,
+        "fixture api_keys must be provider-less"
+    );
     let sidecar_provider: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('request_logs', 'observability') WHERE name = 'provider'",
     )
@@ -553,7 +566,10 @@ async fn try_spawn_harness(db_path: &Path, db_str: &str) -> Option<MigrationHarn
         &format!("http://127.0.0.1:{tavily_port}/mcp"),
         &format!("http://127.0.0.1:{tavily_port}"),
     )
-    .env("SERPAPI_UPSTREAM", format!("http://127.0.0.1:{serpapi_port}"))
+    .env(
+        "SERPAPI_UPSTREAM",
+        format!("http://127.0.0.1:{serpapi_port}"),
+    )
     .env(
         "SERPAPI_MCP_UPSTREAM",
         format!("http://127.0.0.1:{serpapi_port}/mcp"),
@@ -608,11 +624,12 @@ async fn assert_v45_schema_applied(pool: &sqlx::SqlitePool, context: &str) {
             .fetch_one(pool)
             .await
             .expect("count versioned rows");
-    let convergence: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version BETWEEN 31 AND 44")
-            .fetch_one(pool)
-            .await
-            .expect("count convergence rows");
+    let convergence: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version BETWEEN 31 AND 44",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count convergence rows");
     assert_eq!(
         (versioned, convergence),
         (30, 14),
@@ -625,7 +642,10 @@ async fn assert_v45_schema_applied(pool: &sqlx::SqlitePool, context: &str) {
             .await
             .expect("read v45 ledger row");
     assert_eq!(name, "provider-aware-schema-v1", "{context}: v45 name");
-    assert_eq!(checksum, PROVIDER_AWARE_V45_CHECKSUM, "{context}: v45 checksum");
+    assert_eq!(
+        checksum, PROVIDER_AWARE_V45_CHECKSUM,
+        "{context}: v45 checksum"
+    );
 
     let api_keys_cols: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('api_keys') \
@@ -641,7 +661,10 @@ async fn assert_v45_schema_applied(pool: &sqlx::SqlitePool, context: &str) {
     .fetch_one(pool)
     .await
     .expect("probe auth_token_logs columns");
-    assert_eq!(auth_token_logs_cols, 1, "{context}: auth_token_logs.provider");
+    assert_eq!(
+        auth_token_logs_cols, 1,
+        "{context}: auth_token_logs.provider"
+    );
     let mcp_sessions_cols: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('mcp_sessions') WHERE name = 'provider'",
     )
@@ -676,12 +699,11 @@ async fn assert_v45_schema_applied(pool: &sqlx::SqlitePool, context: &str) {
 
 /// Legacy-row counts for the QA happy-path before/after identity check.
 async fn legacy_row_counts(pool: &sqlx::SqlitePool) -> (i64, i64, i64, i64) {
-    let auth: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ?")
-            .bind(LEGACY_TOKEN_ID)
-            .fetch_one(pool)
-            .await
-            .expect("count legacy auth rows");
+    let auth: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ?")
+        .bind(LEGACY_TOKEN_ID)
+        .fetch_one(pool)
+        .await
+        .expect("count legacy auth rows");
     let session: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM mcp_sessions WHERE proxy_session_id = ?")
             .bind(LEGACY_SESSION_ID)
@@ -749,7 +771,10 @@ async fn warm_v44_upgrade_applies_v45_and_keeps_legacy_rows_tavily() {
             .fetch_one(&pool)
             .await
             .expect("count NULL api_keys providers");
-    assert_eq!(null_api_keys, 0, "no api_keys row may carry a NULL provider");
+    assert_eq!(
+        null_api_keys, 0,
+        "no api_keys row may carry a NULL provider"
+    );
 
     // auth_token_logs/mcp_sessions: the v45 ALTER is nullable (legacy rows
     // stay NULL and readers coalesce — T8/T29 contract), so assert zero
@@ -764,7 +789,10 @@ async fn warm_v44_upgrade_applies_v45_and_keeps_legacy_rows_tavily() {
         .fetch_one(&pool)
         .await
         .expect("count non-tavily rows");
-        assert_eq!(contaminate, 0, "{table}: no legacy row may become non-tavily");
+        assert_eq!(
+            contaminate, 0,
+            "{table}: no legacy row may become non-tavily"
+        );
         let legacy_provider: String = sqlx::query_scalar(&format!(
             "SELECT COALESCE(provider, 'tavily') FROM {table} WHERE {token_column} = ?"
         ))
@@ -776,7 +804,10 @@ async fn warm_v44_upgrade_applies_v45_and_keeps_legacy_rows_tavily() {
         .fetch_one(&pool)
         .await
         .expect("read coalesced legacy provider");
-        assert_eq!(legacy_provider, "tavily", "{table}: legacy row resolves to tavily");
+        assert_eq!(
+            legacy_provider, "tavily",
+            "{table}: legacy row resolves to tavily"
+        );
     }
 
     // Every legacy row survives and stays readable.
@@ -786,21 +817,30 @@ async fn warm_v44_upgrade_applies_v45_and_keeps_legacy_rows_tavily() {
             .fetch_one(&pool)
             .await
             .expect("count legacy auth rows");
-    assert_eq!(legacy_auth_rows, 1, "legacy auth_token_logs row must survive");
+    assert_eq!(
+        legacy_auth_rows, 1,
+        "legacy auth_token_logs row must survive"
+    );
     let legacy_session_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM mcp_sessions WHERE proxy_session_id = ?")
             .bind(LEGACY_SESSION_ID)
             .fetch_one(&pool)
             .await
             .expect("count legacy mcp session rows");
-    assert_eq!(legacy_session_rows, 1, "legacy mcp_sessions row must survive");
+    assert_eq!(
+        legacy_session_rows, 1,
+        "legacy mcp_sessions row must survive"
+    );
     let legacy_billing_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM billing_ledger WHERE auth_token_log_id = ?")
             .bind(LEGACY_BILLING_LOG_ID)
             .fetch_one(&pool)
             .await
             .expect("count legacy billing rows");
-    assert_eq!(legacy_billing_rows, 1, "legacy billing_ledger row must survive");
+    assert_eq!(
+        legacy_billing_rows, 1,
+        "legacy billing_ledger row must survive"
+    );
     // Dangling-key row: still selectable, coalesces to tavily.
     let dangling_coalesced: String = sqlx::query_scalar(
         "SELECT COALESCE(provider, 'tavily') FROM observability.request_logs \
@@ -811,11 +851,15 @@ async fn warm_v44_upgrade_applies_v45_and_keeps_legacy_rows_tavily() {
     .await
     .expect("read dangling-key legacy row");
     assert_eq!(dangling_coalesced, "tavily");
-    let request_log_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
-        .fetch_one(&pool)
-        .await
-        .expect("count request logs");
-    assert!(request_log_rows >= 1, "legacy request_logs row must survive");
+    let request_log_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observability.request_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("count request logs");
+    assert!(
+        request_log_rows >= 1,
+        "legacy request_logs row must survive"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -904,7 +948,11 @@ async fn upgraded_database_serves_all_provider_facades_with_zero_new_depletions(
         &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
     )
     .await;
-    assert_eq!(notify_status, StatusCode::ACCEPTED, "serpapi MCP initialized");
+    assert_eq!(
+        notify_status,
+        StatusCode::ACCEPTED,
+        "serpapi MCP initialized"
+    );
     assert_eq!(
         mcp_post(
             &base,
@@ -920,7 +968,9 @@ async fn upgraded_database_serves_all_provider_facades_with_zero_new_depletions(
     );
 
     assert_eq!(
-        mcp_post(&base, "/exa/mcp", &token, None, &initialize_message(3)).await.0,
+        mcp_post(&base, "/exa/mcp", &token, None, &initialize_message(3))
+            .await
+            .0,
         StatusCode::OK,
         "exa MCP initialize"
     );
@@ -938,7 +988,9 @@ async fn upgraded_database_serves_all_provider_facades_with_zero_new_depletions(
         "exa MCP tools/call"
     );
     assert_eq!(
-        mcp_post(&base, "/brave/mcp", &token, None, &initialize_message(5)).await.0,
+        mcp_post(&base, "/brave/mcp", &token, None, &initialize_message(5))
+            .await
+            .0,
         StatusCode::OK,
         "brave MCP initialize"
     );
@@ -1090,7 +1142,9 @@ async fn checksum_tamper_on_upgraded_database_is_rejected_at_startup() {
         health_ready_within(upgrade_port, 30).await,
         "warm upgrade server never became healthy"
     );
-    drop(ChildGuard { child: upgrade_child });
+    drop(ChildGuard {
+        child: upgrade_child,
+    });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Tamper the recorded v45 checksum.

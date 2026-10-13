@@ -17,9 +17,9 @@
 use super::*;
 use tavily_hikari::{
     BraveFacadeOutcome, ExaFacadeOutcome, ProviderRestFacadeRequest, SerpapiFacadeOutcome,
-    TokenBillingGuard, TokenRequestKind,
+    TokenBillingGuard, TokenRequestKind, brave_facade_outcome, exa_facade_outcome,
     providers::{self, ProviderId},
-    brave_facade_outcome, exa_facade_outcome, serpapi_facade_outcome,
+    serpapi_facade_outcome,
 };
 
 // SerpApi hosted MCP passthrough pipeline (plan todo 15): session-provider

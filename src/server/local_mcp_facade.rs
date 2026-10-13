@@ -65,7 +65,9 @@ fn local_mcp_tool_credits(
     provider: tavily_hikari::providers::ProviderId,
     tool: &LocalMcpToolDefinition,
 ) -> i64 {
-    i64::from((tavily_hikari::providers::spec_for(provider).credits)(tool.credits_op))
+    i64::from((tavily_hikari::providers::spec_for(provider).credits)(
+        tool.credits_op,
+    ))
 }
 
 /// Translate hook: (tool, validated arguments object) → upstream REST request.
@@ -97,7 +99,11 @@ impl LocalMcpFacade {
             .map(|tool| tool as &'static LocalMcpToolDefinition)
     }
 
-    fn build_initialize_body(&self, response_id: Option<&Value>, protocol_version: &str) -> Vec<u8> {
+    fn build_initialize_body(
+        &self,
+        response_id: Option<&Value>,
+        protocol_version: &str,
+    ) -> Vec<u8> {
         build_rebalance_mcp_success_body(
             response_id,
             json!({
@@ -247,7 +253,8 @@ async fn local_tool_error_response(
     failure_kind: Option<&str>,
 ) -> Result<ProxyResponse, StatusCode> {
     let body = build_rebalance_mcp_tool_error_result_body(response_id, message);
-    build_and_log_local_facade_response(ctx, message_body, StatusCode::OK, &body, failure_kind).await
+    build_and_log_local_facade_response(ctx, message_body, StatusCode::OK, &body, failure_kind)
+        .await
 }
 
 /// Dispatch the provider lib executor for one translated tools/call and project
@@ -446,12 +453,20 @@ async fn handle_local_mcp_tool_call(
         .await?;
         return Ok((resp, None));
     };
-    let tool_name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+    let tool_name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let Some(tool) = facade.tool_by_name(tool_name) else {
         let message = format!("Not found: Unknown tool: '{tool_name}'");
-        let resp =
-            local_tool_error_response(ctx, message_body, response_id, &message, Some("unknown_tool"))
-                .await?;
+        let resp = local_tool_error_response(
+            ctx,
+            message_body,
+            response_id,
+            &message,
+            Some("unknown_tool"),
+        )
+        .await?;
         return Ok((resp, None));
     };
     let arguments = match (tool.validate)(tool, params.get("arguments")) {
@@ -957,8 +972,7 @@ async fn dispatch_local_mcp_messages(
             let mut business_calls: Vec<LocalMcpBusinessCall> = Vec::new();
 
             for item in items {
-                let item_body =
-                    serde_json::to_vec(item).map_err(|_| StatusCode::BAD_REQUEST)?;
+                let item_body = serde_json::to_vec(item).map_err(|_| StatusCode::BAD_REQUEST)?;
                 let (response, business) =
                     handle_local_mcp_single_message(ctx, item, &item_body, protocol_version)
                         .await?;
@@ -1026,7 +1040,10 @@ fn finalize_dispatch(
     response: ProxyResponse,
     business_calls: Vec<LocalMcpBusinessCall>,
 ) -> LocalMcpDispatchResult {
-    let observed_credits: i64 = business_calls.iter().map(|call| call.observed_credits).sum();
+    let observed_credits: i64 = business_calls
+        .iter()
+        .map(|call| call.observed_credits)
+        .sum();
     let last = business_calls.last();
     let business_result_status = last.map(|call| call.result_status);
     let failure_kind = last.and_then(|call| call.failure_kind);
