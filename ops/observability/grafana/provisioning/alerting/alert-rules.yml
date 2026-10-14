@@ -75,7 +75,7 @@ groups:
                 type: prometheus
                 uid: hikari-prometheus
               editorMode: code
-              expr: up{job="tavily-hikari"} == bool 1 unless on (service, environment, instance) hikari:sample_count5m >= 1
+              expr: up{job="tavily-hikari"} == 1 unless on (service, environment, instance) hikari:sample_count5m >= 1
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200
@@ -131,10 +131,10 @@ groups:
                 uid: hikari-prometheus
               editorMode: code
               expr: >-
-                up{job="tavily-hikari"} == bool 1
-                and on (service, environment, instance) hikari:sample_count5m >= bool 10
-                and on (service, environment, instance) hikari:error_rate5m > bool 0.2
-                and on (service, environment, instance) hikari:request_rate5m > bool 0.1
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:error_rate5m > 0.2
+                and on (service, environment, instance) hikari:request_rate5m > 0.1
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200
@@ -190,9 +190,9 @@ groups:
                 uid: hikari-prometheus
               editorMode: code
               expr: >-
-                up{job="tavily-hikari"} == bool 1
-                and on (service, environment, instance) hikari:sample_count5m >= bool 10
-                and on (service, environment, instance) hikari:request_p95_seconds5m > bool 2
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:request_p95_seconds5m > 2
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200
@@ -248,9 +248,9 @@ groups:
                 uid: hikari-prometheus
               editorMode: code
               expr: >-
-                up{job="tavily-hikari"} == bool 1
-                and on (service, environment, instance) hikari:sample_count5m >= bool 10
-                and on (service, environment, instance) hikari:sqlite_wait_p95_seconds5m > bool 0.5
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:sqlite_wait_p95_seconds5m > 0.5
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200
@@ -306,9 +306,9 @@ groups:
                 uid: hikari-prometheus
               editorMode: code
               expr: >-
-                up{job="tavily-hikari"} == bool 1
-                and on (service, environment, instance) hikari:sample_count5m >= bool 1
-                and on (service, environment, instance) hikari:memory_headroom_bytes < bool 134217728
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 1
+                and on (service, environment, instance) hikari:memory_headroom_bytes < 134217728
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200

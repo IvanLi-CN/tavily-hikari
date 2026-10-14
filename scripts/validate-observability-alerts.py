@@ -7,32 +7,65 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.loader import SafeLoader
 
 
 EXPECTED_QUERY_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "hikari-exporter-unavailable": ('up{job="tavily-hikari"} == bool 0',),
     "hikari-scrape-stale": (
-        'up{job="tavily-hikari"} == bool 1',
+        'up{job="tavily-hikari"} == 1',
         "hikari:sample_count5m >= 1",
     ),
     "hikari-error-rate-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:error_rate5m > bool 0.2",
-        "hikari:request_rate5m > bool 0.1",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:error_rate5m > 0.2",
+        "hikari:request_rate5m > 0.1",
     ),
     "hikari-request-p95-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:request_p95_seconds5m > bool 2",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:request_p95_seconds5m > 2",
     ),
     "hikari-sqlite-wait-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:sqlite_wait_p95_seconds5m > bool 0.5",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:sqlite_wait_p95_seconds5m > 0.5",
     ),
     "hikari-memory-headroom-low": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:memory_headroom_bytes < bool 134217728",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 1",
+        "hikari:memory_headroom_bytes < 134217728",
     ),
 }
+
+
+class UniqueKeyLoader(SafeLoader):
+    pass
+
+
+def construct_unique_mapping(
+    loader: UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_unique_mapping,
+)
 
 
 def fail(message: str) -> None:
@@ -80,6 +113,8 @@ def validate_rule(rule: Any) -> tuple[str, str]:
     expression = source_model.get("expr")
     if not isinstance(expression, str) or not expression.strip():
         fail(f"{uid}: source PromQL expression is empty")
+    if uid != "hikari-exporter-unavailable" and re.search(r"\bbool\b", expression):
+        fail(f"{uid}: bool comparisons cannot filter set operators")
     for fragment in EXPECTED_QUERY_FRAGMENTS[uid]:
         if fragment not in expression:
             fail(f"{uid}: source PromQL is missing {fragment!r}")
@@ -109,7 +144,7 @@ def validate_rule(rule: Any) -> tuple[str, str]:
 
 def load_rules(path: Path) -> list[tuple[str, str]]:
     try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        payload = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
     except yaml.YAMLError as exc:
         fail(f"{path}: invalid YAML: {exc}")
     document = mapping(payload, "alert provisioning")

@@ -25,9 +25,14 @@ alert_rules="$observability_dir/grafana/provisioning/alerting/alert-rules.yml"
 grep -Fq 'apiVersion: 1' "$alert_rules"
 grep -Fq 'datasourceUid: hikari-prometheus' "$alert_rules"
 test "$(grep -c '^      - uid: hikari-' "$alert_rules")" -eq 6
-test "$(grep -c 'up{job="tavily-hikari"} == bool 1' "$alert_rules")" -eq 5
-test "$(grep -c 'hikari:sample_count5m >= bool' "$alert_rules")" -eq 4
+test "$(grep -c 'up{job="tavily-hikari"} == 1' "$alert_rules")" -eq 5
+test "$(grep -c 'hikari:sample_count5m >= 10' "$alert_rules")" -eq 3
+test "$(grep -Ec 'hikari:sample_count5m >= 1([^0-9]|$)' "$alert_rules")" -eq 2
 grep -Fq 'unless on (service, environment, instance) hikari:sample_count5m >= 1' "$alert_rules"
+if grep -Eq 'and on \(service, environment, instance\).*\bbool\b' "$alert_rules"; then
+  echo "alert set filters must not use bool comparisons" >&2
+  exit 1
+fi
 grep -Fq 'honor_labels: false' "$observability_dir/prometheus.yml"
 grep -Fq 'HIKARI_OBSERVABILITY_FILE_SD_DIR:?Set HIKARI_OBSERVABILITY_FILE_SD_DIR' "$observability_dir/compose.yml"
 grep -Fq 'HIKARI_OBSERVABILITY_SECRETS_DIR:?Set HIKARI_OBSERVABILITY_SECRETS_DIR' "$observability_dir/compose.yml"
@@ -41,6 +46,26 @@ grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
 grep -Fq 'prom/prometheus@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3' "$observability_dir/compose.yml"
 grep -Fq 'grafana/grafana@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f' "$observability_dir/compose.yml"
 python3 "$repo_root/scripts/validate-observability-alerts.py" "$alert_rules"
+
+python3 - "$observability_dir/compose.yml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+compose = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+services = compose.get("services")
+if not isinstance(services, dict):
+    raise SystemExit("compose.yml must define services")
+expected = {
+    "prometheus": "prom/prometheus@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3",
+    "grafana": "grafana/grafana@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f",
+}
+for name, default_image in expected.items():
+    image = services.get(name, {}).get("image")
+    if not isinstance(image, str) or default_image not in image:
+        raise SystemExit(f"{name}: immutable default image digest is missing")
+PY
 
 python3 - "$alert_rules" <<'PY'
 import re
@@ -62,25 +87,29 @@ expected_uids = {
 required_query_fragments = {
     "hikari-exporter-unavailable": ('up{job="tavily-hikari"} == bool 0',),
     "hikari-scrape-stale": (
-        'up{job="tavily-hikari"} == bool 1',
+        'up{job="tavily-hikari"} == 1',
         "hikari:sample_count5m >= 1",
     ),
     "hikari-error-rate-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:error_rate5m > bool 0.2",
-        "hikari:request_rate5m > bool 0.1",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:error_rate5m > 0.2",
+        "hikari:request_rate5m > 0.1",
     ),
     "hikari-request-p95-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:request_p95_seconds5m > bool 2",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:request_p95_seconds5m > 2",
     ),
     "hikari-sqlite-wait-high": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:sqlite_wait_p95_seconds5m > bool 0.5",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 10",
+        "hikari:sqlite_wait_p95_seconds5m > 0.5",
     ),
     "hikari-memory-headroom-low": (
-        'up{job="tavily-hikari"} == bool 1',
-        "hikari:memory_headroom_bytes < bool 134217728",
+        'up{job="tavily-hikari"} == 1',
+        "hikari:sample_count5m >= 1",
+        "hikari:memory_headroom_bytes < 134217728",
     ),
 }
 seen_uids = []
