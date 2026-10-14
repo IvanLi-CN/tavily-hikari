@@ -22,15 +22,15 @@
 
 ## Application metrics
 
-| Name                                  | Type              | Unit         | Allowed labels                                           | Source event                    | Meaning                                                                    |
-| ------------------------------------- | ----------------- | ------------ | -------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------- |
-| `hikari_http_requests_total`          | Counter           | requests     | `route_family`, `method`, `status_class`, `outcome`      | request terminal event          | Completed or terminally rejected HTTP/MCP request count.                   |
-| `hikari_http_duration_seconds`        | classic Histogram | seconds      | `route_family`, `method`, `outcome`, `phase`             | request phase completion        | Bounded request or phase duration; `phase=none` represents total duration. |
-| `hikari_upstream_requests_total`      | Counter           | attempts     | `upstream_class`, `operation`, `outcome`, `status_class` | upstream attempt completion     | Upstream attempts, including retry and terminal failures.                  |
-| `hikari_upstream_duration_seconds`    | classic Histogram | seconds      | `upstream_class`, `operation`, `outcome`, `phase`        | upstream attempt completion     | Time spent in a bounded upstream phase.                                    |
-| `hikari_sqlite_wait_duration_seconds` | classic Histogram | seconds      | `workload_class`, `operation`, `reason`                  | pool/begin/lock wait completion | Time spent waiting for SQLite or its coordinator.                          |
-| `hikari_sqlite_transactions_total`    | Counter           | transactions | `workload_class`, `operation`, `outcome`                 | transaction completion          | SQLite transaction outcomes without SQL text or parameters.                |
-| `hikari_background_tasks_total`       | Counter           | tasks        | `operation`, `outcome`, `reason`                         | task lifecycle event            | Bounded background, maintenance or reconciliation task outcomes.           |
+| Name                                  | Type              | Unit         | Allowed labels                                           | Source event                    | Meaning                                                                                                               |
+| ------------------------------------- | ----------------- | ------------ | -------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `hikari_http_requests_total`          | Counter           | requests     | `route_family`, `method`, `status_class`, `outcome`      | request terminal event          | Completed or terminally rejected HTTP/MCP request count.                                                              |
+| `hikari_http_duration_seconds`        | classic Histogram | seconds      | `route_family`, `method`, `outcome`, `phase`             | request phase completion        | Bounded request or phase duration; `phase=none` represents total duration.                                            |
+| `hikari_upstream_requests_total`      | Counter           | attempts     | `upstream_class`, `operation`, `outcome`, `status_class` | response-header completion      | Upstream attempts that received response headers; response-body failures remain visible in the request phase metrics. |
+| `hikari_upstream_duration_seconds`    | classic Histogram | seconds      | `upstream_class`, `operation`, `outcome`, `phase`        | upstream attempt completion     | Time spent in a bounded upstream phase.                                                                               |
+| `hikari_sqlite_wait_duration_seconds` | classic Histogram | seconds      | `workload_class`, `operation`, `reason`                  | pool/begin/lock wait completion | Time spent waiting for SQLite or its coordinator.                                                                     |
+| `hikari_sqlite_transactions_total`    | Counter           | transactions | `workload_class`, `operation`, `outcome`                 | transaction completion          | SQLite transaction outcomes without SQL text or parameters.                                                           |
+| `hikari_background_tasks_total`       | Counter           | tasks        | `operation`, `outcome`, `reason`                         | task lifecycle event            | Bounded background, maintenance or reconciliation task outcomes.                                                      |
 
 ## Runtime and observability metrics
 

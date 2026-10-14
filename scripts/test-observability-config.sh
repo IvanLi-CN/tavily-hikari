@@ -26,6 +26,7 @@ grep -Fq 'datasourceUid: hikari-prometheus' "$alert_rules"
 test "$(grep -c '^      - uid: hikari-' "$alert_rules")" -eq 6
 test "$(grep -c 'up{job="tavily-hikari"} == bool 1' "$alert_rules")" -eq 5
 test "$(grep -c 'hikari:sample_count5m >= bool' "$alert_rules")" -eq 4
+grep -Fq 'unless on (service, environment, instance) hikari:sample_count5m >= 1' "$alert_rules"
 grep -Fq 'honor_labels: false' "$observability_dir/prometheus.yml"
 grep -Fq 'HIKARI_OBSERVABILITY_FILE_SD_DIR:?Set HIKARI_OBSERVABILITY_FILE_SD_DIR' "$observability_dir/compose.yml"
 grep -Fq 'HIKARI_OBSERVABILITY_SECRETS_DIR:?Set HIKARI_OBSERVABILITY_SECRETS_DIR' "$observability_dir/compose.yml"

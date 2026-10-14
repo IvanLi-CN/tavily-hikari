@@ -4,7 +4,7 @@ This directory contains the generic Prometheus/Grafana provisioning contract for
 
 ## Application settings
 
-Set `OBSERVABILITY_ENABLED=true`, choose an explicit `METRICS_BIND` address, and mount a read-only `METRICS_TOKEN_FILE`. `OBSERVABILITY_ENVIRONMENT` and `OBSERVABILITY_INSTANCE` identify the deployment in the surrounding target configuration. `OBSERVABILITY_ROUTE_ALLOWLIST` may restrict request route families; it never accepts arbitrary label values.
+Set `OBSERVABILITY_ENABLED=true`, choose an explicit private `METRICS_BIND` address, and mount a read-only `METRICS_TOKEN_FILE`. `METRICS_ALLOW_UNSPECIFIED_BIND` remains false unless the deployment network is explicitly private and reviewed. `OBSERVABILITY_ENVIRONMENT` accepts only the documented environment enum, and `OBSERVABILITY_INSTANCE` accepts only the documented deployment slots or numeric Hikari ordinals. `OBSERVABILITY_ROUTE_ALLOWLIST` may restrict request route families; it never accepts arbitrary label values.
 
 The exporter is a separate listener and is not a public application route. It accepts only `Authorization: Bearer <token>` and returns 401 for a missing or mismatched token. A missing token file, invalid bind, or failed exporter startup leaves the business listener running.
 

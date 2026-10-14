@@ -20,7 +20,7 @@
 
 ## Configuration contract
 
-Implementation must expose the names and semantics in `SPEC.md`: `OBSERVABILITY_ENABLED`, `METRICS_BIND`, `METRICS_TOKEN_FILE`, `OBSERVABILITY_ENVIRONMENT`, `OBSERVABILITY_INSTANCE` and optional `OBSERVABILITY_ROUTE_ALLOWLIST`.
+Implementation must expose the names and semantics in `SPEC.md`: `OBSERVABILITY_ENABLED`, `METRICS_BIND`, `METRICS_ALLOW_UNSPECIFIED_BIND`, `METRICS_TOKEN_FILE`, `OBSERVABILITY_ENVIRONMENT`, `OBSERVABILITY_INSTANCE` and optional `OBSERVABILITY_ROUTE_ALLOWLIST`.
 
 Defaults must keep observability disabled and must not contain 101 domains, internal addresses, secret paths, host ports, retention values or notification destinations.
 
@@ -58,6 +58,6 @@ The concrete 101 domain, network, secret file and port values remain deployment-
 ## Open implementation risks
 
 - Existing runtime logs already cover many performance phases; instrumentation must reuse event boundaries without double-counting the same source event.
-- SQLite and request-log hot paths are sensitive to additional synchronous work; recorder updates must be constant-time or bounded and must never perform database reads.
+- SQLite and request-log hot paths are sensitive to additional synchronous work; recorder updates use fixed label normalization and a lock-free bounded admission bitmap, and must never perform database reads or extend the SQLite workload critical section.
 - The public metrics API and operational metrics have different privacy and cache contracts; route registration and tests must keep them separate.
 - Current production is `HA_MODE=single`; HA labels and channel metrics must represent unavailable/none explicitly rather than fabricate standby samples.

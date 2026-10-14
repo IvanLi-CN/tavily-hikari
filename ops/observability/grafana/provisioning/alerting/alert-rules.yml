@@ -75,7 +75,7 @@ groups:
                 type: prometheus
                 uid: hikari-prometheus
               editorMode: code
-              expr: up{job="tavily-hikari"} == bool 1 and on() (absent(hikari:sample_count5m) or hikari:sample_count5m < bool 1)
+              expr: up{job="tavily-hikari"} == bool 1 unless on (service, environment, instance) hikari:sample_count5m >= 1
               instant: true
               intervalMs: 15000
               maxDataPoints: 43200

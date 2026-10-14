@@ -1,8 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
-    net::SocketAddr,
-    sync::{Arc, Mutex, OnceLock},
+    net::{IpAddr, SocketAddr},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
     time::{Duration, Instant},
 };
 
@@ -33,6 +36,8 @@ const SQLITE_WAIT_LABELS: &[&str] = &["workload_class", "operation", "reason"];
 const SQLITE_TRANSACTION_LABELS: &[&str] = &["workload_class", "operation", "outcome"];
 const BACKGROUND_LABELS: &[&str] = &["operation", "outcome", "reason"];
 const MAX_CARDINALITY_TUPLES: usize = 2048;
+const CARDINALITY_WORDS: usize = MAX_CARDINALITY_TUPLES / 64;
+const EXPORTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct Metrics {
@@ -50,7 +55,7 @@ pub struct Metrics {
     observability_flush: IntCounterVec,
     observability_dropped: IntCounterVec,
     route_allowlist: Option<HashSet<&'static str>>,
-    cardinality_tuples: Mutex<HashSet<String>>,
+    cardinality_slots: Box<[AtomicU64]>,
     last_cpu_seconds: Mutex<Option<f64>>,
 }
 
@@ -85,7 +90,7 @@ impl Metrics {
         let upstream_requests = IntCounterVec::new(
             Opts::new(
                 "hikari_upstream_requests_total",
-                "Completed upstream attempts.",
+                "Upstream attempts that received response headers.",
             )
             .const_labels(const_labels.clone()),
             UPSTREAM_LABELS,
@@ -187,7 +192,7 @@ impl Metrics {
             observability_flush,
             observability_dropped,
             route_allowlist,
-            cardinality_tuples: Mutex::new(HashSet::new()),
+            cardinality_slots: (0..CARDINALITY_WORDS).map(|_| AtomicU64::new(0)).collect(),
             last_cpu_seconds: Mutex::new(None),
         })
     }
@@ -463,25 +468,26 @@ impl Metrics {
     }
 
     fn admit_label_tuple(&self, metric: &str, labels: &[&str]) -> bool {
-        let mut key = String::with_capacity(
-            metric.len() + labels.iter().map(|label| label.len() + 1).sum::<usize>(),
-        );
-        key.push_str(metric);
+        // All callers normalize labels to fixed enums before reaching this gate. The
+        // bitmap records observed tuples without allocating or waiting on a process-wide
+        // mutex; collisions are safe because the bitmap is only an admission hint.
+        let mut hash = 14_695_981_039_346_656_037u64;
+        for byte in metric.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
+        }
         for label in labels {
-            key.push('\0');
-            key.push_str(label);
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(1_099_511_628_211);
+            for byte in label.bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(1_099_511_628_211);
+            }
         }
-        let mut tuples = self
-            .cardinality_tuples
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if tuples.contains(&key) {
-            return true;
-        }
-        if tuples.len() >= MAX_CARDINALITY_TUPLES {
-            return false;
-        }
-        tuples.insert(key);
+        let slot = (hash as usize) % MAX_CARDINALITY_TUPLES;
+        let word = slot / 64;
+        let bit = 1u64 << (slot % 64);
+        self.cardinality_slots[word].fetch_or(bit, AtomicOrdering::Relaxed);
         true
     }
 
@@ -509,8 +515,34 @@ pub struct ExporterHandle {
 impl ExporterHandle {
     pub async fn shutdown(self) {
         let _ = self.stop.send(true);
-        let _ = self.server.await;
-        let _ = self.sampler.await;
+        let mut server = self.server;
+        if tokio::time::timeout(EXPORTER_SHUTDOWN_TIMEOUT, &mut server)
+            .await
+            .is_err()
+        {
+            server.abort();
+            let _ = server.await;
+            tracing::warn!(
+                component = "observability",
+                event = "exporter_shutdown_timeout",
+                task = "server",
+                "metrics exporter server task did not stop before the shutdown deadline"
+            );
+        }
+        let mut sampler = self.sampler;
+        if tokio::time::timeout(EXPORTER_SHUTDOWN_TIMEOUT, &mut sampler)
+            .await
+            .is_err()
+        {
+            sampler.abort();
+            let _ = sampler.await;
+            tracing::warn!(
+                component = "observability",
+                event = "exporter_shutdown_timeout",
+                task = "sampler",
+                "metrics runtime sampler did not stop before the shutdown deadline"
+            );
+        }
     }
 }
 
@@ -557,6 +589,15 @@ pub async fn start_exporter(metrics: Arc<Metrics>) -> Option<ExporterHandle> {
             return None;
         }
     };
+    if !metrics_bind_allowed(bind, env_flag("METRICS_ALLOW_UNSPECIFIED_BIND")) {
+        tracing::warn!(
+            component = "observability",
+            event = "exporter_disabled",
+            reason = "non_private_bind",
+            "metrics exporter disabled because METRICS_BIND is not a loopback or private address"
+        );
+        return None;
+    }
     let token_path = match env::var("METRICS_TOKEN_FILE") {
         Ok(path) if !path.trim().is_empty() => path,
         _ => {
@@ -717,6 +758,18 @@ fn env_flag(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn metrics_bind_allowed(bind: SocketAddr, allow_unspecified: bool) -> bool {
+    if bind.ip().is_unspecified() {
+        return allow_unspecified;
+    }
+    match bind.ip() {
+        IpAddr::V4(address) => address.is_loopback() || address.is_private(),
+        IpAddr::V6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    }
 }
 
 fn route_allowlist_from_env() -> Option<HashSet<&'static str>> {
@@ -924,46 +977,32 @@ fn common_const_labels() -> HashMap<String, String> {
 
 fn bounded_deployment_identity(name: &str) -> String {
     let value = env::var(name).unwrap_or_default();
-    bounded_deployment_value(value.trim())
+    match name {
+        "OBSERVABILITY_ENVIRONMENT" => bounded_environment_value(value.trim()),
+        "OBSERVABILITY_INSTANCE" => bounded_deployment_value(value.trim()),
+        _ => "unknown".to_owned(),
+    }
 }
 
 fn bounded_deployment_value(value: &str) -> String {
-    if value.is_empty()
-        || value.len() > 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || !value
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-        || value.split('-').any(|part| part.is_empty())
-    {
-        return "unknown".to_owned();
-    }
-
-    let contains_sensitive_token = value.split('-').any(|part| {
-        matches!(
-            part.to_ascii_lowercase().as_str(),
-            "auth"
-                | "credential"
-                | "key"
-                | "request"
-                | "secret"
-                | "session"
-                | "token"
-                | "trace"
-                | "user"
-        )
+    let safe_slot = matches!(
+        value,
+        "primary" | "secondary" | "standby" | "local" | "test"
+    );
+    let safe_ordinal = value.strip_prefix("hikari-").is_some_and(|suffix| {
+        (1..=3).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_digit())
     });
-    let looks_like_ipv4 = value.split('-').count() == 4
-        && value
-            .split('-')
-            .all(|part| !part.is_empty() && part.parse::<u8>().is_ok());
-    if contains_sensitive_token || looks_like_ipv4 {
-        "unknown".to_owned()
-    } else {
+    if safe_slot || safe_ordinal {
         value.to_owned()
+    } else {
+        "unknown".to_owned()
+    }
+}
+
+fn bounded_environment_value(value: &str) -> String {
+    match value {
+        "development" | "staging" | "production" | "test" => value.to_owned(),
+        _ => "unknown".to_owned(),
     }
 }
 
@@ -1002,20 +1041,47 @@ mod tests {
 
     #[test]
     fn instance_identity_rejects_sensitive_tokens() {
-        assert_eq!(bounded_deployment_value("hikari-prod-01"), "hikari-prod-01");
+        assert_eq!(bounded_environment_value("production"), "production");
+        assert_eq!(bounded_deployment_value("primary"), "primary");
+        assert_eq!(bounded_deployment_value("hikari-01"), "hikari-01");
+        assert_eq!(bounded_deployment_value("hikari-prod-01"), "unknown");
         assert_eq!(bounded_deployment_value("token-123"), "unknown");
-        assert_eq!(bounded_deployment_value("request-abc"), "unknown");
-        assert_eq!(bounded_deployment_value("10-0-0-1"), "unknown");
+        assert_eq!(bounded_deployment_value("tvly-dev-abc123"), "unknown");
+        assert_eq!(bounded_environment_value("customer-prod"), "unknown");
     }
 
     #[test]
-    fn recorder_rejects_new_label_tuples_after_bound() {
+    fn recorder_uses_a_fixed_lock_free_cardinality_bitmap() {
         let metrics = Metrics::new(None).expect("metrics");
-        for index in 0..MAX_CARDINALITY_TUPLES {
+        for index in 0..(MAX_CARDINALITY_TUPLES * 2) {
             let value = index.to_string();
             assert!(metrics.admit_label_tuple("test", &[value.as_str()]));
         }
-        assert!(!metrics.admit_label_tuple("test", &["overflow"]));
+        assert_eq!(metrics.cardinality_slots.len(), CARDINALITY_WORDS);
+    }
+
+    #[test]
+    fn metrics_bind_scope_defaults_to_private_addresses() {
+        assert!(metrics_bind_allowed(
+            "127.0.0.1:9091".parse().expect("loopback"),
+            false
+        ));
+        assert!(metrics_bind_allowed(
+            "10.0.0.10:9091".parse().expect("private"),
+            false
+        ));
+        assert!(!metrics_bind_allowed(
+            "0.0.0.0:9091".parse().expect("wildcard"),
+            false
+        ));
+        assert!(metrics_bind_allowed(
+            "0.0.0.0:9091".parse().expect("wildcard"),
+            true
+        ));
+        assert!(!metrics_bind_allowed(
+            "8.8.8.8:9091".parse().expect("public"),
+            true
+        ));
     }
 
     #[test]

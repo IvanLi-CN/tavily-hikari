@@ -45,10 +45,11 @@ Tavily Hikari 是 Rust/Axum 代理服务，React 管理台和 SQLite 业务持�
 ### 配置项
 
 - `OBSERVABILITY_ENABLED`：默认 `false`，显式开启 runtime metrics。
-- `METRICS_BIND`：启用后必须显式指定监听地址和端口，项目不固化某个宿主端口。
+- `METRICS_BIND`：启用后必须显式指定监听地址和端口，默认只允许 loopback 或 RFC1918/private 地址；项目不固化某个宿主端口。
+- `METRICS_ALLOW_UNSPECIFIED_BIND`：默认 `false`；仅在部署网络本身负责隔离且经过部署审查时，显式允许 `0.0.0.0`/`::` 绑定。
 - `METRICS_TOKEN_FILE`：只读 Bearer token 文件路径；应用与 Prometheus 的凭据必须分离时由编排层分别挂载。
-- `OBSERVABILITY_ENVIRONMENT`：稳定环境枚举，例如 `development`、`staging`、`production`。
-- `OBSERVABILITY_INSTANCE`：部署实例标识；不得使用用户、token、key 或请求标识。
+- `OBSERVABILITY_ENVIRONMENT`：固定环境枚举，只接受 `development`、`staging`、`production` 或 `test`。
+- `OBSERVABILITY_INSTANCE`：固定部署槽位，只接受 `primary`、`secondary`、`standby`、`local`、`test` 或 `hikari-<numeric ordinal>`。
 - `OBSERVABILITY_ROUTE_ALLOWLIST`：可选的 route family allowlist；未配置时使用代码内固定集合。
 
 ## Requirements
