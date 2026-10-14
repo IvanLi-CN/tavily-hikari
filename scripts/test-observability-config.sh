@@ -37,8 +37,37 @@ grep -Fq 'sample_limit: 2000' "$observability_dir/prometheus.yml"
 grep -Fq 'label_limit: 32' "$observability_dir/prometheus.yml"
 grep -Fq 'label_name_length_limit: 64' "$observability_dir/prometheus.yml"
 grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
-test "$(grep -c '^                    params: \[A\]$' "$alert_rules")" -eq 6
-test "$(grep -c '^                    params: \[C\]$' "$alert_rules")" -eq 0
+
+python3 - "$alert_rules" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+alert_text = Path(sys.argv[1]).read_text(encoding="utf-8")
+blocks = [block for block in alert_text.split("\n      - uid: ")[1:] if block.strip()]
+if len(blocks) != 6:
+    raise SystemExit(f"expected six alert rule blocks, found {len(blocks)}")
+
+for block in blocks:
+    uid, _, body = block.partition("\n")
+    if not uid.startswith("hikari-"):
+        raise SystemExit(f"unexpected alert uid: {uid}")
+    for pattern, expected, description in (
+        (r"^        condition: C$", 1, "condition C"),
+        (r"^          - refId: A$", 1, "source refId A"),
+        (r"^          - refId: C$", 1, "threshold refId C"),
+        (r"^              expression: A$", 1, "threshold expression A"),
+        (r"^                    params: \[A\]$", 1, "threshold query A"),
+        (r"^              type: threshold$", 1, "threshold node"),
+        (r"^            datasourceUid: hikari-prometheus$", 1, "Prometheus datasource"),
+        (r"^            datasourceUid: __expr__$", 1, "expression datasource"),
+    ):
+        actual = len(re.findall(pattern, body, flags=re.MULTILINE))
+        if actual != expected:
+            raise SystemExit(f"{uid}: expected one {description}, found {actual}")
+    if re.search(r"^                    params: \[C\]$", body, flags=re.MULTILINE):
+        raise SystemExit(f"{uid}: threshold query is self-referential")
+PY
 
 python3 - "$observability_dir/grafana/dashboards" <<'PY'
 import json
