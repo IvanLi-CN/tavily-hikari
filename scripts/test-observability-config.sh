@@ -65,9 +65,13 @@ for block in blocks:
     for pattern, expected, description in (
         (r"^        condition: C$", 1, "condition C"),
         (r"^          - refId: A$", 1, "source refId A"),
+        (r"^                type: prometheus$", 1, "source model type"),
+        (r"^                uid: hikari-prometheus$", 1, "source model datasource UID"),
         (r"^              refId: A$", 1, "source model refId A"),
         (r"^              expr: .+$", 1, "source PromQL expression"),
         (r"^          - refId: C$", 1, "threshold refId C"),
+        (r"^                type: __expr__$", 1, "threshold model type"),
+        (r"^                uid: __expr__$", 1, "threshold model datasource UID"),
         (r"^              expression: A$", 1, "threshold expression A"),
         (r"^                    params: \[A\]$", 1, "threshold query A"),
         (r"^              type: threshold$", 1, "threshold node"),
