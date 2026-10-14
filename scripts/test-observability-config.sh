@@ -47,11 +47,21 @@ alert_text = Path(sys.argv[1]).read_text(encoding="utf-8")
 blocks = [block for block in alert_text.split("\n      - uid: ")[1:] if block.strip()]
 if len(blocks) != 6:
     raise SystemExit(f"expected six alert rule blocks, found {len(blocks)}")
+expected_uids = {
+    "hikari-exporter-unavailable",
+    "hikari-scrape-stale",
+    "hikari-error-rate-high",
+    "hikari-request-p95-high",
+    "hikari-sqlite-wait-high",
+    "hikari-memory-headroom-low",
+}
+seen_uids = []
 
 for block in blocks:
     uid, _, body = block.partition("\n")
-    if not uid.startswith("hikari-"):
-        raise SystemExit(f"unexpected alert uid: {uid}")
+    if uid not in expected_uids or uid in seen_uids:
+        raise SystemExit(f"unexpected or duplicate alert uid: {uid}")
+    seen_uids.append(uid)
     for pattern, expected, description in (
         (r"^        condition: C$", 1, "condition C"),
         (r"^          - refId: A$", 1, "source refId A"),
@@ -67,6 +77,8 @@ for block in blocks:
             raise SystemExit(f"{uid}: expected one {description}, found {actual}")
     if re.search(r"^                    params: \[C\]$", body, flags=re.MULTILINE):
         raise SystemExit(f"{uid}: threshold query is self-referential")
+if set(seen_uids) != expected_uids:
+    raise SystemExit("alert rule UID set does not match the six managed Hikari alerts")
 PY
 
 python3 - "$observability_dir/grafana/dashboards" <<'PY'
