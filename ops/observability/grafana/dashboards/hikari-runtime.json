@@ -1,0 +1,146 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [{"asDropdown": true, "includeVars": true, "keepTime": true, "tags": ["hikari"], "title": "Hikari dashboards", "type": "dashboards"}],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "1 means the selected exporter target is reachable; 0 means Prometheus cannot scrape it.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [{"options": {"0": {"color": "red", "text": "DOWN"}, "1": {"color": "green", "text": "UP"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "min(up{job=\"tavily-hikari\",service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"})", "instant": true, "refId": "A"}],
+      "title": "Target health",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Process CPU seconds consumed per wall-clock second. Values near one represent one fully busy core.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 2}]}, "unit": "cores"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_process_cpu_seconds_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "CPU usage",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Current resident set size of the Hikari process.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "max(hikari_process_memory_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",reason=\"rss\"})", "instant": true, "refId": "A"}],
+      "title": "RSS",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Observed memory headroom before the process or cgroup limit.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 134217728}, {"color": "green", "value": 536870912}]}, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hikari:memory_headroom_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "instant": true, "refId": "A"}],
+      "title": "Memory headroom",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Rate of samples dropped by bounded recorder limits. Any non-zero value means observability data is incomplete.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.1}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_observability_dropped_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "Dropped samples",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Exporter flush failures, deferrals, and timeouts per second.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.1}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "id": 6,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_observability_flush_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=~\"error|timeout|defer\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "Exporter flush failures",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Resident memory relative to the observed process or cgroup limit.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "line", "fillOpacity": 18, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}, "unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "100 * max(hikari_process_memory_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",reason=\"rss\"}) / clamp_min(max(hikari_process_memory_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",reason=\"limit\"}), 1)", "legendFormat": "RSS / limit", "refId": "A"}],
+      "title": "Memory utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "RSS, configured limit, and headroom. The relative shapes distinguish a leak from a changing cgroup limit.",
+      "fieldConfig": {"defaults": {"decimals": 0, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "max by (reason) (hikari_process_memory_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",reason=~\"rss|limit|headroom\"})", "legendFormat": "{{reason}}", "refId": "A"}],
+      "title": "Memory components",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "CPU pressure and recorder drops share a timeline so sampling overhead can be separated from application pressure.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "ops"}, "overrides": [{"matcher": {"id": "byName", "options": "CPU cores"}, "properties": [{"id": "unit", "value": "cores"}]}]},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 12},
+      "id": 9,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum(rate(hikari_process_cpu_seconds_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "CPU cores", "refId": "A"},
+        {"expr": "sum by (reason) (rate(hikari_observability_dropped_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "dropped / {{reason}}", "refId": "B"}
+      ],
+      "title": "CPU and recorder pressure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Exporter flush outcomes. A successful scrape can coexist with deferred or failed recorder work, so keep this separate from target health.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}, "spanNulls": true}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+      "id": 10,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (outcome) (rate(hikari_observability_flush_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "title": "Exporter flush outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Bounded drop reasons. Any non-zero line means the dashboard is seeing an incomplete view of runtime events.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "id": 11,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (reason) (rate(hikari_observability_dropped_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{reason}}", "refId": "A"}],
+      "title": "Dropped samples by reason",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "runtime"],
+  "templating": {"list": [
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total, service)", "includeAll": true, "label": "Service", "multi": true, "name": "service", "query": {"query": "label_values(hikari_http_requests_total, service)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "includeAll": true, "label": "Instance", "multi": true, "name": "instance", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
+  ]},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"], "time_options": ["5m", "15m", "1h", "6h", "12h", "24h"]},
+  "title": "Hikari Runtime",
+  "uid": "hikari-runtime",
+  "version": 2
+}

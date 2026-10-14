@@ -92,6 +92,7 @@
         "tavily_proxy::tests::"
       ],
       "include_prefixes": [
+        "observability::tests::",
         "affinity_tests::",
         "analysis::tests::",
         "ha::tests::",

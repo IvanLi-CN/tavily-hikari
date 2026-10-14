@@ -1,0 +1,54 @@
+groups:
+  - name: hikari-recording
+    interval: 30s
+    rules:
+      - record: hikari:request_rate5m
+        expr: sum by (service, environment, instance) (rate(hikari_http_requests_total[5m]))
+      - record: hikari:error_rate5m
+        expr: |
+          sum by (service, environment, instance) (rate(hikari_http_requests_total{outcome=~"error|timeout|upstream_exhausted"}[5m]))
+          / clamp_min(sum by (service, environment, instance) (rate(hikari_http_requests_total[5m])), 0.001)
+      - record: hikari:request_p50_seconds5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (service, environment, instance, le) (rate(hikari_http_duration_seconds_bucket{phase="none"}[5m])))
+      - record: hikari:request_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, environment, instance, le) (rate(hikari_http_duration_seconds_bucket{phase="none"}[5m])))
+      - record: hikari:request_p99_seconds5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, environment, instance, le) (rate(hikari_http_duration_seconds_bucket{phase="none"}[5m])))
+      - record: hikari:request_phase_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, environment, instance, phase, le) (rate(hikari_http_duration_seconds_bucket{phase!="none"}[5m])))
+      - record: hikari:upstream_p50_seconds5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (service, environment, instance, le) (rate(hikari_upstream_duration_seconds_bucket[5m])))
+      - record: hikari:upstream_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, environment, instance, le) (rate(hikari_upstream_duration_seconds_bucket[5m])))
+      - record: hikari:upstream_p99_seconds5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, environment, instance, le) (rate(hikari_upstream_duration_seconds_bucket[5m])))
+      - record: hikari:sqlite_wait_p95_seconds5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, environment, instance, le) (rate(hikari_sqlite_wait_duration_seconds_bucket[5m])))
+      - record: hikari:sqlite_wait_p50_seconds5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (service, environment, instance, le) (rate(hikari_sqlite_wait_duration_seconds_bucket[5m])))
+      - record: hikari:sqlite_wait_p99_seconds5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, environment, instance, le) (rate(hikari_sqlite_wait_duration_seconds_bucket[5m])))
+      - record: hikari:sample_count5m
+        expr: sum by (service, environment, instance) (increase(hikari_http_requests_total[5m]))
+      - record: hikari:memory_headroom_bytes
+        expr: max by (service, environment, instance) (hikari_process_memory_bytes{reason="headroom"})

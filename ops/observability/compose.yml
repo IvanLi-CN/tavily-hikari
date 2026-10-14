@@ -1,0 +1,29 @@
+services:
+  prometheus:
+    image: ${HIKARI_PROMETHEUS_IMAGE:-prom/prometheus@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3}
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./recording-rules.yml:/etc/prometheus/rules/hikari-recording-rules.yml:ro
+      - ${HIKARI_OBSERVABILITY_FILE_SD_DIR:?Set HIKARI_OBSERVABILITY_FILE_SD_DIR to a deployment-owned file-SD directory}:/etc/prometheus/file_sd:ro
+      - ${HIKARI_OBSERVABILITY_SECRETS_DIR:?Set HIKARI_OBSERVABILITY_SECRETS_DIR to a deployment-owned secrets directory}:/etc/prometheus/secrets:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: ${HIKARI_GRAFANA_IMAGE:-grafana/grafana@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f}
+    profiles: [observability]
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards/hikari:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -26,6 +26,22 @@ async fn workload_window_records_typed_admission_defers_without_statement_text()
 }
 
 #[tokio::test]
+async fn discarded_transaction_connection_is_recorded_as_error() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    runtime.record_discard(
+        SqliteOperation::RequestStatsFlush,
+        Duration::from_millis(2),
+        Duration::from_millis(3),
+        Duration::from_millis(4),
+    );
+
+    let window = runtime.inner.workload.lock().unwrap();
+    let metrics = &window.operations[&SqliteOperation::RequestStatsFlush];
+    assert_eq!(metrics.errors, 1);
+    assert_eq!(metrics.discarded_connections, 1);
+}
+
+#[tokio::test]
 async fn deferred_read_close_is_not_reported_as_a_database_error() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
     let error = ProxyError::Deferred {

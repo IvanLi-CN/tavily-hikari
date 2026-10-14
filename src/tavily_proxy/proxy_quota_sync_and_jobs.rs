@@ -2661,7 +2661,27 @@ impl TavilyProxy {
                 if let Some(timeout) = timeout {
                     req = req.timeout(timeout);
                 }
-                (req.send().await.map_err(ProxyError::Http)?, None)
+                let attempt_started = std::time::Instant::now();
+                match req.send().await {
+                    Ok(response) => {
+                        crate::observability::global_metrics().record_upstream(
+                            crate::observability::upstream_class_for_operation(request_kind),
+                            request_kind,
+                            Ok(response.status()),
+                            attempt_started.elapsed(),
+                        );
+                        (response, None)
+                    }
+                    Err(err) => {
+                        crate::observability::global_metrics().record_upstream_failure(
+                            crate::observability::upstream_class_for_operation(request_kind),
+                            request_kind,
+                            err.is_timeout(),
+                            attempt_started.elapsed(),
+                        );
+                        return Err(ProxyError::Http(err));
+                    }
+                }
             }
         };
         let status = resp.status();

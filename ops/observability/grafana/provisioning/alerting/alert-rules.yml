@@ -1,0 +1,350 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: Hikari alerts
+    folder: Hikari
+    interval: 60s
+    rules:
+      - uid: hikari-exporter-unavailable
+        title: Hikari exporter unavailable
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: up{job="tavily-hikari"} == bool 0
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Hikari metrics exporter is unavailable
+          description: Prometheus cannot scrape the Hikari exporter.
+        labels:
+          severity: critical
+
+      - uid: hikari-scrape-stale
+        title: Hikari scrape stale or low sample
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: up{job="tavily-hikari"} == 1 unless on (service, environment, instance) hikari:sample_count5m >= 1
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Hikari scrape is stale or has too few samples
+          description: The target is reachable but no request samples were observed recently.
+        labels:
+          severity: warning
+
+      - uid: hikari-error-rate-high
+        title: Hikari error rate high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: >-
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:error_rate5m > 0.2
+                and on (service, environment, instance) hikari:request_rate5m > 0.1
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Hikari error rate is high
+          description: More than 20 percent of sampled requests are failing.
+        labels:
+          severity: warning
+
+      - uid: hikari-request-p95-high
+        title: Hikari request P95 high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: >-
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:request_p95_seconds5m > 2
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Hikari request P95 is high
+          description: Request latency is above the generic two-second baseline.
+        labels:
+          severity: warning
+
+      - uid: hikari-sqlite-wait-high
+        title: Hikari SQLite wait high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: >-
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 10
+                and on (service, environment, instance) hikari:sqlite_wait_p95_seconds5m > 0.5
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Hikari SQLite wait P95 is high
+          description: SQLite pool or transaction waits are above the generic baseline.
+        labels:
+          severity: warning
+
+      - uid: hikari-memory-headroom-low
+        title: Hikari memory headroom low
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: hikari-prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: hikari-prometheus
+              editorMode: code
+              expr: >-
+                up{job="tavily-hikari"} == 1
+                and on (service, environment, instance) hikari:sample_count5m >= 1
+                and on (service, environment, instance) hikari:memory_headroom_bytes < 134217728
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: Hikari memory headroom is low
+          description: The process has less than 128 MiB of observed headroom.
+        labels:
+          severity: warning

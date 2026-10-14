@@ -2736,7 +2736,7 @@ impl SqliteRuntime {
             hold_ms = hold.as_millis() as u64,
             "discarded a physical SQLite connection with an unfinished transaction"
         );
-        self.record(operation, pool_wait, begin_wait, hold, 0, false, true, None);
+        self.record(operation, pool_wait, begin_wait, hold, 0, true, true, None);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2753,6 +2753,26 @@ impl SqliteRuntime {
     ) {
         let now = Instant::now();
         self.emit_contention_recovery_if_ready(now);
+        let outcome = if deferred.is_some() {
+            "degraded"
+        } else if error {
+            "error"
+        } else {
+            "success"
+        };
+        let reason = deferred
+            .map(SqliteAdmissionDeferReason::as_str)
+            .unwrap_or(if error { "database" } else { "none" });
+        // Emit operational telemetry before taking the workload mutex. The recorder is
+        // bounded and in-memory, but it must never extend the SQLite critical section.
+        crate::observability::global_metrics().record_sqlite(
+            operation.workload_class(),
+            operation.as_str(),
+            pool_wait,
+            begin_wait,
+            outcome,
+            reason,
+        );
         let mut window = self
             .inner
             .workload

@@ -1,0 +1,125 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [{"asDropdown": true, "includeVars": true, "keepTime": true, "tags": ["hikari"], "title": "Hikari dashboards", "type": "dashboards"}],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "All upstream attempts, including retries, per second.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "Upstream attempts",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Share of upstream attempts ending in error, timeout, or exhausted retries.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.05}, {"color": "red", "value": 0.2}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=~\"error|timeout|upstream_exhausted\"}[5m])) / clamp_min(sum(rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])), 0.001)", "instant": true, "refId": "A"}],
+      "title": "Upstream error rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "95th percentile for an individual upstream attempt.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 2}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hikari:upstream_p95_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "instant": true, "refId": "A"}],
+      "title": "Upstream P95",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Attempts per completed request. Values above one indicate retries or fan-out pressure.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1.2}, {"color": "red", "value": 2}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])) / clamp_min(sum(hikari:request_rate5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}), 0.001)", "instant": true, "refId": "A"}],
+      "title": "Attempts / request",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Upstream volume split by the fixed upstream class and operation labels.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (upstream_class, operation) (rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{upstream_class}} / {{operation}}", "refId": "A"}],
+      "title": "Upstream rate by class",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Upstream failure share by class, exposing whether a particular dependency is driving the error rate.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.05}, {"color": "red", "value": 0.2}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (upstream_class) (rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=~\"error|timeout|upstream_exhausted\"}[5m])) / clamp_min(sum by (upstream_class) (rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])), 0.001)", "legendFormat": "{{upstream_class}}", "refId": "A"}],
+      "title": "Upstream error rate by class",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "P50, P95 and P99 of upstream attempt duration. A widening tail usually indicates retries, throttling, or dependency saturation.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 8, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 12},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "hikari:upstream_p50_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P50", "refId": "A"},
+        {"expr": "hikari:upstream_p95_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P95", "refId": "B"},
+        {"expr": "hikari:upstream_p99_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P99", "refId": "C"}
+      ],
+      "title": "Upstream latency percentiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Terminal upstream outcomes by operation. This distinguishes dependency failures from successful retries.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}, "spanNulls": true}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (operation, outcome) (rate(hikari_upstream_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation}} / {{outcome}}", "refId": "A"}],
+      "title": "Upstream outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "P95 by operation. Use this to identify one upstream operation that is slower than the aggregate.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "id": 9,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (service, environment, instance, operation, le) (rate(hikari_upstream_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{operation}}", "refId": "A"}],
+      "title": "Upstream P95 by operation",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "proxy"],
+  "templating": {"list": [
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total, service)", "includeAll": true, "label": "Service", "multi": true, "name": "service", "query": {"query": "label_values(hikari_http_requests_total, service)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "includeAll": true, "label": "Instance", "multi": true, "name": "instance", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
+  ]},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"], "time_options": ["5m", "15m", "1h", "6h", "12h", "24h"]},
+  "title": "Hikari Proxy",
+  "uid": "hikari-proxy",
+  "version": 2
+}

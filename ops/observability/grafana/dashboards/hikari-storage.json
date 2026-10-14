@@ -1,0 +1,114 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [{"asDropdown": true, "includeVars": true, "keepTime": true, "tags": ["hikari"], "title": "Hikari dashboards", "type": "dashboards"}],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "95th percentile of SQLite pool, begin, and lock waits.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.25}, {"color": "red", "value": 0.5}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "hikari:sqlite_wait_p95_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "instant": true, "refId": "A"}],
+      "title": "SQLite wait P95",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Completed foreground and background transactions per second.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_sqlite_transactions_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "SQLite transactions",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Transactions ending in an error or timeout, divided by all transaction outcomes.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.1}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_sqlite_transactions_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=~\"error|timeout\"}[5m])) / clamp_min(sum(rate(hikari_sqlite_transactions_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])), 0.001)", "instant": true, "refId": "A"}],
+      "title": "SQLite error rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Background task failures and timeouts per second.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.1}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(hikari_background_tasks_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=~\"error|timeout\"}[5m]))", "instant": true, "refId": "A"}],
+      "title": "Background failures",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "P50, P95 and P99 wait duration. A rising P99 with a stable P50 points to intermittent lock contention.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 8, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 4},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "hikari:sqlite_wait_p50_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P50", "refId": "A"},
+        {"expr": "hikari:sqlite_wait_p95_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P95", "refId": "B"},
+        {"expr": "hikari:sqlite_wait_p99_seconds5m{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "P99", "refId": "C"}
+      ],
+      "title": "SQLite wait percentiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "P95 wait by reason. Pool and begin waits are actionable separately from other bounded reason codes.",
+      "fieldConfig": {"defaults": {"decimals": 3, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 4},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (service, environment, instance, reason, le) (rate(hikari_sqlite_wait_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{reason}}", "refId": "A"}],
+      "title": "SQLite wait P95 by reason",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Transaction volume by bounded workload and operation labels, with outcome stacked for comparison.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}, "spanNulls": true}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (workload_class, operation, outcome) (rate(hikari_sqlite_transactions_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{workload_class}} / {{operation}} / {{outcome}}", "refId": "A"}],
+      "title": "SQLite transaction outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "hikari-prometheus"},
+      "description": "Background task volume and terminal outcomes. A task failure without request errors points to asynchronous degradation.",
+      "fieldConfig": {"defaults": {"decimals": 2, "custom": {"drawStyle": "bars", "fillOpacity": 70, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}, "spanNulls": true}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (operation, outcome) (rate(hikari_background_tasks_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation}} / {{outcome}}", "refId": "A"}],
+      "title": "Background task outcomes",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["hikari", "storage"],
+  "templating": {"list": [
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total, service)", "includeAll": true, "label": "Service", "multi": true, "name": "service", "query": {"query": "label_values(hikari_http_requests_total, service)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\"}, environment)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+    {"allValue": ".*", "current": {"selected": true, "text": "All", "value": ["$__all"]}, "datasource": {"type": "prometheus", "uid": "hikari-prometheus"}, "definition": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "includeAll": true, "label": "Instance", "multi": true, "name": "instance", "query": {"query": "label_values(hikari_http_requests_total{service=~\"$service\",environment=~\"$environment\"}, instance)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
+  ]},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"], "time_options": ["5m", "15m", "1h", "6h", "12h", "24h"]},
+  "title": "Hikari Storage",
+  "uid": "hikari-storage",
+  "version": 2
+}

@@ -1739,6 +1739,7 @@ impl TavilyProxy {
         let result = async {
             let mut last_error: Option<ProxyError> = None;
             for candidate in plan {
+                let attempt_started = Instant::now();
                 let mut candidate = candidate;
                 let mut attempted_recovery = false;
                 let relay_lease = loop {
@@ -1767,6 +1768,12 @@ impl TavilyProxy {
                     }
                 };
                 let Some(relay_lease) = relay_lease else {
+                    crate::observability::global_metrics().record_upstream(
+                        "forward_proxy",
+                        request_kind,
+                        Err(()),
+                        attempt_started.elapsed(),
+                    );
                     let _ = self
                         .record_forward_proxy_attempt(
                             &candidate.key,
@@ -1790,6 +1797,12 @@ impl TavilyProxy {
                     Ok(client) => client,
                     Err(err) => {
                         drop(relay_lease);
+                        crate::observability::global_metrics().record_upstream_failure(
+                            "forward_proxy",
+                            request_kind,
+                            crate::observability::outcome_for_proxy_error(&err) == "timeout",
+                            attempt_started.elapsed(),
+                        );
                         let error_code = map_forward_proxy_validation_error_code(&err);
                         let _ = self
                             .record_forward_proxy_attempt(
@@ -1805,10 +1818,18 @@ impl TavilyProxy {
                         continue;
                     }
                 };
-                let started = Instant::now();
+                let request_started = Instant::now();
                 match build(client).send().await {
                     Ok(response) => {
-                        let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        let elapsed = attempt_started.elapsed();
+                        let request_elapsed = request_started.elapsed();
+                        crate::observability::global_metrics().record_upstream(
+                            "forward_proxy",
+                            request_kind,
+                            Ok(response.status()),
+                            elapsed,
+                        );
+                        let latency_ms = request_elapsed.as_secs_f64() * 1000.0;
                         let _ = self
                             .record_forward_proxy_attempt(
                                 &candidate.key,
@@ -1828,6 +1849,12 @@ impl TavilyProxy {
                     }
                     Err(err) => {
                         drop(relay_lease);
+                        crate::observability::global_metrics().record_upstream_failure(
+                            "forward_proxy",
+                            request_kind,
+                            err.is_timeout(),
+                            attempt_started.elapsed(),
+                        );
                         let failure_kind = forward_proxy::failure_kind_from_http_error(&err);
                         let _ = self
                             .record_forward_proxy_attempt(
@@ -1857,16 +1884,23 @@ impl TavilyProxy {
                 }));
             };
             let client = self.forward_proxy_clients.direct_client();
-            let started = Instant::now();
+            let attempt_started = Instant::now();
             match build(client).send().await {
                 Ok(response) => {
+                    let elapsed = attempt_started.elapsed();
+                    crate::observability::global_metrics().record_upstream(
+                        crate::observability::upstream_class_for_operation(request_kind),
+                        request_kind,
+                        Ok(response.status()),
+                        elapsed,
+                    );
                     let _ = self
                         .record_forward_proxy_attempt(
                             &direct.key,
                             affinity_owner_key_id,
                             request_kind,
                             true,
-                            Some(started.elapsed().as_secs_f64() * 1000.0),
+                            Some(elapsed.as_secs_f64() * 1000.0),
                             None,
                         )
                         .await;
@@ -1878,6 +1912,12 @@ impl TavilyProxy {
                     ))
                 }
                 Err(err) => {
+                    crate::observability::global_metrics().record_upstream_failure(
+                        crate::observability::upstream_class_for_operation(request_kind),
+                        request_kind,
+                        err.is_timeout(),
+                        attempt_started.elapsed(),
+                    );
                     let _ = self
                         .record_forward_proxy_attempt(
                             &direct.key,

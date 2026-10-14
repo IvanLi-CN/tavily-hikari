@@ -28,5 +28,8 @@ logs/
 downloads/
 data/
 .tmp/
+ops/observability/secrets/
+ops/observability/file_sd/hikari/*.yml
+!ops/observability/file_sd/hikari/*.yml.disabled
 __pycache__/
 *.py[cod]

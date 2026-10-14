@@ -11,6 +11,47 @@ fn http_upstream_operation(upstream_path: &str) -> Option<&'static str> {
     }
 }
 
+fn record_http_upstream_phase(
+    path: &str,
+    method: &str,
+    response: &Result<(reqwest::Response, forward_proxy::ForwardProxyRelayLease), ProxyError>,
+    elapsed: std::time::Duration,
+) {
+    let outcome = match response {
+        Ok((response, _)) => crate::observability::outcome_for_status_code(response.status()),
+        Err(error) => crate::observability::outcome_for_proxy_error(error),
+    };
+    crate::observability::global_metrics().record_http_phase(
+        path,
+        method,
+        outcome,
+        "upstream",
+        elapsed,
+    );
+}
+
+async fn read_response_body_with_phase(
+    response: reqwest::Response,
+    path: &str,
+    method: &str,
+    status: StatusCode,
+) -> Result<Bytes, ProxyError> {
+    let started = std::time::Instant::now();
+    let result = response.bytes().await.map_err(ProxyError::Http);
+    let outcome = result
+        .as_ref()
+        .map(|_| crate::observability::outcome_for_status_code(status))
+        .unwrap_or_else(|error| crate::observability::outcome_for_proxy_error(error));
+    crate::observability::global_metrics().record_http_phase(
+        path,
+        method,
+        outcome,
+        "response_body",
+        started.elapsed(),
+    );
+    result
+}
+
 impl TavilyProxy {
     async fn select_http_json_key(
         &self,
@@ -58,6 +99,7 @@ impl TavilyProxy {
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
         let mut mcp_session_init_effect = KeyEffect::none();
+        let key_selection_started = std::time::Instant::now();
         let lease = if let Some(key_id) = request.pinned_api_key_id.as_deref() {
             let Some(lease) = self.key_store.try_acquire_specific_key(key_id).await? else {
                 return Err(ProxyError::PinnedMcpSessionUnavailable);
@@ -73,6 +115,13 @@ impl TavilyProxy {
             self.acquire_key_for(request.auth_token_id.as_deref())
                 .await?
         };
+        crate::observability::global_metrics().record_http_phase(
+            request.path.as_str(),
+            request.method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
 
         let mut url = build_mcp_upstream_url(&self.upstream, request.path.as_str());
 
@@ -112,6 +161,7 @@ impl TavilyProxy {
         let request_body = request.body.clone();
         let request_url = url.clone();
         let tavily_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, "mcp", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -126,12 +176,23 @@ impl TavilyProxy {
                     .body(request_body.clone())
             })
             .await;
-
+        record_http_upstream_phase(
+            request.path.as_str(),
+            request.method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+                let body_bytes = read_response_body_with_phase(
+                    response,
+                    request.path.as_str(),
+                    request.method.as_str(),
+                    status,
+                )
+                .await?;
                 let outcome = analyze_attempt(status, &body_bytes);
 
                 log_success(
@@ -300,6 +361,7 @@ impl TavilyProxy {
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let upstream_operation = http_upstream_operation(upstream_path);
+        let key_selection_started = std::time::Instant::now();
         let (
             lease,
             api_route_binding_effect,
@@ -314,6 +376,13 @@ impl TavilyProxy {
                 http_project_id,
             )
             .await?;
+        crate::observability::global_metrics().record_http_phase(
+            display_path,
+            method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -368,6 +437,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -384,12 +454,19 @@ impl TavilyProxy {
                 builder.body(request_body.clone())
             })
             .await;
-
+        record_http_upstream_phase(
+            display_path,
+            method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+                let body_bytes =
+                    read_response_body_with_phase(response, display_path, method.as_str(), status)
+                        .await?;
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
@@ -660,7 +737,15 @@ impl TavilyProxy {
         upstream_operation: &str,
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
+        let key_selection_started = std::time::Instant::now();
         let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
+        crate::observability::global_metrics().record_http_phase(
+            display_path,
+            method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -701,6 +786,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -715,12 +801,23 @@ impl TavilyProxy {
                     .body(request_body.clone())
             })
             .await;
-
+        record_http_upstream_phase(
+            display_path,
+            method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let upstream_status = response.status();
                 let upstream_headers = response.headers().clone();
-                let upstream_body = response.bytes().await.map_err(ProxyError::Http)?;
+                let upstream_body = read_response_body_with_phase(
+                    response,
+                    display_path,
+                    method.as_str(),
+                    upstream_status,
+                )
+                .await?;
 
                 let mut analysis = analyze_http_attempt(upstream_status, &upstream_body);
                 analysis.api_key_id = Some(lease.id.clone());
@@ -905,7 +1002,15 @@ impl TavilyProxy {
         upstream_operation: &str,
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
+        let key_selection_started = std::time::Instant::now();
         let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
+        crate::observability::global_metrics().record_http_phase(
+            display_path,
+            method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -944,6 +1049,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, "research", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -958,12 +1064,23 @@ impl TavilyProxy {
                     .body(request_body.clone())
             })
             .await;
-
+        record_http_upstream_phase(
+            display_path,
+            method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let upstream_status = response.status();
                 let upstream_headers = response.headers().clone();
-                let upstream_body = response.bytes().await.map_err(ProxyError::Http)?;
+                let upstream_body = read_response_body_with_phase(
+                    response,
+                    display_path,
+                    method.as_str(),
+                    upstream_status,
+                )
+                .await?;
 
                 let mut analysis = analyze_http_attempt(upstream_status, &upstream_body);
                 analysis.api_key_id = Some(lease.id.clone());
@@ -1160,6 +1277,7 @@ impl TavilyProxy {
         inject_upstream_bearer_auth: bool,
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<(ProxyResponse, AttemptAnalysis, Option<i64>), ProxyError> {
+        let key_selection_started = std::time::Instant::now();
         let (
             lease,
             api_route_binding_effect,
@@ -1174,6 +1292,13 @@ impl TavilyProxy {
                 http_project_id,
             )
             .await?;
+        crate::observability::global_metrics().record_http_phase(
+            display_path,
+            method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
             source,
@@ -1216,6 +1341,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, "research", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -1232,12 +1358,19 @@ impl TavilyProxy {
                 builder.body(request_body.clone())
             })
             .await;
-
+        record_http_upstream_phase(
+            display_path,
+            method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+                let body_bytes =
+                    read_response_body_with_phase(response, display_path, method.as_str(), status)
+                        .await?;
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
@@ -1444,6 +1577,7 @@ impl TavilyProxy {
         fixed_research_request_key_id: Option<&str>,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let research_request_id = extract_research_request_id_from_path(upstream_path);
+        let key_selection_started = std::time::Instant::now();
         let lease = if let Some(fixed_key_id) = fixed_research_request_key_id {
             self.key_store
                 .try_acquire_specific_key(fixed_key_id)
@@ -1453,6 +1587,13 @@ impl TavilyProxy {
             self.acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
                 .await?
         };
+        crate::observability::global_metrics().record_http_phase(
+            display_path,
+            method.as_str(),
+            "success",
+            "key_selection",
+            key_selection_started.elapsed(),
+        );
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -1474,6 +1615,7 @@ impl TavilyProxy {
         let request_method = method.clone();
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
+        let upstream_started = std::time::Instant::now();
         let response = self
             .send_with_forward_proxy(&lease.id, "research_result", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
@@ -1490,12 +1632,19 @@ impl TavilyProxy {
                 builder
             })
             .await;
-
+        record_http_upstream_phase(
+            display_path,
+            method.as_str(),
+            &response,
+            upstream_started.elapsed(),
+        );
         match response {
             Ok((response, _relay_lease)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
-                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+                let body_bytes =
+                    read_response_body_with_phase(response, display_path, method.as_str(), status)
+                        .await?;
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
