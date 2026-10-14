@@ -123,7 +123,7 @@ Prometheus、Grafana、exporter scrape、recording rule、dashboard query 或可
 
 ## Visual Evidence
 
-本轮视觉证据使用 pinned Grafana `11.2.0` 与 Prometheus `2.55.1` 的隔离本机进程，file-SD 指向 mock/sandbox exporter，未连接 101 或官方 Tavily endpoint。Prometheus target 为 UP，Grafana datasource UID 为 `hikari-prometheus`，四个 dashboard 均由仓库 provisioning 自动加载并显示真实查询曲线。
+本轮视觉证据使用 pinned Grafana `11.2.0` 与 Prometheus `2.55.1` 的隔离本机进程，file-SD 指向 mock/sandbox exporter，未连接 101 或官方 Tavily endpoint。Prometheus target 为 UP，Grafana datasource UID 为 `hikari-prometheus`，四个 dashboard 均由仓库 provisioning 自动加载并显示真实查询曲线；Overview、Proxy、Storage、Runtime 分别渲染 11、9、8、11 个面板，包含变量筛选、目标健康、分位数、路由/upstream/SQLite/后台任务和 exporter 压力信号。
 
 - [Hikari Overview](./assets/hikari-overview.png)
 - [Hikari Proxy](./assets/hikari-proxy.png)
