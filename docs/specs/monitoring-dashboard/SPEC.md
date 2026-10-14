@@ -83,7 +83,7 @@ Tavily Hikari 是 Rust/Axum 代理服务，React 管理台和 SQLite 业务持�
 
 ### REQ-MONITORING-008：固定 dashboard
 
-首期 MUST 提供 `Hikari Overview`、`Hikari Proxy`、`Hikari Storage` 和 `Hikari Runtime` 四个固定 dashboard，使用稳定 UID、只读 datasource 和可替换的 deployment variables。
+首期 MUST 提供 `Hikari Overview`、`Hikari Proxy`、`Hikari Storage` 和 `Hikari Runtime` 四个固定 dashboard，使用稳定 UID、只读 datasource 和可替换的 deployment variables。Dashboard MUST 保留 `service`、`environment`、`instance` 过滤，并提供 target health、样本量、错误率、P50/P95/P99、route/upstream/phase/storage/runtime 分解和 recorder 丢样本状态，使值班人员可以从症状定位到责任边界，而不是只能确认 exporter 有数据。
 
 ### REQ-MONITORING-009：告警语义
 
@@ -118,7 +118,7 @@ Prometheus、Grafana、exporter scrape、recording rule、dashboard query 或可
 - **VER-MONITORING-002**：关闭 `OBSERVABILITY_ENABLED` 后 exporter 不监听，业务 health、public metrics API、请求处理和持久化回归通过，covers: `REQ-MONITORING-001`, `REQ-MONITORING-006`, `REQ-MONITORING-011`。
 - **VER-MONITORING-003**：metrics fixture、allowlist 测试和敏感字段扫描验证名称、类型、单位、labels、未知值和 recorder 边界，covers: `REQ-MONITORING-002`, `REQ-MONITORING-003`, `REQ-MONITORING-004`, `REQ-MONITORING-005`。
 - **VER-MONITORING-004**：Prometheus 配置、recording rules、Counter reset、classic Histogram 分位数和 freshness/sample-count fixture 可重复执行，covers: `REQ-MONITORING-004`, `REQ-MONITORING-007`, `REQ-MONITORING-009`, `REQ-MONITORING-012`。
-- **VER-MONITORING-005**：四个 dashboard 的 datasource UID、dashboard UID、无样本/低样本/stale/错误状态和告警加载在隔离 provisioning 检查中验证，covers: `REQ-MONITORING-007`, `REQ-MONITORING-008`, `REQ-MONITORING-009`。
+- **VER-MONITORING-005**：四个 dashboard 的 datasource UID、dashboard UID、变量筛选、诊断面板、无样本/低样本/stale/错误状态和告警加载在隔离 provisioning 与实际渲染检查中验证，covers: `REQ-MONITORING-007`, `REQ-MONITORING-008`, `REQ-MONITORING-009`。
 - **VER-MONITORING-006**：mock traffic 与 exporter interruption smoke 验证代理请求、ACK、后台任务和 SQLite 写入继续完成；101 的 target、Grafana rendering 和 retention/阈值在 owner 授权的部署验收中验证，covers: `REQ-MONITORING-010`, `REQ-MONITORING-011`, `REQ-MONITORING-012`。
 
 ## Visual Evidence
