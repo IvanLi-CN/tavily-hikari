@@ -14,7 +14,7 @@
 - `phase`: `none`, `admission`, `key_selection`, `upstream`, `response_headers`, `response_body`, `persistence`, `ack`。
 - `outcome`: `success`, `error`, `timeout`, `cancelled`, `rate_limited`, `upstream_exhausted`, `degraded`。
 - `status_class`: `2xx`, `3xx`, `4xx`, `5xx`, `none`。
-- `method`: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `SSE`, `MCP`。
+- `method`: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OTHER`, `SSE`, `MCP`。
 - `upstream_class`: `tavily_http`, `tavily_mcp`, `forward_proxy`, `none`。
 - `workload_class`: `foreground`, `background`, `maintenance`, `reconciliation`, `observability`。
 - `channel`: `control`, `billing`, `usage`, `research`, `none`。

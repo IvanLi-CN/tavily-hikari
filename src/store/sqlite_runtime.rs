@@ -2736,7 +2736,7 @@ impl SqliteRuntime {
             hold_ms = hold.as_millis() as u64,
             "discarded a physical SQLite connection with an unfinished transaction"
         );
-        self.record(operation, pool_wait, begin_wait, hold, 0, false, true, None);
+        self.record(operation, pool_wait, begin_wait, hold, 0, true, true, None);
     }
 
     #[allow(clippy::too_many_arguments)]

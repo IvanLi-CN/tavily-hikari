@@ -9,7 +9,12 @@ scrape_configs:
   - job_name: tavily-hikari
     metrics_path: /metrics
     scheme: http
-    honor_labels: true
+    honor_labels: false
+    body_size_limit: 2MB
+    sample_limit: 2000
+    label_limit: 32
+    label_name_length_limit: 64
+    label_value_length_limit: 128
     bearer_token_file: /etc/prometheus/secrets/hikari-metrics.token
     file_sd_configs:
       - files:

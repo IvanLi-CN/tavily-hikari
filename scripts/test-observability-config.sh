@@ -24,7 +24,14 @@ alert_rules="$observability_dir/grafana/provisioning/alerting/alert-rules.yml"
 grep -Fq 'apiVersion: 1' "$alert_rules"
 grep -Fq 'datasourceUid: hikari-prometheus' "$alert_rules"
 test "$(grep -c '^      - uid: hikari-' "$alert_rules")" -eq 6
-grep -Fq 'honor_labels: true' "$observability_dir/prometheus.yml"
+test "$(grep -c 'up{job="tavily-hikari"} == bool 1' "$alert_rules")" -eq 5
+test "$(grep -c 'hikari:sample_count5m >= bool' "$alert_rules")" -eq 4
+grep -Fq 'honor_labels: false' "$observability_dir/prometheus.yml"
+grep -Fq 'body_size_limit: 2MB' "$observability_dir/prometheus.yml"
+grep -Fq 'sample_limit: 2000' "$observability_dir/prometheus.yml"
+grep -Fq 'label_limit: 32' "$observability_dir/prometheus.yml"
+grep -Fq 'label_name_length_limit: 64' "$observability_dir/prometheus.yml"
+grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
 
 python3 - "$observability_dir/grafana/dashboards" <<'PY'
 import json

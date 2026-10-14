@@ -24,3 +24,6 @@ jobs:
 
       - name: Validate quality gates contract
         run: python3 .github/scripts/check_quality_gates.py
+
+      - name: Validate observability provisioning
+        run: bash scripts/test-observability-config.sh

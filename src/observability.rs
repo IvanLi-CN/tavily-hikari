@@ -506,7 +506,9 @@ async fn metrics_handler(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim);
-    if provided != Some(endpoint.token.as_ref()) {
+    let authorized =
+        provided.is_some_and(|provided| constant_time_token_eq(provided, endpoint.token.as_ref()));
+    if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match endpoint.metrics.gather() {
@@ -532,6 +534,19 @@ async fn metrics_handler(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+fn constant_time_token_eq(provided: &str, expected: &str) -> bool {
+    let provided = provided.as_bytes();
+    let expected = expected.as_bytes();
+    let mut difference = provided.len() ^ expected.len();
+    for index in 0..provided.len().max(expected.len()) {
+        difference |= usize::from(
+            provided.get(index).copied().unwrap_or_default()
+                ^ expected.get(index).copied().unwrap_or_default(),
+        );
+    }
+    difference == 0
 }
 
 async fn runtime_sampler(metrics: Arc<Metrics>, mut stop: watch::Receiver<bool>) {
@@ -619,7 +634,7 @@ fn metric_method(path: &str, method: &str) -> &'static str {
             "PUT" => "PUT",
             "PATCH" => "PATCH",
             "DELETE" => "DELETE",
-            _ => "GET",
+            _ => "OTHER",
         }
     }
 }
@@ -653,7 +668,7 @@ fn normalize_operation(operation: &str) -> &'static str {
         "extract" | "http_extract" => "extract",
         "crawl" | "http_crawl" => "crawl",
         "map" | "http_map" => "map",
-        "research" | "http_research" => "research",
+        "research" | "research_result" | "http_research" => "research",
         "observability_sampler" => "observability_sampler",
         "background_tasks" => "background_tasks",
         "foreground_job_trigger" => "foreground_job_trigger",
@@ -721,7 +736,7 @@ fn common_const_labels() -> HashMap<String, String> {
     );
     labels.insert(
         "instance".to_owned(),
-        bounded_identity("OBSERVABILITY_INSTANCE"),
+        bounded_instance_identity("OBSERVABILITY_INSTANCE"),
     );
     labels
 }
@@ -738,6 +753,47 @@ fn bounded_identity(name: &str) -> String {
         value.to_owned()
     } else {
         "unknown".to_owned()
+    }
+}
+
+fn bounded_instance_identity(name: &str) -> String {
+    let value = env::var(name).unwrap_or_default();
+    bounded_instance_value(value.trim())
+}
+
+fn bounded_instance_value(value: &str) -> String {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        || value.split('-').any(|part| part.is_empty())
+    {
+        return "unknown".to_owned();
+    }
+
+    let contains_sensitive_token = value.split('-').any(|part| {
+        matches!(
+            part.to_ascii_lowercase().as_str(),
+            "auth"
+                | "credential"
+                | "key"
+                | "request"
+                | "secret"
+                | "session"
+                | "token"
+                | "trace"
+                | "user"
+        )
+    });
+    if contains_sensitive_token {
+        "unknown".to_owned()
+    } else {
+        value.to_owned()
     }
 }
 
@@ -770,7 +826,15 @@ mod tests {
         assert_eq!(route_family("/api/tavily/search"), "http_search");
         assert_eq!(route_family("/mcp"), "mcp");
         assert_eq!(metric_method("/mcp", "POST"), "MCP");
-        assert_eq!(metric_method("/anything", "OPTIONS"), "GET");
+        assert_eq!(metric_method("/anything", "OPTIONS"), "OTHER");
+        assert_eq!(metric_method("/anything", "HEAD"), "OTHER");
+    }
+
+    #[test]
+    fn instance_identity_rejects_sensitive_tokens() {
+        assert_eq!(bounded_instance_value("hikari-prod-01"), "hikari-prod-01");
+        assert_eq!(bounded_instance_value("token-123"), "unknown");
+        assert_eq!(bounded_instance_value("request-abc"), "unknown");
     }
 
     #[test]
@@ -797,6 +861,7 @@ mod tests {
     #[test]
     fn unknown_dimensions_are_mapped_to_fixed_values() {
         assert_eq!(normalize_operation("user supplied operation"), "other");
+        assert_eq!(normalize_operation("research_result"), "research");
         assert_eq!(normalize_reason("user supplied reason"), "other");
         assert_eq!(normalize_workload_class("maintenance_bulk"), "maintenance");
     }
@@ -826,6 +891,14 @@ mod tests {
         let denied =
             metrics_handler(axum::extract::State(endpoint.clone()), HeaderMap::new()).await;
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+        let mut wrong_headers = HeaderMap::new();
+        wrong_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong-token"),
+        );
+        let wrong = metrics_handler(axum::extract::State(endpoint.clone()), wrong_headers).await;
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
 
         let mut headers = HeaderMap::new();
         headers.insert(
