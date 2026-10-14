@@ -57,7 +57,43 @@ for filename, uid in expected.items():
 PY
 
 if command -v promtool >/dev/null 2>&1; then
-  promtool check config "$observability_dir/prometheus.yml"
+  validation_root="$(mktemp -d)"
+  trap 'rm -rf "$validation_root"' EXIT
+  python3 - "$observability_dir/prometheus.yml" "$observability_dir/recording-rules.yml" "$validation_root" <<'PY'
+import pathlib
+import sys
+
+prometheus_source = pathlib.Path(sys.argv[1])
+rules_source = pathlib.Path(sys.argv[2])
+validation_root = pathlib.Path(sys.argv[3])
+(validation_root / "rules").mkdir(parents=True)
+(validation_root / "secrets").mkdir()
+(validation_root / "file_sd" / "hikari").mkdir(parents=True)
+(validation_root / "rules" / "hikari-recording-rules.yml").write_text(
+    rules_source.read_text()
+)
+(validation_root / "secrets" / "hikari-metrics.token").write_text(
+    "local-validation-token\n"
+)
+(validation_root / "file_sd" / "hikari" / "validation.yml").write_text(
+    "- targets:\n    - 127.0.0.1:1\n"
+)
+config = prometheus_source.read_text()
+config = config.replace(
+    "/etc/prometheus/rules/hikari-recording-rules.yml",
+    str(validation_root / "rules" / "hikari-recording-rules.yml"),
+)
+config = config.replace(
+    "/etc/prometheus/secrets/hikari-metrics.token",
+    str(validation_root / "secrets" / "hikari-metrics.token"),
+)
+config = config.replace(
+    "/etc/prometheus/file_sd/hikari/*.yml",
+    str(validation_root / "file_sd" / "hikari" / "*.yml"),
+)
+(validation_root / "prometheus.yml").write_text(config)
+PY
+  promtool check config "$validation_root/prometheus.yml"
   promtool check rules "$observability_dir/recording-rules.yml"
 else
   if [[ "${OBSERVABILITY_REQUIRE_PROMTOOL:-false}" == "true" ]]; then
