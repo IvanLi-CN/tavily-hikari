@@ -37,6 +37,7 @@ grep -Fq 'sample_limit: 2000' "$observability_dir/prometheus.yml"
 grep -Fq 'label_limit: 32' "$observability_dir/prometheus.yml"
 grep -Fq 'label_name_length_limit: 64' "$observability_dir/prometheus.yml"
 grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
+python3 "$repo_root/scripts/validate-observability-alerts.py" "$alert_rules"
 
 python3 - "$alert_rules" <<'PY'
 import re
@@ -186,12 +187,16 @@ config = config.replace(
 PY
   promtool check config "$validation_root/prometheus.yml"
   promtool check rules "$observability_dir/recording-rules.yml"
+  python3 "$repo_root/scripts/validate-observability-alerts.py" \
+    "$alert_rules" \
+    --prometheus-rules-output "$validation_root/grafana-alert-expressions.yml"
+  promtool check rules "$validation_root/grafana-alert-expressions.yml"
 else
   if [[ "${OBSERVABILITY_REQUIRE_PROMTOOL:-false}" == "true" ]]; then
     echo "promtool is required for this validation environment" >&2
     exit 1
   fi
-  echo "promtool not installed; checked files and dashboard JSON only"
+  echo "promtool not installed; checked files, alert provisioning, and dashboard JSON only"
 fi
 
 echo "observability configuration checks passed"

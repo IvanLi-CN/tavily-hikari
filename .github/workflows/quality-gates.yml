@@ -25,6 +25,9 @@ jobs:
       - name: Validate quality gates contract
         run: python3 .github/scripts/check_quality_gates.py
 
+      - name: Install observability validation dependencies
+        run: python3 -m pip install --user PyYAML==6.0.2
+
       - name: Install pinned Prometheus tools
         env:
           PROMETHEUS_VERSION: 2.55.1
