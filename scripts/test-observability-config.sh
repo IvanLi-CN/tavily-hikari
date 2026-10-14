@@ -7,6 +7,7 @@ observability_dir="$repo_root/ops/observability"
 required_files=(
   "$observability_dir/prometheus.yml"
   "$observability_dir/recording-rules.yml"
+  "$observability_dir/compose.yml"
   "$observability_dir/grafana/provisioning/datasources/datasource.yml"
   "$observability_dir/grafana/provisioning/dashboards/provider.yml"
   "$observability_dir/grafana/provisioning/alerting/alert-rules.yml"
@@ -37,6 +38,8 @@ grep -Fq 'sample_limit: 2000' "$observability_dir/prometheus.yml"
 grep -Fq 'label_limit: 32' "$observability_dir/prometheus.yml"
 grep -Fq 'label_name_length_limit: 64' "$observability_dir/prometheus.yml"
 grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
+grep -Fq 'prom/prometheus@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3' "$observability_dir/compose.yml"
+grep -Fq 'grafana/grafana@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f' "$observability_dir/compose.yml"
 python3 "$repo_root/scripts/validate-observability-alerts.py" "$alert_rules"
 
 python3 - "$alert_rules" <<'PY'
