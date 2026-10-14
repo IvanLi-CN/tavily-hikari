@@ -222,6 +222,41 @@ impl Metrics {
             .observe(elapsed.as_secs_f64());
     }
 
+    pub fn record_http_phase(
+        &self,
+        path: &str,
+        method: &str,
+        outcome: &str,
+        phase: &str,
+        elapsed: Duration,
+    ) {
+        if !self.recording_enabled {
+            return;
+        }
+        let route_family = route_family(path);
+        if !self.route_allowed(route_family) {
+            self.record_drop("route_allowlist");
+            return;
+        }
+        let method = metric_method(path, method);
+        let outcome = normalize_outcome(outcome);
+        let phase = normalize_phase(phase);
+        if phase == "none"
+            || !self.admit_label_tuple(
+                "hikari_http_duration_seconds",
+                &[route_family, method, outcome, phase],
+            )
+        {
+            if phase != "none" {
+                self.record_drop("cardinality");
+            }
+            return;
+        }
+        self.http_duration
+            .with_label_values(&[route_family, method, outcome, phase])
+            .observe(elapsed.as_secs_f64());
+    }
+
     pub fn record_upstream(
         &self,
         upstream_class: &str,
@@ -253,6 +288,40 @@ impl Metrics {
         }
         self.upstream_requests
             .with_label_values(&[upstream_class, operation, outcome, status_class])
+            .inc();
+        self.upstream_duration
+            .with_label_values(&[upstream_class, operation, outcome, "upstream"])
+            .observe(elapsed.as_secs_f64());
+    }
+
+    pub fn record_upstream_failure(
+        &self,
+        upstream_class: &str,
+        operation: &str,
+        timed_out: bool,
+        elapsed: Duration,
+    ) {
+        if !self.recording_enabled {
+            return;
+        }
+        let upstream_class = match upstream_class {
+            "tavily_http" | "tavily_mcp" | "forward_proxy" => upstream_class,
+            _ => "tavily_http",
+        };
+        let operation = normalize_operation(operation);
+        let outcome = if timed_out { "timeout" } else { "error" };
+        if !self.admit_label_tuple(
+            "hikari_upstream_requests_total",
+            &[upstream_class, operation, outcome, "none"],
+        ) || !self.admit_label_tuple(
+            "hikari_upstream_duration_seconds",
+            &[upstream_class, operation, outcome, "upstream"],
+        ) {
+            self.record_drop("cardinality");
+            return;
+        }
+        self.upstream_requests
+            .with_label_values(&[upstream_class, operation, outcome, "none"])
             .inc();
         self.upstream_duration
             .with_label_values(&[upstream_class, operation, outcome, "upstream"])
@@ -739,6 +808,18 @@ fn outcome_for_status(status: StatusCode) -> &'static str {
     }
 }
 
+pub(crate) fn outcome_for_status_code(status: StatusCode) -> &'static str {
+    outcome_for_status(status)
+}
+
+pub(crate) fn outcome_for_proxy_error(error: &crate::ProxyError) -> &'static str {
+    if matches!(error, crate::ProxyError::Http(error) if error.is_timeout()) {
+        "timeout"
+    } else {
+        "error"
+    }
+}
+
 fn normalize_operation(operation: &str) -> &'static str {
     match operation {
         "mcp" => "mcp",
@@ -810,6 +891,20 @@ fn normalize_reason(reason: &str) -> &'static str {
         "pool_pressure" => "pool_pressure",
         "recent_contention" => "recent_contention",
         _ => "other",
+    }
+}
+
+fn normalize_phase(phase: &str) -> &'static str {
+    match phase {
+        "none" => "none",
+        "admission" => "admission",
+        "key_selection" => "key_selection",
+        "upstream" => "upstream",
+        "response_headers" => "response_headers",
+        "response_body" => "response_body",
+        "persistence" => "persistence",
+        "ack" => "ack",
+        _ => "none",
     }
 }
 
@@ -942,6 +1037,22 @@ mod tests {
         assert!(output.contains("hikari_http_requests_total"));
         assert!(output.contains("route_family=\"http_search\""));
         assert!(!output.contains("request_id"));
+    }
+
+    #[test]
+    fn phase_and_timeout_outcomes_are_exported() {
+        let metrics = Metrics::new(None).expect("metrics");
+        metrics.record_http_phase(
+            "/api/tavily/search",
+            "POST",
+            "success",
+            "upstream",
+            Duration::from_millis(10),
+        );
+        metrics.record_upstream_failure("tavily_http", "search", true, Duration::from_millis(20));
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(output.contains("phase=\"upstream\""));
+        assert!(output.contains("outcome=\"timeout\""));
     }
 
     #[test]

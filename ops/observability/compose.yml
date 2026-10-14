@@ -8,8 +8,8 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./recording-rules.yml:/etc/prometheus/rules/hikari-recording-rules.yml:ro
-      - ./file_sd:/etc/prometheus/file_sd:ro
-      - ./secrets:/etc/prometheus/secrets:ro
+      - ${HIKARI_OBSERVABILITY_FILE_SD_DIR:?Set HIKARI_OBSERVABILITY_FILE_SD_DIR to a deployment-owned file-SD directory}:/etc/prometheus/file_sd:ro
+      - ${HIKARI_OBSERVABILITY_SECRETS_DIR:?Set HIKARI_OBSERVABILITY_SECRETS_DIR to a deployment-owned secrets directory}:/etc/prometheus/secrets:ro
       - prometheus-data:/prometheus
 
   grafana:

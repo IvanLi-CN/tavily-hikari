@@ -2673,10 +2673,10 @@ impl TavilyProxy {
                         (response, None)
                     }
                     Err(err) => {
-                        crate::observability::global_metrics().record_upstream(
+                        crate::observability::global_metrics().record_upstream_failure(
                             crate::observability::upstream_class_for_operation(request_kind),
                             request_kind,
-                            Err(()),
+                            err.is_timeout(),
                             attempt_started.elapsed(),
                         );
                         return Err(ProxyError::Http(err));

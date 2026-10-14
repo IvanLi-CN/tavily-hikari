@@ -27,6 +27,8 @@ test "$(grep -c '^      - uid: hikari-' "$alert_rules")" -eq 6
 test "$(grep -c 'up{job="tavily-hikari"} == bool 1' "$alert_rules")" -eq 5
 test "$(grep -c 'hikari:sample_count5m >= bool' "$alert_rules")" -eq 4
 grep -Fq 'honor_labels: false' "$observability_dir/prometheus.yml"
+grep -Fq 'HIKARI_OBSERVABILITY_FILE_SD_DIR:?Set HIKARI_OBSERVABILITY_FILE_SD_DIR' "$observability_dir/compose.yml"
+grep -Fq 'HIKARI_OBSERVABILITY_SECRETS_DIR:?Set HIKARI_OBSERVABILITY_SECRETS_DIR' "$observability_dir/compose.yml"
 test ! -e "$observability_dir/file_sd/hikari/example.yml"
 test -s "$observability_dir/file_sd/hikari/example.yml.disabled"
 grep -Fq 'body_size_limit: 2MB' "$observability_dir/prometheus.yml"
