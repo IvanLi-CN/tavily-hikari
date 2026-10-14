@@ -10,7 +10,7 @@ The exporter is a separate listener and is not a public application route. It ac
 
 ## Prometheus target
 
-Copy `file_sd/hikari/example.yml` to an instance-owned target file and replace the example address and labels. The scrape job uses `honor_labels: true`, so the exporter’s validated `service`, `environment`, and `instance` const labels remain canonical; keep target labels aligned for target discovery and inventory. Keep the target file and `secrets/hikari-metrics.token` outside this repository when they contain deployment-specific values. The scrape job uses the bearer token file and refreshes file-SD targets without requiring a Prometheus restart.
+Copy `file_sd/hikari/example.yml.disabled` to an instance-owned `.yml` target file and replace the example address and labels. The scrape job keeps `honor_labels: false`, so Prometheus target labels remain canonical inventory labels and conflicting scraped labels are renamed rather than allowed to spoof target identity; keep target `service`, `environment`, and `instance` aligned with the exporter labels. Keep the target file and `secrets/hikari-metrics.token` outside this repository when they contain deployment-specific values. The scrape job uses the bearer token file and refreshes file-SD targets without requiring a Prometheus restart.
 
 ## Grafana provisioning
 

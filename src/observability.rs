@@ -32,6 +32,7 @@ const UPSTREAM_DURATION_LABELS: &[&str] = &["upstream_class", "operation", "outc
 const SQLITE_WAIT_LABELS: &[&str] = &["workload_class", "operation", "reason"];
 const SQLITE_TRANSACTION_LABELS: &[&str] = &["workload_class", "operation", "outcome"];
 const BACKGROUND_LABELS: &[&str] = &["operation", "outcome", "reason"];
+const MAX_CARDINALITY_TUPLES: usize = 2048;
 
 #[derive(Debug)]
 pub struct Metrics {
@@ -49,6 +50,7 @@ pub struct Metrics {
     observability_flush: IntCounterVec,
     observability_dropped: IntCounterVec,
     route_allowlist: Option<HashSet<&'static str>>,
+    cardinality_tuples: Mutex<HashSet<String>>,
     last_cpu_seconds: Mutex<Option<f64>>,
 }
 
@@ -185,6 +187,7 @@ impl Metrics {
             observability_flush,
             observability_dropped,
             route_allowlist,
+            cardinality_tuples: Mutex::new(HashSet::new()),
             last_cpu_seconds: Mutex::new(None),
         })
     }
@@ -201,6 +204,16 @@ impl Metrics {
         let method = metric_method(path, method);
         let status_class = status_class(status);
         let outcome = outcome_for_status(status);
+        if !self.admit_label_tuple(
+            "hikari_http_requests_total",
+            &[route_family, method, status_class, outcome],
+        ) || !self.admit_label_tuple(
+            "hikari_http_duration_seconds",
+            &[route_family, method, outcome, "none"],
+        ) {
+            self.record_drop("cardinality");
+            return;
+        }
         self.http_requests
             .with_label_values(&[route_family, method, status_class, outcome])
             .inc();
@@ -228,6 +241,16 @@ impl Metrics {
             Ok(status) => (status_class(status), outcome_for_status(status)),
             Err(()) => ("none", "error"),
         };
+        if !self.admit_label_tuple(
+            "hikari_upstream_requests_total",
+            &[upstream_class, operation, outcome, status_class],
+        ) || !self.admit_label_tuple(
+            "hikari_upstream_duration_seconds",
+            &[upstream_class, operation, outcome, "upstream"],
+        ) {
+            self.record_drop("cardinality");
+            return;
+        }
         self.upstream_requests
             .with_label_values(&[upstream_class, operation, outcome, status_class])
             .inc();
@@ -252,20 +275,49 @@ impl Metrics {
         let operation = normalize_operation(operation);
         let outcome = normalize_outcome(outcome);
         let reason = normalize_reason(reason);
+        if !self.admit_label_tuple(
+            "hikari_sqlite_transactions_total",
+            &[workload_class, operation, outcome],
+        ) {
+            self.record_drop("cardinality");
+            return;
+        }
         self.sqlite_transactions
             .with_label_values(&[workload_class, operation, outcome])
             .inc();
-        if !pool_wait.is_zero() {
-            self.sqlite_wait_duration
-                .with_label_values(&[workload_class, operation, "pool"])
-                .observe(pool_wait.as_secs_f64());
-        }
-        if !begin_wait.is_zero() {
-            self.sqlite_wait_duration
-                .with_label_values(&[workload_class, operation, "begin"])
-                .observe(begin_wait.as_secs_f64());
-        }
-        if reason != "none" {
+        if reason == "none" {
+            if !pool_wait.is_zero() {
+                if !self.admit_label_tuple(
+                    "hikari_sqlite_wait_duration_seconds",
+                    &[workload_class, operation, "pool"],
+                ) {
+                    self.record_drop("cardinality");
+                    return;
+                }
+                self.sqlite_wait_duration
+                    .with_label_values(&[workload_class, operation, "pool"])
+                    .observe(pool_wait.as_secs_f64());
+            }
+            if !begin_wait.is_zero() {
+                if !self.admit_label_tuple(
+                    "hikari_sqlite_wait_duration_seconds",
+                    &[workload_class, operation, "begin"],
+                ) {
+                    self.record_drop("cardinality");
+                    return;
+                }
+                self.sqlite_wait_duration
+                    .with_label_values(&[workload_class, operation, "begin"])
+                    .observe(begin_wait.as_secs_f64());
+            }
+        } else if !pool_wait.saturating_add(begin_wait).is_zero() {
+            if !self.admit_label_tuple(
+                "hikari_sqlite_wait_duration_seconds",
+                &[workload_class, operation, reason],
+            ) {
+                self.record_drop("cardinality");
+                return;
+            }
             self.sqlite_wait_duration
                 .with_label_values(&[workload_class, operation, reason])
                 .observe(pool_wait.saturating_add(begin_wait).as_secs_f64());
@@ -276,13 +328,16 @@ impl Metrics {
         if !self.recording_enabled {
             return;
         }
-        self.background_tasks
-            .with_label_values(&[
-                normalize_operation(operation),
-                normalize_outcome(outcome),
-                normalize_reason(reason),
-            ])
-            .inc();
+        let labels = [
+            normalize_operation(operation),
+            normalize_outcome(outcome),
+            normalize_reason(reason),
+        ];
+        if self.admit_label_tuple("hikari_background_tasks_total", &labels) {
+            self.background_tasks.with_label_values(&labels).inc();
+        } else {
+            self.record_drop("cardinality");
+        }
     }
 
     pub fn record_drop(&self, reason: &str) {
@@ -336,6 +391,29 @@ impl Metrics {
         self.route_allowlist
             .as_ref()
             .is_none_or(|allowlist| allowlist.contains(route_family))
+    }
+
+    fn admit_label_tuple(&self, metric: &str, labels: &[&str]) -> bool {
+        let mut key = String::with_capacity(
+            metric.len() + labels.iter().map(|label| label.len() + 1).sum::<usize>(),
+        );
+        key.push_str(metric);
+        for label in labels {
+            key.push('\0');
+            key.push_str(label);
+        }
+        let mut tuples = self
+            .cardinality_tuples
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if tuples.contains(&key) {
+            return true;
+        }
+        if tuples.len() >= MAX_CARDINALITY_TUPLES {
+            return false;
+        }
+        tuples.insert(key);
+        true
     }
 
     fn gather(&self) -> Result<Vec<u8>, prometheus::Error> {
@@ -679,6 +757,14 @@ fn normalize_operation(operation: &str) -> &'static str {
     }
 }
 
+pub(crate) fn upstream_class_for_operation(operation: &str) -> &'static str {
+    if operation == "mcp" {
+        "tavily_mcp"
+    } else {
+        "tavily_http"
+    }
+}
+
 fn normalize_workload_class(workload_class: &str) -> &'static str {
     if workload_class.contains("foreground") {
         "foreground"
@@ -732,36 +818,21 @@ fn common_const_labels() -> HashMap<String, String> {
     labels.insert("service".to_owned(), "tavily-hikari".to_owned());
     labels.insert(
         "environment".to_owned(),
-        bounded_identity("OBSERVABILITY_ENVIRONMENT"),
+        bounded_deployment_identity("OBSERVABILITY_ENVIRONMENT"),
     );
     labels.insert(
         "instance".to_owned(),
-        bounded_instance_identity("OBSERVABILITY_INSTANCE"),
+        bounded_deployment_identity("OBSERVABILITY_INSTANCE"),
     );
     labels
 }
 
-fn bounded_identity(name: &str) -> String {
+fn bounded_deployment_identity(name: &str) -> String {
     let value = env::var(name).unwrap_or_default();
-    let value = value.trim();
-    if !value.is_empty()
-        && value.len() <= 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-    {
-        value.to_owned()
-    } else {
-        "unknown".to_owned()
-    }
+    bounded_deployment_value(value.trim())
 }
 
-fn bounded_instance_identity(name: &str) -> String {
-    let value = env::var(name).unwrap_or_default();
-    bounded_instance_value(value.trim())
-}
-
-fn bounded_instance_value(value: &str) -> String {
+fn bounded_deployment_value(value: &str) -> String {
     if value.is_empty()
         || value.len() > 64
         || !value
@@ -790,7 +861,11 @@ fn bounded_instance_value(value: &str) -> String {
                 | "user"
         )
     });
-    if contains_sensitive_token {
+    let looks_like_ipv4 = value.split('-').count() == 4
+        && value
+            .split('-')
+            .all(|part| !part.is_empty() && part.parse::<u8>().is_ok());
+    if contains_sensitive_token || looks_like_ipv4 {
         "unknown".to_owned()
     } else {
         value.to_owned()
@@ -832,9 +907,20 @@ mod tests {
 
     #[test]
     fn instance_identity_rejects_sensitive_tokens() {
-        assert_eq!(bounded_instance_value("hikari-prod-01"), "hikari-prod-01");
-        assert_eq!(bounded_instance_value("token-123"), "unknown");
-        assert_eq!(bounded_instance_value("request-abc"), "unknown");
+        assert_eq!(bounded_deployment_value("hikari-prod-01"), "hikari-prod-01");
+        assert_eq!(bounded_deployment_value("token-123"), "unknown");
+        assert_eq!(bounded_deployment_value("request-abc"), "unknown");
+        assert_eq!(bounded_deployment_value("10-0-0-1"), "unknown");
+    }
+
+    #[test]
+    fn recorder_rejects_new_label_tuples_after_bound() {
+        let metrics = Metrics::new(None).expect("metrics");
+        for index in 0..MAX_CARDINALITY_TUPLES {
+            let value = index.to_string();
+            assert!(metrics.admit_label_tuple("test", &[value.as_str()]));
+        }
+        assert!(!metrics.admit_label_tuple("test", &["overflow"]));
     }
 
     #[test]
