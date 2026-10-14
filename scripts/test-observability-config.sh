@@ -55,6 +55,30 @@ expected_uids = {
     "hikari-sqlite-wait-high",
     "hikari-memory-headroom-low",
 }
+required_query_fragments = {
+    "hikari-exporter-unavailable": ('up{job="tavily-hikari"} == bool 0',),
+    "hikari-scrape-stale": (
+        'up{job="tavily-hikari"} == bool 1',
+        "hikari:sample_count5m >= 1",
+    ),
+    "hikari-error-rate-high": (
+        'up{job="tavily-hikari"} == bool 1',
+        "hikari:error_rate5m > bool 0.2",
+        "hikari:request_rate5m > bool 0.1",
+    ),
+    "hikari-request-p95-high": (
+        'up{job="tavily-hikari"} == bool 1',
+        "hikari:request_p95_seconds5m > bool 2",
+    ),
+    "hikari-sqlite-wait-high": (
+        'up{job="tavily-hikari"} == bool 1',
+        "hikari:sqlite_wait_p95_seconds5m > bool 0.5",
+    ),
+    "hikari-memory-headroom-low": (
+        'up{job="tavily-hikari"} == bool 1',
+        "hikari:memory_headroom_bytes < bool 134217728",
+    ),
+}
 seen_uids = []
 
 for block in blocks:
@@ -83,6 +107,24 @@ for block in blocks:
             raise SystemExit(f"{uid}: expected one {description}, found {actual}")
     if re.search(r"^                    params: \[C\]$", body, flags=re.MULTILINE):
         raise SystemExit(f"{uid}: threshold query is self-referential")
+    lines = body.splitlines()
+    expr_lines = [index for index, line in enumerate(lines) if line.startswith("              expr:")]
+    if len(expr_lines) != 1:
+        raise SystemExit(f"{uid}: expected one source PromQL expr field")
+    expr_line = lines[expr_lines[0]].split("expr:", 1)[1].strip()
+    if expr_line in {">-", "|-", ">", "|"}:
+        folded = []
+        for continuation in lines[expr_lines[0] + 1 :]:
+            if continuation.strip() and len(continuation) - len(continuation.lstrip(" ")) <= 14:
+                break
+            if continuation.strip() and not continuation.lstrip().startswith("#"):
+                folded.append(continuation.strip())
+        expr_line = " ".join(folded)
+    if not expr_line:
+        raise SystemExit(f"{uid}: source PromQL expr is empty")
+    for fragment in required_query_fragments[uid]:
+        if fragment not in expr_line:
+            raise SystemExit(f"{uid}: source PromQL is missing {fragment!r}")
 if set(seen_uids) != expected_uids:
     raise SystemExit("alert rule UID set does not match the six managed Hikari alerts")
 PY
