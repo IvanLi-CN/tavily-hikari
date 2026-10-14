@@ -8,7 +8,7 @@
 
 ## Repository surfaces
 
-- `src/observability.rs`：recorder、label allowlist、exposition、configuration and bounded flush boundary。
+- `src/observability.rs`：recorder、label allowlist、exposition、configuration and bounded flush boundary；source events use a fixed-capacity non-blocking queue, and only exporter-side flushing touches Prometheus vectors。
 - `src/server/serve.rs`：conditionally mount `/metrics` without changing public metrics or business routes。
 - `src/store/sqlite_runtime.rs` and `src/tavily_proxy/proxy_forward_proxy_maintenance.rs`：record SQLite events plus relay-candidate and direct-fallback upstream events without copying request content。
 - `ops/observability/prometheus.yml`：generic scrape job template with token file and deployment substitutions。

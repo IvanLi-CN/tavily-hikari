@@ -22,7 +22,10 @@ use prometheus::{
     Counter, Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     TextEncoder,
 };
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 const HISTOGRAM_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
@@ -38,7 +41,57 @@ const SQLITE_ADMISSION_LABELS: &[&str] = &["workload_class", "operation", "reaso
 const BACKGROUND_LABELS: &[&str] = &["operation", "outcome", "reason"];
 const MAX_CARDINALITY_TUPLES: usize = 2048;
 const CARDINALITY_PROBES: usize = 4;
+const EVENT_QUEUE_CAPACITY: usize = 4096;
 const EXPORTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+enum MetricEvent {
+    Http {
+        route_family: &'static str,
+        method: &'static str,
+        status_class: &'static str,
+        outcome: &'static str,
+        elapsed_seconds: f64,
+    },
+    HttpPhase {
+        route_family: &'static str,
+        method: &'static str,
+        outcome: &'static str,
+        phase: &'static str,
+        elapsed_seconds: f64,
+    },
+    UpstreamResponse {
+        upstream_class: &'static str,
+        operation: &'static str,
+        outcome: &'static str,
+        status_class: &'static str,
+        elapsed_seconds: f64,
+    },
+    UpstreamFailure {
+        upstream_class: &'static str,
+        operation: &'static str,
+        outcome: &'static str,
+        elapsed_seconds: f64,
+    },
+    Sqlite {
+        workload_class: &'static str,
+        operation: &'static str,
+        outcome: &'static str,
+        reason: &'static str,
+        pool_wait_seconds: f64,
+        begin_wait_seconds: f64,
+        transaction_admitted: bool,
+        admission_metric_admitted: bool,
+    },
+    Background {
+        operation: &'static str,
+        outcome: &'static str,
+        reason: &'static str,
+    },
+    Drop {
+        reason: &'static str,
+    },
+}
 
 #[derive(Debug)]
 pub struct Metrics {
@@ -58,6 +111,9 @@ pub struct Metrics {
     observability_dropped: IntCounterVec,
     route_allowlist: Option<HashSet<&'static str>>,
     cardinality_slots: Box<[AtomicU64]>,
+    event_tx: mpsc::Sender<MetricEvent>,
+    event_rx: Mutex<mpsc::Receiver<MetricEvent>>,
+    pending_queue_drops: AtomicU64,
     last_cpu_seconds: Mutex<Option<f64>>,
 }
 
@@ -71,6 +127,7 @@ impl Metrics {
         recording_enabled: bool,
     ) -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
+        let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
         let const_labels = common_const_labels();
         let http_requests = IntCounterVec::new(
             Opts::new(
@@ -207,6 +264,9 @@ impl Metrics {
             cardinality_slots: (0..MAX_CARDINALITY_TUPLES)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
+            event_tx,
+            event_rx: Mutex::new(event_rx),
+            pending_queue_drops: AtomicU64::new(0),
             last_cpu_seconds: Mutex::new(None),
         })
     }
@@ -233,12 +293,13 @@ impl Metrics {
             self.record_drop("cardinality");
             return;
         }
-        self.http_requests
-            .with_label_values(&[route_family, method, status_class, outcome])
-            .inc();
-        self.http_duration
-            .with_label_values(&[route_family, method, outcome, "none"])
-            .observe(elapsed.as_secs_f64());
+        self.enqueue_event(MetricEvent::Http {
+            route_family,
+            method,
+            status_class,
+            outcome,
+            elapsed_seconds: elapsed.as_secs_f64(),
+        });
     }
 
     pub fn record_http_phase(
@@ -271,9 +332,13 @@ impl Metrics {
             }
             return;
         }
-        self.http_duration
-            .with_label_values(&[route_family, method, outcome, phase])
-            .observe(elapsed.as_secs_f64());
+        self.enqueue_event(MetricEvent::HttpPhase {
+            route_family,
+            method,
+            outcome,
+            phase,
+            elapsed_seconds: elapsed.as_secs_f64(),
+        });
     }
 
     pub fn record_upstream(
@@ -287,14 +352,18 @@ impl Metrics {
             return;
         }
         let upstream_class = match upstream_class {
-            "tavily_http" | "tavily_mcp" | "forward_proxy" => upstream_class,
+            "tavily_http" => "tavily_http",
+            "tavily_mcp" => "tavily_mcp",
+            "forward_proxy" => "forward_proxy",
             _ => "tavily_http",
         };
         let operation = normalize_operation(operation);
-        let (status_class, outcome) = match response {
-            Ok(status) => (status_class(status), outcome_for_status(status)),
-            Err(()) => ("none", "error"),
+        let Ok(status) = response else {
+            self.record_upstream_failure(upstream_class, operation, false, elapsed);
+            return;
         };
+        let status_class = status_class(status);
+        let outcome = outcome_for_status(status);
         if !self.admit_label_tuple(
             "hikari_upstream_requests_total",
             &[upstream_class, operation, outcome, status_class],
@@ -305,12 +374,13 @@ impl Metrics {
             self.record_drop("cardinality");
             return;
         }
-        self.upstream_requests
-            .with_label_values(&[upstream_class, operation, outcome, status_class])
-            .inc();
-        self.upstream_duration
-            .with_label_values(&[upstream_class, operation, outcome, "upstream"])
-            .observe(elapsed.as_secs_f64());
+        self.enqueue_event(MetricEvent::UpstreamResponse {
+            upstream_class,
+            operation,
+            outcome,
+            status_class,
+            elapsed_seconds: elapsed.as_secs_f64(),
+        });
     }
 
     pub fn record_upstream_failure(
@@ -324,27 +394,26 @@ impl Metrics {
             return;
         }
         let upstream_class = match upstream_class {
-            "tavily_http" | "tavily_mcp" | "forward_proxy" => upstream_class,
+            "tavily_http" => "tavily_http",
+            "tavily_mcp" => "tavily_mcp",
+            "forward_proxy" => "forward_proxy",
             _ => "tavily_http",
         };
         let operation = normalize_operation(operation);
         let outcome = if timed_out { "timeout" } else { "error" };
         if !self.admit_label_tuple(
-            "hikari_upstream_requests_total",
-            &[upstream_class, operation, outcome, "none"],
-        ) || !self.admit_label_tuple(
             "hikari_upstream_duration_seconds",
             &[upstream_class, operation, outcome, "upstream"],
         ) {
             self.record_drop("cardinality");
             return;
         }
-        self.upstream_requests
-            .with_label_values(&[upstream_class, operation, outcome, "none"])
-            .inc();
-        self.upstream_duration
-            .with_label_values(&[upstream_class, operation, outcome, "upstream"])
-            .observe(elapsed.as_secs_f64());
+        self.enqueue_event(MetricEvent::UpstreamFailure {
+            upstream_class,
+            operation,
+            outcome,
+            elapsed_seconds: elapsed.as_secs_f64(),
+        });
     }
 
     pub fn record_sqlite(
@@ -363,66 +432,66 @@ impl Metrics {
         let operation = normalize_operation(operation);
         let outcome = normalize_outcome(outcome);
         let reason = normalize_reason(reason);
-        if outcome == "degraded" {
-            if self.admit_label_tuple(
+        let transaction_admitted = outcome != "degraded";
+        let admission_metric_admitted = if !transaction_admitted {
+            let admitted = self.admit_label_tuple(
                 "hikari_sqlite_admission_defers_total",
                 &[workload_class, operation, reason],
-            ) {
-                self.sqlite_admission_defers
-                    .with_label_values(&[workload_class, operation, reason])
-                    .inc();
-            } else {
+            );
+            if !admitted {
                 self.record_drop("cardinality");
             }
+            admitted
         } else {
-            if !self.admit_label_tuple(
+            true
+        };
+        if transaction_admitted
+            && !self.admit_label_tuple(
                 "hikari_sqlite_transactions_total",
                 &[workload_class, operation, outcome],
-            ) {
-                self.record_drop("cardinality");
-                return;
-            }
-            self.sqlite_transactions
-                .with_label_values(&[workload_class, operation, outcome])
-                .inc();
+            )
+        {
+            self.record_drop("cardinality");
+            return;
         }
         if reason == "none" {
-            if !pool_wait.is_zero() {
-                if !self.admit_label_tuple(
+            if !pool_wait.is_zero()
+                && !self.admit_label_tuple(
                     "hikari_sqlite_wait_duration_seconds",
                     &[workload_class, operation, "pool"],
-                ) {
-                    self.record_drop("cardinality");
-                    return;
-                }
-                self.sqlite_wait_duration
-                    .with_label_values(&[workload_class, operation, "pool"])
-                    .observe(pool_wait.as_secs_f64());
-            }
-            if !begin_wait.is_zero() {
-                if !self.admit_label_tuple(
-                    "hikari_sqlite_wait_duration_seconds",
-                    &[workload_class, operation, "begin"],
-                ) {
-                    self.record_drop("cardinality");
-                    return;
-                }
-                self.sqlite_wait_duration
-                    .with_label_values(&[workload_class, operation, "begin"])
-                    .observe(begin_wait.as_secs_f64());
-            }
-        } else if !pool_wait.saturating_add(begin_wait).is_zero() {
-            if !self.admit_label_tuple(
-                "hikari_sqlite_wait_duration_seconds",
-                &[workload_class, operation, reason],
-            ) {
+                )
+            {
                 self.record_drop("cardinality");
                 return;
             }
-            self.sqlite_wait_duration
-                .with_label_values(&[workload_class, operation, reason])
-                .observe(pool_wait.saturating_add(begin_wait).as_secs_f64());
+            if !begin_wait.is_zero()
+                && !self.admit_label_tuple(
+                    "hikari_sqlite_wait_duration_seconds",
+                    &[workload_class, operation, "begin"],
+                )
+            {
+                self.record_drop("cardinality");
+                return;
+            }
+        } else if !pool_wait.saturating_add(begin_wait).is_zero()
+            && !self.admit_label_tuple(
+                "hikari_sqlite_wait_duration_seconds",
+                &[workload_class, operation, reason],
+            )
+        {
+            self.record_drop("cardinality");
+            return;
         }
+        self.enqueue_event(MetricEvent::Sqlite {
+            workload_class,
+            operation,
+            outcome,
+            reason,
+            pool_wait_seconds: pool_wait.as_secs_f64(),
+            begin_wait_seconds: begin_wait.as_secs_f64(),
+            transaction_admitted,
+            admission_metric_admitted,
+        });
     }
 
     pub fn record_background(&self, operation: &str, outcome: &str, reason: &str) {
@@ -435,7 +504,11 @@ impl Metrics {
             normalize_reason(reason),
         ];
         if self.admit_label_tuple("hikari_background_tasks_total", &labels) {
-            self.background_tasks.with_label_values(&labels).inc();
+            self.enqueue_event(MetricEvent::Background {
+                operation: labels[0],
+                outcome: labels[1],
+                reason: labels[2],
+            });
         } else {
             self.record_drop("cardinality");
         }
@@ -445,9 +518,145 @@ impl Metrics {
         if !self.recording_enabled {
             return;
         }
-        self.observability_dropped
-            .with_label_values(&[normalize_reason(reason)])
-            .inc();
+        self.enqueue_event(MetricEvent::Drop {
+            reason: normalize_reason(reason),
+        });
+    }
+
+    fn enqueue_event(&self, event: MetricEvent) {
+        if self.event_tx.try_send(event).is_err() {
+            self.pending_queue_drops
+                .fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    fn flush_pending(&self) {
+        let mut events = Vec::new();
+        {
+            let mut receiver = self
+                .event_rx
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            self.apply_event(event);
+        }
+        let queue_drops = self.pending_queue_drops.swap(0, AtomicOrdering::AcqRel);
+        if queue_drops > 0 {
+            self.observability_dropped
+                .with_label_values(&["queue"])
+                .inc_by(queue_drops);
+        }
+    }
+
+    fn apply_event(&self, event: MetricEvent) {
+        match event {
+            MetricEvent::Http {
+                route_family,
+                method,
+                status_class,
+                outcome,
+                elapsed_seconds,
+            } => {
+                self.http_requests
+                    .with_label_values(&[route_family, method, status_class, outcome])
+                    .inc();
+                self.http_duration
+                    .with_label_values(&[route_family, method, outcome, "none"])
+                    .observe(elapsed_seconds);
+            }
+            MetricEvent::HttpPhase {
+                route_family,
+                method,
+                outcome,
+                phase,
+                elapsed_seconds,
+            } => {
+                self.http_duration
+                    .with_label_values(&[route_family, method, outcome, phase])
+                    .observe(elapsed_seconds);
+            }
+            MetricEvent::UpstreamResponse {
+                upstream_class,
+                operation,
+                outcome,
+                status_class,
+                elapsed_seconds,
+            } => {
+                self.upstream_requests
+                    .with_label_values(&[upstream_class, operation, outcome, status_class])
+                    .inc();
+                self.upstream_duration
+                    .with_label_values(&[upstream_class, operation, outcome, "upstream"])
+                    .observe(elapsed_seconds);
+            }
+            MetricEvent::UpstreamFailure {
+                upstream_class,
+                operation,
+                outcome,
+                elapsed_seconds,
+            } => {
+                self.upstream_duration
+                    .with_label_values(&[upstream_class, operation, outcome, "upstream"])
+                    .observe(elapsed_seconds);
+            }
+            MetricEvent::Sqlite {
+                workload_class,
+                operation,
+                outcome,
+                reason,
+                pool_wait_seconds,
+                begin_wait_seconds,
+                transaction_admitted,
+                admission_metric_admitted,
+            } => {
+                if transaction_admitted {
+                    self.sqlite_transactions
+                        .with_label_values(&[workload_class, operation, outcome])
+                        .inc();
+                } else if admission_metric_admitted {
+                    self.sqlite_admission_defers
+                        .with_label_values(&[workload_class, operation, reason])
+                        .inc();
+                }
+                if reason == "none" {
+                    if pool_wait_seconds > 0.0 {
+                        self.sqlite_wait_duration
+                            .with_label_values(&[workload_class, operation, "pool"])
+                            .observe(pool_wait_seconds);
+                    }
+                    if begin_wait_seconds > 0.0 {
+                        self.sqlite_wait_duration
+                            .with_label_values(&[workload_class, operation, "begin"])
+                            .observe(begin_wait_seconds);
+                    }
+                } else {
+                    let wait_seconds = pool_wait_seconds + begin_wait_seconds;
+                    if wait_seconds > 0.0 {
+                        self.sqlite_wait_duration
+                            .with_label_values(&[workload_class, operation, reason])
+                            .observe(wait_seconds);
+                    }
+                }
+            }
+            MetricEvent::Background {
+                operation,
+                outcome,
+                reason,
+            } => {
+                self.background_tasks
+                    .with_label_values(&[operation, outcome, reason])
+                    .inc();
+            }
+            MetricEvent::Drop { reason } => {
+                self.observability_dropped
+                    .with_label_values(&[reason])
+                    .inc();
+            }
+        }
     }
 
     pub fn sample_runtime(&self) {
@@ -524,6 +733,7 @@ impl Metrics {
     }
 
     fn gather(&self) -> Result<Vec<u8>, prometheus::Error> {
+        self.flush_pending();
         let families = self.registry.gather();
         let mut output = Vec::new();
         TextEncoder::new()
@@ -586,7 +796,7 @@ pub fn global_metrics() -> Arc<Metrics> {
             Arc::new(
                 Metrics::new_with_recording(
                     route_allowlist_from_env(),
-                    env_flag("OBSERVABILITY_ENABLED"),
+                    env_flag("OBSERVABILITY_ENABLED") && observability_identity_is_valid(),
                 )
                 .expect("metrics catalog"),
             )
@@ -596,6 +806,15 @@ pub fn global_metrics() -> Arc<Metrics> {
 
 pub async fn start_exporter(metrics: Arc<Metrics>) -> Option<ExporterHandle> {
     if !env_flag("OBSERVABILITY_ENABLED") {
+        return None;
+    }
+    if !observability_identity_is_valid() {
+        tracing::warn!(
+            component = "observability",
+            event = "exporter_disabled",
+            reason = "invalid_deployment_identity",
+            "metrics exporter disabled because deployment identity is missing or invalid"
+        );
         return None;
     }
     let bind = match env::var("METRICS_BIND") {
@@ -1024,6 +1243,16 @@ fn common_const_labels() -> HashMap<String, String> {
     labels
 }
 
+fn observability_identity_is_valid() -> bool {
+    let Ok(environment) = env::var("OBSERVABILITY_ENVIRONMENT") else {
+        return false;
+    };
+    let Ok(instance) = env::var("OBSERVABILITY_INSTANCE") else {
+        return false;
+    };
+    valid_environment_value(environment.trim()) && valid_deployment_value(instance.trim())
+}
+
 fn bounded_deployment_identity(name: &str) -> String {
     let value = env::var(name).unwrap_or_default();
     match name {
@@ -1034,14 +1263,7 @@ fn bounded_deployment_identity(name: &str) -> String {
 }
 
 fn bounded_deployment_value(value: &str) -> String {
-    let safe_slot = matches!(
-        value,
-        "primary" | "secondary" | "standby" | "local" | "test"
-    );
-    let safe_ordinal = value.strip_prefix("hikari-").is_some_and(|suffix| {
-        (1..=3).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_digit())
-    });
-    if safe_slot || safe_ordinal {
+    if valid_deployment_value(value) {
         value.to_owned()
     } else {
         "unknown".to_owned()
@@ -1049,10 +1271,26 @@ fn bounded_deployment_value(value: &str) -> String {
 }
 
 fn bounded_environment_value(value: &str) -> String {
-    match value {
-        "development" | "staging" | "production" | "test" => value.to_owned(),
-        _ => "unknown".to_owned(),
+    if valid_environment_value(value) {
+        value.to_owned()
+    } else {
+        "unknown".to_owned()
     }
+}
+
+fn valid_deployment_value(value: &str) -> bool {
+    let safe_slot = matches!(
+        value,
+        "primary" | "secondary" | "standby" | "local" | "test"
+    );
+    let safe_ordinal = value.strip_prefix("hikari-").is_some_and(|suffix| {
+        (1..=3).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    safe_slot || safe_ordinal
+}
+
+fn valid_environment_value(value: &str) -> bool {
+    matches!(value, "development" | "staging" | "production" | "test")
 }
 
 fn set_memory_gauge(gauge: &IntGaugeVec, reason: &'static str, value: Option<u64>) {
@@ -1128,6 +1366,17 @@ mod tests {
     }
 
     #[test]
+    fn recorder_queue_is_bounded_and_reports_overflow() {
+        let metrics = Metrics::new(None).expect("metrics");
+        for _ in 0..(EVENT_QUEUE_CAPACITY + 16) {
+            metrics.record_background("background_tasks", "success", "started");
+        }
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(output.contains("hikari_observability_dropped_total"));
+        assert!(output.contains("reason=\"queue\""));
+    }
+
+    #[test]
     fn metrics_bind_scope_defaults_to_private_addresses() {
         assert!(metrics_bind_allowed(
             "127.0.0.1:9091".parse().expect("loopback"),
@@ -1186,6 +1435,15 @@ mod tests {
         let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
         assert!(output.contains("phase=\"upstream\""));
         assert!(output.contains("outcome=\"timeout\""));
+        assert!(!output.contains("hikari_upstream_requests_total{"));
+    }
+
+    #[test]
+    fn invalid_deployment_identity_disables_runtime_observability() {
+        assert!(valid_environment_value("production"));
+        assert!(valid_deployment_value("hikari-01"));
+        assert!(!valid_environment_value("customer-prod"));
+        assert!(!valid_deployment_value("token-123"));
     }
 
     #[test]
