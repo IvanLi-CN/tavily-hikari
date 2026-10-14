@@ -121,6 +121,15 @@ Prometheus、Grafana、exporter scrape、recording rule、dashboard query 或可
 - **VER-MONITORING-005**：四个 dashboard 的 datasource UID、dashboard UID、无样本/低样本/stale/错误状态和告警加载在隔离 provisioning 检查中验证，covers: `REQ-MONITORING-007`, `REQ-MONITORING-008`, `REQ-MONITORING-009`。
 - **VER-MONITORING-006**：mock traffic 与 exporter interruption smoke 验证代理请求、ACK、后台任务和 SQLite 写入继续完成；101 的 target、Grafana rendering 和 retention/阈值在 owner 授权的部署验收中验证，covers: `REQ-MONITORING-010`, `REQ-MONITORING-011`, `REQ-MONITORING-012`。
 
+## Visual Evidence
+
+本轮视觉证据使用 pinned Grafana `11.2.0` 与 Prometheus `2.55.1` 的隔离本机进程，file-SD 指向 mock/sandbox exporter，未连接 101 或官方 Tavily endpoint。Prometheus target 为 UP，Grafana datasource UID 为 `hikari-prometheus`，四个 dashboard 均由仓库 provisioning 自动加载并显示真实查询曲线。
+
+- [Hikari Overview](./assets/hikari-overview.png)
+- [Hikari Proxy](./assets/hikari-proxy.png)
+- [Hikari Storage](./assets/hikari-storage.png)
+- [Hikari Runtime](./assets/hikari-runtime.png)
+
 ## 相关文档
 
 - [`METRICS.md`](./METRICS.md)
