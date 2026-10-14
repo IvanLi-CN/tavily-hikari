@@ -65,6 +65,8 @@ for block in blocks:
     for pattern, expected, description in (
         (r"^        condition: C$", 1, "condition C"),
         (r"^          - refId: A$", 1, "source refId A"),
+        (r"^              refId: A$", 1, "source model refId A"),
+        (r"^              expr: .+$", 1, "source PromQL expression"),
         (r"^          - refId: C$", 1, "threshold refId C"),
         (r"^              expression: A$", 1, "threshold expression A"),
         (r"^                    params: \[A\]$", 1, "threshold query A"),
