@@ -37,6 +37,8 @@ grep -Fq 'sample_limit: 2000' "$observability_dir/prometheus.yml"
 grep -Fq 'label_limit: 32' "$observability_dir/prometheus.yml"
 grep -Fq 'label_name_length_limit: 64' "$observability_dir/prometheus.yml"
 grep -Fq 'label_value_length_limit: 128' "$observability_dir/prometheus.yml"
+test "$(grep -c '^                    params: \[A\]$' "$alert_rules")" -eq 6
+test "$(grep -c '^                    params: \[C\]$' "$alert_rules")" -eq 0
 
 python3 - "$observability_dir/grafana/dashboards" <<'PY'
 import json
