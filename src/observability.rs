@@ -34,9 +34,10 @@ const UPSTREAM_LABELS: &[&str] = &["upstream_class", "operation", "outcome", "st
 const UPSTREAM_DURATION_LABELS: &[&str] = &["upstream_class", "operation", "outcome", "phase"];
 const SQLITE_WAIT_LABELS: &[&str] = &["workload_class", "operation", "reason"];
 const SQLITE_TRANSACTION_LABELS: &[&str] = &["workload_class", "operation", "outcome"];
+const SQLITE_ADMISSION_LABELS: &[&str] = &["workload_class", "operation", "reason"];
 const BACKGROUND_LABELS: &[&str] = &["operation", "outcome", "reason"];
 const MAX_CARDINALITY_TUPLES: usize = 2048;
-const CARDINALITY_WORDS: usize = MAX_CARDINALITY_TUPLES / 64;
+const CARDINALITY_PROBES: usize = 4;
 const EXPORTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -49,6 +50,7 @@ pub struct Metrics {
     upstream_duration: HistogramVec,
     sqlite_wait_duration: HistogramVec,
     sqlite_transactions: IntCounterVec,
+    sqlite_admission_defers: IntCounterVec,
     background_tasks: IntCounterVec,
     process_cpu_seconds: Counter,
     process_memory_bytes: IntGaugeVec,
@@ -121,6 +123,14 @@ impl Metrics {
             .const_labels(const_labels.clone()),
             SQLITE_TRANSACTION_LABELS,
         )?;
+        let sqlite_admission_defers = IntCounterVec::new(
+            Opts::new(
+                "hikari_sqlite_admission_defers_total",
+                "SQLite work deferred before transaction admission.",
+            )
+            .const_labels(const_labels.clone()),
+            SQLITE_ADMISSION_LABELS,
+        )?;
         let background_tasks = IntCounterVec::new(
             Opts::new(
                 "hikari_background_tasks_total",
@@ -168,6 +178,7 @@ impl Metrics {
             Box::new(upstream_duration.clone()),
             Box::new(sqlite_wait_duration.clone()),
             Box::new(sqlite_transactions.clone()),
+            Box::new(sqlite_admission_defers.clone()),
             Box::new(background_tasks.clone()),
             Box::new(process_cpu_seconds.clone()),
             Box::new(process_memory_bytes.clone()),
@@ -186,13 +197,16 @@ impl Metrics {
             upstream_duration,
             sqlite_wait_duration,
             sqlite_transactions,
+            sqlite_admission_defers,
             background_tasks,
             process_cpu_seconds,
             process_memory_bytes,
             observability_flush,
             observability_dropped,
             route_allowlist,
-            cardinality_slots: (0..CARDINALITY_WORDS).map(|_| AtomicU64::new(0)).collect(),
+            cardinality_slots: (0..MAX_CARDINALITY_TUPLES)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
             last_cpu_seconds: Mutex::new(None),
         })
     }
@@ -349,16 +363,29 @@ impl Metrics {
         let operation = normalize_operation(operation);
         let outcome = normalize_outcome(outcome);
         let reason = normalize_reason(reason);
-        if !self.admit_label_tuple(
-            "hikari_sqlite_transactions_total",
-            &[workload_class, operation, outcome],
-        ) {
-            self.record_drop("cardinality");
-            return;
+        if outcome == "degraded" {
+            if self.admit_label_tuple(
+                "hikari_sqlite_admission_defers_total",
+                &[workload_class, operation, reason],
+            ) {
+                self.sqlite_admission_defers
+                    .with_label_values(&[workload_class, operation, reason])
+                    .inc();
+            } else {
+                self.record_drop("cardinality");
+            }
+        } else {
+            if !self.admit_label_tuple(
+                "hikari_sqlite_transactions_total",
+                &[workload_class, operation, outcome],
+            ) {
+                self.record_drop("cardinality");
+                return;
+            }
+            self.sqlite_transactions
+                .with_label_values(&[workload_class, operation, outcome])
+                .inc();
         }
-        self.sqlite_transactions
-            .with_label_values(&[workload_class, operation, outcome])
-            .inc();
         if reason == "none" {
             if !pool_wait.is_zero() {
                 if !self.admit_label_tuple(
@@ -468,27 +495,32 @@ impl Metrics {
     }
 
     fn admit_label_tuple(&self, metric: &str, labels: &[&str]) -> bool {
-        // All callers normalize labels to fixed enums before reaching this gate. The
-        // bitmap records observed tuples without allocating or waiting on a process-wide
-        // mutex; collisions are safe because the bitmap is only an admission hint.
-        let mut hash = 14_695_981_039_346_656_037u64;
-        for byte in metric.bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(1_099_511_628_211);
-        }
-        for label in labels {
-            hash ^= 0xff;
-            hash = hash.wrapping_mul(1_099_511_628_211);
-            for byte in label.bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(1_099_511_628_211);
+        // All callers normalize labels to fixed enums before reaching this gate. A
+        // fixed open-addressing table admits known tuples without allocation or a
+        // process-wide mutex; a saturated probe window conservatively drops new ones.
+        let fingerprint = label_tuple_fingerprint(metric, labels);
+        let start = (fingerprint as usize) % MAX_CARDINALITY_TUPLES;
+        for offset in 0..CARDINALITY_PROBES {
+            let slot = (start + offset) % MAX_CARDINALITY_TUPLES;
+            let entry = &self.cardinality_slots[slot];
+            let observed = entry.load(AtomicOrdering::Acquire);
+            if observed == fingerprint {
+                return true;
+            }
+            if observed == 0 {
+                match entry.compare_exchange(
+                    0,
+                    fingerprint,
+                    AtomicOrdering::AcqRel,
+                    AtomicOrdering::Acquire,
+                ) {
+                    Ok(_) => return true,
+                    Err(raced) if raced == fingerprint => return true,
+                    Err(_) => continue,
+                }
             }
         }
-        let slot = (hash as usize) % MAX_CARDINALITY_TUPLES;
-        let word = slot / 64;
-        let bit = 1u64 << (slot % 64);
-        self.cardinality_slots[word].fetch_or(bit, AtomicOrdering::Relaxed);
-        true
+        false
     }
 
     fn gather(&self) -> Result<Vec<u8>, prometheus::Error> {
@@ -772,6 +804,23 @@ fn metrics_bind_allowed(bind: SocketAddr, allow_unspecified: bool) -> bool {
     }
 }
 
+fn label_tuple_fingerprint(metric: &str, labels: &[&str]) -> u64 {
+    let mut hash = 14_695_981_039_346_656_037u64;
+    for byte in metric.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    for label in labels {
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(1_099_511_628_211);
+        for byte in label.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
+        }
+    }
+    if hash == 0 { 1 } else { hash }
+}
+
 fn route_allowlist_from_env() -> Option<HashSet<&'static str>> {
     let value = env::var("OBSERVABILITY_ROUTE_ALLOWLIST").ok()?;
     if value.trim().is_empty() {
@@ -1051,13 +1100,31 @@ mod tests {
     }
 
     #[test]
-    fn recorder_uses_a_fixed_lock_free_cardinality_bitmap() {
+    fn recorder_uses_a_fixed_lock_free_cardinality_table() {
         let metrics = Metrics::new(None).expect("metrics");
-        for index in 0..(MAX_CARDINALITY_TUPLES * 2) {
+        for index in 0..MAX_CARDINALITY_TUPLES {
             let value = index.to_string();
-            assert!(metrics.admit_label_tuple("test", &[value.as_str()]));
+            let _ = metrics.admit_label_tuple("test", &[value.as_str()]);
         }
-        assert_eq!(metrics.cardinality_slots.len(), CARDINALITY_WORDS);
+        assert_eq!(metrics.cardinality_slots.len(), MAX_CARDINALITY_TUPLES);
+    }
+
+    #[test]
+    fn recorder_rejects_a_saturated_probe_window() {
+        let metrics = Metrics::new(None).expect("metrics");
+        let labels = ["overflow"];
+        let fingerprint = label_tuple_fingerprint("test", &labels);
+        let start = (fingerprint as usize) % MAX_CARDINALITY_TUPLES;
+        for offset in 0..CARDINALITY_PROBES {
+            metrics.cardinality_slots[(start + offset) % MAX_CARDINALITY_TUPLES].store(
+                fingerprint.wrapping_add(offset as u64 + 1),
+                AtomicOrdering::Release,
+            );
+        }
+        assert!(!metrics.admit_label_tuple("test", &labels));
+        metrics.record_drop("cardinality");
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(output.contains("reason=\"cardinality\""));
     }
 
     #[test]
@@ -1119,6 +1186,23 @@ mod tests {
         let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
         assert!(output.contains("phase=\"upstream\""));
         assert!(output.contains("outcome=\"timeout\""));
+    }
+
+    #[test]
+    fn deferred_sqlite_admission_is_not_a_transaction() {
+        let metrics = Metrics::new(None).expect("metrics");
+        metrics.record_sqlite(
+            "foreground",
+            "request_log",
+            Duration::ZERO,
+            Duration::ZERO,
+            "degraded",
+            "pool",
+        );
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(output.contains("hikari_sqlite_admission_defers_total"));
+        assert!(output.contains("reason=\"pool\""));
+        assert!(!output.contains("hikari_sqlite_transactions_total"));
     }
 
     #[test]

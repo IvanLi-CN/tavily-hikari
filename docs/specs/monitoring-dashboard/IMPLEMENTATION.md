@@ -16,7 +16,7 @@
 - `ops/observability/grafana/provisioning/`：read-only datasource, dashboard provider and six Grafana managed alert rules。
 - `ops/observability/grafana/dashboards/`：four dashboard JSON files with stable UIDs and deployment variables。
 - `ops/observability/compose.yml` or an equivalent optional profile：Prometheus/Grafana integration for local or self-hosted environments, without requiring it for the application alone。
-- `scripts/test-observability-config.sh`：static provisioning and dashboard schema checks, with `promtool` validation when available。
+- `scripts/test-observability-config.sh`：static provisioning and dashboard schema checks, with pinned `promtool` validation required in CI and an explicit local fallback when the tool is unavailable。
 
 ## Configuration contract
 
@@ -51,13 +51,13 @@ The concrete 101 domain, network, secret file and port values remain deployment-
 
 - `cargo fmt --check`, `cargo check`, `cargo clippy --locked -j 2 -- -D warnings` and `cargo build` pass on the candidate.
 - The observability unit tests cover disabled no-op behavior, Bearer authentication, fixed dimensions and bounded unknown values.
-- `scripts/test-observability-config.sh` validates the generic Prometheus/Grafana files and all four dashboard UIDs; `promtool` is used automatically when installed.
+- `scripts/test-observability-config.sh` validates the generic Prometheus/Grafana files and all four dashboard UIDs; CI installs the pinned Prometheus release and fails closed if `promtool` is missing.
 - Local HTTP smoke validation covers valid and invalid Bearer tokens, business health during exporter bind failure, Prometheus text output and sensitive-value absence against a mock upstream.
 - The 101 target, Grafana rendering and remote outage-isolation checks remain deployment acceptance work and are intentionally not run against production from this repository.
 
 ## Open implementation risks
 
 - Existing runtime logs already cover many performance phases; instrumentation must reuse event boundaries without double-counting the same source event.
-- SQLite and request-log hot paths are sensitive to additional synchronous work; recorder updates use fixed label normalization and a lock-free bounded admission bitmap, and must never perform database reads or extend the SQLite workload critical section.
+- SQLite and request-log hot paths are sensitive to additional synchronous work; recorder updates use fixed label normalization and a lock-free bounded admission table, and must never perform database reads or extend the SQLite workload critical section.
 - The public metrics API and operational metrics have different privacy and cache contracts; route registration and tests must keep them separate.
 - Current production is `HA_MODE=single`; HA labels and channel metrics must represent unavailable/none explicitly rather than fabricate standby samples.

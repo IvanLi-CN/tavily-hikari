@@ -60,6 +60,10 @@ if command -v promtool >/dev/null 2>&1; then
   promtool check config "$observability_dir/prometheus.yml"
   promtool check rules "$observability_dir/recording-rules.yml"
 else
+  if [[ "${OBSERVABILITY_REQUIRE_PROMTOOL:-false}" == "true" ]]; then
+    echo "promtool is required for this validation environment" >&2
+    exit 1
+  fi
   echo "promtool not installed; checked files and dashboard JSON only"
 fi
 

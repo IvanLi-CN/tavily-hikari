@@ -25,5 +25,21 @@ jobs:
       - name: Validate quality gates contract
         run: python3 .github/scripts/check_quality_gates.py
 
+      - name: Install pinned Prometheus tools
+        env:
+          PROMETHEUS_VERSION: 2.55.1
+        run: |
+          archive_dir="${RUNNER_TEMP}/prometheus-tools"
+          mkdir -p "$archive_dir"
+          curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            -o "$archive_dir/prometheus.tar.gz"
+          printf '%s  %s\n' \
+            '19700bdd42ec31ee162e4079ebda4cd0a44432df4daa637141bdbea4b1cd8927' \
+            'prometheus.tar.gz' | (cd "$archive_dir" && sha256sum -c -)
+          tar -xzf "$archive_dir/prometheus.tar.gz" -C "$archive_dir"
+          sudo install -m 0755 "$archive_dir/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
+
       - name: Validate observability provisioning
+        env:
+          OBSERVABILITY_REQUIRE_PROMTOOL: "true"
         run: bash scripts/test-observability-config.sh
