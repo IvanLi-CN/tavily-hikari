@@ -10,7 +10,7 @@
 
 - `src/observability.rs`：recorder、label allowlist、exposition、configuration and bounded flush boundary。
 - `src/server/serve.rs`：conditionally mount `/metrics` without changing public metrics or business routes。
-- `src/store/sqlite_runtime.rs` and `src/tavily_proxy/proxy_http_and_logs.rs`：record SQLite and upstream terminal events without copying request content。
+- `src/store/sqlite_runtime.rs` and `src/tavily_proxy/proxy_forward_proxy_maintenance.rs`：record SQLite events plus relay-candidate and direct-fallback upstream events without copying request content。
 - `ops/observability/prometheus.yml`：generic scrape job template with token file and deployment substitutions。
 - `ops/observability/recording-rules.yml`：stable `hikari:` recording rule names and classic Histogram queries。
 - `ops/observability/grafana/provisioning/`：read-only datasource, dashboard provider and six Grafana managed alert rules。

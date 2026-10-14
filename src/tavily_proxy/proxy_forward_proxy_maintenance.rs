@@ -1769,7 +1769,7 @@ impl TavilyProxy {
                 };
                 let Some(relay_lease) = relay_lease else {
                     crate::observability::global_metrics().record_upstream(
-                        crate::observability::upstream_class_for_operation(request_kind),
+                        "forward_proxy",
                         request_kind,
                         Err(()),
                         attempt_started.elapsed(),
@@ -1798,7 +1798,7 @@ impl TavilyProxy {
                     Err(err) => {
                         drop(relay_lease);
                         crate::observability::global_metrics().record_upstream_failure(
-                            crate::observability::upstream_class_for_operation(request_kind),
+                            "forward_proxy",
                             request_kind,
                             crate::observability::outcome_for_proxy_error(&err) == "timeout",
                             attempt_started.elapsed(),
@@ -1824,7 +1824,7 @@ impl TavilyProxy {
                         let elapsed = attempt_started.elapsed();
                         let request_elapsed = request_started.elapsed();
                         crate::observability::global_metrics().record_upstream(
-                            crate::observability::upstream_class_for_operation(request_kind),
+                            "forward_proxy",
                             request_kind,
                             Ok(response.status()),
                             elapsed,
@@ -1850,7 +1850,7 @@ impl TavilyProxy {
                     Err(err) => {
                         drop(relay_lease);
                         crate::observability::global_metrics().record_upstream_failure(
-                            crate::observability::upstream_class_for_operation(request_kind),
+                            "forward_proxy",
                             request_kind,
                             err.is_timeout(),
                             attempt_started.elapsed(),
