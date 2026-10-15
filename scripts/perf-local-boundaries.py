@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import re
+import resource as posix_resource
 import shlex
 import signal
 import socket
@@ -37,16 +38,108 @@ DEFAULT_EXTENSION_SECONDS = 1800
 DEFAULT_MOCK_DELAY_MS = 200
 DEFAULT_MIN_SAMPLES = 30
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
-DEFAULT_SUBJECTS = ("subject-a", "subject-b", "subject-c", "subject-d")
-DEFAULT_TOKENS = ("token-a", "token-b", "token-c", "token-d")
+DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
+DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 9))
+DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 9))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=4"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
+REQUIRED_SCENARIO_NAMES = (
+    "serial",
+    "cross_account_concurrency_4",
+    "cross_account_concurrency_8",
+    "same_account_queue",
+)
 PHASE_METRIC_SELECTOR = {
     "method": "POST",
     "operation": "search",
     "outcome": "success",
     "route_family": "http_search",
 }
+
+
+@dataclass(frozen=True)
+class Credential:
+    """A bootstrapped credential with secret-free identity evidence."""
+
+    label: str
+    secret: str
+    token_id: str | None
+    billing_subject: str | None
+
+
+def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
+    scheduling = {
+        "dispatch": "fixed_rate",
+        "interval_seconds": interval_seconds,
+        "measurement_window": "shared",
+        "start_synchronization": "barrier",
+    }
+    return [
+        {
+            "name": "serial",
+            "driver": "serial",
+            "concurrency": 1,
+            "credential_mode": "single_token_subject",
+            "credential_slots": 1,
+            "scheduling": scheduling,
+        },
+        {
+            "name": "cross_account_concurrency_4",
+            "driver": "parallel_workers",
+            "concurrency": 4,
+            "credential_mode": "one_unique_token_subject_per_worker",
+            "credential_slots": 4,
+            "scheduling": scheduling,
+        },
+        {
+            "name": "cross_account_concurrency_8",
+            "driver": "parallel_workers",
+            "concurrency": 8,
+            "credential_mode": "one_unique_token_subject_per_worker",
+            "credential_slots": 8,
+            "scheduling": scheduling,
+        },
+        {
+            "name": "same_account_queue",
+            "driver": "parallel_workers_shared_subject",
+            "concurrency": 8,
+            "credential_mode": "same_token_subject_for_all_workers",
+            "credential_slots": 1,
+            "scheduling": scheduling,
+        },
+    ]
+
+
+def logical_cohort(subjects: tuple[str, ...], tokens: tuple[str, ...], interval: float) -> dict[str, Any]:
+    return {
+        "subjects": list(subjects),
+        "tokens": list(tokens),
+        "scenarios": scenario_contract(interval),
+        "cohort_path": "variants[*].scenarios[*].request",
+    }
+
+
+def credential_mapping_evidence(credentials: tuple[Credential, ...]) -> dict[str, Any]:
+    verified = bool(credentials) and all(
+        credential.token_id and credential.billing_subject for credential in credentials
+    )
+    return {
+        "status": "verified" if verified else "synthetic_labels_only",
+        "source": "POST /api/tokens response token id + billing_subject_for_token",
+        "credential_kind": "unbound_access_token",
+        "billing_subject_kind": "token",
+        "secret_persisted": False,
+        "credentials": [
+            {
+                "label": credential.label,
+                "token_id": credential.token_id,
+                "billing_subject": credential.billing_subject,
+            }
+            for credential in credentials
+        ],
+        "same_account_definition": "same token_id and billing_subject reused by every queue worker",
+        "cross_account_definition": "one distinct token_id and billing_subject per worker",
+    }
 
 
 class MockUpstreamHandler(BaseHTTPRequestHandler):
@@ -183,11 +276,14 @@ class CheckpointStore:
 
     def __init__(self, root: Path, contract: dict[str, Any]) -> None:
         self.root = root.resolve()
+        self.contract_scenarios = contract.get("scenarios")
         self.variant_root = self.root / "variants"
         self.pair_root = self.root / "pairs"
+        self.phase_root = self.root / "phases"
         self.log_root = self.root / "logs"
         self.variant_root.mkdir(parents=True, exist_ok=True)
         self.pair_root.mkdir(parents=True, exist_ok=True)
+        self.phase_root.mkdir(parents=True, exist_ok=True)
         self.log_root.mkdir(parents=True, exist_ok=True)
         self.active: dict[str, Any] | None = None
         atomic_write_json(self.root / "contract.json", {"kind": "contract", "contract": contract})
@@ -239,6 +335,10 @@ class CheckpointStore:
                 "statuses": {},
                 "errors": {},
                 "phases": {},
+                "scenarios": None,
+                "scenario_contract": self.contract_scenarios,
+                "credential_mapping": None,
+                "resource_observation": None,
             },
         )
         self._write_progress("variant_running")
@@ -266,6 +366,10 @@ class CheckpointStore:
             "phases": result.get("phases", {}),
             "cohort": result.get("cohort"),
             "accepted_progress": result.get("accepted_progress"),
+            "scenarios": result.get("scenarios"),
+            "scenario_contract": result.get("scenario_contract"),
+            "credential_mapping": result.get("credential_mapping"),
+            "resource_observation": result.get("resource_observation"),
         }
         if result.get("error_type") is not None:
             payload["error_type"] = result["error_type"]
@@ -296,6 +400,30 @@ class CheckpointStore:
         )
         self._write_progress("pair_complete", phase=phase, round=round_number)
 
+    def write_phase_comparison(
+        self,
+        phase: str,
+        rounds: list[dict[str, Any]],
+        comparison: dict[str, Any],
+    ) -> None:
+        atomic_write_json(
+            self.phase_root / f"{phase}-comparison.json",
+            {
+                "kind": "phase_comparison",
+                "phase": phase,
+                "status": comparison.get("status"),
+                "reasons": comparison.get("reasons", []),
+                "rounds": rounds,
+                "comparison": comparison,
+            },
+        )
+        self._write_progress(
+            "phase_complete",
+            phase=phase,
+            phase_status=comparison.get("status"),
+            reasons=comparison.get("reasons", []),
+        )
+
     def mark_interrupted(self, reason: str) -> None:
         if self.active is not None:
             interrupted = {
@@ -308,6 +436,10 @@ class CheckpointStore:
                 "statuses": {},
                 "errors": {},
                 "phases": {},
+                "scenarios": None,
+                "scenario_contract": self.contract_scenarios,
+                "credential_mapping": None,
+                "resource_observation": None,
             }
             atomic_write_json(
                 self.variant_path(
@@ -332,26 +464,31 @@ class SampleRecorder:
     errors: dict[str, int] = field(default_factory=dict)
     accepted_progress: int = 0
     reported_progress: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add_status(self, lane: str, status: int, elapsed_ms: float, body: bytes) -> None:
-        key = f"{lane}:{status}"
-        self.statuses[key] = self.statuses.get(key, 0) + 1
-        target = self.unrelated_elapsed_ms if lane == "unrelated" else self.elapsed_ms
-        target.append(elapsed_ms)
-        if lane != "unrelated" and 200 <= status < 300:
-            self.accepted_progress += 1
         try:
             decoded = json.loads(body)
         except (ValueError, UnicodeDecodeError):
-            return
-        if isinstance(decoded, dict):
-            value = decoded.get("accepted_progress")
-            if isinstance(value, int) and value >= 0:
-                self.reported_progress += value
+            decoded = None
+        with self._lock:
+            key = f"{lane}:{status}"
+            self.statuses[key] = self.statuses.get(key, 0) + 1
+            target = self.unrelated_elapsed_ms if lane == "unrelated" else self.elapsed_ms
+            target.append(elapsed_ms)
+            # HTTP 200 from the business lane is not maintenance progress. Only a
+            # maintenance/recovery response explicitly carrying accepted progress counts.
+            if lane in {"maintenance", "recovery"} and 200 <= status < 300:
+                self.accepted_progress += 1
+            if lane in {"maintenance", "recovery"} and isinstance(decoded, dict):
+                value = decoded.get("accepted_progress")
+                if isinstance(value, int) and value >= 0:
+                    self.reported_progress += value
 
     def add_error(self, lane: str, error: BaseException) -> None:
-        key = f"{lane}:{type(error).__name__}"
-        self.errors[key] = self.errors.get(key, 0) + 1
+        with self._lock:
+            key = f"{lane}:{type(error).__name__}"
+            self.errors[key] = self.errors.get(key, 0) + 1
 
     def stats(self, values: list[float], duration_seconds: int) -> dict[str, Any]:
         ordered = sorted(values)
@@ -364,18 +501,44 @@ class SampleRecorder:
         }
 
     def result(self, duration_seconds: int) -> dict[str, Any]:
+        with self._lock:
+            elapsed_ms = list(self.elapsed_ms)
+            unrelated_elapsed_ms = list(self.unrelated_elapsed_ms)
+            statuses = dict(self.statuses)
+            errors = dict(self.errors)
+            accepted_progress = self.accepted_progress
+            reported_progress = self.reported_progress
         return {
             "duration_seconds": duration_seconds,
-            "request": self.stats(self.elapsed_ms, duration_seconds),
-            "unrelated_cohort": self.stats(self.unrelated_elapsed_ms, duration_seconds),
-            "statuses": dict(sorted(self.statuses.items())),
-            "errors": dict(sorted(self.errors.items())),
+            "request": self.stats(elapsed_ms, duration_seconds),
+            "unrelated_cohort": self.stats(unrelated_elapsed_ms, duration_seconds),
+            "statuses": dict(sorted(statuses.items())),
+            "errors": dict(sorted(errors.items())),
             "phases": {},
             "accepted_progress": {
-                "responses": self.accepted_progress,
-                "reported": self.reported_progress,
+                "source": "maintenance_or_recovery_response_field_only",
+                "responses": accepted_progress,
+                "reported": reported_progress,
             },
         }
+
+    def merge(self, other: "SampleRecorder") -> None:
+        with other._lock:
+            elapsed_ms = list(other.elapsed_ms)
+            unrelated_elapsed_ms = list(other.unrelated_elapsed_ms)
+            statuses = dict(other.statuses)
+            errors = dict(other.errors)
+            accepted_progress = other.accepted_progress
+            reported_progress = other.reported_progress
+        with self._lock:
+            self.elapsed_ms.extend(elapsed_ms)
+            self.unrelated_elapsed_ms.extend(unrelated_elapsed_ms)
+            for key, value in statuses.items():
+                self.statuses[key] = self.statuses.get(key, 0) + value
+            for key, value in errors.items():
+                self.errors[key] = self.errors.get(key, 0) + value
+            self.accepted_progress += accepted_progress
+            self.reported_progress += reported_progress
 
 
 def create_fixture(directory: Path) -> tuple[Path, Path]:
@@ -467,15 +630,199 @@ def request_once(
     method: str = "POST",
 ) -> None:
     started = time.monotonic()
+    connection: http.client.HTTPConnection | None = None
     try:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         response_body = response.read()
         recorder.add_status(lane, response.status, (time.monotonic() - started) * 1000, response_body)
-        connection.close()
     except (OSError, http.client.HTTPException, TimeoutError) as error:
         recorder.add_error(lane, error)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def synthetic_credentials(labels: tuple[str, ...]) -> tuple[Credential, ...]:
+    return tuple(
+        Credential(label=label, secret=label, token_id=None, billing_subject=None)
+        for label in labels
+    )
+
+
+def scenario_bindings(
+    name: str,
+    credentials: tuple[Credential, ...],
+    subjects: tuple[str, ...],
+) -> tuple[tuple[Credential, ...], tuple[str, ...]]:
+    if name == "serial":
+        return (credentials[0],), (subjects[0],)
+    if name == "cross_account_concurrency_4":
+        return credentials[:4], subjects[:4]
+    if name == "cross_account_concurrency_8":
+        return credentials[:8], subjects[:8]
+    if name == "same_account_queue":
+        return (credentials[0],) * 8, (subjects[0],) * 8
+    raise ValueError(f"unknown workload scenario: {name}")
+
+
+def run_scenario_window(
+    port: int,
+    deadline: float,
+    scenario: dict[str, Any],
+    credentials: tuple[Credential, ...],
+    subjects: tuple[str, ...],
+    interval_seconds: float,
+    recorder: SampleRecorder,
+    stop_event: threading.Event,
+) -> None:
+    payload = b'{"query":"synthetic","search_depth":"basic","max_results":1}'
+    worker_count = int(scenario["concurrency"])
+    barrier = threading.Barrier(worker_count)
+    bound_credentials, bound_subjects = scenario_bindings(scenario["name"], credentials, subjects)
+
+    def worker(slot: int) -> None:
+        try:
+            barrier.wait(timeout=10)
+            next_request = time.monotonic()
+            while not stop_event.is_set() and time.monotonic() < deadline:
+                credential = bound_credentials[slot % len(bound_credentials)]
+                subject = bound_subjects[slot % len(bound_subjects)]
+                request_once(
+                    port,
+                    "/api/tavily/search",
+                    payload,
+                    {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {credential.secret}",
+                        "X-Perf-Subject": subject,
+                    },
+                    recorder,
+                    "business",
+                )
+                next_request += interval_seconds
+                if stop_event.wait(max(0, next_request - time.monotonic())):
+                    return
+        except Exception as error:
+            recorder.add_error("scenario", error)
+
+    workers = [
+        threading.Thread(target=worker, args=(slot,), daemon=True)
+        for slot in range(worker_count)
+    ]
+    for thread in workers:
+        thread.start()
+    for thread in workers:
+        thread.join()
+
+
+def run_control_window(
+    port: int,
+    deadline: float,
+    interval_seconds: float,
+    recorder: SampleRecorder,
+    stop_event: threading.Event,
+) -> None:
+    next_request = time.monotonic()
+    while not stop_event.is_set() and time.monotonic() < deadline:
+        request_once(
+            port,
+            "/health",
+            b"{}",
+            {"Content-Type": "application/json"},
+            recorder,
+            "unrelated",
+            method="GET",
+        )
+        next_request += interval_seconds
+        if stop_event.wait(max(0, next_request - time.monotonic())):
+            return
+
+
+def run_workload_window(
+    port: int,
+    duration_seconds: int,
+    credentials: tuple[Credential, ...],
+    subjects: tuple[str, ...],
+    interval_seconds: float,
+) -> tuple[SampleRecorder, list[dict[str, Any]]]:
+    scenarios = scenario_contract(interval_seconds)
+    scenario_recorders = {scenario["name"]: SampleRecorder() for scenario in scenarios}
+    control_recorder = SampleRecorder()
+    stop_event = threading.Event()
+    deadline = time.monotonic() + duration_seconds
+    threads = [
+        threading.Thread(
+            target=run_scenario_window,
+            args=(
+                port,
+                deadline,
+                scenario,
+                credentials,
+                subjects,
+                interval_seconds,
+                scenario_recorders[scenario["name"]],
+                stop_event,
+            ),
+            daemon=True,
+        )
+        for scenario in scenarios
+    ]
+    control_thread = threading.Thread(
+        target=run_control_window,
+        args=(
+            port,
+            deadline,
+            DEFAULT_CONTROL_INTERVAL_SECONDS,
+            control_recorder,
+            stop_event,
+        ),
+        daemon=True,
+    )
+    try:
+        for thread in threads:
+            thread.start()
+        control_thread.start()
+        for thread in threads:
+            thread.join()
+        control_thread.join()
+    finally:
+        stop_event.set()
+        for thread in threads:
+            thread.join(timeout=2)
+        control_thread.join(timeout=2)
+
+    aggregate = SampleRecorder()
+    scenarios_result: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        recorder = scenario_recorders[scenario["name"]]
+        aggregate.merge(recorder)
+        bound_credentials, bound_subjects = scenario_bindings(
+            scenario["name"], credentials, subjects
+        )
+        recorded = recorder.result(duration_seconds)
+        scenarios_result.append(
+            {
+                "name": scenario["name"],
+                "driver": scenario["driver"],
+                "concurrency": scenario["concurrency"],
+                "credential_mode": scenario["credential_mode"],
+                "credential_labels": [credential.label for credential in bound_credentials],
+                "credential_ids": [credential.token_id for credential in bound_credentials],
+                "billing_subjects": [
+                    credential.billing_subject for credential in bound_credentials
+                ],
+                "subjects": list(bound_subjects),
+                "scheduling": scenario["scheduling"],
+                "request": recorded["request"],
+                "statuses": recorded["statuses"],
+                "errors": recorded["errors"],
+                "accepted_progress": recorded["accepted_progress"],
+            }
+        )
+    aggregate.merge(control_recorder)
+    return aggregate, scenarios_result
 
 
 def run_load(
@@ -483,64 +830,25 @@ def run_load(
     warmup_seconds: int,
     duration_seconds: int,
     subjects: tuple[str, ...],
-    tokens: tuple[str, ...],
+    credentials: tuple[Credential, ...],
     interval_seconds: float,
     on_measurement_start: Callable[[], dict[str, dict[str, float]]] | None = None,
-) -> tuple[SampleRecorder, dict[str, dict[str, float]]]:
-    recorder = SampleRecorder()
-    payload = b'{"query":"synthetic","search_depth":"basic","max_results":1}'
-    started = time.monotonic()
-    deadline = started + warmup_seconds
-    index = 0
-    while time.monotonic() < deadline:
-        request_once(
-            port,
-            "/api/tavily/search",
-            payload,
-            {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {tokens[index % len(tokens)]}",
-                "X-Perf-Subject": subjects[index % len(subjects)],
-            },
-            recorder,
-            "warmup",
-        )
-        index += 1
-    recorder = SampleRecorder()
+) -> tuple[dict[str, Any], dict[str, dict[str, float]]]:
+    if warmup_seconds > 0:
+        run_workload_window(port, warmup_seconds, credentials, subjects, interval_seconds)
     phase_baseline = on_measurement_start() if on_measurement_start else {}
-    deadline = time.monotonic() + duration_seconds
-    next_request = time.monotonic()
-    while time.monotonic() < deadline:
-        request_once(
-            port,
-            "/api/tavily/search",
-            payload,
-            {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {tokens[index % len(tokens)]}",
-                "X-Perf-Subject": subjects[index % len(subjects)],
-            },
-            recorder,
-            "business",
-        )
-        if index % 4 == 0:
-            request_once(
-                port,
-                "/health",
-                b"{}",
-                {"Content-Type": "application/json"},
-                recorder,
-                "unrelated",
-                method="GET",
-            )
-        index += 1
-        next_request += interval_seconds
-        time.sleep(max(0, next_request - time.monotonic()))
-    return recorder, phase_baseline
+    recorder, scenarios_result = run_workload_window(
+        port, duration_seconds, credentials, subjects, interval_seconds
+    )
+    result = recorder.result(duration_seconds)
+    result["scenarios"] = scenarios_result
+    result["scenario_contract"] = scenario_contract(interval_seconds)
+    result["credential_mapping"] = credential_mapping_evidence(credentials)
+    return result, phase_baseline
 
 
-def bootstrap_business_tokens(port: int, labels: tuple[str, ...]) -> tuple[str, ...]:
-    access_tokens: list[str] = []
+def bootstrap_business_tokens(port: int, labels: tuple[str, ...]) -> tuple[Credential, ...]:
+    credentials: list[Credential] = []
     for label in labels:
         payload = json.dumps({"note": f"perf-local-{label}"}).encode("utf-8")
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -565,8 +873,49 @@ def bootstrap_business_tokens(port: int, labels: tuple[str, ...]) -> tuple[str, 
             raise RuntimeError("token_bootstrap_invalid_json") from error
         if not isinstance(token, str) or not token:
             raise RuntimeError("token_bootstrap_missing_secret")
-        access_tokens.append(token)
-    return tuple(access_tokens)
+        token_parts = token.split("-", 2)
+        if len(token_parts) != 3 or token_parts[0] != "th" or not token_parts[1]:
+            raise RuntimeError("token_bootstrap_invalid_identity")
+        token_id = token_parts[1]
+        credentials.append(
+            Credential(
+                label=label,
+                secret=token,
+                token_id=token_id,
+                billing_subject=f"token:{token_id}",
+            )
+        )
+    return tuple(credentials)
+
+
+def verify_credential_bindings(
+    database_path: Path, credentials: tuple[Credential, ...]
+) -> dict[str, Any]:
+    token_ids = [credential.token_id for credential in credentials if credential.token_id]
+    if len(token_ids) != len(credentials):
+        return {"status": "failed", "reason": "missing_token_id"}
+    placeholders = ",".join("?" for _ in token_ids)
+    try:
+        with sqlite3.connect(database_path, timeout=5) as connection:
+            rows = connection.execute(
+                f"SELECT t.id, b.user_id "
+                f"FROM auth_tokens t LEFT JOIN user_token_bindings b ON b.token_id = t.id "
+                f"WHERE t.id IN ({placeholders})",
+                token_ids,
+            ).fetchall()
+    except sqlite3.Error as error:
+        return {"status": "failed", "reason": f"database_query:{type(error).__name__}"}
+    observed = {token_id: owner_id for token_id, owner_id in rows}
+    missing = sorted(set(token_ids) - set(observed))
+    bound = sorted(token_id for token_id, owner_id in observed.items() if owner_id is not None)
+    return {
+        "status": "passed" if not missing and not bound else "failed",
+        "source": "auth_tokens LEFT JOIN user_token_bindings",
+        "expected_binding": "unbound",
+        "observed_token_ids": sorted(observed),
+        "missing_token_ids": missing,
+        "bound_token_ids": bound,
+    }
 
 
 def phase_delta(
@@ -584,6 +933,167 @@ def phase_delta(
             ),
         }
     return phases
+
+
+def parse_memory_bytes(value: str) -> int:
+    match = re.fullmatch(r"(?i)([0-9]+)(b|kib|mib|gib|kb|mb|gb)?", value.strip())
+    if match is None:
+        raise ValueError(f"invalid memory resource: {value}")
+    amount = int(match.group(1))
+    unit = (match.group(2) or "b").lower()
+    multiplier = {
+        "b": 1,
+        "kb": 1000,
+        "mb": 1000**2,
+        "gb": 1000**3,
+        "kib": 1024,
+        "mib": 1024**2,
+        "gib": 1024**3,
+    }[unit]
+    return amount * multiplier
+
+
+def parse_resource_spec(raw: str) -> dict[str, Any]:
+    values: dict[str, str] = {}
+    for item in raw.split(","):
+        key, separator, value = item.partition("=")
+        if not separator or not key or not value:
+            raise ValueError(f"invalid resource item: {item}")
+        values[key.strip()] = value.strip()
+    try:
+        cpu = int(values["cpu"])
+        memory_bytes = parse_memory_bytes(values["memory"])
+        sqlite_pool = int(values["sqlite_pool"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("resources require cpu, memory and sqlite_pool") from error
+    if cpu < 1 or memory_bytes < 1 or sqlite_pool < 1:
+        raise ValueError("resource limits must be positive")
+    return {
+        "raw": raw,
+        "cpu": cpu,
+        "memory": values["memory"],
+        "memory_bytes": memory_bytes,
+        "sqlite_pool": sqlite_pool,
+    }
+
+
+def host_memory_bytes() -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return None
+
+
+def cgroup_observation(pid: int) -> dict[str, Any]:
+    result: dict[str, Any] = {"path": None, "memory_max_bytes": None, "memory_max_raw": None}
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text(encoding="ascii").splitlines()
+    except (FileNotFoundError, OSError):
+        return result
+    for line in lines:
+        hierarchy, _controllers, path = line.split(":", 2)
+        if hierarchy == "0":
+            result["path"] = path
+            candidate = Path("/sys/fs/cgroup") / path.lstrip("/") / "memory.max"
+            try:
+                raw = candidate.read_text(encoding="ascii").strip()
+            except (FileNotFoundError, OSError):
+                raw = None
+            result["memory_max_raw"] = raw
+            if raw and raw != "max":
+                try:
+                    result["memory_max_bytes"] = int(raw)
+                except ValueError:
+                    pass
+            break
+    return result
+
+
+def source_sqlite_pool_limit(repo: Path) -> int | None:
+    source_path = repo / "src" / "lib.rs"
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    match = re.search(
+        r"pub\s+const\s+SQLITE_POOL_MAX_CONNECTIONS_DEFAULT\s*:\s*u32\s*=\s*(\d+)",
+        source,
+    )
+    return int(match.group(1)) if match else None
+
+
+def apply_resource_constraints(
+    process: subprocess.Popen[bytes], repo: Path, resource_spec: dict[str, Any]
+) -> dict[str, Any]:
+    requested_cpu = int(resource_spec["cpu"])
+    requested_memory = int(resource_spec["memory_bytes"])
+    errors: list[str] = []
+    host_cpu_count = os.cpu_count()
+    if host_cpu_count is None or host_cpu_count < requested_cpu:
+        errors.append("requested_cpu_exceeds_host")
+    elif not hasattr(os, "sched_setaffinity"):
+        errors.append("cpu_affinity_unavailable")
+    else:
+        try:
+            os.sched_setaffinity(process.pid, set(range(requested_cpu)))
+        except OSError as error:
+            errors.append(f"cpu_affinity_apply_failed:{type(error).__name__}")
+
+    if not hasattr(posix_resource, "prlimit"):
+        errors.append("address_space_limit_unavailable")
+    else:
+        try:
+            posix_resource.prlimit(
+                process.pid,
+                posix_resource.RLIMIT_AS,
+                (requested_memory, requested_memory),
+            )
+        except (OSError, ValueError) as error:
+            errors.append(f"address_space_limit_apply_failed:{type(error).__name__}")
+
+    observed_affinity: list[int] | None = None
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            observed_affinity = sorted(os.sched_getaffinity(process.pid))
+        except OSError:
+            observed_affinity = None
+    observed_rlimit_as: list[int] | None = None
+    if hasattr(posix_resource, "prlimit"):
+        try:
+            observed_rlimit_as = list(posix_resource.prlimit(process.pid, posix_resource.RLIMIT_AS))
+        except (OSError, ValueError):
+            observed_rlimit_as = None
+
+    observed_pool = source_sqlite_pool_limit(repo)
+    if observed_pool != int(resource_spec["sqlite_pool"]):
+        errors.append(
+            f"sqlite_pool_requested_{resource_spec['sqlite_pool']}_observed_{observed_pool}"
+        )
+    status = "validated" if not errors else "mismatch"
+    return {
+        "status": status,
+        "scope": "launcher_process_and_inherited_descendants",
+        "requested": resource_spec,
+        "host": {
+            "cpu_count": host_cpu_count,
+            "memory_total_bytes": host_memory_bytes(),
+        },
+        "process": {
+            "launcher_pid": process.pid,
+            "cpu_affinity_cpus": observed_affinity,
+            "address_space_limit_bytes": observed_rlimit_as,
+            "cgroup": cgroup_observation(process.pid),
+        },
+        "startup": {
+            "sqlite_pool_max_connections": observed_pool,
+            "source": "src/lib.rs:SQLITE_POOL_MAX_CONNECTIONS_DEFAULT",
+        },
+        "enforcement": ["sched_setaffinity", "RLIMIT_AS"],
+        "errors": errors,
+    }
 
 
 def terminate_process(process: subprocess.Popen[bytes]) -> None:
@@ -618,6 +1128,9 @@ def run_variant(
     repo = workdir / f"{variant}-repo"
     repo.mkdir()
     resolved = archive_revision(root, revision, repo)
+    resource_spec = getattr(args, "resource_spec", parse_resource_spec(args.resources))
+    scenario_shape = scenario_contract(args.request_interval_seconds)
+    synthetic_mapping = credential_mapping_evidence(synthetic_credentials(tuple(args.tokens)))
     core, sidecar = create_fixture(workdir / f"{variant}-fixture")
     port = find_free_port()
     metrics_port = find_free_port()
@@ -638,7 +1151,11 @@ def run_variant(
             "unrelated_cohort": None,
             "phases": {},
             "accepted_progress": {"responses": 0, "reported": 0},
-            "cohort": {"subjects": list(args.subjects), "tokens": list(args.tokens)},
+            "cohort": logical_cohort(tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds),
+            "scenarios": scenario_shape,
+            "scenario_contract": scenario_shape,
+            "credential_mapping": synthetic_mapping,
+            "resource_observation": None,
         }
     environment = dict(os.environ)
     environment.update(
@@ -655,6 +1172,7 @@ def run_variant(
             "PERF_LOCAL_SUBJECTS": ",".join(args.subjects),
             "PERF_LOCAL_TOKENS": ",".join(args.tokens),
             "PERF_LOCAL_RESOURCES": args.resources,
+            "PERF_LOCAL_RESOURCE_SPEC": json.dumps(resource_spec, sort_keys=True),
             "TAVILY_UPSTREAM": mock.url,
             "TAVILY_USAGE_BASE": mock.url,
             "PROXY_DB_PATH": str(core),
@@ -704,6 +1222,32 @@ def run_variant(
     for thread in output_threads:
         thread.start()
     try:
+        resource_observation = apply_resource_constraints(process, repo, resource_spec)
+        hard_resource_errors = [
+            error
+            for error in resource_observation["errors"]
+            if not error.startswith("sqlite_pool_requested_")
+        ]
+        if hard_resource_errors:
+            return {
+                "variant": variant,
+                "round": round_number,
+                "ref": resolved,
+                "status": "unvalidated",
+                "reason": "resource_constraints_unverified",
+                "duration_seconds": duration_seconds,
+                "request": None,
+                "unrelated_cohort": None,
+                "phases": {},
+                "accepted_progress": {"responses": 0, "reported": 0},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "scenarios": scenario_shape,
+                "scenario_contract": scenario_shape,
+                "credential_mapping": synthetic_mapping,
+                "resource_observation": resource_observation,
+            }
         if not wait_for_service(port, args.readiness_timeout_seconds):
             return {
                 "variant": variant,
@@ -716,12 +1260,19 @@ def run_variant(
                 "unrelated_cohort": None,
                 "phases": {},
                 "accepted_progress": {"responses": 0, "reported": 0},
-                "cohort": {"subjects": list(args.subjects), "tokens": list(args.tokens)},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "scenarios": scenario_shape,
+                "scenario_contract": scenario_shape,
+                "credential_mapping": synthetic_mapping,
+                "resource_observation": resource_observation,
             }
-        access_tokens = tuple(args.tokens)
+        credentials = synthetic_credentials(tuple(args.tokens))
+        credential_mapping = synthetic_mapping
         if args.bootstrap_business_tokens:
             try:
-                access_tokens = bootstrap_business_tokens(port, tuple(args.tokens))
+                credentials = bootstrap_business_tokens(port, tuple(args.tokens))
             except RuntimeError:
                 return {
                     "variant": variant,
@@ -734,18 +1285,68 @@ def run_variant(
                     "unrelated_cohort": None,
                     "phases": {},
                     "accepted_progress": {"responses": 0, "reported": 0},
-                    "cohort": {"subjects": list(args.subjects), "tokens": list(args.tokens)},
+                    "cohort": logical_cohort(
+                        tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                    ),
+                    "scenarios": scenario_shape,
+                    "scenario_contract": scenario_shape,
+                    "credential_mapping": synthetic_mapping,
+                    "resource_observation": resource_observation,
                 }
+            credential_mapping = credential_mapping_evidence(credentials)
+            binding_check = verify_credential_bindings(core, credentials)
+            credential_mapping["runtime_binding_check"] = binding_check
+            if binding_check.get("status") != "passed":
+                credential_mapping["status"] = "unverified"
+                return {
+                    "variant": variant,
+                    "round": round_number,
+                    "ref": resolved,
+                    "status": "unvalidated",
+                    "reason": "credential_mapping_unverified",
+                    "duration_seconds": duration_seconds,
+                    "request": None,
+                    "unrelated_cohort": None,
+                    "phases": {},
+                    "accepted_progress": {"responses": 0, "reported": 0},
+                    "cohort": logical_cohort(
+                        tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                    ),
+                    "scenarios": scenario_shape,
+                    "scenario_contract": scenario_shape,
+                    "credential_mapping": credential_mapping,
+                    "resource_observation": resource_observation,
+                }
+        else:
+            return {
+                "variant": variant,
+                "round": round_number,
+                "ref": resolved,
+                "status": "unvalidated",
+                "reason": "business_credentials_not_bootstrapped",
+                "duration_seconds": duration_seconds,
+                "request": None,
+                "unrelated_cohort": None,
+                "phases": {},
+                "accepted_progress": {"responses": 0, "reported": 0},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "scenarios": scenario_shape,
+                "scenario_contract": scenario_shape,
+                "credential_mapping": credential_mapping_evidence(credentials),
+                "resource_observation": resource_observation,
+            }
         result, phase_baseline = run_load(
             port,
             args.warmup_seconds,
             duration_seconds,
             tuple(args.subjects),
-            access_tokens,
+            credentials,
             args.request_interval_seconds,
             on_measurement_start=lambda: collect_phase_metrics(metrics_port, metrics_token),
         )
-        result_payload = result.result(duration_seconds)
+        result_payload = result
         time.sleep(1.0)
         result_payload["phases"] = phase_delta(
             phase_baseline, collect_phase_metrics(metrics_port, metrics_token)
@@ -757,7 +1358,11 @@ def run_variant(
                 "round": round_number,
                 "ref": resolved,
                 "status": "measured",
-                "cohort": {"subjects": list(args.subjects), "tokens": list(args.tokens)},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "credential_mapping": credential_mapping,
+                "resource_observation": resource_observation,
             }
         )
         return result
@@ -779,6 +1384,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--extension-seconds", type=int, default=DEFAULT_EXTENSION_SECONDS)
     parser.add_argument("--mock-delay-ms", type=int, default=DEFAULT_MOCK_DELAY_MS)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
+    parser.add_argument("--min-control-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--request-interval-seconds", type=float, default=DEFAULT_REQUEST_INTERVAL_SECONDS)
     parser.add_argument("--readiness-timeout-seconds", type=float, default=60)
     parser.add_argument("--service-command", help="shell template; supports {repo}, {db}, {sidecar}, {port}, {upstream}, {variant}")
@@ -809,16 +1415,26 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("warmup must be non-negative and duration must be positive")
     if args.duration_seconds > args.extension_seconds:
         raise SystemExit("duration cannot exceed extension duration")
+    if args.min_samples < 1 or args.min_control_samples < 1:
+        raise SystemExit("sample minimums must be positive")
+    if args.request_interval_seconds <= 0:
+        raise SystemExit("request interval must be positive")
     if args.mock_delay_ms != DEFAULT_MOCK_DELAY_MS:
         raise SystemExit("the local boundary contract fixes mock delay at 200ms")
     if not args.subjects or not args.tokens:
         raise SystemExit("subject and token distributions must be non-empty")
+    if len(args.subjects) < 8 or len(args.tokens) < 8:
+        raise SystemExit("at least eight subjects and token labels are required for concurrency-8")
     if any(not re.fullmatch(r"subject-[a-z0-9-]+", value) for value in args.subjects):
         raise SystemExit("subjects must use synthetic subject-* values")
     if any(not re.fullmatch(r"token-[a-z0-9-]+", value) for value in args.tokens):
         raise SystemExit("tokens must use synthetic token-* values")
     if not args.comparison_entry.is_file():
         raise SystemExit(f"comparison entry does not exist: {args.comparison_entry}")
+    try:
+        args.resource_spec = parse_resource_spec(args.resources)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
 
 def create_run_directory(output: Path, requested: Path | None) -> Path:
@@ -855,7 +1471,10 @@ def extension_allowed(comparison: dict[str, Any]) -> bool:
     return all(
         reason.endswith("/request.samples_below_minimum")
         or reason.endswith("/control.samples_missing")
+        or reason.endswith("/control.samples_below_minimum")
         or reason.endswith("/control/p95_regression_over_5_percent")
+        or reason.endswith("/control/baseline_p95_variation_over_5_percent")
+        or reason.endswith("/control/candidate_p95_variation_over_5_percent")
         for reason in reasons
     )
 
@@ -920,7 +1539,9 @@ def run_paired_rounds(
 
         round_record = {"round": round_number, "baseline": baseline, "candidate": candidate}
         paired_rounds.append(round_record)
-        round_comparison = compare_rounds([round_record], args.min_samples)["rounds"][0]
+        round_comparison = compare_rounds(
+            [round_record], args.min_samples, args.min_control_samples
+        )["rounds"][0]
         checkpoint.write_pair(phase, round_number, baseline, candidate, round_comparison)
     return paired_rounds
 
@@ -951,8 +1572,31 @@ def measurement_view(result: dict[str, Any]) -> dict[str, Any]:
         "errors": result.get("errors", {}),
         "phases": result.get("phases", {}),
         "cohort": result.get("cohort"),
+        "scenarios": result.get("scenarios"),
+        "scenario_contract": result.get("scenario_contract"),
+        "credential_mapping": result.get("credential_mapping"),
+        "resource_observation": result.get("resource_observation"),
         "accepted_progress": result.get("accepted_progress"),
     }
+
+
+def scenario_shape_key(result: dict[str, Any]) -> str | None:
+    scenarios = result.get("scenario_contract")
+    if not isinstance(scenarios, list):
+        return None
+    shape = [
+        {
+            "name": item.get("name"),
+            "driver": item.get("driver"),
+            "concurrency": item.get("concurrency"),
+            "credential_mode": item.get("credential_mode"),
+            "credential_slots": item.get("credential_slots"),
+            "scheduling": item.get("scheduling"),
+        }
+        for item in scenarios
+        if isinstance(item, dict)
+    ]
+    return json.dumps(shape, sort_keys=True, separators=(",", ":"))
 
 
 def measurement_reasons(
@@ -960,7 +1604,10 @@ def measurement_reasons(
     role: str,
     result: dict[str, Any],
     min_samples: int,
+    min_control_samples: int | None = None,
 ) -> list[str]:
+    if min_control_samples is None:
+        min_control_samples = min_samples
     prefix = f"round-{round_number}/{role}"
     reasons: list[str] = []
     if result.get("status") != "measured":
@@ -981,8 +1628,26 @@ def measurement_reasons(
     else:
         if control.get("samples", 0) <= 0:
             reasons.append(f"{prefix}/control.samples_missing")
+        elif control.get("samples", 0) < min_control_samples:
+            reasons.append(f"{prefix}/control.samples_below_minimum")
         elif control.get("p95_ms") is None:
             reasons.append(f"{prefix}/control.p95_missing")
+    scenarios = result.get("scenario_contract")
+    scenario_names = [
+        item.get("name") for item in scenarios if isinstance(item, dict)
+    ] if isinstance(scenarios, list) else []
+    if scenario_names != list(REQUIRED_SCENARIO_NAMES):
+        reasons.append(f"{prefix}/scenarios/contract_mismatch")
+    mapping = result.get("credential_mapping")
+    if not isinstance(mapping, dict):
+        reasons.append(f"{prefix}/credentials/mapping_missing")
+    elif mapping.get("status") != "verified":
+        reasons.append(f"{prefix}/credentials/mapping_unverified")
+    resource_observation = result.get("resource_observation")
+    if not isinstance(resource_observation, dict):
+        reasons.append(f"{prefix}/resources/observation_missing")
+    elif resource_observation.get("status") != "validated":
+        reasons.append(f"{prefix}/resources/constraints_unverified")
     if cohort_key(result) is None:
         reasons.append(f"{prefix}/cohort.missing")
     return reasons
@@ -991,13 +1656,21 @@ def measurement_reasons(
 def compare_round(
     round_record: dict[str, Any],
     min_samples: int,
+    min_control_samples: int | None = None,
     expected_cohort: str | None = None,
+    expected_scenario_shape: str | None = None,
 ) -> dict[str, Any]:
+    if min_control_samples is None:
+        min_control_samples = min_samples
     round_number = int(round_record["round"])
     baseline = round_record["baseline"]
     candidate = round_record["candidate"]
-    reasons = measurement_reasons(round_number, "baseline", baseline, min_samples)
-    reasons.extend(measurement_reasons(round_number, "candidate", candidate, min_samples))
+    reasons = measurement_reasons(
+        round_number, "baseline", baseline, min_samples, min_control_samples
+    )
+    reasons.extend(
+        measurement_reasons(round_number, "candidate", candidate, min_samples, min_control_samples)
+    )
     baseline_cohort = cohort_key(baseline)
     candidate_cohort = cohort_key(candidate)
     if baseline_cohort is not None and candidate_cohort is not None:
@@ -1005,6 +1678,16 @@ def compare_round(
             reasons.append(f"round-{round_number}/cohort/mismatch")
         if expected_cohort is not None and baseline_cohort != expected_cohort:
             reasons.append(f"round-{round_number}/cohort/changed_across_rounds")
+    baseline_scenario_shape = scenario_shape_key(baseline)
+    candidate_scenario_shape = scenario_shape_key(candidate)
+    if (
+        baseline_scenario_shape is not None
+        and candidate_scenario_shape is not None
+        and baseline_scenario_shape != candidate_scenario_shape
+    ):
+        reasons.append(f"round-{round_number}/scenarios/mismatch")
+    if expected_scenario_shape is not None and baseline_scenario_shape != expected_scenario_shape:
+        reasons.append(f"round-{round_number}/scenarios/changed_across_rounds")
 
     if reasons:
         return {
@@ -1063,7 +1746,22 @@ def compare_round(
     }
 
 
-def compare_rounds(rounds: list[dict[str, Any]], min_samples: int) -> dict[str, Any]:
+def variation_ratio(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return 0.0 if values else None
+    center = statistics.median(values)
+    if center <= 0:
+        return None
+    return max(abs(value / center - 1) for value in values)
+
+
+def compare_rounds(
+    rounds: list[dict[str, Any]],
+    min_samples: int,
+    min_control_samples: int | None = None,
+) -> dict[str, Any]:
+    if min_control_samples is None:
+        min_control_samples = min_samples
     if not rounds:
         return {
             "status": "unvalidated",
@@ -1076,14 +1774,23 @@ def compare_rounds(rounds: list[dict[str, Any]], min_samples: int) -> dict[str, 
     comparisons: list[dict[str, Any]] = []
     reasons: list[str] = []
     expected_cohort: str | None = None
+    expected_scenario_shape: str | None = None
     for round_record in rounds:
-        comparison = compare_round(round_record, min_samples, expected_cohort)
+        comparison = compare_round(
+            round_record,
+            min_samples,
+            min_control_samples,
+            expected_cohort,
+            expected_scenario_shape,
+        )
         comparisons.append(comparison)
         for reason in comparison["reasons"]:
             if reason not in reasons:
                 reasons.append(reason)
         if expected_cohort is None:
             expected_cohort = cohort_key(round_record["baseline"])
+        if expected_scenario_shape is None:
+            expected_scenario_shape = scenario_shape_key(round_record["baseline"])
 
     affected_baseline = [
         item["affected"]["baseline_p95_ms"]
@@ -1109,6 +1816,32 @@ def compare_rounds(rounds: list[dict[str, Any]], min_samples: int) -> dict[str, 
     summary_candidate = p95(affected_candidate)
     summary_control_baseline = p95(control_baseline)
     summary_control_candidate = p95(control_candidate)
+    control_complete = (
+        len(control_baseline) == len(comparisons)
+        and len(control_candidate) == len(comparisons)
+        and bool(comparisons)
+    )
+    baseline_control_variation = variation_ratio(control_baseline) if control_complete else None
+    candidate_control_variation = variation_ratio(control_candidate) if control_complete else None
+    control_stability = {
+        "min_samples": min_control_samples,
+        "rounds": len(control_baseline),
+        "baseline_p95_variation_ratio": baseline_control_variation,
+        "candidate_p95_variation_ratio": candidate_control_variation,
+        "stable": control_complete,
+    }
+    if control_complete and (baseline_control_variation is None or baseline_control_variation > 0.05):
+        control_stability["stable"] = False
+        reason = "rounds/control/baseline_p95_variation_over_5_percent"
+        if reason not in reasons:
+            reasons.append(reason)
+    if control_complete and (
+        candidate_control_variation is None or candidate_control_variation > 0.05
+    ):
+        control_stability["stable"] = False
+        reason = "rounds/control/candidate_p95_variation_over_5_percent"
+        if reason not in reasons:
+            reasons.append(reason)
     summary = {
         "p95_is_descriptive_only": True,
         "baseline_request_p95_ms": summary_baseline,
@@ -1125,6 +1858,7 @@ def compare_rounds(rounds: list[dict[str, Any]], min_samples: int) -> dict[str, 
             if summary_control_baseline and summary_control_candidate is not None
             else None
         ),
+        "control_stability": control_stability,
     }
     status = "validated"
     if reasons:
@@ -1161,7 +1895,15 @@ def variant_exception_result(
         "errors": {},
         "phases": {},
         "accepted_progress": {"responses": 0, "reported": 0},
-        "cohort": {"subjects": list(args.subjects), "tokens": list(args.tokens)},
+        "cohort": logical_cohort(
+            tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+        ),
+        "scenarios": scenario_contract(args.request_interval_seconds),
+        "scenario_contract": scenario_contract(args.request_interval_seconds),
+        "credential_mapping": credential_mapping_evidence(
+            synthetic_credentials(tuple(args.tokens))
+        ),
+        "resource_observation": None,
     }
 
 
@@ -1179,8 +1921,25 @@ def main() -> int:
         "rounds": args.rounds,
         "mock_delay_ms": args.mock_delay_ms,
         "resources": args.resources,
+        "resource_spec": args.resource_spec,
         "subjects": args.subjects,
         "tokens": args.tokens,
+        "scenarios": scenario_contract(args.request_interval_seconds),
+        "cohort_path": "variants[*].scenarios[*].request",
+        "control_path": "variants[*].unrelated_cohort",
+        "credential_mapping": {
+            "source": "per-variant POST /api/tokens bootstrap",
+            "cross_account_definition": "distinct token billing subjects",
+            "same_account_definition": "one token billing subject shared by queue workers",
+            "secret_persisted": False,
+        },
+        "scheduling": {
+            "request_interval_seconds": args.request_interval_seconds,
+            "control_interval_seconds": DEFAULT_CONTROL_INTERVAL_SECONDS,
+            "measurement_window": "shared_per_variant",
+        },
+        "min_samples": args.min_samples,
+        "min_control_samples": args.min_control_samples,
         "bootstrap_business_tokens": args.bootstrap_business_tokens,
         "metrics_enabled": args.metrics_enabled,
         "comparison_entry": str(args.comparison_entry.resolve()),
@@ -1200,6 +1959,7 @@ def main() -> int:
             "contract": str(run_directory / "contract.json"),
             "variants": str(checkpoint.variant_root),
             "pairs": str(checkpoint.pair_root),
+            "phases": str(checkpoint.phase_root),
             "logs": str(checkpoint.log_root),
             "progress": str(run_directory / "progress.json"),
         },
@@ -1219,9 +1979,12 @@ def main() -> int:
                     "initial",
                     checkpoint,
                 )
-                comparison = compare_rounds(evidence["rounds"], args.min_samples)
+                comparison = compare_rounds(
+                    evidence["rounds"], args.min_samples, args.min_control_samples
+                )
                 evidence["comparison"] = comparison
                 evidence["status"] = comparison["status"]
+                checkpoint.write_phase_comparison("initial", evidence["rounds"], comparison)
                 if comparison["status"] == "unvalidated" and args.duration_seconds < args.extension_seconds:
                     if args.service_command and extension_allowed(comparison):
                         extension_rounds = run_paired_rounds(
@@ -1234,7 +1997,10 @@ def main() -> int:
                             checkpoint,
                         )
                         extension_comparison = compare_rounds(
-                            extension_rounds, args.min_samples
+                            extension_rounds, args.min_samples, args.min_control_samples
+                        )
+                        checkpoint.write_phase_comparison(
+                            "extension", extension_rounds, extension_comparison
                         )
                         evidence["extension"] = {
                             "status": extension_comparison["status"],
