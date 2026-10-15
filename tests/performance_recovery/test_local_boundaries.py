@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -690,6 +691,161 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             ),
             {"dropped": {"queue": 11.0}, "flush": {"success|scrape": 3.0}},
         )
+
+    def test_metrics_collector_records_continued_success_after_history_truncation(self) -> None:
+        supported = {
+            "values": {"total": {"count": 1.0, "sum_seconds": 0.1}},
+            "schema": {"status": "supported", "kind": HARNESS.PHASE_SCHEMA_OPERATION},
+            "counters": {"http_requests": {}},
+            "observability": {"dropped": {}, "flush": {}},
+        }
+        with mock.patch.object(HARNESS, "collect_phase_snapshot", return_value=supported):
+            collector = HARNESS.MetricsCollector(0, "test-token", 1.0)
+            for _ in range(HARNESS.MAX_METRICS_SCRAPES + 345):
+                collector.scrape("cadence")
+
+        evidence = collector.evidence()
+
+        self.assertEqual(evidence["scrape_attempts"], 601)
+        self.assertEqual(evidence["scrape_successes"], 601)
+        self.assertEqual(evidence["scrape_failures"], 0)
+        self.assertEqual(evidence["scrape_failure_reasons"], {})
+        self.assertEqual(evidence["errors"], [])
+        self.assertEqual(evidence["history_retained"], HARNESS.MAX_METRICS_SCRAPES)
+        self.assertTrue(evidence["history_truncated"])
+        self.assertEqual(evidence["history_truncated_count"], 345)
+        self.assertEqual(evidence["history_sequence_range"], [346, 601])
+
+    def test_metrics_collector_separates_scrape_failure_from_history_truncation(self) -> None:
+        snapshots = iter(
+            [
+                {
+                    "values": {},
+                    "schema": {"status": "unsupported", "reason": "metrics_unavailable"},
+                    "counters": {"http_requests": {}},
+                    "observability": {"dropped": {}, "flush": {}},
+                },
+                {
+                    "values": {"total": {"count": 1.0, "sum_seconds": 0.1}},
+                    "schema": {"status": "supported", "kind": HARNESS.PHASE_SCHEMA_OPERATION},
+                    "counters": {"http_requests": {}},
+                    "observability": {"dropped": {}, "flush": {}},
+                },
+            ]
+        )
+        with mock.patch.object(HARNESS, "collect_phase_snapshot", side_effect=snapshots):
+            collector = HARNESS.MetricsCollector(0, "test-token", 1.0)
+            collector.scrape("measurement_start")
+            collector.scrape("after_join_flush")
+
+        evidence = collector.evidence()
+
+        self.assertEqual(evidence["scrape_attempts"], 2)
+        self.assertEqual(evidence["scrape_successes"], 1)
+        self.assertEqual(evidence["scrape_failures"], 1)
+        self.assertEqual(evidence["scrape_failure_reasons"], {"metrics_unavailable": 1})
+        self.assertEqual(
+            evidence["errors"],
+            [{"boundary": "measurement_start", "reason": "metrics_unavailable"}],
+        )
+        self.assertFalse(evidence["history_truncated"])
+        self.assertEqual(evidence["history_truncated_count"], 0)
+
+    def test_service_readiness_records_listener_and_health_separately(self) -> None:
+        class Response:
+            status = 503
+
+            @staticmethod
+            def read() -> bytes:
+                return b"starting"
+
+        class Connection:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            @staticmethod
+            def getresponse() -> Response:
+                return Response()
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        with mock.patch.object(HARNESS.http.client, "HTTPConnection", return_value=Connection()):
+            readiness = HARNESS.wait_for_service(12345, 1)
+
+        self.assertTrue(readiness["listener_ready"])
+        self.assertFalse(readiness["health_ready"])
+        self.assertEqual(readiness["http_status"], 503)
+
+    def test_token_bootstrap_retries_only_explicit_deferred_status(self) -> None:
+        class Response:
+            def __init__(self, status: int, body: bytes, retry_after: str | None = None) -> None:
+                self.status = status
+                self._body = body
+                self.headers = {"Retry-After": retry_after} if retry_after is not None else {}
+
+            def read(self) -> bytes:
+                return self._body
+
+        responses = iter(
+            [
+                Response(503, b"deferred", "0"),
+                Response(201, b'{"token":"th-abcd-secret"}'),
+            ]
+        )
+
+        class Connection:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            @staticmethod
+            def getresponse() -> Response:
+                return next(responses)
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        with mock.patch.object(HARNESS.http.client, "HTTPConnection", return_value=Connection()):
+            credentials, evidence = HARNESS.bootstrap_business_tokens(12345, ("token-1",))
+
+        self.assertEqual([credential.token_id for credential in credentials], ["abcd"])
+        self.assertEqual(evidence["status"], "ready")
+        self.assertEqual([item["status"] for item in evidence["attempts"]], [503, 201])
+        self.assertEqual(evidence["attempts"][0]["retry_basis"], "http_503_retry_after")
+        self.assertEqual(evidence["attempts"][0]["decision"], "retry")
+        self.assertEqual(evidence["attempts"][1]["decision"], "accept")
+
+    def test_token_bootstrap_does_not_retry_503_without_retry_after(self) -> None:
+        class Response:
+            status = 503
+            headers: dict[str, str] = {}
+
+            @staticmethod
+            def read() -> bytes:
+                return b"deferred"
+
+        class Connection:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            @staticmethod
+            def getresponse() -> Response:
+                return Response()
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        with mock.patch.object(HARNESS.http.client, "HTTPConnection", return_value=Connection()):
+            credentials, evidence = HARNESS.bootstrap_business_tokens(12345, ("token-1",))
+
+        self.assertEqual(credentials, ())
+        self.assertEqual(evidence["status"], "failed")
+        self.assertEqual(evidence["reason"], "token_bootstrap_status_503")
+        self.assertEqual(len(evidence["attempts"]), 1)
+        self.assertFalse(evidence["attempts"][0]["retryable"])
 
     def test_sqlite_pool_mismatch_remains_fail_closed(self) -> None:
         mismatch = {

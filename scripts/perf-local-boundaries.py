@@ -40,6 +40,8 @@ DEFAULT_MIN_SAMPLES = 30
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
 DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = 0.0
+TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS = 5.0
+TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL = 3
 DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 15))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 15))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
@@ -804,18 +806,42 @@ def find_free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def wait_for_service(port: int, timeout_seconds: float) -> bool:
+def wait_for_service(port: int, timeout_seconds: float) -> dict[str, Any]:
+    started = time.monotonic()
     deadline = time.monotonic() + timeout_seconds
+    attempts = 0
     while time.monotonic() < deadline:
+        connection: http.client.HTTPConnection | None = None
         try:
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
             connection.request("GET", "/health")
-            connection.getresponse().read()
-            connection.close()
-            return True
+            response = connection.getresponse()
+            response.read()
+            attempts += 1
+            return {
+                "status": "listener_ready",
+                "endpoint": "/health",
+                "listener_ready": True,
+                "health_ready": 200 <= response.status < 300,
+                "http_status": response.status,
+                "attempts": attempts,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            }
         except (OSError, http.client.HTTPException, TimeoutError):
-            time.sleep(0.25)
-    return False
+            attempts += 1
+        finally:
+            if connection is not None:
+                connection.close()
+        time.sleep(0.25)
+    return {
+        "status": "listener_timeout",
+        "endpoint": "/health",
+        "listener_ready": False,
+        "health_ready": False,
+        "http_status": None,
+        "attempts": attempts,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+    }
 
 
 def configure_synthetic_fixture(port: int) -> dict[str, Any]:
@@ -1019,6 +1045,11 @@ class MetricsCollector:
         self._snapshots: list[dict[str, Any]] = []
         self._errors: list[dict[str, Any]] = []
         self._sequence = 0
+        self._scrape_attempts = 0
+        self._scrape_successes = 0
+        self._scrape_failures = 0
+        self._scrape_failure_reasons: dict[str, int] = {}
+        self._history_truncated_count = 0
 
     def start(self) -> None:
         if self.interval_seconds <= 0 or self._thread is not None:
@@ -1039,21 +1070,27 @@ class MetricsCollector:
         elapsed_ms = round((time.monotonic() - started) * 1000, 3)
         with self._history_lock:
             self._sequence += 1
+            self._scrape_attempts += 1
             entry = {
                 "boundary": boundary,
                 "sequence": self._sequence,
                 "elapsed_ms": elapsed_ms,
                 "snapshot": snapshot,
             }
-            if len(self._snapshots) < MAX_METRICS_SCRAPES:
-                self._snapshots.append(entry)
-            else:
-                self._record_error_locked("scrape_history_limit", boundary)
             schema = snapshot.get("schema", {})
-            if schema.get("status") != "supported":
-                self._record_error_locked(
-                    str(schema.get("reason") or "metrics_unsupported"), boundary
+            if schema.get("status") == "supported":
+                self._scrape_successes += 1
+            else:
+                reason = str(schema.get("reason") or "metrics_unsupported")
+                self._scrape_failures += 1
+                self._scrape_failure_reasons[reason] = (
+                    self._scrape_failure_reasons.get(reason, 0) + 1
                 )
+                self._record_error_locked(reason, boundary)
+            if len(self._snapshots) >= MAX_METRICS_SCRAPES:
+                self._snapshots.pop(0)
+                self._history_truncated_count += 1
+            self._snapshots.append(entry)
         return snapshot
 
     def _record_error_locked(self, reason: str, boundary: str) -> None:
@@ -1070,11 +1107,24 @@ class MetricsCollector:
 
     def evidence(self) -> dict[str, Any]:
         with self._history_lock:
+            retained_sequences = [entry["sequence"] for entry in self._snapshots]
             return {
                 "interval_seconds": self.interval_seconds,
                 "max_snapshots": MAX_METRICS_SCRAPES,
                 "scrapes": list(self._snapshots),
                 "errors": list(self._errors),
+                "scrape_attempts": self._scrape_attempts,
+                "scrape_successes": self._scrape_successes,
+                "scrape_failures": self._scrape_failures,
+                "scrape_failure_reasons": dict(sorted(self._scrape_failure_reasons.items())),
+                "history_retained": len(self._snapshots),
+                "history_truncated": self._history_truncated_count > 0,
+                "history_truncated_count": self._history_truncated_count,
+                "history_sequence_range": (
+                    [retained_sequences[0], retained_sequences[-1]]
+                    if retained_sequences
+                    else None
+                ),
                 "joined": self._thread is None or not self._thread.is_alive(),
             }
 
@@ -1365,45 +1415,139 @@ def run_load(
     return result, phase_baseline
 
 
-def bootstrap_business_tokens(port: int, labels: tuple[str, ...]) -> tuple[Credential, ...]:
+def retry_after_seconds(response: http.client.HTTPResponse) -> float | None:
+    raw_value = response.headers.get("Retry-After")
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def bootstrap_business_tokens(
+    port: int, labels: tuple[str, ...]
+) -> tuple[tuple[Credential, ...], dict[str, Any]]:
+    started = time.monotonic()
     credentials: list[Credential] = []
+    evidence: dict[str, Any] = {
+        "status": "pending",
+        "retry_budget_seconds": TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS,
+        "max_retries_per_label": TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL,
+        "retry_policy": {
+            "status": 503,
+            "requires_retry_after": True,
+            "basis": "server_deferred_write",
+        },
+        "attempts": [],
+        "completed_labels": [],
+        "remaining_labels": list(labels),
+    }
+
+    def finish(
+        status: str, reason: str | None = None
+    ) -> tuple[tuple[Credential, ...], dict[str, Any]]:
+        evidence["status"] = status
+        if reason is not None:
+            evidence["reason"] = reason
+        evidence["completed_labels"] = [credential.label for credential in credentials]
+        evidence["remaining_labels"] = [
+            label for label in labels if label not in evidence["completed_labels"]
+        ]
+        evidence["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+        return tuple(credentials), evidence
+
     for label in labels:
-        payload = json.dumps({"note": f"perf-local-{label}"}).encode("utf-8")
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        try:
-            connection.request(
-                "POST",
-                "/api/tokens",
-                body=payload,
-                headers={"Content-Type": "application/json"},
+        retry_count = 0
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed >= TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS:
+                return finish("failed", "token_bootstrap_retry_budget_exhausted")
+            attempt_started = time.monotonic()
+            payload = json.dumps({"note": f"perf-local-{label}"}).encode("utf-8")
+            connection: http.client.HTTPConnection | None = None
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                connection.request(
+                    "POST",
+                    "/api/tokens",
+                    body=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                body = response.read()
+            except (OSError, http.client.HTTPException, TimeoutError) as error:
+                evidence["attempts"].append(
+                    {
+                        "label": label,
+                        "attempt": retry_count + 1,
+                        "status": None,
+                        "reason": "token_bootstrap_transport",
+                        "error_type": type(error).__name__,
+                        "elapsed_ms": round((time.monotonic() - attempt_started) * 1000, 3),
+                        "decision": "fail",
+                    }
+                )
+                return finish("failed", "token_bootstrap_transport")
+            finally:
+                if connection is not None:
+                    connection.close()
+
+            retry_after = retry_after_seconds(response)
+            retryable = response.status == 503 and retry_after is not None
+            attempt = {
+                "label": label,
+                "attempt": retry_count + 1,
+                "status": response.status,
+                "retry_after_seconds": retry_after,
+                "retryable": retryable,
+                "retry_basis": "http_503_retry_after" if retryable else None,
+                "elapsed_ms": round((time.monotonic() - attempt_started) * 1000, 3),
+            }
+            if response.status != 201:
+                if not retryable:
+                    attempt["decision"] = "fail"
+                    evidence["attempts"].append(attempt)
+                    return finish("failed", f"token_bootstrap_status_{response.status}")
+                remaining_budget = TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS - (
+                    time.monotonic() - started
+                )
+                if retry_count >= TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL or remaining_budget <= 0:
+                    attempt["decision"] = "fail"
+                    evidence["attempts"].append(attempt)
+                    return finish("failed", "token_bootstrap_retry_budget_exhausted")
+                sleep_seconds = min(retry_after, remaining_budget)
+                attempt["decision"] = "retry"
+                attempt["sleep_seconds"] = sleep_seconds
+                evidence["attempts"].append(attempt)
+                retry_count += 1
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
+                continue
+
+            attempt["decision"] = "accept"
+            evidence["attempts"].append(attempt)
+            try:
+                token = json.loads(body).get("token")
+            except (ValueError, UnicodeDecodeError):
+                return finish("failed", "token_bootstrap_invalid_json")
+            if not isinstance(token, str) or not token:
+                return finish("failed", "token_bootstrap_missing_secret")
+            token_parts = token.split("-", 2)
+            if len(token_parts) != 3 or token_parts[0] != "th" or not token_parts[1]:
+                return finish("failed", "token_bootstrap_invalid_identity")
+            token_id = token_parts[1]
+            credentials.append(
+                Credential(
+                    label=label,
+                    secret=token,
+                    token_id=token_id,
+                    billing_subject=f"token:{token_id}",
+                )
             )
-            response = connection.getresponse()
-            body = response.read()
-        except (OSError, http.client.HTTPException, TimeoutError) as error:
-            raise RuntimeError("token_bootstrap_transport") from error
-        finally:
-            connection.close()
-        if response.status != 201:
-            raise RuntimeError(f"token_bootstrap_status_{response.status}")
-        try:
-            token = json.loads(body).get("token")
-        except (ValueError, UnicodeDecodeError) as error:
-            raise RuntimeError("token_bootstrap_invalid_json") from error
-        if not isinstance(token, str) or not token:
-            raise RuntimeError("token_bootstrap_missing_secret")
-        token_parts = token.split("-", 2)
-        if len(token_parts) != 3 or token_parts[0] != "th" or not token_parts[1]:
-            raise RuntimeError("token_bootstrap_invalid_identity")
-        token_id = token_parts[1]
-        credentials.append(
-            Credential(
-                label=label,
-                secret=token,
-                token_id=token_id,
-                billing_subject=f"token:{token_id}",
-            )
-        )
-    return tuple(credentials)
+            break
+    return finish("ready")
 
 
 def verify_credential_bindings(
@@ -1839,7 +1983,8 @@ def run_variant(
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
             }
-        if not wait_for_service(port, args.readiness_timeout_seconds):
+        service_readiness = wait_for_service(port, args.readiness_timeout_seconds)
+        if not service_readiness["listener_ready"]:
             return {
                 "variant": variant,
                 "round": round_number,
@@ -1858,21 +2003,57 @@ def run_variant(
                 "scenario_contract": scenario_shape,
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
+                "service_readiness": service_readiness,
             }
         fixture_settings = dict(SYNTHETIC_FIXTURE_SETTINGS)
-        fixture_settings.update(configure_synthetic_fixture(port))
+        fixture_setup: dict[str, Any]
+        try:
+            configured_settings = configure_synthetic_fixture(port)
+        except RuntimeError as error:
+            fixture_setup = {
+                "status": "failed",
+                "reason": str(error),
+            }
+            return {
+                "variant": variant,
+                "round": round_number,
+                "ref": resolved,
+                "status": "unvalidated",
+                "reason": "synthetic_fixture_setup_failed",
+                "duration_seconds": duration_seconds,
+                "request": None,
+                "unrelated_cohort": None,
+                "phases": {},
+                "accepted_progress": {"responses": 0, "reported": 0},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "scenarios": scenario_shape,
+                "scenario_contract": scenario_shape,
+                "credential_mapping": synthetic_mapping,
+                "resource_observation": resource_observation,
+                "service_readiness": service_readiness,
+                "fixture_setup": fixture_setup,
+            }
+        fixture_settings.update(configured_settings)
+        fixture_setup = {
+            "status": "configured",
+            "settings": configured_settings,
+        }
         credentials = synthetic_credentials(tuple(args.tokens))
         credential_mapping = synthetic_mapping
         if args.bootstrap_business_tokens:
-            try:
-                credentials = bootstrap_business_tokens(port, tuple(args.tokens))
-            except RuntimeError:
+            credentials, bootstrap_evidence = bootstrap_business_tokens(port, tuple(args.tokens))
+            fixture_setup["bootstrap"] = bootstrap_evidence
+            if bootstrap_evidence["status"] != "ready":
                 return {
                     "variant": variant,
                     "round": round_number,
                     "ref": resolved,
                     "status": "unvalidated",
-                    "reason": "business_token_bootstrap_failed",
+                    "reason": bootstrap_evidence.get(
+                        "reason", "business_token_bootstrap_failed"
+                    ),
                     "duration_seconds": duration_seconds,
                     "request": None,
                     "unrelated_cohort": None,
@@ -1885,6 +2066,8 @@ def run_variant(
                     "scenario_contract": scenario_shape,
                     "credential_mapping": synthetic_mapping,
                     "resource_observation": resource_observation,
+                    "service_readiness": service_readiness,
+                    "fixture_setup": fixture_setup,
                 }
             credential_mapping = credential_mapping_evidence(credentials)
             binding_check = verify_credential_bindings(core, credentials)
@@ -1909,8 +2092,14 @@ def run_variant(
                     "scenario_contract": scenario_shape,
                     "credential_mapping": credential_mapping,
                     "resource_observation": resource_observation,
+                    "service_readiness": service_readiness,
+                    "fixture_setup": fixture_setup,
                 }
         else:
+            fixture_setup["bootstrap"] = {
+                "status": "skipped",
+                "reason": "business_credentials_not_bootstrapped",
+            }
             return {
                 "variant": variant,
                 "round": round_number,
@@ -1929,6 +2118,8 @@ def run_variant(
                 "scenario_contract": scenario_shape,
                 "credential_mapping": credential_mapping_evidence(credentials),
                 "resource_observation": resource_observation,
+                "service_readiness": service_readiness,
+                "fixture_setup": fixture_setup,
             }
         mock_before = mock.evidence()
         metrics_collector = MetricsCollector(
@@ -1974,6 +2165,8 @@ def run_variant(
                 ),
                 "credential_mapping": credential_mapping,
                 "resource_observation": resource_observation,
+                "service_readiness": service_readiness,
+                "fixture_setup": fixture_setup,
                 "mock_upstream": {
                     "before": mock_before,
                     "after": mock.evidence(),
