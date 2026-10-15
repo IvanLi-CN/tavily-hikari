@@ -635,6 +635,8 @@ class SampleRecorder:
         with self._lock:
             key = f"{lane}:{type(error).__name__}"
             self.errors[key] = self.errors.get(key, 0) + 1
+            outcome_key = f"{lane}:error"
+            self.outcome_counts[outcome_key] = self.outcome_counts.get(outcome_key, 0) + 1
 
     def stats(self, values: list[float], duration_seconds: int) -> dict[str, Any]:
         ordered = sorted(values)

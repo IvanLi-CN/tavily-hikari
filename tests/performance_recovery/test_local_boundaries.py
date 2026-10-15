@@ -455,6 +455,16 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
         self.assertEqual(evidence["response_usage_credits"], 1)
         self.assertEqual(evidence["response_contract"], "results + usage.credits=1")
 
+    def test_transport_error_is_counted_in_business_outcomes(self) -> None:
+        recorder = HARNESS.SampleRecorder()
+        recorder.add_error("business", TimeoutError("bounded test timeout"))
+
+        result = recorder.result(1)
+
+        self.assertEqual(result["business_outcomes"], {"success": 0, "reject": 0, "error": 1})
+        self.assertEqual(result["outcome_counts"], {"business:error": 1})
+        self.assertEqual(result["errors"], {"business:TimeoutError": 1})
+
     def test_http_reject_is_not_a_success_sample_and_keeps_fixed_429_evidence(self) -> None:
         recorder = HARNESS.SampleRecorder()
         recorder.add_status(
