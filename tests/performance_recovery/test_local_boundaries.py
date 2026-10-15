@@ -153,6 +153,19 @@ def measured_result(
             "coverage_count": request_samples,
             "coverage_phase": "total",
         },
+        "phase_observation": {
+            "measurement_start": {
+                "schema": {"status": "supported"},
+                "values": {},
+                "observability": {"dropped": {}, "flush": {}},
+            },
+            "after_join_flush": {
+                "schema": {"status": "supported"},
+                "values": {},
+                "observability": {"dropped": {}, "flush": {}},
+            },
+            "observability_delta": {"dropped": {}, "flush": {}},
+        },
         "accepted_progress": {
             "source": "maintenance_or_recovery_response_field_only",
             "responses": 0,
@@ -651,6 +664,33 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             HARNESS.phase_metric_matches_schema(base_labels, HARNESS.PHASE_SCHEMA_OPERATION)
         )
 
+    def test_observability_counter_snapshots_are_bounded_and_delta_is_explicit(self) -> None:
+        body = "\n".join(
+            [
+                'hikari_observability_dropped_total{reason="queue"} 11',
+                'hikari_observability_dropped_total{reason="cardinality"} 2',
+                'hikari_observability_flush_total{outcome="success",reason="scrape"} 7',
+                'hikari_observability_flush_total{outcome="error",reason="scrape"} 1',
+            ]
+        )
+
+        dropped = HARNESS.parse_counter_family(
+            body, "hikari_observability_dropped_total", ("reason",)
+        )
+        flush = HARNESS.parse_counter_family(
+            body, "hikari_observability_flush_total", ("outcome", "reason")
+        )
+
+        self.assertEqual(dropped, {"cardinality": 2.0, "queue": 11.0})
+        self.assertEqual(flush, {"error|scrape": 1.0, "success|scrape": 7.0})
+        self.assertEqual(
+            HARNESS.observability_delta(
+                {"observability": {"dropped": {"queue": 3.0}, "flush": {"success|scrape": 4.0}}},
+                {"observability": {"dropped": {"queue": 14.0}, "flush": {"success|scrape": 7.0}}},
+            ),
+            {"dropped": {"queue": 11.0}, "flush": {"success|scrape": 3.0}},
+        )
+
     def test_sqlite_pool_mismatch_remains_fail_closed(self) -> None:
         mismatch = {
             **RESOURCES,
@@ -780,6 +820,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                 "errors",
                 "phases",
                 "phase_schema",
+                "phase_observation",
                 "warmup",
                 "fixture_settings",
                 "mock_upstream",

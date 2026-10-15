@@ -39,11 +39,14 @@ DEFAULT_MOCK_DELAY_MS = 200
 DEFAULT_MIN_SAMPLES = 30
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
+DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = 0.0
 DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 15))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 15))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
 MAX_RESPONSE_EVIDENCE = 12
+MAX_METRICS_SCRAPES = 256
+MAX_METRICS_SCRAPE_ERRORS = 64
 PHASE_SCHEMA_LEGACY = "legacy"
 PHASE_SCHEMA_OPERATION = "operation"
 PHASE_SCHEMA_UNSUPPORTED = "unsupported"
@@ -428,6 +431,7 @@ class CheckpointStore:
                 "statuses": {},
                 "errors": {},
                 "phases": {},
+                "phase_observation": None,
                 "scenarios": None,
                 "scenario_contract": self.contract_scenarios,
                 "credential_mapping": None,
@@ -463,6 +467,7 @@ class CheckpointStore:
             "errors": result.get("errors", {}),
             "phases": result.get("phases", {}),
             "phase_schema": result.get("phase_schema"),
+            "phase_observation": result.get("phase_observation"),
             "warmup": result.get("warmup"),
             "fixture_settings": result.get("fixture_settings"),
             "mock_upstream": result.get("mock_upstream"),
@@ -538,6 +543,7 @@ class CheckpointStore:
                 "statuses": {},
                 "errors": {},
                 "phases": {},
+                "phase_observation": None,
                 "scenarios": None,
                 "scenario_contract": self.contract_scenarios,
                 "credential_mapping": None,
@@ -856,6 +862,8 @@ def configure_synthetic_fixture(port: int) -> dict[str, Any]:
 
 
 def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
+    empty_observability = {"dropped": {}, "flush": {}}
+    empty_counters = {"http_requests": {}}
     unavailable = {
         "status": "unsupported",
         "kind": PHASE_SCHEMA_UNSUPPORTED,
@@ -871,7 +879,12 @@ def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
         body = response.read().decode("utf-8", errors="replace")
         connection.close()
     except (OSError, http.client.HTTPException, TimeoutError):
-        return {"values": {}, "schema": unavailable}
+        return {
+            "values": {},
+            "schema": unavailable,
+            "counters": empty_counters,
+            "observability": empty_observability,
+        }
     if response.status != 200:
         return {
             "values": {},
@@ -880,10 +893,27 @@ def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
                 "reason": f"metrics_http_status_{response.status}",
                 "http_status": response.status,
             },
+            "counters": empty_counters,
+            "observability": empty_observability,
         }
     values_by_schema: dict[str, dict[str, dict[str, float]]] = {
         PHASE_SCHEMA_LEGACY: {},
         PHASE_SCHEMA_OPERATION: {},
+    }
+    observability = {
+        "dropped": parse_counter_family(
+            body, "hikari_observability_dropped_total", ("reason",)
+        ),
+        "flush": parse_counter_family(
+            body, "hikari_observability_flush_total", ("outcome", "reason")
+        ),
+    }
+    counters = {
+        "http_requests": parse_counter_family(
+            body,
+            "hikari_http_requests_total",
+            ("route_family", "method", "status_class", "outcome"),
+        )
     }
     for line in body.splitlines():
         metric_name = next(
@@ -929,7 +959,12 @@ def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
             "reason": "selector_no_matching_phase_series",
             "http_status": response.status,
         }
-        return {"values": {}, "schema": schema}
+        return {
+            "values": {},
+            "schema": schema,
+            "counters": counters,
+            "observability": observability,
+        }
     selector = (
         PHASE_METRIC_SELECTOR
         if selected_kind == PHASE_SCHEMA_OPERATION
@@ -943,7 +978,105 @@ def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
         "phase_keys": sorted(values_by_schema[selected_kind]),
         "http_status": response.status,
     }
-    return {"values": values_by_schema[selected_kind], "schema": schema}
+    return {
+        "values": values_by_schema[selected_kind],
+        "schema": schema,
+        "counters": counters,
+        "observability": observability,
+    }
+
+
+def parse_counter_family(
+    body: str, metric_name: str, label_names: tuple[str, ...]
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    pattern = re.compile(
+        rf"^{re.escape(metric_name)}\{{([^}}]*)\}}\s+([0-9.eE+-]+)$"
+    )
+    for line in body.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        labels = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
+        if any(name not in labels for name in label_names):
+            continue
+        key = "|".join(labels[name] for name in label_names)
+        values[key] = float(match.group(2))
+    return dict(sorted(values.items()))
+
+
+class MetricsCollector:
+    """Capture bounded structured metric snapshots around a workload window."""
+
+    def __init__(self, port: int, token: str, interval_seconds: float) -> None:
+        self.port = port
+        self.token = token
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+        self._scrape_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._snapshots: list[dict[str, Any]] = []
+        self._errors: list[dict[str, Any]] = []
+        self._sequence = 0
+
+    def start(self) -> None:
+        if self.interval_seconds <= 0 or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        next_scrape = time.monotonic() + self.interval_seconds
+        while not self._stop_event.wait(max(0.0, next_scrape - time.monotonic())):
+            self.scrape("cadence")
+            next_scrape += self.interval_seconds
+
+    def scrape(self, boundary: str) -> dict[str, Any]:
+        started = time.monotonic()
+        with self._scrape_lock:
+            snapshot = collect_phase_snapshot(self.port, self.token)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+        with self._history_lock:
+            self._sequence += 1
+            entry = {
+                "boundary": boundary,
+                "sequence": self._sequence,
+                "elapsed_ms": elapsed_ms,
+                "snapshot": snapshot,
+            }
+            if len(self._snapshots) < MAX_METRICS_SCRAPES:
+                self._snapshots.append(entry)
+            else:
+                self._record_error_locked("scrape_history_limit", boundary)
+            schema = snapshot.get("schema", {})
+            if schema.get("status") != "supported":
+                self._record_error_locked(
+                    str(schema.get("reason") or "metrics_unsupported"), boundary
+                )
+        return snapshot
+
+    def _record_error_locked(self, reason: str, boundary: str) -> None:
+        if len(self._errors) < MAX_METRICS_SCRAPE_ERRORS:
+            self._errors.append({"boundary": boundary, "reason": reason})
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                with self._history_lock:
+                    self._record_error_locked("collector_join_timeout", "collector")
+
+    def evidence(self) -> dict[str, Any]:
+        with self._history_lock:
+            return {
+                "interval_seconds": self.interval_seconds,
+                "max_snapshots": MAX_METRICS_SCRAPES,
+                "scrapes": list(self._snapshots),
+                "errors": list(self._errors),
+                "joined": self._thread is None or not self._thread.is_alive(),
+            }
 
 
 def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
@@ -1320,6 +1453,27 @@ def phase_delta(
             ),
         }
     return phases
+
+
+def counter_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    return {
+        key: max(0.0, float(after.get(key, 0.0)) - float(before.get(key, 0.0)))
+        for key in sorted(set(before) | set(after))
+        if float(after.get(key, 0.0)) >= float(before.get(key, 0.0))
+    }
+
+
+def observability_delta(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, dict[str, float]]:
+    before_values = before.get("observability", {})
+    after_values = after.get("observability", {})
+    return {
+        family: counter_delta(
+            before_values.get(family, {}), after_values.get(family, {})
+        )
+        for family in ("dropped", "flush")
+    }
 
 
 def phase_schema_delta(
@@ -1777,6 +1931,12 @@ def run_variant(
                 "resource_observation": resource_observation,
             }
         mock_before = mock.evidence()
+        metrics_collector = MetricsCollector(
+            metrics_port,
+            metrics_token,
+            args.metrics_scrape_interval_seconds,
+        )
+        metrics_collector.start()
         result, phase_baseline = run_load(
             port,
             args.warmup_seconds,
@@ -1784,15 +1944,23 @@ def run_variant(
             tuple(args.subjects),
             credentials,
             args.request_interval_seconds,
-            on_measurement_start=lambda: collect_phase_snapshot(metrics_port, metrics_token),
+            on_measurement_start=lambda: metrics_collector.scrape("measurement_start"),
         )
+        metrics_collector.stop()
         result_payload = result
         time.sleep(1.0)
-        phase_after = collect_phase_snapshot(metrics_port, metrics_token)
+        phase_after = metrics_collector.scrape("after_join_flush")
         result_payload["phases"] = phase_delta(phase_baseline, phase_after)
         result_payload["phase_schema"] = phase_schema_delta(
             phase_baseline, phase_after, result_payload["phases"]
         )
+        result_payload["phase_observation"] = {
+            "cadence_seconds": args.metrics_scrape_interval_seconds,
+            "measurement_start": phase_baseline,
+            "after_join_flush": phase_after,
+            "observability_delta": observability_delta(phase_baseline, phase_after),
+            "collector": metrics_collector.evidence(),
+        }
         result = result_payload
         result["fixture_settings"] = fixture_settings
         result.update(
@@ -1815,6 +1983,8 @@ def run_variant(
         )
         return result
     finally:
+        if "metrics_collector" in locals():
+            metrics_collector.stop()
         terminate_process(process)
         for thread in output_threads:
             thread.join(timeout=2)
@@ -1834,6 +2004,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--min-control-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--request-interval-seconds", type=float, default=DEFAULT_REQUEST_INTERVAL_SECONDS)
+    parser.add_argument(
+        "--metrics-scrape-interval-seconds",
+        type=float,
+        default=DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS,
+        help="bounded metrics collector cadence; zero keeps boundary-only scrapes",
+    )
     parser.add_argument("--readiness-timeout-seconds", type=float, default=60)
     parser.add_argument("--service-command", help="shell template; supports {repo}, {db}, {sidecar}, {port}, {upstream}, {variant}")
     parser.add_argument("--comparison-entry", type=Path, required=True)
@@ -1867,6 +2043,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("sample minimums must be positive")
     if args.request_interval_seconds <= 0:
         raise SystemExit("request interval must be positive")
+    if (
+        args.metrics_scrape_interval_seconds != args.metrics_scrape_interval_seconds
+        or args.metrics_scrape_interval_seconds < 0
+        or args.metrics_scrape_interval_seconds > 60
+    ):
+        raise SystemExit("metrics scrape interval must be between 0 and 60 seconds")
     if args.mock_delay_ms != DEFAULT_MOCK_DELAY_MS:
         raise SystemExit("the local boundary contract fixes mock delay at 200ms")
     if not args.subjects or not args.tokens:
@@ -2544,6 +2726,7 @@ def main() -> int:
         "scheduling": {
             "request_interval_seconds": args.request_interval_seconds,
             "control_interval_seconds": DEFAULT_CONTROL_INTERVAL_SECONDS,
+            "metrics_scrape_interval_seconds": args.metrics_scrape_interval_seconds,
             "measurement_window": "shared_per_variant",
         },
         "min_samples": args.min_samples,
