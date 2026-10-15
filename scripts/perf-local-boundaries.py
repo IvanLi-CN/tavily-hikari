@@ -56,6 +56,9 @@ SYNTHETIC_FIXTURE_SETTINGS = {
     "TOKEN_HOURLY_LIMIT": "100000",
     "TOKEN_DAILY_LIMIT": "100000",
     "TOKEN_MONTHLY_LIMIT": "1000000",
+    "REQUEST_RATE_LIMIT": "100000",
+    "REQUEST_RATE_LIMIT_WINDOW_MINUTES": "5",
+    "MCP_SESSION_AFFINITY_KEY_COUNT": "5",
     "purpose": "mock_only_business_success_budget",
     "billing_checks": "enabled",
 }
@@ -769,6 +772,49 @@ def wait_for_service(port: int, timeout_seconds: float) -> bool:
         except (OSError, http.client.HTTPException, TimeoutError):
             time.sleep(0.25)
     return False
+
+
+def configure_synthetic_fixture(port: int) -> dict[str, Any]:
+    request_rate_limit = int(SYNTHETIC_FIXTURE_SETTINGS["REQUEST_RATE_LIMIT"])
+    affinity_key_count = int(SYNTHETIC_FIXTURE_SETTINGS["MCP_SESSION_AFFINITY_KEY_COUNT"])
+    payload = json.dumps(
+        {
+            "requestRateLimit": request_rate_limit,
+            "mcpSessionAffinityKeyCount": affinity_key_count,
+        }
+    ).encode("utf-8")
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.request(
+            "PUT",
+            "/api/settings/system",
+            body=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response_body = response.read()
+    except (OSError, http.client.HTTPException, TimeoutError) as error:
+        raise RuntimeError("synthetic_fixture_settings_transport") from error
+    finally:
+        connection.close()
+    if response.status != 200:
+        raise RuntimeError(f"synthetic_fixture_settings_status_{response.status}")
+    try:
+        persisted = json.loads(response_body)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise RuntimeError("synthetic_fixture_settings_invalid_json") from error
+    if persisted.get("requestRateLimit") != request_rate_limit:
+        raise RuntimeError("synthetic_fixture_settings_request_rate_limit_mismatch")
+    if persisted.get("mcpSessionAffinityKeyCount") != affinity_key_count:
+        raise RuntimeError("synthetic_fixture_settings_affinity_key_count_mismatch")
+    return {
+        "request_rate_limit_status": "applied",
+        "request_rate_limit": request_rate_limit,
+        "request_rate_limit_window_minutes": int(
+            SYNTHETIC_FIXTURE_SETTINGS["REQUEST_RATE_LIMIT_WINDOW_MINUTES"]
+        ),
+        "mcp_session_affinity_key_count": affinity_key_count,
+    }
 
 
 def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
@@ -1617,6 +1663,8 @@ def run_variant(
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
             }
+        fixture_settings = dict(SYNTHETIC_FIXTURE_SETTINGS)
+        fixture_settings.update(configure_synthetic_fixture(port))
         credentials = synthetic_credentials(tuple(args.tokens))
         credential_mapping = synthetic_mapping
         if args.bootstrap_business_tokens:
@@ -1704,6 +1752,7 @@ def run_variant(
             phase_baseline, phase_after, result_payload["phases"]
         )
         result = result_payload
+        result["fixture_settings"] = fixture_settings
         result.update(
             {
                 "variant": variant,
