@@ -34,14 +34,19 @@ async fn proxy_handler(
     let mut headers = clone_headers(&parts.headers);
     // prevent leaking our Authorization to upstream
     headers.remove(axum::http::header::AUTHORIZATION);
+    let preflight_phase = tavily_hikari::observability::begin_request_phase("preflight");
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let system_settings = state
-        .proxy
-        .get_system_settings()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    drop(preflight_phase);
+    let system_settings = {
+        let _phase = tavily_hikari::observability::begin_request_phase("configuration");
+        state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     let client_ip = resolve_client_ip_info(
         remote_addr,
         &parts.headers,
@@ -832,6 +837,27 @@ async fn proxy_handler(
         }
     }
 
+    if path.starts_with("/mcp") {
+        let method_is_tool_call = serde_json::from_slice::<Value>(&body_bytes)
+            .ok()
+            .is_some_and(|value| match value {
+                Value::Object(message) => message
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .is_some_and(|method| method.trim() == "tools/call"),
+                Value::Array(items) => items.iter().any(|item| {
+                    item.get("method")
+                        .and_then(Value::as_str)
+                        .is_some_and(|method| method.trim() == "tools/call")
+                }),
+                _ => false,
+            });
+        tavily_hikari::observability::set_mcp_request_operation_kind(
+            method_is_tool_call,
+            billable_flag,
+        );
+    }
+
     // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
     let token_billing_guard = if !using_dev_open_admin_fallback
         && billable_flag
@@ -839,7 +865,11 @@ async fn proxy_handler(
         && invalid_mcp_request_message.is_none()
         && let Some(tid) = token_id.as_deref()
     {
-        Some(state.proxy.lock_token_billing(tid).await.map_err(|err| {
+        let result = {
+            let _phase = tavily_hikari::observability::begin_request_phase("billing_lock_wait");
+            state.proxy.lock_token_billing(tid).await
+        };
+        Some(result.map_err(|err| {
             eprintln!("token billing lock failed: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?)

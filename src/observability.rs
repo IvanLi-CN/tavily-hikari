@@ -33,6 +33,8 @@ const HISTOGRAM_BUCKETS: &[f64] = &[
 
 const HTTP_LABELS: &[&str] = &["route_family", "method", "status_class", "outcome"];
 const HTTP_DURATION_LABELS: &[&str] = &["route_family", "method", "outcome", "phase"];
+const HTTP_REQUEST_DURATION_LABELS: &[&str] =
+    &["route_family", "method", "operation", "outcome", "phase"];
 const UPSTREAM_LABELS: &[&str] = &["upstream_class", "operation", "outcome", "status_class"];
 const UPSTREAM_DURATION_LABELS: &[&str] = &["upstream_class", "operation", "outcome", "phase"];
 const SQLITE_WAIT_LABELS: &[&str] = &["workload_class", "operation", "reason"];
@@ -43,6 +45,20 @@ const MAX_CARDINALITY_TUPLES: usize = 2048;
 const CARDINALITY_PROBES: usize = 4;
 const EVENT_QUEUE_CAPACITY: usize = 4096;
 const EXPORTER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_PHASES: [&str; 11] = [
+    "configuration",
+    "billing_lock_wait",
+    "preflight",
+    "key_selection",
+    "upstream",
+    "response_body",
+    "persistence",
+    "settlement",
+    "reconciliation_usage",
+    "reconciliation_schedule",
+    "other",
+];
+const REQUEST_PHASE_COUNT: usize = REQUEST_PHASES.len();
 
 #[derive(Debug)]
 enum MetricEvent {
@@ -59,6 +75,15 @@ enum MetricEvent {
         outcome: &'static str,
         phase: &'static str,
         elapsed_seconds: f64,
+    },
+    HttpRequestTiming {
+        route_family: &'static str,
+        method: &'static str,
+        status_class: &'static str,
+        operation: &'static str,
+        outcome: &'static str,
+        total_seconds: f64,
+        phase_seconds: [f64; REQUEST_PHASE_COUNT],
     },
     UpstreamResponse {
         upstream_class: &'static str,
@@ -94,11 +119,276 @@ enum MetricEvent {
 }
 
 #[derive(Debug)]
+struct RequestTimingState {
+    operation: &'static str,
+    phases: [Duration; REQUEST_PHASE_COUNT],
+    active: [Option<ActiveRequestPhase>; REQUEST_PHASE_COUNT],
+    active_len: usize,
+    next_token: u64,
+    terminal: bool,
+}
+
+#[derive(Debug)]
+struct ActiveRequestPhase {
+    token: u64,
+    phase: usize,
+    started: Instant,
+}
+
+#[derive(Debug)]
+struct RequestTimingInner {
+    metrics: Arc<Metrics>,
+    route_family: &'static str,
+    method: &'static str,
+    started: Instant,
+    state: Mutex<RequestTimingState>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RequestTimingScope {
+    inner: Arc<RequestTimingInner>,
+}
+
+#[derive(Debug)]
+pub struct RequestPhaseGuard {
+    inner: Arc<RequestTimingInner>,
+    token: u64,
+}
+
+tokio::task_local! {
+    static REQUEST_TIMING_SCOPE: RequestTimingScope;
+}
+
+impl RequestTimingScope {
+    fn new(metrics: Arc<Metrics>, path: &str, method: &str) -> Self {
+        let route_family = route_family(path);
+        let method = metric_method(path, method);
+        let operation = default_request_operation(route_family);
+        Self {
+            inner: Arc::new(RequestTimingInner {
+                metrics,
+                route_family,
+                method,
+                started: Instant::now(),
+                state: Mutex::new(RequestTimingState {
+                    operation,
+                    phases: [Duration::ZERO; REQUEST_PHASE_COUNT],
+                    active: std::array::from_fn(|_| None),
+                    active_len: 0,
+                    next_token: 1,
+                    terminal: false,
+                }),
+            }),
+        }
+    }
+
+    fn finish(&self, status: StatusCode) {
+        self.finish_with_labels(status_class(status), outcome_for_status(status));
+    }
+
+    fn finish_cancelled(&self) {
+        self.finish_with_labels("none", "cancelled");
+    }
+
+    fn finish_with_labels(&self, status_class: &'static str, outcome: &'static str) {
+        let (operation, total, phases) = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.terminal {
+                return;
+            }
+            let now = Instant::now();
+            pause_active_phase(&mut state, now);
+            state.terminal = true;
+            let total = now.saturating_duration_since(self.inner.started);
+            let phases = reconcile_request_phases(state.phases, total);
+            (state.operation, total, phases)
+        };
+        self.inner.metrics.enqueue_request_timing(
+            self.inner.route_family,
+            self.inner.method,
+            status_class,
+            operation,
+            outcome,
+            total,
+            phases,
+        );
+    }
+
+    fn set_operation(&self, operation: &str) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.terminal {
+            state.operation = normalize_request_operation(operation);
+        }
+    }
+
+    fn begin_phase(&self, phase: &str) -> Option<RequestPhaseGuard> {
+        let phase = request_phase_index(phase)?;
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal {
+            return None;
+        }
+        if state.active_len == REQUEST_PHASE_COUNT {
+            return None;
+        }
+        let now = Instant::now();
+        pause_active_phase(&mut state, now);
+        let token = state.next_token;
+        state.next_token = state.next_token.wrapping_add(1).max(1);
+        let active_index = state.active_len;
+        state.active[active_index] = Some(ActiveRequestPhase {
+            token,
+            phase,
+            started: now,
+        });
+        state.active_len += 1;
+        Some(RequestPhaseGuard {
+            inner: self.inner.clone(),
+            token,
+        })
+    }
+
+    fn record_phase_duration(&self, phase: &str, elapsed: Duration) {
+        let Some(phase) = request_phase_index(phase) else {
+            return;
+        };
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal {
+            return;
+        }
+        let now = Instant::now();
+        pause_active_phase(&mut state, now);
+        state.phases[phase] = state.phases[phase].saturating_add(elapsed);
+        resume_active_phase(&mut state, now);
+    }
+}
+
+impl Drop for RequestTimingScope {
+    fn drop(&mut self) {
+        self.finish_cancelled();
+    }
+}
+
+impl Drop for RequestPhaseGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.terminal {
+            return;
+        }
+        if state.active_len == 0 {
+            return;
+        }
+        let active_index = state.active_len - 1;
+        let Some(active) = state.active[active_index].as_ref() else {
+            return;
+        };
+        if active.token != self.token {
+            return;
+        }
+        let now = Instant::now();
+        pause_active_phase(&mut state, now);
+        state.active[active_index] = None;
+        state.active_len -= 1;
+        resume_active_phase(&mut state, now);
+    }
+}
+
+fn pause_active_phase(state: &mut RequestTimingState, now: Instant) {
+    if state.active_len == 0 {
+        return;
+    }
+    if let Some(active) = state.active[state.active_len - 1].as_mut() {
+        state.phases[active.phase] = state.phases[active.phase]
+            .saturating_add(now.saturating_duration_since(active.started));
+        active.started = now;
+    }
+}
+
+fn resume_active_phase(state: &mut RequestTimingState, now: Instant) {
+    if state.active_len == 0 {
+        return;
+    }
+    if let Some(active) = state.active[state.active_len - 1].as_mut() {
+        active.started = now;
+    }
+}
+
+fn reconcile_request_phases(
+    mut phases: [Duration; REQUEST_PHASE_COUNT],
+    total: Duration,
+) -> [Duration; REQUEST_PHASE_COUNT] {
+    let other = REQUEST_PHASE_COUNT - 1;
+    let phase_sum = phases
+        .iter()
+        .fold(Duration::ZERO, |sum, phase| sum.saturating_add(*phase));
+    if phase_sum < total {
+        phases[other] = phases[other].saturating_add(total - phase_sum);
+        return phases;
+    }
+    if phase_sum == total {
+        return phases;
+    }
+    let total_nanos = total.as_nanos();
+    let phase_sum_nanos = phase_sum.as_nanos();
+    let mut assigned_nanos = 0_u128;
+    for phase in &mut phases {
+        let nanos = phase.as_nanos().saturating_mul(total_nanos) / phase_sum_nanos;
+        *phase = Duration::from_nanos(nanos.min(u64::MAX as u128) as u64);
+        assigned_nanos = assigned_nanos.saturating_add(nanos);
+    }
+    let remainder = total_nanos.saturating_sub(assigned_nanos);
+    phases[other] =
+        phases[other].saturating_add(Duration::from_nanos(remainder.min(u64::MAX as u128) as u64));
+    phases
+}
+
+pub fn begin_request_phase(phase: &str) -> Option<RequestPhaseGuard> {
+    REQUEST_TIMING_SCOPE
+        .try_with(|scope| scope.begin_phase(phase))
+        .ok()
+        .flatten()
+}
+
+pub fn set_request_operation(operation: &str) {
+    let _ = REQUEST_TIMING_SCOPE.try_with(|scope| scope.set_operation(operation));
+}
+
+pub fn set_mcp_request_operation_kind(method_is_tool_call: bool, billable: bool) {
+    set_request_operation(if billable {
+        "mcp_business"
+    } else if method_is_tool_call {
+        "mcp_unknown"
+    } else {
+        "mcp_control"
+    });
+}
+
+#[derive(Debug)]
 pub struct Metrics {
     registry: Registry,
     recording_enabled: bool,
     http_requests: IntCounterVec,
     http_duration: HistogramVec,
+    http_request_duration: HistogramVec,
     upstream_requests: IntCounterVec,
     upstream_duration: HistogramVec,
     sqlite_wait_duration: HistogramVec,
@@ -145,6 +435,15 @@ impl Metrics {
             .const_labels(const_labels.clone())
             .buckets(HISTOGRAM_BUCKETS.to_vec()),
             HTTP_DURATION_LABELS,
+        )?;
+        let http_request_duration = HistogramVec::new(
+            HistogramOpts::new(
+                "hikari_http_request_duration_seconds",
+                "Terminal HTTP or MCP request duration and mutually exclusive leaf phases.",
+            )
+            .const_labels(const_labels.clone())
+            .buckets(HISTOGRAM_BUCKETS.to_vec()),
+            HTTP_REQUEST_DURATION_LABELS,
         )?;
         let upstream_requests = IntCounterVec::new(
             Opts::new(
@@ -231,6 +530,7 @@ impl Metrics {
         for collector in [
             Box::new(http_requests.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(http_duration.clone()),
+            Box::new(http_request_duration.clone()),
             Box::new(upstream_requests.clone()),
             Box::new(upstream_duration.clone()),
             Box::new(sqlite_wait_duration.clone()),
@@ -250,6 +550,7 @@ impl Metrics {
             recording_enabled,
             http_requests,
             http_duration,
+            http_request_duration,
             upstream_requests,
             upstream_duration,
             sqlite_wait_duration,
@@ -321,6 +622,11 @@ impl Metrics {
         let method = metric_method(path, method);
         let outcome = normalize_outcome(outcome);
         let phase = normalize_phase(phase);
+        if phase != "none" {
+            let _ = REQUEST_TIMING_SCOPE.try_with(|scope| {
+                scope.record_phase_duration(legacy_request_phase(phase), elapsed)
+            });
+        }
         if phase == "none"
             || !self.admit_label_tuple(
                 "hikari_http_duration_seconds",
@@ -338,6 +644,64 @@ impl Metrics {
             outcome,
             phase,
             elapsed_seconds: elapsed.as_secs_f64(),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_request_timing(
+        &self,
+        route_family: &'static str,
+        method: &'static str,
+        status_class: &'static str,
+        operation: &'static str,
+        outcome: &'static str,
+        total: Duration,
+        phases: [Duration; REQUEST_PHASE_COUNT],
+    ) {
+        if !self.recording_enabled {
+            return;
+        }
+        if !self.route_allowed(route_family)
+            || !self.admit_label_tuple(
+                "hikari_http_requests_total",
+                &[route_family, method, status_class, outcome],
+            )
+            || !self.admit_label_tuple(
+                "hikari_http_duration_seconds",
+                &[route_family, method, outcome, "none"],
+            )
+            || !self.admit_label_tuple(
+                "hikari_http_request_duration_seconds",
+                &[route_family, method, operation, outcome, "total"],
+            )
+            || phases.iter().enumerate().any(|(index, _)| {
+                !self.admit_label_tuple(
+                    "hikari_http_request_duration_seconds",
+                    &[
+                        route_family,
+                        method,
+                        operation,
+                        outcome,
+                        REQUEST_PHASES[index],
+                    ],
+                )
+            })
+        {
+            self.record_drop(if self.route_allowed(route_family) {
+                "cardinality"
+            } else {
+                "route_allowlist"
+            });
+            return;
+        }
+        self.enqueue_event(MetricEvent::HttpRequestTiming {
+            route_family,
+            method,
+            status_class,
+            operation,
+            outcome,
+            total_seconds: total.as_secs_f64(),
+            phase_seconds: phases.map(|phase| phase.as_secs_f64()),
         });
     }
 
@@ -578,6 +942,30 @@ impl Metrics {
                 self.http_duration
                     .with_label_values(&[route_family, method, outcome, phase])
                     .observe(elapsed_seconds);
+            }
+            MetricEvent::HttpRequestTiming {
+                route_family,
+                method,
+                status_class,
+                operation,
+                outcome,
+                total_seconds,
+                phase_seconds,
+            } => {
+                self.http_requests
+                    .with_label_values(&[route_family, method, status_class, outcome])
+                    .inc();
+                self.http_duration
+                    .with_label_values(&[route_family, method, outcome, "none"])
+                    .observe(total_seconds);
+                self.http_request_duration
+                    .with_label_values(&[route_family, method, operation, outcome, "total"])
+                    .observe(total_seconds);
+                for (phase, elapsed_seconds) in REQUEST_PHASES.iter().zip(phase_seconds) {
+                    self.http_request_duration
+                        .with_label_values(&[route_family, method, operation, outcome, phase])
+                        .observe(elapsed_seconds);
+                }
             }
             MetricEvent::UpstreamResponse {
                 upstream_class,
@@ -930,10 +1318,14 @@ pub async fn start_exporter(metrics: Arc<Metrics>) -> Option<ExporterHandle> {
 pub async fn http_metrics_middleware(req: Request<Body>, next: Next) -> Response {
     let path = req.uri().path().to_owned();
     let method = req.method().as_str().to_owned();
-    let started = Instant::now();
-    let response = next.run(req).await;
-    global_metrics().record_http(&path, &method, response.status(), started.elapsed());
-    response
+    let scope = RequestTimingScope::new(global_metrics(), &path, &method);
+    REQUEST_TIMING_SCOPE
+        .scope(scope, async move {
+            let response = next.run(req).await;
+            REQUEST_TIMING_SCOPE.with(|scope| scope.finish(response.status()));
+            response
+        })
+        .await
 }
 
 async fn metrics_handler(
@@ -1107,6 +1499,68 @@ fn metric_method(path: &str, method: &str) -> &'static str {
     }
 }
 
+fn default_request_operation(route_family: &str) -> &'static str {
+    match route_family {
+        "mcp" => "mcp_unknown",
+        "http_search" => "search",
+        "http_extract" => "extract",
+        "http_crawl" => "crawl",
+        "http_map" => "map",
+        "http_research" => "research",
+        "admin" => "admin",
+        "user" => "user",
+        "public" => "public",
+        _ => "internal",
+    }
+}
+
+fn normalize_request_operation(operation: &str) -> &'static str {
+    match operation {
+        "search" | "http_search" => "search",
+        "extract" | "http_extract" => "extract",
+        "crawl" | "http_crawl" => "crawl",
+        "map" | "http_map" => "map",
+        "research" | "http_research" => "research",
+        "admin" => "admin",
+        "user" => "user",
+        "public" => "public",
+        "internal" => "internal",
+        "mcp_control" => "mcp_control",
+        "mcp_business" => "mcp_business",
+        "mcp_unknown" => "mcp_unknown",
+        _ => "other",
+    }
+}
+
+fn request_phase_index(phase: &str) -> Option<usize> {
+    Some(match phase {
+        "configuration" => 0,
+        "billing_lock_wait" => 1,
+        "preflight" => 2,
+        "key_selection" => 3,
+        "upstream" => 4,
+        "response_body" => 5,
+        "persistence" => 6,
+        "settlement" => 7,
+        "reconciliation_usage" => 8,
+        "reconciliation_schedule" => 9,
+        "other" => 10,
+        _ => return None,
+    })
+}
+
+fn legacy_request_phase(phase: &str) -> &'static str {
+    match phase {
+        "admission" => "preflight",
+        "key_selection" => "key_selection",
+        "upstream" | "response_headers" => "upstream",
+        "response_body" => "response_body",
+        "persistence" => "persistence",
+        "ack" => "settlement",
+        _ => "other",
+    }
+}
+
 fn status_class(status: StatusCode) -> &'static str {
     match status.as_u16() {
         200..=299 => "2xx",
@@ -1208,9 +1662,13 @@ fn normalize_reason(reason: &str) -> &'static str {
         "database" => "database",
         "deferred" => "deferred",
         "query_deadline" => "query_deadline",
+        "native_query_deadline" => "native_query_deadline",
         "foreground_pressure" => "foreground_pressure",
         "pool_pressure" => "pool_pressure",
         "recent_contention" => "recent_contention",
+        "writer_contention" => "writer_contention",
+        "coverage_readiness" => "coverage_readiness",
+        "source_baseline" => "source_baseline",
         _ => "other",
     }
 }
@@ -1376,6 +1834,121 @@ mod tests {
         assert!(output.contains("reason=\"queue\""));
     }
 
+    #[tokio::test]
+    async fn request_timing_scope_emits_one_terminal_event_and_all_leaf_phases() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/api/tavily/search", "POST");
+        REQUEST_TIMING_SCOPE
+            .scope(scope, async {
+                set_request_operation("search");
+                let outer = begin_request_phase("preflight").expect("preflight phase");
+                let inner = begin_request_phase("upstream").expect("upstream phase");
+                drop(inner);
+                drop(outer);
+                REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::OK));
+            })
+            .await;
+
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert_eq!(
+            output.matches("hikari_http_requests_total{").count(),
+            1,
+            "terminal request must be counted once"
+        );
+        assert_eq!(
+            output
+                .matches("hikari_http_request_duration_seconds_count{")
+                .count(),
+            REQUEST_PHASE_COUNT + 1,
+            "one total plus every leaf phase must be exported"
+        );
+        for phase in REQUEST_PHASES {
+            assert!(
+                output.contains(&format!("phase=\"{phase}\"")),
+                "missing phase {phase}"
+            );
+        }
+        let histogram_sum = |phase: &str| {
+            output
+                .lines()
+                .find(|line| {
+                    line.starts_with("hikari_http_request_duration_seconds_sum{")
+                        && line.contains(&format!("phase=\"{phase}\""))
+                })
+                .and_then(|line| line.rsplit_once(' ').map(|(_, value)| value))
+                .and_then(|value| value.parse::<f64>().ok())
+                .expect("phase histogram sum")
+        };
+        let total_sum = histogram_sum("total");
+        let leaf_sum: f64 = REQUEST_PHASES
+            .iter()
+            .map(|phase| histogram_sum(phase))
+            .sum();
+        assert!((leaf_sum - total_sum).abs() <= 1e-9);
+        assert!(output.contains("operation=\"search\""));
+        assert!(!output.contains("request_id"));
+    }
+
+    #[tokio::test]
+    async fn mcp_request_operation_is_fixed_for_control_business_and_unknown_calls() {
+        for (method_is_tool_call, billable, expected) in [
+            (false, false, "mcp_control"),
+            (true, true, "mcp_business"),
+            (true, false, "mcp_unknown"),
+        ] {
+            let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+            let scope = RequestTimingScope::new(metrics.clone(), "/mcp", "POST");
+            REQUEST_TIMING_SCOPE
+                .scope(scope, async {
+                    set_mcp_request_operation_kind(method_is_tool_call, billable);
+                    REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::OK));
+                })
+                .await;
+            let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+            assert!(output.contains(&format!("operation=\"{expected}\"")));
+            assert!(!output.contains("tool-name"));
+        }
+    }
+
+    #[test]
+    fn request_timing_scope_cancellation_is_terminal_once() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/mcp", "POST");
+        drop(scope);
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(output.contains("outcome=\"cancelled\""));
+        assert_eq!(
+            output
+                .matches("hikari_http_request_duration_seconds_count{")
+                .count(),
+            REQUEST_PHASE_COUNT + 1
+        );
+    }
+
+    #[test]
+    fn request_timing_scope_disabled_recording_is_empty() {
+        let metrics = Arc::new(Metrics::new_with_recording(None, false).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/api/tavily/search", "POST");
+        drop(scope);
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(!output.contains("hikari_http_requests_total{"));
+        assert!(!output.contains("hikari_http_request_duration_seconds_count{"));
+    }
+
+    #[test]
+    fn request_timing_queue_overflow_drops_the_whole_terminal_event() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        for _ in 0..EVENT_QUEUE_CAPACITY {
+            metrics.record_background("background_tasks", "success", "started");
+        }
+        let scope = RequestTimingScope::new(metrics.clone(), "/api/tavily/search", "POST");
+        drop(scope);
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(!output.contains("hikari_http_request_duration_seconds_count{"));
+        assert!(output.contains("hikari_observability_dropped_total"));
+        assert!(output.contains("reason=\"queue\""));
+    }
+
     #[test]
     fn metrics_bind_scope_defaults_to_private_addresses() {
         assert!(metrics_bind_allowed(
@@ -1467,7 +2040,14 @@ mod tests {
     fn unknown_dimensions_are_mapped_to_fixed_values() {
         assert_eq!(normalize_operation("user supplied operation"), "other");
         assert_eq!(normalize_operation("research_result"), "research");
+        assert_eq!(normalize_request_operation("mcp_control"), "mcp_control");
+        assert_eq!(normalize_request_operation("arbitrary-tool-name"), "other");
         assert_eq!(normalize_reason("user supplied reason"), "other");
+        assert_eq!(
+            normalize_reason("native_query_deadline"),
+            "native_query_deadline"
+        );
+        assert_eq!(normalize_reason("writer_contention"), "writer_contention");
         assert_eq!(normalize_workload_class("maintenance_bulk"), "maintenance");
     }
 
