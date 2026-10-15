@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_BASELINE_REF = "b1bb1043823b9260b18389854e6b90b2cdedbd70"
@@ -40,6 +40,12 @@ DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_SUBJECTS = ("subject-a", "subject-b", "subject-c", "subject-d")
 DEFAULT_TOKENS = ("token-a", "token-b", "token-c", "token-d")
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=4"
+PHASE_METRIC_SELECTOR = {
+    "method": "POST",
+    "operation": "search",
+    "outcome": "success",
+    "route_family": "http_search",
+}
 
 
 class MockUpstreamHandler(BaseHTTPRequestHandler):
@@ -150,16 +156,10 @@ def create_fixture(directory: Path) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     core = directory / "tavily_proxy.db"
     sidecar = directory / "tavily_proxy-observability.db"
-    with sqlite3.connect(core) as connection:
-        connection.execute(
-            "CREATE TABLE perf_local_fixture (id INTEGER PRIMARY KEY, kind TEXT NOT NULL)"
-        )
-        connection.execute("INSERT INTO perf_local_fixture(kind) VALUES ('synthetic')")
-    with sqlite3.connect(sidecar) as connection:
-        connection.execute(
-            "CREATE TABLE perf_local_fixture (id INTEGER PRIMARY KEY, kind TEXT NOT NULL)"
-        )
-        connection.execute("INSERT INTO perf_local_fixture(kind) VALUES ('synthetic')")
+    # Leave both databases schema-empty so the service owns migration/bootstrap state.
+    for path in (core, sidecar):
+        with sqlite3.connect(path):
+            pass
     core.chmod(0o600)
     sidecar.chmod(0o600)
     return core, sidecar
@@ -221,6 +221,8 @@ def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
             continue
         metric_kind, labels_text, raw_value = match.groups()
         labels = dict(re.findall(r'(\w+)="([^"]*)"', labels_text))
+        if any(labels.get(key) != value for key, value in PHASE_METRIC_SELECTOR.items()):
+            continue
         phase = labels.get("phase")
         if phase is None:
             continue
@@ -236,11 +238,12 @@ def request_once(
     headers: dict[str, str],
     recorder: SampleRecorder,
     lane: str,
+    method: str = "POST",
 ) -> None:
     started = time.monotonic()
     try:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        connection.request("POST", path, body=body, headers=headers)
+        connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         response_body = response.read()
         recorder.add_status(lane, response.status, (time.monotonic() - started) * 1000, response_body)
@@ -256,7 +259,8 @@ def run_load(
     subjects: tuple[str, ...],
     tokens: tuple[str, ...],
     interval_seconds: float,
-) -> SampleRecorder:
+    on_measurement_start: Callable[[], dict[str, dict[str, float]]] | None = None,
+) -> tuple[SampleRecorder, dict[str, dict[str, float]]]:
     recorder = SampleRecorder()
     payload = b'{"query":"synthetic","search_depth":"basic","max_results":1}'
     started = time.monotonic()
@@ -277,6 +281,7 @@ def run_load(
         )
         index += 1
     recorder = SampleRecorder()
+    phase_baseline = on_measurement_start() if on_measurement_start else {}
     deadline = time.monotonic() + duration_seconds
     next_request = time.monotonic()
     while time.monotonic() < deadline:
@@ -300,21 +305,75 @@ def run_load(
                 {"Content-Type": "application/json"},
                 recorder,
                 "unrelated",
+                method="GET",
             )
         index += 1
         next_request += interval_seconds
         time.sleep(max(0, next_request - time.monotonic()))
-    return recorder
+    return recorder, phase_baseline
+
+
+def bootstrap_business_tokens(port: int, labels: tuple[str, ...]) -> tuple[str, ...]:
+    access_tokens: list[str] = []
+    for label in labels:
+        payload = json.dumps({"note": f"perf-local-{label}"}).encode("utf-8")
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request(
+                "POST",
+                "/api/tokens",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            body = response.read()
+        except (OSError, http.client.HTTPException, TimeoutError) as error:
+            raise RuntimeError("token_bootstrap_transport") from error
+        finally:
+            connection.close()
+        if response.status != 201:
+            raise RuntimeError(f"token_bootstrap_status_{response.status}")
+        try:
+            token = json.loads(body).get("token")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise RuntimeError("token_bootstrap_invalid_json") from error
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("token_bootstrap_missing_secret")
+        access_tokens.append(token)
+    return tuple(access_tokens)
+
+
+def phase_delta(
+    before: dict[str, dict[str, float]], after: dict[str, dict[str, float]]
+) -> dict[str, dict[str, float]]:
+    phases: dict[str, dict[str, float]] = {}
+    for phase in sorted(set(before) | set(after)):
+        current = after.get(phase, {})
+        initial = before.get(phase, {})
+        phases[phase] = {
+            "count": max(0.0, current.get("count", 0.0) - initial.get("count", 0.0)),
+            "sum_seconds": max(
+                0.0,
+                current.get("sum_seconds", 0.0) - initial.get("sum_seconds", 0.0),
+            ),
+        }
+    return phases
 
 
 def terminate_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
-    process.send_signal(signal.SIGTERM)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=5)
 
 
@@ -394,6 +453,7 @@ def run_variant(
         cwd=repo,
         env=environment,
         shell=True,
+        start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -410,16 +470,36 @@ def run_variant(
                 "phases": {},
                 "accepted_progress": {"responses": 0, "reported": 0},
             }
-        result = run_load(
+        access_tokens = tuple(args.tokens)
+        if args.bootstrap_business_tokens:
+            try:
+                access_tokens = bootstrap_business_tokens(port, tuple(args.tokens))
+            except RuntimeError:
+                return {
+                    "variant": variant,
+                    "round": round_number,
+                    "ref": resolved,
+                    "status": "unvalidated",
+                    "reason": "business_token_bootstrap_failed",
+                    "request": None,
+                    "unrelated_cohort": None,
+                    "phases": {},
+                    "accepted_progress": {"responses": 0, "reported": 0},
+                }
+        result, phase_baseline = run_load(
             port,
             args.warmup_seconds,
             duration_seconds,
             tuple(args.subjects),
-            tuple(args.tokens),
+            access_tokens,
             args.request_interval_seconds,
+            on_measurement_start=lambda: collect_phase_metrics(metrics_port, metrics_token),
         )
         result_payload = result.result(duration_seconds)
-        result_payload["phases"] = collect_phase_metrics(metrics_port, metrics_token)
+        time.sleep(1.0)
+        result_payload["phases"] = phase_delta(
+            phase_baseline, collect_phase_metrics(metrics_port, metrics_token)
+        )
         result = result_payload
         result.update({"variant": variant, "round": round_number, "ref": resolved, "status": "measured"})
         return result
@@ -446,6 +526,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subjects", nargs="+", default=list(DEFAULT_SUBJECTS))
     parser.add_argument("--tokens", nargs="+", default=list(DEFAULT_TOKENS))
     parser.add_argument("--metrics-enabled", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--bootstrap-business-tokens",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="create one temporary dev-open-admin access token per synthetic token label",
+    )
     return parser.parse_args()
 
 
@@ -592,9 +678,11 @@ def main() -> int:
             "resources": args.resources,
             "subjects": args.subjects,
             "tokens": args.tokens,
+            "bootstrap_business_tokens": args.bootstrap_business_tokens,
             "metrics_enabled": args.metrics_enabled,
             "comparison_entry": str(args.comparison_entry.resolve()),
             "upstream_kind": "loopback-synthetic-mock",
+            "phase_metric_selector": PHASE_METRIC_SELECTOR,
         },
         "rounds": [],
         "comparison": None,
