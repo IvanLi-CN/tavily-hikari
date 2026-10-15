@@ -43,6 +43,25 @@ DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 9))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 9))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
+MAX_RESPONSE_EVIDENCE = 12
+PHASE_SCHEMA_LEGACY = "legacy"
+PHASE_SCHEMA_OPERATION = "operation"
+PHASE_SCHEMA_UNSUPPORTED = "unsupported"
+PHASE_METRIC_NAMES = {
+    PHASE_SCHEMA_LEGACY: "hikari_http_duration_seconds",
+    PHASE_SCHEMA_OPERATION: "hikari_http_request_duration_seconds",
+}
+SYNTHETIC_FIXTURE_SETTINGS = {
+    "TOKEN_HOURLY_REQUEST_LIMIT": "100000",
+    "TOKEN_HOURLY_LIMIT": "100000",
+    "TOKEN_DAILY_LIMIT": "100000",
+    "TOKEN_MONTHLY_LIMIT": "1000000",
+    "purpose": "mock_only_business_success_budget",
+    "billing_checks": "enabled",
+}
+SYNTHETIC_FIXTURE_ENV = {
+    key: value for key, value in SYNTHETIC_FIXTURE_SETTINGS.items() if key.startswith("TOKEN_")
+}
 REQUIRED_SCENARIO_NAMES = (
     "serial",
     "cross_account_concurrency_4",
@@ -54,6 +73,9 @@ PHASE_METRIC_SELECTOR = {
     "operation": "search",
     "outcome": "success",
     "route_family": "http_search",
+}
+LEGACY_PHASE_METRIC_SELECTOR = {
+    key: value for key, value in PHASE_METRIC_SELECTOR.items() if key != "operation"
 }
 
 
@@ -81,6 +103,8 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "concurrency": 1,
             "credential_mode": "single_token_subject",
             "credential_slots": 1,
+            "expected_outcome": "success",
+            "expected_status_class": "2xx",
             "scheduling": scheduling,
         },
         {
@@ -89,6 +113,8 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "concurrency": 4,
             "credential_mode": "one_unique_token_subject_per_worker",
             "credential_slots": 4,
+            "expected_outcome": "success",
+            "expected_status_class": "2xx",
             "scheduling": scheduling,
         },
         {
@@ -97,6 +123,8 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "concurrency": 8,
             "credential_mode": "one_unique_token_subject_per_worker",
             "credential_slots": 8,
+            "expected_outcome": "success",
+            "expected_status_class": "2xx",
             "scheduling": scheduling,
         },
         {
@@ -105,6 +133,8 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "concurrency": 8,
             "credential_mode": "same_token_subject_for_all_workers",
             "credential_slots": 1,
+            "expected_outcome": "success",
+            "expected_status_class": "2xx",
             "scheduling": scheduling,
         },
     ]
@@ -116,6 +146,7 @@ def logical_cohort(subjects: tuple[str, ...], tokens: tuple[str, ...], interval:
         "tokens": list(tokens),
         "scenarios": scenario_contract(interval),
         "cohort_path": "variants[*].scenarios[*].request",
+        "success_cohort_path": "variants[*].scenarios[*].actual.success_request",
     }
 
 
@@ -144,6 +175,9 @@ def credential_mapping_evidence(credentials: tuple[Credential, ...]) -> dict[str
 
 class MockUpstreamHandler(BaseHTTPRequestHandler):
     delay_seconds = DEFAULT_MOCK_DELAY_MS / 1000
+    request_count = 0
+    response_status_counts: dict[str, int] = {}
+    observation_lock = threading.Lock()
 
     def do_GET(self) -> None:  # noqa: N802
         self._respond()
@@ -158,6 +192,10 @@ class MockUpstreamHandler(BaseHTTPRequestHandler):
         return
 
     def _respond(self) -> None:
+        with self.observation_lock:
+            self.request_count += 1
+            key = "200"
+            self.response_status_counts[key] = self.response_status_counts.get(key, 0) + 1
         time.sleep(self.delay_seconds)
         payload = {
             "results": [{"title": "synthetic", "url": "http://sandbox.invalid/result"}],
@@ -175,11 +213,25 @@ class MockUpstream:
     def __init__(self, delay_ms: int) -> None:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MockUpstreamHandler)
         MockUpstreamHandler.delay_seconds = delay_ms / 1000
+        with MockUpstreamHandler.observation_lock:
+            MockUpstreamHandler.request_count = 0
+            MockUpstreamHandler.response_status_counts = {}
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server.server_port}"
+
+    def evidence(self) -> dict[str, Any]:
+        with MockUpstreamHandler.observation_lock:
+            return {
+                "status": "ready",
+                "url_kind": "loopback_synthetic_mock",
+                "request_count": MockUpstreamHandler.request_count,
+                "response_statuses": dict(MockUpstreamHandler.response_status_counts),
+                "response_usage_credits": 1,
+                "response_contract": "results + usage.credits=1",
+            }
 
     def __enter__(self) -> "MockUpstream":
         self.thread.start()
@@ -459,14 +511,87 @@ class CheckpointStore:
 class SampleRecorder:
     started_at: float = field(default_factory=time.monotonic)
     elapsed_ms: list[float] = field(default_factory=list)
+    success_elapsed_ms: list[float] = field(default_factory=list)
     unrelated_elapsed_ms: list[float] = field(default_factory=list)
     statuses: dict[str, int] = field(default_factory=dict)
+    outcome_counts: dict[str, int] = field(default_factory=dict)
+    response_evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: dict[str, int] = field(default_factory=dict)
     accepted_progress: int = 0
     reported_progress: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def add_status(self, lane: str, status: int, elapsed_ms: float, body: bytes) -> None:
+    @staticmethod
+    def _outcome_for_status(status: int) -> str:
+        if 200 <= status < 300:
+            return "success"
+        if status == 429:
+            return "reject"
+        return "error"
+
+    @staticmethod
+    def _bounded_value(value: object, limit: int = 160) -> str | None:
+        if value is None:
+            return None
+        text = redact_output(str(value)).strip()
+        if not text:
+            return None
+        return text[:limit]
+
+    def _record_response_evidence(
+        self,
+        status: int,
+        decoded: object,
+        headers: dict[str, str] | None,
+    ) -> None:
+        if status != 429:
+            return
+        body_fields: dict[str, str] = {}
+        if isinstance(decoded, dict):
+            for field_name in ("error", "code", "reason", "message"):
+                value = self._bounded_value(decoded.get(field_name))
+                if value is not None:
+                    body_fields[field_name] = value
+        if not body_fields:
+            body_fields["body"] = "invalid_or_unstructured_json"
+        safe_headers: dict[str, str] = {}
+        for name, value in (headers or {}).items():
+            normalized_name = name.lower()
+            if (
+                normalized_name == "content-type"
+                or normalized_name == "retry-after"
+                or normalized_name.startswith("x-ratelimit-")
+                or normalized_name.startswith("ratelimit-")
+            ):
+                bounded = self._bounded_value(value)
+                if bounded is not None:
+                    safe_headers[normalized_name] = bounded
+        signature = json.dumps(
+            {"body": body_fields, "headers": safe_headers},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        entry = self.response_evidence.get(signature)
+        if entry is None:
+            if len(self.response_evidence) >= MAX_RESPONSE_EVIDENCE:
+                return
+            self.response_evidence[signature] = {
+                "status": status,
+                "count": 1,
+                "body": body_fields,
+                "headers": safe_headers,
+            }
+        else:
+            entry["count"] = int(entry["count"]) + 1
+
+    def add_status(
+        self,
+        lane: str,
+        status: int,
+        elapsed_ms: float,
+        body: bytes,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         try:
             decoded = json.loads(body)
         except (ValueError, UnicodeDecodeError):
@@ -474,8 +599,15 @@ class SampleRecorder:
         with self._lock:
             key = f"{lane}:{status}"
             self.statuses[key] = self.statuses.get(key, 0) + 1
+            outcome = self._outcome_for_status(status)
+            outcome_key = f"{lane}:{outcome}"
+            self.outcome_counts[outcome_key] = self.outcome_counts.get(outcome_key, 0) + 1
             target = self.unrelated_elapsed_ms if lane == "unrelated" else self.elapsed_ms
             target.append(elapsed_ms)
+            if lane == "business" and outcome == "success":
+                self.success_elapsed_ms.append(elapsed_ms)
+            if lane == "business":
+                self._record_response_evidence(status, decoded, headers)
             # HTTP 200 from the business lane is not maintenance progress. Only a
             # maintenance/recovery response explicitly carrying accepted progress counts.
             if lane in {"maintenance", "recovery"} and 200 <= status < 300:
@@ -503,16 +635,32 @@ class SampleRecorder:
     def result(self, duration_seconds: int) -> dict[str, Any]:
         with self._lock:
             elapsed_ms = list(self.elapsed_ms)
+            success_elapsed_ms = list(self.success_elapsed_ms)
             unrelated_elapsed_ms = list(self.unrelated_elapsed_ms)
             statuses = dict(self.statuses)
+            outcome_counts = dict(self.outcome_counts)
+            response_evidence = [
+                dict(entry)
+                for entry in self.response_evidence.values()
+            ]
             errors = dict(self.errors)
             accepted_progress = self.accepted_progress
             reported_progress = self.reported_progress
         return {
             "duration_seconds": duration_seconds,
             "request": self.stats(elapsed_ms, duration_seconds),
+            "success_request": self.stats(success_elapsed_ms, duration_seconds),
             "unrelated_cohort": self.stats(unrelated_elapsed_ms, duration_seconds),
             "statuses": dict(sorted(statuses.items())),
+            "outcome_counts": dict(sorted(outcome_counts.items())),
+            "business_outcomes": {
+                outcome: outcome_counts.get(f"business:{outcome}", 0)
+                for outcome in ("success", "reject", "error")
+            },
+            "response_evidence": sorted(
+                response_evidence,
+                key=lambda entry: (-int(entry["count"]), json.dumps(entry, sort_keys=True)),
+            ),
             "errors": dict(sorted(errors.items())),
             "phases": {},
             "accepted_progress": {
@@ -525,16 +673,30 @@ class SampleRecorder:
     def merge(self, other: "SampleRecorder") -> None:
         with other._lock:
             elapsed_ms = list(other.elapsed_ms)
+            success_elapsed_ms = list(other.success_elapsed_ms)
             unrelated_elapsed_ms = list(other.unrelated_elapsed_ms)
             statuses = dict(other.statuses)
+            outcome_counts = dict(other.outcome_counts)
+            response_evidence = {
+                signature: dict(entry)
+                for signature, entry in other.response_evidence.items()
+            }
             errors = dict(other.errors)
             accepted_progress = other.accepted_progress
             reported_progress = other.reported_progress
         with self._lock:
             self.elapsed_ms.extend(elapsed_ms)
+            self.success_elapsed_ms.extend(success_elapsed_ms)
             self.unrelated_elapsed_ms.extend(unrelated_elapsed_ms)
             for key, value in statuses.items():
                 self.statuses[key] = self.statuses.get(key, 0) + value
+            for key, value in outcome_counts.items():
+                self.outcome_counts[key] = self.outcome_counts.get(key, 0) + value
+            for signature, entry in response_evidence.items():
+                if signature in self.response_evidence:
+                    self.response_evidence[signature]["count"] += int(entry["count"])
+                elif len(self.response_evidence) < MAX_RESPONSE_EVIDENCE:
+                    self.response_evidence[signature] = entry
             for key, value in errors.items():
                 self.errors[key] = self.errors.get(key, 0) + value
             self.accepted_progress += accepted_progress
@@ -590,7 +752,15 @@ def wait_for_service(port: int, timeout_seconds: float) -> bool:
     return False
 
 
-def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
+def collect_phase_snapshot(port: int, token: str) -> dict[str, Any]:
+    unavailable = {
+        "status": "unsupported",
+        "kind": PHASE_SCHEMA_UNSUPPORTED,
+        "reason": "metrics_unavailable",
+        "metric_name": None,
+        "selector": None,
+        "phase_keys": [],
+    }
     try:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.request("GET", "/metrics", headers={"Authorization": f"Bearer {token}"})
@@ -598,30 +768,89 @@ def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
         body = response.read().decode("utf-8", errors="replace")
         connection.close()
     except (OSError, http.client.HTTPException, TimeoutError):
-        return {}
+        return {"values": {}, "schema": unavailable}
     if response.status != 200:
-        return {}
-    values: dict[str, dict[str, float]] = {}
+        return {
+            "values": {},
+            "schema": {
+                **unavailable,
+                "reason": f"metrics_http_status_{response.status}",
+                "http_status": response.status,
+            },
+        }
+    values_by_schema: dict[str, dict[str, dict[str, float]]] = {
+        PHASE_SCHEMA_LEGACY: {},
+        PHASE_SCHEMA_OPERATION: {},
+    }
     for line in body.splitlines():
-        if not line.startswith("hikari_http_request_duration_seconds_"):
+        metric_name = next(
+            (
+                name
+                for name in PHASE_METRIC_NAMES.values()
+                if line.startswith(f"{name}_")
+            ),
+            None,
+        )
+        if metric_name is None:
             continue
-        match = re.match(r"^hikari_http_request_duration_seconds_(count|sum)\{([^}]*)\}\s+([0-9.eE+-]+)$", line)
+        match = re.match(
+            rf"^{re.escape(metric_name)}_(count|sum)\{{([^}}]*)\}}\s+([0-9.eE+-]+)$",
+            line,
+        )
         if not match:
             continue
         metric_kind, labels_text, raw_value = match.groups()
         labels = dict(re.findall(r'(\w+)="([^"]*)"', labels_text))
-        if not phase_metric_matches(labels):
+        schema_kind = next(
+            kind for kind, name in PHASE_METRIC_NAMES.items() if name == metric_name
+        )
+        if not phase_metric_matches_schema(labels, schema_kind):
             continue
         phase = labels.get("phase")
         if phase is None:
             continue
+        values = values_by_schema[schema_kind]
         bucket = values.setdefault(phase, {"count": 0.0, "sum_seconds": 0.0})
         bucket["count" if metric_kind == "count" else "sum_seconds"] = float(raw_value)
-    return values
+    selected_kind = next(
+        (
+            kind
+            for kind in (PHASE_SCHEMA_OPERATION, PHASE_SCHEMA_LEGACY)
+            if values_by_schema[kind]
+        ),
+        None,
+    )
+    if selected_kind is None:
+        schema = {
+            **unavailable,
+            "reason": "selector_no_matching_phase_series",
+            "http_status": response.status,
+        }
+        return {"values": {}, "schema": schema}
+    selector = (
+        PHASE_METRIC_SELECTOR
+        if selected_kind == PHASE_SCHEMA_OPERATION
+        else LEGACY_PHASE_METRIC_SELECTOR
+    )
+    schema = {
+        "status": "supported",
+        "kind": selected_kind,
+        "metric_name": PHASE_METRIC_NAMES[selected_kind],
+        "selector": dict(selector),
+        "phase_keys": sorted(values_by_schema[selected_kind]),
+        "http_status": response.status,
+    }
+    return {"values": values_by_schema[selected_kind], "schema": schema}
+
+
+def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
+    """Compatibility view for callers that only need selected phase values."""
+
+    return collect_phase_snapshot(port, token)["values"]
 
 
 def phase_metric_matches(labels: dict[str, str]) -> bool:
-    """Match base metrics while requiring operation on the candidate schema."""
+    """Match either the legacy or operation label shape for compatibility tests."""
 
     for key, value in PHASE_METRIC_SELECTOR.items():
         if key == "operation" and key not in labels:
@@ -629,6 +858,15 @@ def phase_metric_matches(labels: dict[str, str]) -> bool:
         if labels.get(key) != value:
             return False
     return True
+
+
+def phase_metric_matches_schema(labels: dict[str, str], schema_kind: str) -> bool:
+    selector = (
+        PHASE_METRIC_SELECTOR
+        if schema_kind == PHASE_SCHEMA_OPERATION
+        else LEGACY_PHASE_METRIC_SELECTOR
+    )
+    return all(labels.get(key) == value for key, value in selector.items())
 
 
 def request_once(
@@ -647,7 +885,16 @@ def request_once(
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         response_body = response.read()
-        recorder.add_status(lane, response.status, (time.monotonic() - started) * 1000, response_body)
+        response_headers = {
+            name.lower(): value for name, value in response.getheaders()
+        }
+        recorder.add_status(
+            lane,
+            response.status,
+            (time.monotonic() - started) * 1000,
+            response_body,
+            response_headers,
+        )
     except (OSError, http.client.HTTPException, TimeoutError) as error:
         recorder.add_error(lane, error)
     finally:
@@ -826,8 +1073,19 @@ def run_workload_window(
                 ],
                 "subjects": list(bound_subjects),
                 "scheduling": scenario["scheduling"],
+                "expected": {
+                    "outcome": scenario["expected_outcome"],
+                    "status_class": scenario["expected_status_class"],
+                },
+                "actual": {
+                    "outcomes": recorded["business_outcomes"],
+                    "success_request": recorded["success_request"],
+                },
                 "request": recorded["request"],
+                "success_request": recorded["success_request"],
                 "statuses": recorded["statuses"],
+                "outcome_counts": recorded["outcome_counts"],
+                "response_evidence": recorded["response_evidence"],
                 "errors": recorded["errors"],
                 "accepted_progress": recorded["accepted_progress"],
             }
@@ -843,10 +1101,15 @@ def run_load(
     subjects: tuple[str, ...],
     credentials: tuple[Credential, ...],
     interval_seconds: float,
-    on_measurement_start: Callable[[], dict[str, dict[str, float]]] | None = None,
-) -> tuple[dict[str, Any], dict[str, dict[str, float]]]:
+    on_measurement_start: Callable[[], dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    warmup_observation: dict[str, Any] | None = None
     if warmup_seconds > 0:
-        run_workload_window(port, warmup_seconds, credentials, subjects, interval_seconds)
+        warmup_recorder, warmup_scenarios = run_workload_window(
+            port, warmup_seconds, credentials, subjects, interval_seconds
+        )
+        warmup_observation = warmup_recorder.result(warmup_seconds)
+        warmup_observation["scenarios"] = warmup_scenarios
     phase_baseline = on_measurement_start() if on_measurement_start else {}
     recorder, scenarios_result = run_workload_window(
         port, duration_seconds, credentials, subjects, interval_seconds
@@ -855,6 +1118,8 @@ def run_load(
     result["scenarios"] = scenarios_result
     result["scenario_contract"] = scenario_contract(interval_seconds)
     result["credential_mapping"] = credential_mapping_evidence(credentials)
+    result["fixture_settings"] = dict(SYNTHETIC_FIXTURE_SETTINGS)
+    result["warmup"] = warmup_observation
     return result, phase_baseline
 
 
@@ -930,12 +1195,14 @@ def verify_credential_bindings(
 
 
 def phase_delta(
-    before: dict[str, dict[str, float]], after: dict[str, dict[str, float]]
+    before: dict[str, Any], after: dict[str, Any]
 ) -> dict[str, dict[str, float]]:
+    before_values = before.get("values", before)
+    after_values = after.get("values", after)
     phases: dict[str, dict[str, float]] = {}
-    for phase in sorted(set(before) | set(after)):
-        current = after.get(phase, {})
-        initial = before.get(phase, {})
+    for phase in sorted(set(before_values) | set(after_values)):
+        current = after_values.get(phase, {})
+        initial = before_values.get(phase, {})
         phases[phase] = {
             "count": max(0.0, current.get("count", 0.0) - initial.get("count", 0.0)),
             "sum_seconds": max(
@@ -944,6 +1211,55 @@ def phase_delta(
             ),
         }
     return phases
+
+
+def phase_schema_delta(
+    before: dict[str, Any], after: dict[str, Any], phases: dict[str, dict[str, float]]
+) -> dict[str, Any]:
+    before_schema = before.get("schema", {})
+    after_schema = after.get("schema", {})
+    before_kind = before_schema.get("kind")
+    after_kind = after_schema.get("kind")
+    if after_schema.get("status") != "supported":
+        return {
+            **after_schema,
+            "status": "unsupported",
+            "before_kind": before_kind,
+            "after_kind": after_kind,
+            "coverage_count": 0.0,
+            "coverage_phase": None,
+        }
+    if before_kind != after_kind:
+        return {
+            "status": "unsupported",
+            "kind": PHASE_SCHEMA_UNSUPPORTED,
+            "reason": "phase_schema_changed_during_measurement",
+            "before_kind": before_kind,
+            "after_kind": after_kind,
+            "metric_name": after_schema.get("metric_name"),
+            "selector": after_schema.get("selector"),
+            "phase_keys": sorted(phases),
+            "coverage_count": 0.0,
+            "coverage_phase": None,
+        }
+    coverage_phase = "total" if "total" in phases else None
+    if coverage_phase is None and phases:
+        coverage_phase = max(
+            phases,
+            key=lambda phase: float(phases[phase].get("count", 0.0)),
+        )
+    coverage_count = (
+        float(phases[coverage_phase].get("count", 0.0))
+        if coverage_phase is not None
+        else 0.0
+    )
+    return {
+        **after_schema,
+        "before_kind": before_kind,
+        "after_kind": after_kind,
+        "coverage_count": coverage_count,
+        "coverage_phase": coverage_phase,
+    }
 
 
 def parse_memory_bytes(value: str) -> int:
@@ -1195,6 +1511,7 @@ def run_variant(
             "METRICS_BIND": f"127.0.0.1:{metrics_port}",
             "METRICS_TOKEN_FILE": str(metrics_token_path),
             "TAVILY_API_KEYS": "tvly-synthetic-test-key",
+            **SYNTHETIC_FIXTURE_ENV,
             "HA_MODE": "single",
             "DEV_OPEN_ADMIN": "true",
         }
@@ -1348,6 +1665,7 @@ def run_variant(
                 "credential_mapping": credential_mapping_evidence(credentials),
                 "resource_observation": resource_observation,
             }
+        mock_before = mock.evidence()
         result, phase_baseline = run_load(
             port,
             args.warmup_seconds,
@@ -1355,12 +1673,14 @@ def run_variant(
             tuple(args.subjects),
             credentials,
             args.request_interval_seconds,
-            on_measurement_start=lambda: collect_phase_metrics(metrics_port, metrics_token),
+            on_measurement_start=lambda: collect_phase_snapshot(metrics_port, metrics_token),
         )
         result_payload = result
         time.sleep(1.0)
-        result_payload["phases"] = phase_delta(
-            phase_baseline, collect_phase_metrics(metrics_port, metrics_token)
+        phase_after = collect_phase_snapshot(metrics_port, metrics_token)
+        result_payload["phases"] = phase_delta(phase_baseline, phase_after)
+        result_payload["phase_schema"] = phase_schema_delta(
+            phase_baseline, phase_after, result_payload["phases"]
         )
         result = result_payload
         result.update(
@@ -1374,6 +1694,11 @@ def run_variant(
                 ),
                 "credential_mapping": credential_mapping,
                 "resource_observation": resource_observation,
+                "mock_upstream": {
+                    "before": mock_before,
+                    "after": mock.evidence(),
+                    "response_usage_credits": 1,
+                },
             }
         )
         return result
@@ -1578,16 +1903,24 @@ def measurement_view(result: dict[str, Any]) -> dict[str, Any]:
         "reason": result.get("reason"),
         "duration_seconds": result.get("duration_seconds"),
         "request": result.get("request"),
+        "success_request": result.get("success_request"),
         "unrelated_cohort": result.get("unrelated_cohort"),
         "statuses": result.get("statuses", {}),
+        "outcome_counts": result.get("outcome_counts", {}),
+        "business_outcomes": result.get("business_outcomes", {}),
+        "response_evidence": result.get("response_evidence", []),
         "errors": result.get("errors", {}),
         "phases": result.get("phases", {}),
+        "phase_schema": result.get("phase_schema"),
+        "warmup": result.get("warmup"),
+        "mock_upstream": result.get("mock_upstream"),
         "cohort": result.get("cohort"),
         "scenarios": result.get("scenarios"),
         "scenario_contract": result.get("scenario_contract"),
         "credential_mapping": result.get("credential_mapping"),
         "resource_observation": result.get("resource_observation"),
         "accepted_progress": result.get("accepted_progress"),
+        "fixture_settings": result.get("fixture_settings"),
     }
 
 
@@ -1602,6 +1935,8 @@ def scenario_shape_key(result: dict[str, Any]) -> str | None:
             "concurrency": item.get("concurrency"),
             "credential_mode": item.get("credential_mode"),
             "credential_slots": item.get("credential_slots"),
+            "expected_outcome": item.get("expected_outcome"),
+            "expected_status_class": item.get("expected_status_class"),
             "scheduling": item.get("scheduling"),
         }
         for item in scenarios
@@ -1643,12 +1978,84 @@ def measurement_reasons(
             reasons.append(f"{prefix}/control.samples_below_minimum")
         elif control.get("p95_ms") is None:
             reasons.append(f"{prefix}/control.p95_missing")
+    success_request = result.get("success_request")
+    if not isinstance(success_request, dict):
+        reasons.append(f"{prefix}/business/success.missing")
+    else:
+        if success_request.get("samples", 0) <= 0:
+            reasons.append(f"{prefix}/business/success.samples_missing")
+        elif success_request.get("samples", 0) < min_samples:
+            reasons.append(f"{prefix}/business/success.samples_below_minimum")
+        elif success_request.get("p95_ms") is None:
+            reasons.append(f"{prefix}/business/success.p95_missing")
+    business_outcomes = result.get("business_outcomes")
+    if not isinstance(business_outcomes, dict):
+        reasons.append(f"{prefix}/business/outcomes_missing")
+    elif not isinstance(business_outcomes.get("success"), int):
+        reasons.append(f"{prefix}/business/success_count_missing")
+    elif business_outcomes.get("success", 0) <= 0:
+        reasons.append(f"{prefix}/business/429_or_error_only")
     scenarios = result.get("scenario_contract")
     scenario_names = [
         item.get("name") for item in scenarios if isinstance(item, dict)
     ] if isinstance(scenarios, list) else []
     if scenario_names != list(REQUIRED_SCENARIO_NAMES):
         reasons.append(f"{prefix}/scenarios/contract_mismatch")
+    scenario_records = result.get("scenarios")
+    if not isinstance(scenario_records, list):
+        reasons.append(f"{prefix}/scenarios/records_missing")
+    else:
+        records_by_name = {
+            record.get("name"): record
+            for record in scenario_records
+            if isinstance(record, dict) and record.get("name")
+        }
+        for scenario in scenarios if isinstance(scenarios, list) else []:
+            if not isinstance(scenario, dict):
+                continue
+            name = scenario.get("name")
+            record = records_by_name.get(name)
+            if record is None:
+                reasons.append(f"{prefix}/scenarios/{name}/record_missing")
+                continue
+            expected = record.get("expected")
+            if not isinstance(expected, dict):
+                reasons.append(f"{prefix}/scenarios/{name}/expected_missing")
+            elif (
+                expected.get("outcome") != scenario.get("expected_outcome")
+                or expected.get("status_class") != scenario.get("expected_status_class")
+            ):
+                reasons.append(f"{prefix}/scenarios/{name}/expected_mismatch")
+            actual = record.get("actual")
+            if not isinstance(actual, dict):
+                reasons.append(f"{prefix}/scenarios/{name}/actual_missing")
+                continue
+            outcomes = actual.get("outcomes")
+            if not isinstance(outcomes, dict) or any(
+                not isinstance(outcomes.get(outcome), int)
+                for outcome in ("success", "reject", "error")
+            ):
+                reasons.append(f"{prefix}/scenarios/{name}/outcomes_missing")
+            elif outcomes.get("success", 0) <= 0:
+                reasons.append(f"{prefix}/scenarios/{name}/success.samples_missing")
+            scenario_success = actual.get("success_request")
+            if not isinstance(scenario_success, dict):
+                reasons.append(f"{prefix}/scenarios/{name}/success.missing")
+            elif scenario_success.get("samples", 0) < min_samples:
+                reasons.append(f"{prefix}/scenarios/{name}/success.samples_below_minimum")
+            elif scenario_success.get("p95_ms") is None:
+                reasons.append(f"{prefix}/scenarios/{name}/success.p95_missing")
+    phase_schema = result.get("phase_schema")
+    if not isinstance(phase_schema, dict):
+        reasons.append(f"{prefix}/phase_schema/missing")
+    elif phase_schema.get("status") != "supported":
+        reasons.append(
+            f"{prefix}/phase_schema/{phase_schema.get('reason') or 'unsupported'}"
+        )
+    elif phase_schema.get("coverage_count", 0) <= 0:
+        reasons.append(f"{prefix}/phase_schema/coverage_missing")
+    elif isinstance(success_request, dict) and phase_schema.get("coverage_count", 0) < success_request.get("samples", 0):
+        reasons.append(f"{prefix}/phase_schema/coverage_below_success_samples")
     mapping = result.get("credential_mapping")
     if not isinstance(mapping, dict):
         reasons.append(f"{prefix}/credentials/mapping_missing")
@@ -1712,8 +2119,8 @@ def compare_round(
             "control": None,
         }
 
-    baseline_request = baseline["request"]
-    candidate_request = candidate["request"]
+    baseline_request = baseline["success_request"]
+    candidate_request = candidate["success_request"]
     baseline_control = baseline["unrelated_cohort"]
     candidate_control = candidate["unrelated_cohort"]
     baseline_request_p95 = baseline_request["p95_ms"]
@@ -1855,6 +2262,7 @@ def compare_rounds(
             reasons.append(reason)
     summary = {
         "p95_is_descriptive_only": True,
+        "p95_basis": "business_success_only",
         "baseline_request_p95_ms": summary_baseline,
         "candidate_request_p95_ms": summary_candidate,
         "baseline_unrelated_p95_ms": summary_control_baseline,
@@ -1944,6 +2352,7 @@ def main() -> int:
             "same_account_definition": "one token billing subject shared by queue workers",
             "secret_persisted": False,
         },
+        "fixture_settings": dict(SYNTHETIC_FIXTURE_SETTINGS),
         "scheduling": {
             "request_interval_seconds": args.request_interval_seconds,
             "control_interval_seconds": DEFAULT_CONTROL_INTERVAL_SECONDS,
@@ -1956,6 +2365,10 @@ def main() -> int:
         "comparison_entry": str(args.comparison_entry.resolve()),
         "upstream_kind": "loopback-synthetic-mock",
         "phase_metric_selector": PHASE_METRIC_SELECTOR,
+        "phase_metric_schema_selectors": {
+            PHASE_SCHEMA_LEGACY: LEGACY_PHASE_METRIC_SELECTOR,
+            PHASE_SCHEMA_OPERATION: PHASE_METRIC_SELECTOR,
+        },
         "run_directory": str(run_directory),
         "checkpoint_schema": 1,
     }

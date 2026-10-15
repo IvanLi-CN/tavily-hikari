@@ -75,6 +75,32 @@ def measured_result(
     status: str = "measured",
     reason: str | None = None,
 ) -> dict[str, object]:
+    success_request = {
+        "samples": request_samples,
+        "mean_ms": request_p95 / 2,
+        "p95_ms": request_p95,
+        "throughput_rps": 0.05,
+    }
+    scenario_records = [
+        {
+            "name": scenario["name"],
+            "expected": {
+                "outcome": scenario["expected_outcome"],
+                "status_class": scenario["expected_status_class"],
+            },
+            "actual": {
+                "outcomes": {"success": request_samples, "reject": 0, "error": 0},
+                "success_request": success_request,
+            },
+            "success_request": success_request,
+            "request": success_request,
+            "statuses": {"business:200": request_samples},
+            "outcome_counts": {"business:success": request_samples},
+            "response_evidence": [],
+            "errors": {},
+        }
+        for scenario in SCENARIOS
+    ]
     return {
         "variant": variant,
         "round": round_number,
@@ -88,6 +114,7 @@ def measured_result(
             "p95_ms": request_p95,
             "throughput_rps": 0.05,
         },
+        "success_request": success_request,
         "unrelated_cohort": {
             "samples": unrelated_samples,
             "mean_ms": unrelated_p95,
@@ -95,15 +122,27 @@ def measured_result(
             "throughput_rps": 0.01,
         },
         "statuses": {"business:200": request_samples},
+        "outcome_counts": {"business:success": request_samples},
+        "business_outcomes": {"success": request_samples, "reject": 0, "error": 0},
+        "response_evidence": [],
         "errors": {},
         "phases": {"total": {"count": request_samples, "sum_seconds": 1.0}},
+        "phase_schema": {
+            "status": "supported",
+            "kind": HARNESS.PHASE_SCHEMA_OPERATION,
+            "metric_name": "hikari_http_request_duration_seconds",
+            "selector": dict(HARNESS.PHASE_METRIC_SELECTOR),
+            "phase_keys": ["total"],
+            "coverage_count": request_samples,
+            "coverage_phase": "total",
+        },
         "accepted_progress": {
             "source": "maintenance_or_recovery_response_field_only",
             "responses": 0,
             "reported": 0,
         },
         "cohort": cohort or COHORT,
-        "scenarios": [],
+        "scenarios": scenario_records,
         "scenario_contract": SCENARIOS,
         "credential_mapping": MAPPING,
         "resource_observation": resource_observation or RESOURCES,
@@ -284,7 +323,67 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
             [
                 "round-1/baseline/request.samples_below_minimum",
                 "round-1/baseline/control.samples_missing",
+                "round-1/baseline/business/success.samples_below_minimum",
+                "round-1/baseline/scenarios/serial/success.samples_below_minimum",
+                "round-1/baseline/scenarios/cross_account_concurrency_4/success.samples_below_minimum",
+                "round-1/baseline/scenarios/cross_account_concurrency_8/success.samples_below_minimum",
+                "round-1/baseline/scenarios/same_account_queue/success.samples_below_minimum",
             ],
+        )
+
+    def test_rejects_all_429_business_samples_even_when_transport_samples_are_adequate(self) -> None:
+        result = measured_result(
+            variant="candidate",
+            round_number=1,
+            request_p95=100,
+            unrelated_p95=100,
+        )
+        result["request"] = {
+            "samples": 30,
+            "mean_ms": 100,
+            "p95_ms": 100,
+            "throughput_rps": 0.05,
+        }
+        result["success_request"] = {
+            "samples": 0,
+            "mean_ms": None,
+            "p95_ms": None,
+            "throughput_rps": 0.0,
+        }
+        result["business_outcomes"] = {"success": 0, "reject": 30, "error": 0}
+        result["statuses"] = {"business:429": 30}
+        result["phases"] = {}
+        result["phase_schema"] = {
+            "status": "unsupported",
+            "kind": HARNESS.PHASE_SCHEMA_UNSUPPORTED,
+            "reason": "selector_no_matching_phase_series",
+            "coverage_count": 0,
+        }
+        for scenario in result["scenarios"]:
+            scenario["actual"] = {
+                "outcomes": {"success": 0, "reject": 30, "error": 0},
+                "success_request": {
+                    "samples": 0,
+                    "mean_ms": None,
+                    "p95_ms": None,
+                    "throughput_rps": 0.0,
+                },
+            }
+        comparison = HARNESS.compare_round(
+            paired_round(
+                1,
+                measured_result(variant="baseline", round_number=1, request_p95=100, unrelated_p95=100),
+                result,
+            ),
+            min_samples=30,
+        )
+
+        self.assertFalse(comparison["comparable"])
+        self.assertIn("round-1/candidate/business/success.samples_missing", comparison["reasons"])
+        self.assertIn("round-1/candidate/business/429_or_error_only", comparison["reasons"])
+        self.assertIn(
+            "round-1/candidate/phase_schema/selector_no_matching_phase_series",
+            comparison["reasons"],
         )
 
     def test_cohort_mismatch_is_unvalidated(self) -> None:
@@ -311,6 +410,25 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
 
 
 class LocalBoundaryCheckpointTests(unittest.TestCase):
+    def test_http_reject_is_not_a_success_sample_and_keeps_fixed_429_evidence(self) -> None:
+        recorder = HARNESS.SampleRecorder()
+        recorder.add_status(
+            "business",
+            429,
+            12.0,
+            b'{"error":"quota_exhausted","message":"quota exhausted for this token"}',
+            {"Content-Type": "application/json", "Retry-After": "7", "Authorization": "Bearer secret"},
+        )
+
+        result = recorder.result(1)
+
+        self.assertEqual(result["request"]["samples"], 1)
+        self.assertEqual(result["success_request"]["samples"], 0)
+        self.assertEqual(result["business_outcomes"], {"success": 0, "reject": 1, "error": 0})
+        self.assertEqual(result["response_evidence"][0]["body"]["error"], "quota_exhausted")
+        self.assertEqual(result["response_evidence"][0]["headers"]["retry-after"], "7")
+        self.assertNotIn("authorization", result["response_evidence"][0]["headers"])
+
     def test_business_success_does_not_count_as_accepted_maintenance_progress(self) -> None:
         recorder = HARNESS.SampleRecorder()
         recorder.add_status("business", 200, 10.0, b'{"accepted_progress": 99}')
@@ -379,6 +497,15 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
         self.assertTrue(HARNESS.phase_metric_matches(base_labels))
         self.assertTrue(HARNESS.phase_metric_matches(candidate_labels))
         self.assertFalse(HARNESS.phase_metric_matches(wrong_operation))
+        self.assertTrue(
+            HARNESS.phase_metric_matches_schema(base_labels, HARNESS.PHASE_SCHEMA_LEGACY)
+        )
+        self.assertTrue(
+            HARNESS.phase_metric_matches_schema(candidate_labels, HARNESS.PHASE_SCHEMA_OPERATION)
+        )
+        self.assertFalse(
+            HARNESS.phase_metric_matches_schema(base_labels, HARNESS.PHASE_SCHEMA_OPERATION)
+        )
 
     def test_sqlite_pool_mismatch_remains_fail_closed(self) -> None:
         mismatch = {
