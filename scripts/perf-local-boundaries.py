@@ -610,7 +610,7 @@ def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
             continue
         metric_kind, labels_text, raw_value = match.groups()
         labels = dict(re.findall(r'(\w+)="([^"]*)"', labels_text))
-        if any(labels.get(key) != value for key, value in PHASE_METRIC_SELECTOR.items()):
+        if not phase_metric_matches(labels):
             continue
         phase = labels.get("phase")
         if phase is None:
@@ -618,6 +618,17 @@ def collect_phase_metrics(port: int, token: str) -> dict[str, dict[str, float]]:
         bucket = values.setdefault(phase, {"count": 0.0, "sum_seconds": 0.0})
         bucket["count" if metric_kind == "count" else "sum_seconds"] = float(raw_value)
     return values
+
+
+def phase_metric_matches(labels: dict[str, str]) -> bool:
+    """Match base metrics while requiring operation on the candidate schema."""
+
+    for key, value in PHASE_METRIC_SELECTOR.items():
+        if key == "operation" and key not in labels:
+            continue
+        if labels.get(key) != value:
+            return False
+    return True
 
 
 def request_once(

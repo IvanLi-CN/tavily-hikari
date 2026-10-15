@@ -366,6 +366,20 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
         self.assertEqual(process["cgroup"]["memory_max_raw"], "max")
         self.assertIsNone(process["cgroup"]["memory_max_bytes"])
 
+    def test_phase_metric_selector_accepts_base_and_candidate_label_shapes(self) -> None:
+        base_labels = {
+            "route_family": "http_search",
+            "method": "POST",
+            "outcome": "success",
+            "phase": "total",
+        }
+        candidate_labels = {**base_labels, "operation": "search"}
+        wrong_operation = {**base_labels, "operation": "mcp"}
+
+        self.assertTrue(HARNESS.phase_metric_matches(base_labels))
+        self.assertTrue(HARNESS.phase_metric_matches(candidate_labels))
+        self.assertFalse(HARNESS.phase_metric_matches(wrong_operation))
+
     def test_sqlite_pool_mismatch_remains_fail_closed(self) -> None:
         mismatch = {
             **RESOURCES,
