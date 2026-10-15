@@ -2,7 +2,7 @@ name: Docs Pages
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "prd/**"]
   push:
     branches: [main]
   workflow_dispatch:
