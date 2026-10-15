@@ -193,9 +193,11 @@ class MockUpstreamHandler(BaseHTTPRequestHandler):
 
     def _respond(self) -> None:
         with self.observation_lock:
-            self.request_count += 1
+            type(self).request_count += 1
             key = "200"
-            self.response_status_counts[key] = self.response_status_counts.get(key, 0) + 1
+            type(self).response_status_counts[key] = (
+                type(self).response_status_counts.get(key, 0) + 1
+            )
         time.sleep(self.delay_seconds)
         payload = {
             "results": [{"title": "synthetic", "url": "http://sandbox.invalid/result"}],
@@ -412,10 +414,19 @@ class CheckpointStore:
             "reason": result.get("reason"),
             "duration_seconds": result.get("duration_seconds"),
             "request": result.get("request"),
+            "success_request": result.get("success_request"),
             "unrelated_cohort": result.get("unrelated_cohort"),
             "statuses": result.get("statuses", {}),
+            "business_statuses": result.get("business_statuses", {}),
+            "outcome_counts": result.get("outcome_counts", {}),
+            "business_outcomes": result.get("business_outcomes", {}),
+            "response_evidence": result.get("response_evidence", []),
             "errors": result.get("errors", {}),
             "phases": result.get("phases", {}),
+            "phase_schema": result.get("phase_schema"),
+            "warmup": result.get("warmup"),
+            "fixture_settings": result.get("fixture_settings"),
+            "mock_upstream": result.get("mock_upstream"),
             "cohort": result.get("cohort"),
             "accepted_progress": result.get("accepted_progress"),
             "scenarios": result.get("scenarios"),

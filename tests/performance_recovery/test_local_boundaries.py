@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import urllib.request
 from pathlib import Path
 import sqlite3
 import sys
@@ -116,6 +117,8 @@ def measured_result(
             "throughput_rps": 0.05,
         },
         "success_request": success_request,
+        "business_outcomes": {"success": request_samples, "reject": 0, "error": 0},
+        "business_statuses": {"200": request_samples, "429": 0, "other": 0},
         "unrelated_cohort": {
             "samples": unrelated_samples,
             "mean_ms": unrelated_p95,
@@ -148,6 +151,33 @@ def measured_result(
         "scenario_contract": SCENARIOS,
         "credential_mapping": MAPPING,
         "resource_observation": resource_observation or RESOURCES,
+        "warmup": {
+            "duration_seconds": 1,
+            "request": success_request,
+            "business_statuses": {"200": request_samples, "429": 0, "other": 0},
+            "business_outcomes": {"success": request_samples, "reject": 0, "error": 0},
+            "response_evidence": [],
+        },
+        "fixture_settings": dict(HARNESS.SYNTHETIC_FIXTURE_SETTINGS),
+        "mock_upstream": {
+            "before": {
+                "status": "ready",
+                "url_kind": "loopback_synthetic_mock",
+                "request_count": 0,
+                "response_statuses": {},
+                "response_usage_credits": 1,
+                "response_contract": "results + usage.credits=1",
+            },
+            "after": {
+                "status": "ready",
+                "url_kind": "loopback_synthetic_mock",
+                "request_count": request_samples,
+                "response_statuses": {"200": request_samples},
+                "response_usage_credits": 1,
+                "response_contract": "results + usage.credits=1",
+            },
+            "response_usage_credits": 1,
+        },
     }
 
 
@@ -412,6 +442,19 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
 
 
 class LocalBoundaryCheckpointTests(unittest.TestCase):
+    def test_mock_upstream_evidence_counts_requests_and_usage(self) -> None:
+        with HARNESS.MockUpstream(0) as mock:
+            with urllib.request.urlopen(f"{mock.url}/", timeout=2) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"usage", response.read())
+
+            evidence = mock.evidence()
+
+        self.assertEqual(evidence["request_count"], 1)
+        self.assertEqual(evidence["response_statuses"], {"200": 1})
+        self.assertEqual(evidence["response_usage_credits"], 1)
+        self.assertEqual(evidence["response_contract"], "results + usage.credits=1")
+
     def test_http_reject_is_not_a_success_sample_and_keeps_fixed_429_evidence(self) -> None:
         recorder = HARNESS.SampleRecorder()
         recorder.add_status(
@@ -627,7 +670,22 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
 
             self.assertEqual(variant["status"], "measured")
             self.assertEqual(variant["duration_seconds"], 600)
-            for field in ("request", "unrelated_cohort", "statuses", "errors", "phases"):
+            for field in (
+                "request",
+                "success_request",
+                "unrelated_cohort",
+                "statuses",
+                "business_statuses",
+                "outcome_counts",
+                "business_outcomes",
+                "response_evidence",
+                "errors",
+                "phases",
+                "phase_schema",
+                "warmup",
+                "fixture_settings",
+                "mock_upstream",
+            ):
                 self.assertIn(field, variant)
 
     def test_phase_comparison_is_persisted_before_any_extension(self) -> None:
