@@ -646,12 +646,20 @@ class SampleRecorder:
             errors = dict(self.errors)
             accepted_progress = self.accepted_progress
             reported_progress = self.reported_progress
+        business_statuses = {"200": 0, "429": 0, "other": 0}
+        for key, count in statuses.items():
+            lane, _, raw_status = key.partition(":")
+            if lane != "business":
+                continue
+            bucket = raw_status if raw_status in {"200", "429"} else "other"
+            business_statuses[bucket] += count
         return {
             "duration_seconds": duration_seconds,
             "request": self.stats(elapsed_ms, duration_seconds),
             "success_request": self.stats(success_elapsed_ms, duration_seconds),
             "unrelated_cohort": self.stats(unrelated_elapsed_ms, duration_seconds),
             "statuses": dict(sorted(statuses.items())),
+            "business_statuses": business_statuses,
             "outcome_counts": dict(sorted(outcome_counts.items())),
             "business_outcomes": {
                 outcome: outcome_counts.get(f"business:{outcome}", 0)
@@ -1079,12 +1087,14 @@ def run_workload_window(
                 },
                 "actual": {
                     "outcomes": recorded["business_outcomes"],
+                    "status_counts": recorded["business_statuses"],
                     "success_request": recorded["success_request"],
                 },
                 "request": recorded["request"],
                 "success_request": recorded["success_request"],
                 "statuses": recorded["statuses"],
                 "outcome_counts": recorded["outcome_counts"],
+                "business_statuses": recorded["business_statuses"],
                 "response_evidence": recorded["response_evidence"],
                 "errors": recorded["errors"],
                 "accepted_progress": recorded["accepted_progress"],
@@ -1908,6 +1918,7 @@ def measurement_view(result: dict[str, Any]) -> dict[str, Any]:
         "statuses": result.get("statuses", {}),
         "outcome_counts": result.get("outcome_counts", {}),
         "business_outcomes": result.get("business_outcomes", {}),
+        "business_statuses": result.get("business_statuses", {}),
         "response_evidence": result.get("response_evidence", []),
         "errors": result.get("errors", {}),
         "phases": result.get("phases", {}),

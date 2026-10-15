@@ -90,6 +90,7 @@ def measured_result(
             },
             "actual": {
                 "outcomes": {"success": request_samples, "reject": 0, "error": 0},
+                "status_counts": {"200": request_samples, "429": 0, "other": 0},
                 "success_request": success_request,
             },
             "success_request": success_request,
@@ -124,6 +125,7 @@ def measured_result(
         "statuses": {"business:200": request_samples},
         "outcome_counts": {"business:success": request_samples},
         "business_outcomes": {"success": request_samples, "reject": 0, "error": 0},
+        "business_statuses": {"200": request_samples, "429": 0, "other": 0},
         "response_evidence": [],
         "errors": {},
         "phases": {"total": {"count": request_samples, "sum_seconds": 1.0}},
@@ -425,6 +427,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
         self.assertEqual(result["request"]["samples"], 1)
         self.assertEqual(result["success_request"]["samples"], 0)
         self.assertEqual(result["business_outcomes"], {"success": 0, "reject": 1, "error": 0})
+        self.assertEqual(result["business_statuses"], {"200": 0, "429": 1, "other": 0})
         self.assertEqual(result["response_evidence"][0]["body"]["error"], "quota_exhausted")
         self.assertEqual(result["response_evidence"][0]["headers"]["retry-after"], "7")
         self.assertNotIn("authorization", result["response_evidence"][0]["headers"])
