@@ -23,8 +23,8 @@ SPEC.loader.exec_module(HARNESS)
 
 
 COHORT = HARNESS.logical_cohort(
-    tuple(f"subject-{index}" for index in range(1, 9)),
-    tuple(f"token-{index}" for index in range(1, 9)),
+    tuple(f"subject-{index}" for index in range(1, 15)),
+    tuple(f"token-{index}" for index in range(1, 15)),
     0.25,
 )
 SCENARIOS = HARNESS.scenario_contract(0.25)
@@ -37,7 +37,7 @@ MAPPING = {
             "token_id": f"{index:04d}",
             "billing_subject": f"token:{index:04d}",
         }
-        for index in range(1, 9)
+        for index in range(1, 15)
     ],
 }
 RESOURCES = {
@@ -96,6 +96,18 @@ def measured_result(
             },
             "success_request": success_request,
             "request": success_request,
+            "credential_ids": [
+                f"{index + 1:04d}" for index in scenario["credential_indices"]
+            ],
+            "credential_labels": [
+                f"token-{index + 1}" for index in scenario["credential_indices"]
+            ],
+            "billing_subjects": [
+                f"token:{index + 1:04d}" for index in scenario["credential_indices"]
+            ],
+            "subjects": [
+                f"subject-{index + 1}" for index in scenario["subject_indices"]
+            ],
             "statuses": {"business:200": request_samples},
             "outcome_counts": {"business:success": request_samples},
             "response_evidence": [],
@@ -190,6 +202,42 @@ def paired_round(
 
 
 class LocalBoundaryComparatorTests(unittest.TestCase):
+    def test_identity_reuse_is_unvalidated_even_when_samples_are_healthy(self) -> None:
+        result = measured_result(
+            variant="candidate",
+            round_number=1,
+            request_p95=100,
+            unrelated_p95=100,
+        )
+        cross_account = next(
+            record for record in result["scenarios"] if record["name"] == "cross_account_concurrency_4"
+        )
+        cross_account["credential_ids"] = ["0001"] * 4
+        cross_account["billing_subjects"] = ["token:0001"] * 4
+        cross_account["subjects"] = ["subject-1"] * 4
+
+        reasons = HARNESS.measurement_reasons(1, "candidate", result, min_samples=30)
+
+        self.assertIn(
+            "round-1/candidate/scenarios/cross_account_concurrency_4/identity/"
+            "billing_subjects_reuse_mismatch",
+            reasons,
+        )
+        self.assertTrue(
+            any(
+                reason.endswith(
+                    "identity/credential_reused_with_cross_account_concurrency_4"
+                )
+                for reason in reasons
+            )
+        )
+        self.assertTrue(
+            any(
+                reason.endswith("identity/subject_reused_with_cross_account_concurrency_4")
+                for reason in reasons
+            )
+        )
+
     def test_single_round_regression_is_preserved_instead_of_hidden_by_aggregate_p95(self) -> None:
         rounds = [
             paired_round(
@@ -513,17 +561,57 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                 token_id=f"{index:04d}",
                 billing_subject=f"token:{index:04d}",
             )
-            for index in range(1, 9)
+            for index in range(1, 15)
         )
-        cross, _ = HARNESS.scenario_bindings(
-            "cross_account_concurrency_8", credentials, tuple(f"subject-{i}" for i in range(1, 9))
-        )
-        same, _ = HARNESS.scenario_bindings(
-            "same_account_queue", credentials, tuple(f"subject-{i}" for i in range(1, 9))
-        )
+        subjects = tuple(f"subject-{index}" for index in range(1, 15))
+        bindings = {
+            scenario["name"]: HARNESS.scenario_bindings(scenario["name"], credentials, subjects)
+            for scenario in scenarios
+        }
 
-        self.assertEqual(len({credential.billing_subject for credential in cross}), 8)
-        self.assertEqual(len({credential.billing_subject for credential in same}), 1)
+        self.assertEqual(
+            [scenario["credential_indices"] for scenario in scenarios],
+            [[0], [1, 2, 3, 4], [5, 6, 7, 8, 9, 10, 11, 12], [13] * 8],
+        )
+        self.assertEqual(
+            [scenario["subject_indices"] for scenario in scenarios],
+            [[0], [1, 2, 3, 4], [5, 6, 7, 8, 9, 10, 11, 12], [13] * 8],
+        )
+        for name in ("serial", "cross_account_concurrency_4", "cross_account_concurrency_8"):
+            scenario_credentials, scenario_subjects = bindings[name]
+            self.assertEqual(
+                len({credential.billing_subject for credential in scenario_credentials}),
+                len(scenario_credentials),
+            )
+            self.assertEqual(len(set(scenario_subjects)), len(scenario_subjects))
+
+        same_credentials, same_subjects = bindings["same_account_queue"]
+        self.assertEqual(len({credential.billing_subject for credential in same_credentials}), 1)
+        self.assertEqual(len(set(same_subjects)), 1)
+
+        scenario_owners = {
+            name: {credential.billing_subject for credential in bindings[name][0]}
+            for name in (
+                "serial",
+                "cross_account_concurrency_4",
+                "cross_account_concurrency_8",
+                "same_account_queue",
+            )
+        }
+        subject_owners = {
+            name: set(bindings[name][1])
+            for name in (
+                "serial",
+                "cross_account_concurrency_4",
+                "cross_account_concurrency_8",
+                "same_account_queue",
+            )
+        }
+        for owners in (scenario_owners, subject_owners):
+            for left_name, left_subjects in owners.items():
+                for right_name, right_subjects in owners.items():
+                    if left_name < right_name:
+                        self.assertTrue(left_subjects.isdisjoint(right_subjects))
 
     def test_resource_spec_is_parsed_into_enforceable_values(self) -> None:
         self.assertEqual(HARNESS.DEFAULT_RESOURCES, "cpu=2,memory=1GiB,sqlite_pool=3")

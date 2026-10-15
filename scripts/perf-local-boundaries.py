@@ -39,8 +39,8 @@ DEFAULT_MOCK_DELAY_MS = 200
 DEFAULT_MIN_SAMPLES = 30
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
-DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 9))
-DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 9))
+DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 15))
+DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 15))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
 MAX_RESPONSE_EVIDENCE = 12
@@ -81,6 +81,22 @@ LEGACY_PHASE_METRIC_SELECTOR = {
     key: value for key, value in PHASE_METRIC_SELECTOR.items() if key != "operation"
 }
 
+# Keep each scenario's account identity isolated while preserving same-account
+# sharing inside the queue scenario. Indices are part of the persisted contract.
+SCENARIO_IDENTITY_INDICES = {
+    "serial": {"credentials": (0,), "subjects": (0,)},
+    "cross_account_concurrency_4": {
+        "credentials": (1, 2, 3, 4),
+        "subjects": (1, 2, 3, 4),
+    },
+    "cross_account_concurrency_8": {
+        "credentials": (5, 6, 7, 8, 9, 10, 11, 12),
+        "subjects": (5, 6, 7, 8, 9, 10, 11, 12),
+    },
+    "same_account_queue": {"credentials": (13,) * 8, "subjects": (13,) * 8},
+}
+REQUIRED_IDENTITY_COUNT = 14
+
 
 @dataclass(frozen=True)
 class Credential:
@@ -108,6 +124,8 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "credential_slots": 1,
             "expected_outcome": "success",
             "expected_status_class": "2xx",
+            "credential_indices": list(SCENARIO_IDENTITY_INDICES["serial"]["credentials"]),
+            "subject_indices": list(SCENARIO_IDENTITY_INDICES["serial"]["subjects"]),
             "scheduling": scheduling,
         },
         {
@@ -118,6 +136,12 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "credential_slots": 4,
             "expected_outcome": "success",
             "expected_status_class": "2xx",
+            "credential_indices": list(
+                SCENARIO_IDENTITY_INDICES["cross_account_concurrency_4"]["credentials"]
+            ),
+            "subject_indices": list(
+                SCENARIO_IDENTITY_INDICES["cross_account_concurrency_4"]["subjects"]
+            ),
             "scheduling": scheduling,
         },
         {
@@ -128,6 +152,12 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "credential_slots": 8,
             "expected_outcome": "success",
             "expected_status_class": "2xx",
+            "credential_indices": list(
+                SCENARIO_IDENTITY_INDICES["cross_account_concurrency_8"]["credentials"]
+            ),
+            "subject_indices": list(
+                SCENARIO_IDENTITY_INDICES["cross_account_concurrency_8"]["subjects"]
+            ),
             "scheduling": scheduling,
         },
         {
@@ -138,6 +168,12 @@ def scenario_contract(interval_seconds: float) -> list[dict[str, Any]]:
             "credential_slots": 1,
             "expected_outcome": "success",
             "expected_status_class": "2xx",
+            "credential_indices": list(
+                SCENARIO_IDENTITY_INDICES["same_account_queue"]["credentials"]
+            ),
+            "subject_indices": list(
+                SCENARIO_IDENTITY_INDICES["same_account_queue"]["subjects"]
+            ),
             "scheduling": scheduling,
         },
     ]
@@ -981,15 +1017,19 @@ def scenario_bindings(
     credentials: tuple[Credential, ...],
     subjects: tuple[str, ...],
 ) -> tuple[tuple[Credential, ...], tuple[str, ...]]:
-    if name == "serial":
-        return (credentials[0],), (subjects[0],)
-    if name == "cross_account_concurrency_4":
-        return credentials[:4], subjects[:4]
-    if name == "cross_account_concurrency_8":
-        return credentials[:8], subjects[:8]
-    if name == "same_account_queue":
-        return (credentials[0],) * 8, (subjects[0],) * 8
-    raise ValueError(f"unknown workload scenario: {name}")
+    try:
+        indices = SCENARIO_IDENTITY_INDICES[name]
+    except KeyError as error:
+        raise ValueError(f"unknown workload scenario: {name}") from error
+    try:
+        return (
+            tuple(credentials[index] for index in indices["credentials"]),
+            tuple(subjects[index] for index in indices["subjects"]),
+        )
+    except IndexError as error:
+        raise ValueError(
+            f"scenario {name} requires {REQUIRED_IDENTITY_COUNT} credential and subject slots"
+        ) from error
 
 
 def run_scenario_window(
@@ -1831,8 +1871,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("the local boundary contract fixes mock delay at 200ms")
     if not args.subjects or not args.tokens:
         raise SystemExit("subject and token distributions must be non-empty")
-    if len(args.subjects) < 8 or len(args.tokens) < 8:
-        raise SystemExit("at least eight subjects and token labels are required for concurrency-8")
+    if len(args.subjects) < REQUIRED_IDENTITY_COUNT or len(args.tokens) < REQUIRED_IDENTITY_COUNT:
+        raise SystemExit(
+            f"at least {REQUIRED_IDENTITY_COUNT} subjects and token labels are required for isolated scenarios"
+        )
+    if len(set(args.subjects[:REQUIRED_IDENTITY_COUNT])) != REQUIRED_IDENTITY_COUNT:
+        raise SystemExit("the first 14 subjects must be distinct across workload scenarios")
+    if len(set(args.tokens[:REQUIRED_IDENTITY_COUNT])) != REQUIRED_IDENTITY_COUNT:
+        raise SystemExit("the first 14 token labels must be distinct across workload scenarios")
     if any(not re.fullmatch(r"subject-[a-z0-9-]+", value) for value in args.subjects):
         raise SystemExit("subjects must use synthetic subject-* values")
     if any(not re.fullmatch(r"token-[a-z0-9-]+", value) for value in args.tokens):
@@ -2008,6 +2054,8 @@ def scenario_shape_key(result: dict[str, Any]) -> str | None:
             "concurrency": item.get("concurrency"),
             "credential_mode": item.get("credential_mode"),
             "credential_slots": item.get("credential_slots"),
+            "credential_indices": item.get("credential_indices"),
+            "subject_indices": item.get("subject_indices"),
             "expected_outcome": item.get("expected_outcome"),
             "expected_status_class": item.get("expected_status_class"),
             "scheduling": item.get("scheduling"),
@@ -2016,6 +2064,71 @@ def scenario_shape_key(result: dict[str, Any]) -> str | None:
         if isinstance(item, dict)
     ]
     return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
+
+def scenario_identity_reasons(
+    prefix: str,
+    scenarios: list[dict[str, Any]],
+    records_by_name: dict[str, dict[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+    credential_id_owners: dict[str, set[str]] = {}
+    credential_owners: dict[str, set[str]] = {}
+    subject_owners: dict[str, set[str]] = {}
+    for scenario in scenarios:
+        name = scenario.get("name")
+        record = records_by_name.get(name)
+        credential_indices = scenario.get("credential_indices")
+        subject_indices = scenario.get("subject_indices")
+        if (
+            not isinstance(name, str)
+            or not isinstance(record, dict)
+            or not isinstance(credential_indices, list)
+            or not isinstance(subject_indices, list)
+        ):
+            reasons.append(f"{prefix}/scenarios/{name}/identity_contract_missing")
+            continue
+        for field, expected_indices in (
+            ("credential_ids", credential_indices),
+            ("billing_subjects", credential_indices),
+            ("subjects", subject_indices),
+        ):
+            values = record.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value for value in values
+            ):
+                reasons.append(f"{prefix}/scenarios/{name}/identity/{field}_missing")
+                continue
+            if len(values) != len(expected_indices):
+                reasons.append(f"{prefix}/scenarios/{name}/identity/{field}_count_mismatch")
+            if len(set(values)) != len(set(expected_indices)):
+                reasons.append(f"{prefix}/scenarios/{name}/identity/{field}_reuse_mismatch")
+            if field == "subjects":
+                subject_owners[name] = set(values)
+            elif field == "credential_ids":
+                credential_id_owners[name] = set(values)
+            elif field == "billing_subjects":
+                credential_owners[name] = set(values)
+
+    for owners, reason_suffix in (
+        (credential_id_owners, "credential_reused_with"),
+        (credential_owners, "billing_subject_reused_with"),
+    ):
+        scenario_names = list(owners)
+        for index, left_name in enumerate(scenario_names):
+            for right_name in scenario_names[index + 1 :]:
+                if owners[left_name].isdisjoint(owners[right_name]):
+                    continue
+                reasons.append(
+                    f"{prefix}/scenarios/{left_name}/identity/{reason_suffix}_{right_name}"
+                )
+    scenario_names = list(subject_owners)
+    for index, left_name in enumerate(scenario_names):
+        for right_name in scenario_names[index + 1 :]:
+            if subject_owners[left_name].isdisjoint(subject_owners[right_name]):
+                continue
+            reasons.append(f"{prefix}/scenarios/{left_name}/identity/subject_reused_with_{right_name}")
+    return reasons
 
 
 def measurement_reasons(
@@ -2118,6 +2231,8 @@ def measurement_reasons(
                 reasons.append(f"{prefix}/scenarios/{name}/success.samples_below_minimum")
             elif scenario_success.get("p95_ms") is None:
                 reasons.append(f"{prefix}/scenarios/{name}/success.p95_missing")
+        if isinstance(scenarios, list):
+            reasons.extend(scenario_identity_reasons(prefix, scenarios, records_by_name))
     phase_schema = result.get("phase_schema")
     if not isinstance(phase_schema, dict):
         reasons.append(f"{prefix}/phase_schema/missing")
