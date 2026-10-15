@@ -41,8 +41,24 @@ MAPPING = {
 }
 RESOURCES = {
     "status": "validated",
-    "requested": {"raw": "cpu=2,memory=1GiB,sqlite_pool=4"},
-    "startup": {"sqlite_pool_max_connections": 4},
+    "scope": "launcher_process_and_inherited_descendants",
+    "requested": {
+        "raw": "cpu=2,memory=1GiB,sqlite_pool=3",
+        "cpu": 2,
+        "memory": "1GiB",
+        "memory_bytes": 1024**3,
+        "sqlite_pool": 3,
+    },
+    "process": {
+        "cpu_affinity_cpus": [0, 1],
+        "address_space_limit_bytes": [1024**3, 1024**3],
+        "cgroup": {"memory_max_raw": "max", "memory_max_bytes": None},
+    },
+    "startup": {
+        "sqlite_pool_max_connections": 3,
+        "source": "src/lib.rs:SQLITE_POOL_MAX_CONNECTIONS_DEFAULT",
+    },
+    "enforcement": ["sched_setaffinity", "RLIMIT_AS"],
 }
 
 
@@ -55,6 +71,7 @@ def measured_result(
     request_samples: int = 30,
     unrelated_samples: int = 30,
     cohort: dict[str, object] | None = None,
+    resource_observation: dict[str, object] | None = None,
     status: str = "measured",
     reason: str | None = None,
 ) -> dict[str, object]:
@@ -89,7 +106,7 @@ def measured_result(
         "scenarios": [],
         "scenario_contract": SCENARIOS,
         "credential_mapping": MAPPING,
-        "resource_observation": RESOURCES,
+        "resource_observation": resource_observation or RESOURCES,
     }
 
 
@@ -335,11 +352,54 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
         self.assertEqual(len({credential.billing_subject for credential in same}), 1)
 
     def test_resource_spec_is_parsed_into_enforceable_values(self) -> None:
-        spec = HARNESS.parse_resource_spec("cpu=2,memory=1GiB,sqlite_pool=4")
+        self.assertEqual(HARNESS.DEFAULT_RESOURCES, "cpu=2,memory=1GiB,sqlite_pool=3")
+        spec = HARNESS.parse_resource_spec(HARNESS.DEFAULT_RESOURCES)
 
         self.assertEqual(spec["cpu"], 2)
         self.assertEqual(spec["memory_bytes"], 1024**3)
-        self.assertEqual(spec["sqlite_pool"], 4)
+        self.assertEqual(spec["sqlite_pool"], 3)
+
+    def test_resource_observation_identifies_process_rlimit_scope(self) -> None:
+        self.assertEqual(RESOURCES["scope"], "launcher_process_and_inherited_descendants")
+        process = RESOURCES["process"]
+        self.assertEqual(process["address_space_limit_bytes"], [1024**3, 1024**3])
+        self.assertEqual(process["cgroup"]["memory_max_raw"], "max")
+        self.assertIsNone(process["cgroup"]["memory_max_bytes"])
+
+    def test_sqlite_pool_mismatch_remains_fail_closed(self) -> None:
+        mismatch = {
+            **RESOURCES,
+            "status": "mismatch",
+            "requested": {
+                **RESOURCES["requested"],
+                "raw": "cpu=2,memory=1GiB,sqlite_pool=4",
+                "sqlite_pool": 4,
+            },
+            "errors": ["sqlite_pool_requested_4_observed_3"],
+        }
+        comparison = HARNESS.compare_round(
+            paired_round(
+                1,
+                measured_result(
+                    variant="baseline",
+                    round_number=1,
+                    request_p95=100,
+                    unrelated_p95=100,
+                    resource_observation=mismatch,
+                ),
+                measured_result(
+                    variant="candidate",
+                    round_number=1,
+                    request_p95=100,
+                    unrelated_p95=100,
+                ),
+            ),
+            min_samples=1,
+            min_control_samples=1,
+        )
+
+        self.assertEqual(comparison["status"], "unvalidated")
+        self.assertIn("round-1/baseline/resources/constraints_unverified", comparison["reasons"])
 
     def test_runtime_binding_check_rejects_bound_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

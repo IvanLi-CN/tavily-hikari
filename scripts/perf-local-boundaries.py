@@ -41,7 +41,7 @@ DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
 DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 9))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 9))
-DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=4"
+DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
 REQUIRED_SCENARIO_NAMES = (
     "serial",
