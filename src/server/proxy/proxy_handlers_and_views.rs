@@ -866,7 +866,7 @@ async fn proxy_handler(
         && let Some(tid) = token_id.as_deref()
     {
         let result = {
-            let _phase = tavily_hikari::observability::begin_request_phase("billing_lock_wait");
+            let _phase = tavily_hikari::observability::begin_request_phase("preflight");
             state.proxy.lock_token_billing(tid).await
         };
         Some(result.map_err(|err| {

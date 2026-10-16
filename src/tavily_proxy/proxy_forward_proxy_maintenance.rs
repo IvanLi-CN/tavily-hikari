@@ -2058,6 +2058,7 @@ impl TavilyProxy {
         &self,
         billing_subject: &str,
     ) -> Result<(), ProxyError> {
+        let _settlement_phase = crate::observability::begin_request_phase("settlement");
         let pending = self
             .key_store
             .list_pending_billing_log_ids(billing_subject)
@@ -2096,21 +2097,26 @@ impl TavilyProxy {
         &self,
         billing_subject: &str,
     ) -> Result<TokenBillingGuard, ProxyError> {
-        let lock = {
-            let mut locks = self.token_billing_locks.lock().await;
-            if locks.len() > 1024 {
-                locks.retain(|_, lock| lock.strong_count() > 0);
-            }
+        let local_guard = {
+            let _billing_lock_phase =
+                crate::observability::begin_request_phase("billing_lock_wait");
+            let lock = {
+                let mut locks = self.token_billing_locks.lock().await;
+                if locks.len() > 1024 {
+                    locks.retain(|_, lock| lock.strong_count() > 0);
+                }
 
-            if let Some(existing) = locks.get(billing_subject).and_then(|lock| lock.upgrade()) {
-                existing
-            } else {
-                let lock = Arc::new(Mutex::new(()));
-                locks.insert(billing_subject.to_string(), Arc::downgrade(&lock));
-                lock
-            }
+                if let Some(existing) = locks.get(billing_subject).and_then(|lock| lock.upgrade()) {
+                    existing
+                } else {
+                    let lock = Arc::new(Mutex::new(()));
+                    locks.insert(billing_subject.to_string(), Arc::downgrade(&lock));
+                    lock
+                }
+            };
+            lock.lock_owned()
+            .await
         };
-        let local_guard = lock.lock_owned().await;
         Ok(TokenBillingGuard {
             billing_subject: billing_subject.to_string(),
             _local: local_guard,

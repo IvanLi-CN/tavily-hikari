@@ -1138,6 +1138,24 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             self.assertEqual(unavailable["status"], "unavailable")
             self.assertEqual(unavailable["reason"], "service_binary_process_not_found")
 
+            replaced_path = root / "service-replaced"
+            replaced_path.write_bytes(b"replacement-at-the-same-path")
+            (proc_root / "42" / "exe").unlink()
+            (proc_root / "42" / "exe").symlink_to(replaced_path)
+
+            def hash_proc_executable(path: Path) -> str:
+                if path == proc_root / "42" / "exe":
+                    return provenance["binary_sha256"]
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+
+            with mock.patch.object(HARNESS, "sha256_file", side_effect=hash_proc_executable):
+                replaced_evidence = HARNESS.service_process_binary_binding(
+                    41, provenance, proc_root
+                )
+            self.assertEqual(replaced_evidence["status"], "verified")
+            self.assertEqual(replaced_evidence["service_pid"], 42)
+            self.assertEqual(replaced_evidence["service_exe"], str(replaced_path))
+
     def test_system_snapshot_reports_fixed_sources_and_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             proc_root = Path(temporary)

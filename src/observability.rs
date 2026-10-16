@@ -1842,8 +1842,15 @@ mod tests {
             .scope(scope, async {
                 set_request_operation("search");
                 let outer = begin_request_phase("preflight").expect("preflight phase");
-                let inner = begin_request_phase("upstream").expect("upstream phase");
-                drop(inner);
+                let upstream = begin_request_phase("upstream").expect("upstream phase");
+                drop(upstream);
+                let billing_lock =
+                    begin_request_phase("billing_lock_wait").expect("billing lock phase");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                drop(billing_lock);
+                let settlement = begin_request_phase("settlement").expect("settlement phase");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                drop(settlement);
                 drop(outer);
                 REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::OK));
             })
@@ -1885,6 +1892,8 @@ mod tests {
             .map(|phase| histogram_sum(phase))
             .sum();
         assert!((leaf_sum - total_sum).abs() <= 1e-9);
+        assert!(histogram_sum("billing_lock_wait") > 0.0);
+        assert!(histogram_sum("settlement") > 0.0);
         assert!(output.contains("operation=\"search\""));
         assert!(!output.contains("request_id"));
     }

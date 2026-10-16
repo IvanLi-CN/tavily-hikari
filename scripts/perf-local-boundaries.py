@@ -792,10 +792,13 @@ def service_process_binary_binding(
             "matches_manifest": False,
         }
         try:
-            raw_exe = os.readlink(proc_root / str(pid) / "exe")
+            proc_exe = proc_root / str(pid) / "exe"
+            raw_exe = os.readlink(proc_exe)
             exe = raw_exe.removesuffix(" (deleted)")
             candidate["exe"] = exe
-            actual_hash = sha256_file(Path(exe))
+            # /proc/<pid>/exe follows the executing inode even when its displayed pathname
+            # has been replaced or unlinked.
+            actual_hash = sha256_file(proc_exe)
             candidate["sha256"] = actual_hash
             candidate["matches_manifest"] = actual_hash.lower() == expected_hash.lower()
             if candidate["matches_manifest"] and matched is None:

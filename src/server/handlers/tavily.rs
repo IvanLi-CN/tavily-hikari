@@ -850,8 +850,7 @@ async fn proxy_tavily_http_endpoint(
     let token_billing_guard = if !using_dev_open_admin_fallback {
         if let Some(tid) = auth_token_id.as_deref() {
             let result = {
-                let _phase =
-                    tavily_hikari::observability::begin_request_phase("billing_lock_wait");
+                let _phase = tavily_hikari::observability::begin_request_phase("preflight");
                 state.proxy.lock_token_billing(tid).await
             };
             Some(result.map_err(|err| {
