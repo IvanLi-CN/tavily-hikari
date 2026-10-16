@@ -2305,11 +2305,8 @@ mod tests {
                 "search",
                 StatusCode::OK,
                 async move {
-                    let result = {
-                        let _preflight = crate::observability::begin_request_phase("preflight");
-                        waiter_proxy.lock_token_billing(&waiter_token_id).await
-                    };
-                    result
+                    let _preflight = crate::observability::begin_request_phase("preflight");
+                    waiter_proxy.lock_token_billing(&waiter_token_id).await
                 },
             )
             .await
