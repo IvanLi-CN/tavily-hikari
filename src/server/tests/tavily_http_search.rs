@@ -239,13 +239,17 @@ use tower::ServiceExt;
     async fn tavily_http_search_returns_401_for_invalid_token() {
         let db_path = temp_db_path("http-search-401-invalid");
         let db_str = db_path.to_string_lossy().to_string();
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
+        let mock_upstream = "http://127.0.0.1:9".to_string();
 
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), &mock_upstream, &db_str)
             .await
             .expect("proxy created");
 
-        let usage_base = "http://127.0.0.1:58088".to_string();
-        let proxy_addr = spawn_proxy_server(proxy, usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy, mock_upstream, metrics.clone()).await;
 
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
@@ -265,6 +269,13 @@ use tower::ServiceExt;
             Some(&serde_json::Value::String(
                 "invalid or disabled token".into()
             ))
+        );
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "error",
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -362,7 +373,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -608,10 +619,13 @@ use tower::ServiceExt;
         )
         .await;
         let usage_base = format!("http://{}", upstream_addr);
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -621,7 +635,8 @@ use tower::ServiceExt;
             .await
             .expect("create token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
 
@@ -655,6 +670,15 @@ use tower::ServiceExt;
         let resp = handle.await.expect("task join");
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let response_body: serde_json::Value = resp.json().await.expect("response json");
+        assert_eq!(response_body.get("status"), Some(&serde_json::json!(200)));
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
 
         let row = sqlx::query(
             r#"
@@ -742,10 +766,13 @@ use tower::ServiceExt;
         )
         .await;
         let usage_base = format!("http://{}", upstream_addr);
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -756,7 +783,8 @@ use tower::ServiceExt;
             .expect("create token");
         let billing_subject = format!("token:{}", token.id);
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
 
@@ -782,6 +810,15 @@ use tower::ServiceExt;
         let resp = handle.await.expect("task join");
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let response_body: serde_json::Value = resp.json().await.expect("response json");
+        assert_eq!(response_body.get("status"), Some(&serde_json::json!(200)));
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
 
         let verdict = proxy.peek_token_quota(&token.id).await.expect("peek quota");
         assert_eq!(verdict.hourly_used, 0);
@@ -864,7 +901,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -933,6 +970,259 @@ use tower::ServiceExt;
 
         let verdict = proxy.peek_token_quota(&token.id).await.expect("peek quota");
         assert_eq!(verdict.hourly_used, 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_serializes_bound_tokens_but_not_distinct_accounts() {
+        let db_path = temp_db_path("http-search-bound-account-lock-scope");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+
+        let expected_api_key = "tvly-http-search-bound-account-lock-scope-key";
+        let arrived = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (upstream_addr, hits) = spawn_http_search_mock_with_usage_delayed(
+            expected_api_key.to_string(),
+            arrived.clone(),
+            release.clone(),
+        )
+        .await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            &usage_base,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let user_a = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "test".to_string(),
+                provider_user_id: "http-search-bound-account-a".to_string(),
+                username: Some("bound-account-a".to_string()),
+                name: Some("Bound Account A".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: None,
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert account A");
+        let user_b = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "test".to_string(),
+                provider_user_id: "http-search-bound-account-b".to_string(),
+                username: Some("bound-account-b".to_string()),
+                name: Some("Bound Account B".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: None,
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert account B");
+        proxy
+            .update_account_business_quota_limits(&user_a.user_id, 100, 1_000, 10_000)
+            .await
+            .expect("set account A quota");
+        proxy
+            .update_account_business_quota_limits(&user_b.user_id, 100, 1_000, 10_000)
+            .await
+            .expect("set account B quota");
+
+        let first_a = proxy
+            .ensure_user_token_binding(&user_a.user_id, Some("bound-account-a-first"))
+            .await
+            .expect("bind first account A token");
+        let second_a_unbound = proxy
+            .create_access_token(Some("bound-account-a-second"))
+            .await
+            .expect("create second account A token");
+        let second_a = proxy
+            .ensure_user_token_binding_with_preferred(
+                &user_a.user_id,
+                Some("bound-account-a-second"),
+                Some(&second_a_unbound.id),
+            )
+            .await
+            .expect("bind second account A token");
+        assert_eq!(second_a.id, second_a_unbound.id);
+        let token_b = proxy
+            .ensure_user_token_binding(&user_b.user_id, Some("bound-account-b-token"))
+            .await
+            .expect("bind account B token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        for (token_id, expected_user_id) in [
+            (&first_a.id, &user_a.user_id),
+            (&second_a.id, &user_a.user_id),
+            (&token_b.id, &user_b.user_id),
+        ] {
+            let owner = sqlx::query_scalar::<_, String>(
+                "SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1",
+            )
+            .bind(token_id)
+            .fetch_one(&pool)
+            .await
+            .expect("query bound token owner");
+            assert_eq!(&owner, expected_user_id);
+        }
+
+        let first_metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("first request metrics"),
+        );
+        let second_metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("second request metrics"),
+        );
+        let other_metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("other account metrics"),
+        );
+        let first_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base.clone(), first_metrics.clone())
+                .await;
+        let second_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base.clone(), second_metrics.clone())
+                .await;
+        let other_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, other_metrics.clone())
+                .await;
+        let client = Client::new();
+
+        let first = tokio::spawn({
+            let client = client.clone();
+            let url = format!("http://{first_addr}/api/tavily/search");
+            let token = first_a.token.clone();
+            async move {
+                client
+                    .post(url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&serde_json::json!({ "query": "bound-account-first" }))
+                    .send()
+                    .await
+                    .expect("first bound-account request")
+            }
+        });
+        arrived.notified().await;
+
+        let second = tokio::spawn({
+            let client = client.clone();
+            let url = format!("http://{second_addr}/api/tavily/search");
+            let token = second_a.token.clone();
+            async move {
+                client
+                    .post(url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&serde_json::json!({ "query": "bound-account-second" }))
+                    .send()
+                    .await
+                    .expect("second bound-account request")
+            }
+        });
+        let other = tokio::spawn({
+            let client = client.clone();
+            let url = format!("http://{other_addr}/api/tavily/search");
+            let token = token_b.token.clone();
+            async move {
+                client
+                    .post(url)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .json(&serde_json::json!({ "query": "other-account" }))
+                    .send()
+                    .await
+                    .expect("other account request")
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if hits.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("distinct account reaches upstream while same account waits");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "only the first same-account request and distinct-account request should reach upstream"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        for _ in 0..3 {
+            release.notify_one();
+        }
+        let first_response = first.await.expect("join first request");
+        let second_response = second.await.expect("join second request");
+        let other_response = other.await.expect("join other account request");
+        assert_eq!(first_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(second_response.status(), reqwest::StatusCode::OK);
+        assert_eq!(other_response.status(), reqwest::StatusCode::OK);
+        for response in [first_response, second_response, other_response] {
+            let body: serde_json::Value = response.json().await.expect("response json");
+            assert_eq!(body.get("status"), Some(&serde_json::json!(200)));
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        let second_phase_sums = assert_single_request_timing(
+            &second_metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
+        assert!(
+            second_phase_sums["billing_lock_wait"] > 0.05,
+            "same-account token must record the controlled billing wait"
+        );
+        let other_phase_sums = assert_single_request_timing(
+            &other_metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
+        assert!(
+            other_phase_sums["billing_lock_wait"] < 0.05,
+            "distinct account should not inherit the same-account billing wait"
+        );
+        assert_single_request_timing(
+            &first_metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
+
+        assert_eq!(
+            proxy
+                .peek_token_quota(&first_a.id)
+                .await
+                .expect("peek account A first quota")
+                .hourly_used,
+            2
+        );
+        assert_eq!(
+            proxy
+                .peek_token_quota(&second_a.id)
+                .await
+                .expect("peek account A second quota")
+                .hourly_used,
+            2
+        );
+        assert_eq!(
+            proxy
+                .peek_token_quota(&token_b.id)
+                .await
+                .expect("peek account B quota")
+                .hourly_used,
+            1
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2772,6 +3062,9 @@ use tower::ServiceExt;
         let expected_api_key = "tvly-http-research-failed-upstream-key";
         let usage_calls = Arc::new(AtomicUsize::new(0));
         let research_calls = Arc::new(AtomicUsize::new(0));
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
         let app = Router::new()
             .route(
                 "/usage",
@@ -2821,7 +3114,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -2831,7 +3124,8 @@ use tower::ServiceExt;
             .await
             .expect("create token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
 
         let url = format!("http://{}/api/tavily/research", proxy_addr);
@@ -2848,6 +3142,13 @@ use tower::ServiceExt;
         assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
         assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_research",
+            "POST",
+            "research",
+            "error",
+        );
 
         let verdict = proxy
             .peek_token_quota(&access_token.id)

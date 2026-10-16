@@ -12,6 +12,7 @@ use std::{
 #[cfg(test)]
 use std::future::Future;
 
+use axum::extract::Extension;
 use axum::{
     Router,
     body::Body,
@@ -25,6 +26,8 @@ use prometheus::{
     Counter, Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     TextEncoder,
 };
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -1157,6 +1160,11 @@ impl Metrics {
             .encode(&families, &mut output)
             .map(|_| output)
     }
+
+    #[doc(hidden)]
+    pub fn gather_test_metrics(&self) -> String {
+        String::from_utf8(self.gather().expect("gather test metrics")).expect("metrics are utf8")
+    }
 }
 
 #[derive(Clone)]
@@ -1348,6 +1356,24 @@ pub async fn http_metrics_middleware(req: Request<Body>, next: Next) -> Response
     let path = req.uri().path().to_owned();
     let method = req.method().as_str().to_owned();
     let scope = RequestTimingScope::new(global_metrics(), &path, &method);
+    REQUEST_TIMING_SCOPE
+        .scope(scope, async move {
+            let response = next.run(req).await;
+            REQUEST_TIMING_SCOPE.with(|scope| scope.finish(response.status()));
+            response
+        })
+        .await
+}
+
+#[doc(hidden)]
+pub async fn http_metrics_middleware_with_metrics(
+    Extension(metrics): Extension<Arc<Metrics>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let method = req.method().as_str().to_owned();
+    let scope = RequestTimingScope::new(metrics, &path, &method);
     REQUEST_TIMING_SCOPE
         .scope(scope, async move {
             let response = next.run(req).await;
@@ -1873,6 +1899,10 @@ mod tests {
                 let outer = begin_request_phase("preflight").expect("preflight phase");
                 let upstream = begin_request_phase("upstream").expect("upstream phase");
                 drop(upstream);
+                let repeated_preflight =
+                    begin_request_phase("preflight").expect("repeated preflight phase");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                drop(repeated_preflight);
                 let billing_lock =
                     begin_request_phase("billing_lock_wait").expect("billing lock phase");
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -1921,6 +1951,7 @@ mod tests {
             .map(|phase| histogram_sum(phase))
             .sum();
         assert!((leaf_sum - total_sum).abs() <= 1e-9);
+        assert!(histogram_sum("preflight") > 0.0);
         assert!(histogram_sum("billing_lock_wait") > 0.0);
         assert!(histogram_sum("settlement") > 0.0);
         assert!(output.contains("operation=\"search\""));
@@ -1955,6 +1986,39 @@ mod tests {
         drop(scope);
         let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
         assert!(output.contains("outcome=\"cancelled\""));
+        assert_eq!(
+            output
+                .matches("hikari_http_request_duration_seconds_count{")
+                .count(),
+            REQUEST_PHASE_COUNT + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn request_timing_scope_active_future_abort_is_terminal_once() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let entered = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let metrics = metrics.clone();
+            let entered = entered.clone();
+            async move {
+                let scope = RequestTimingScope::new(metrics, "/mcp", "POST");
+                REQUEST_TIMING_SCOPE
+                    .scope(scope, async move {
+                        let _phase = begin_request_phase("upstream").expect("upstream phase");
+                        entered.notify_one();
+                        std::future::pending::<()>().await;
+                    })
+                    .await;
+            }
+        });
+        entered.notified().await;
+        task.abort();
+        assert!(task.await.expect_err("aborted task").is_cancelled());
+
+        let output = metrics.gather_test_metrics();
+        assert!(output.contains("outcome=\"cancelled\""));
+        assert!(output.contains("phase=\"upstream\""));
         assert_eq!(
             output
                 .matches("hikari_http_request_duration_seconds_count{")

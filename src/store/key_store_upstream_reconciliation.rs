@@ -1223,6 +1223,8 @@ impl KeyStore {
             .await?;
         }
         tx.commit().await?;
+        let _reconciliation_schedule =
+            crate::observability::begin_request_phase("reconciliation_schedule");
         self.ensure_upstream_reconciliation_representative_job().await?;
         Ok(Some(period))
     }

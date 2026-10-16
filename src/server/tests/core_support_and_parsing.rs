@@ -67,6 +67,80 @@
         hex
     }
 
+    pub(super) const REQUEST_TIMING_PHASES: [&str; 11] = [
+        "configuration",
+        "billing_lock_wait",
+        "preflight",
+        "key_selection",
+        "upstream",
+        "response_body",
+        "persistence",
+        "settlement",
+        "reconciliation_usage",
+        "reconciliation_schedule",
+        "other",
+    ];
+
+    fn request_timing_metric_value(output: &str, metric: &str, labels: &str) -> f64 {
+        output
+            .lines()
+            .find(|line| line.starts_with(metric) && line.contains(labels))
+            .and_then(|line| line.rsplit_once(' ').map(|(_, value)| value))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or_else(|| panic!("missing {metric} with {labels}: {output}"))
+    }
+
+    pub(super) fn assert_single_request_timing(
+        output: &str,
+        route_family: &str,
+        method: &str,
+        operation: &str,
+        outcome: &str,
+    ) -> HashMap<String, f64> {
+        let base_labels = format!(
+            "method=\"{method}\",operation=\"{operation}\",outcome=\"{outcome}\""
+        );
+        let mut phase_sums = HashMap::new();
+        for phase in REQUEST_TIMING_PHASES {
+            let labels = format!(
+                "{base_labels},phase=\"{phase}\",route_family=\"{route_family}\""
+            );
+            let count = request_timing_metric_value(
+                output,
+                "hikari_http_request_duration_seconds_count{",
+                &labels,
+            );
+            assert_eq!(count, 1.0, "expected one terminal {phase} sample: {output}");
+            let sum = request_timing_metric_value(
+                output,
+                "hikari_http_request_duration_seconds_sum{",
+                &labels,
+            );
+            phase_sums.insert(phase.to_string(), sum);
+        }
+        let total_labels = format!(
+            "{base_labels},phase=\"total\",route_family=\"{route_family}\""
+        );
+        let total_count = request_timing_metric_value(
+            output,
+            "hikari_http_request_duration_seconds_count{",
+            &total_labels,
+        );
+        assert_eq!(total_count, 1.0, "expected one terminal total sample: {output}");
+        let total = request_timing_metric_value(
+            output,
+            "hikari_http_request_duration_seconds_sum{",
+            &total_labels,
+        );
+        let leaf_sum: f64 = phase_sums.values().sum();
+        assert!(
+            (leaf_sum - total).abs() <= 1e-9,
+            "terminal total must equal the 11 leaf phases: {output}"
+        );
+        phase_sums.insert("total".to_string(), total);
+        phase_sums
+    }
+
     pub(super) fn sqlite_test_layout(database_path: &str) -> (String, Option<String>) {
         let database_path = database_path.trim();
         let path = std::path::Path::new(database_path);

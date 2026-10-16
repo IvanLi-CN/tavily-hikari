@@ -33,6 +33,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
+        let _configuration_load = crate::observability::begin_request_phase("configuration");
         let request_rate_limit = self
             .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
             .await?

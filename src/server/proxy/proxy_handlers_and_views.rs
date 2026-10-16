@@ -1134,6 +1134,7 @@ async fn proxy_handler(
         && is_mcp_initialize
         && planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
     {
+        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         match handle_rebalance_mcp_request_body(
             &state,
             &method,
@@ -1164,6 +1165,7 @@ async fn proxy_handler(
             }
         }
     } else if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
+        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         match handle_rebalance_mcp_request_body(
             &state,
             &method,
@@ -1196,13 +1198,17 @@ async fn proxy_handler(
             }
         }
     } else if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         proxy_mcp_follow_up_with_retry(&state, proxy_session_id, proxy_request).await
     } else {
+        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         state.proxy.proxy_request(proxy_request).await
     };
 
     match proxy_result {
         Ok(mut resp) => {
+            let _persistence_phase =
+                tavily_hikari::observability::begin_request_phase("persistence");
             let analysis = analyze_mcp_attempt(resp.status, &resp.body);
             if is_mcp_request {
                 if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
@@ -1632,75 +1638,85 @@ async fn proxy_handler(
                             (api_key_id, billing_subject.as_deref())
                     {
                         let research_request_id = extract_research_request_id(&resp.body);
-                        if let Err(err) = state
-                            .proxy
-                            .record_upstream_reconciliation_usage(
-                                tid,
-                                api_key_id,
-                                subject,
-                                research_request_id.as_deref(),
-                            )
-                            .await
-                        {
+                        let reconciliation = {
+                            let _phase = tavily_hikari::observability::begin_request_phase(
+                                "reconciliation_usage",
+                            );
+                            state
+                                .proxy
+                                .record_upstream_reconciliation_usage(
+                                    tid,
+                                    api_key_id,
+                                    subject,
+                                    research_request_id.as_deref(),
+                                )
+                                .await
+                        };
+                        if let Err(err) = reconciliation {
                             eprintln!("record MCP reconciliation usage failed: {err}");
                         }
                     }
 
                     if credits > 0 {
-                        match if let Some(subject) = billing_subject.as_deref() {
-                            state
-                                .proxy
-                                .record_pending_billing_attempt_for_subject_with_kind_request_log(
-                                    tid,
-                                    &method,
-                                    &path,
-                                    query.as_deref(),
-                                    Some(resp.status.as_u16() as i64),
-                                    tavily_code,
-                                    effective_billable_flag,
-                                    result_status,
-                                    None,
-                                    credits,
-                                    subject,
-                                    &request_kind,
-                                    api_key_id,
-                                    analysis.failure_kind.as_deref(),
-                                    Some(resp.key_effect_code.as_str()),
-                                    resp.key_effect_summary.as_deref(),
-                                    Some(resp.binding_effect_code.as_str()),
-                                    resp.binding_effect_summary.as_deref(),
-                                    Some(resp.selection_effect_code.as_str()),
-                                    resp.selection_effect_summary.as_deref(),
-                                    resp.request_log_id,
-                                )
-                                .await
-                        } else {
-                            state
-                                .proxy
-                                .record_pending_billing_attempt_with_kind_request_log_metadata(
-                                    tid,
-                                    &method,
-                                    &path,
-                                    query.as_deref(),
-                                    Some(resp.status.as_u16() as i64),
-                                    tavily_code,
-                                    effective_billable_flag,
-                                    result_status,
-                                    None,
-                                    credits,
-                                    &request_kind,
-                                    api_key_id,
-                                    analysis.failure_kind.as_deref(),
-                                    Some(resp.key_effect_code.as_str()),
-                                    resp.key_effect_summary.as_deref(),
-                                    Some(resp.binding_effect_code.as_str()),
-                                    resp.binding_effect_summary.as_deref(),
-                                    Some(resp.selection_effect_code.as_str()),
-                                    resp.selection_effect_summary.as_deref(),
-                                    resp.request_log_id,
-                                )
-                                .await
-                        } {
+                        let pending_attempt = {
+                            let _phase =
+                                tavily_hikari::observability::begin_request_phase("persistence");
+                            if let Some(subject) = billing_subject.as_deref() {
+                                state
+                                    .proxy
+                                    .record_pending_billing_attempt_for_subject_with_kind_request_log(
+                                        tid,
+                                        &method,
+                                        &path,
+                                        query.as_deref(),
+                                        Some(resp.status.as_u16() as i64),
+                                        tavily_code,
+                                        effective_billable_flag,
+                                        result_status,
+                                        None,
+                                        credits,
+                                        subject,
+                                        &request_kind,
+                                        api_key_id,
+                                        analysis.failure_kind.as_deref(),
+                                        Some(resp.key_effect_code.as_str()),
+                                        resp.key_effect_summary.as_deref(),
+                                        Some(resp.binding_effect_code.as_str()),
+                                        resp.binding_effect_summary.as_deref(),
+                                        Some(resp.selection_effect_code.as_str()),
+                                        resp.selection_effect_summary.as_deref(),
+                                        resp.request_log_id,
+                                    )
+                                    .await
+                            } else {
+                                state
+                                    .proxy
+                                    .record_pending_billing_attempt_with_kind_request_log_metadata(
+                                        tid,
+                                        &method,
+                                        &path,
+                                        query.as_deref(),
+                                        Some(resp.status.as_u16() as i64),
+                                        tavily_code,
+                                        effective_billable_flag,
+                                        result_status,
+                                        None,
+                                        credits,
+                                        &request_kind,
+                                        api_key_id,
+                                        analysis.failure_kind.as_deref(),
+                                        Some(resp.key_effect_code.as_str()),
+                                        resp.key_effect_summary.as_deref(),
+                                        Some(resp.binding_effect_code.as_str()),
+                                        resp.binding_effect_summary.as_deref(),
+                                        Some(resp.selection_effect_code.as_str()),
+                                        resp.selection_effect_summary.as_deref(),
+                                        resp.request_log_id,
+                                    )
+                                    .await
+                            }
+                        };
+                        match pending_attempt {
                             Ok(log_id) => {
                                 attempt_logged = true;
                                 let lock_lost_msg = token_billing_guard
@@ -1719,7 +1735,14 @@ async fn proxy_handler(
                                         .await;
                                     billing_error = Some(msg);
                                 } else {
-                                    match state.proxy.settle_pending_billing_attempt(log_id).await {
+                                    let settlement = {
+                                        let _phase =
+                                            tavily_hikari::observability::begin_request_phase(
+                                                "settlement",
+                                            );
+                                        state.proxy.settle_pending_billing_attempt(log_id).await
+                                    };
+                                    match settlement {
                                         Ok(PendingBillingSettleOutcome::Charged)
                                         | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
                                         Ok(PendingBillingSettleOutcome::RetryLater) => {
@@ -1797,6 +1820,8 @@ async fn proxy_handler(
             Ok(build_response(resp))
         }
         Err(err) => {
+            let _persistence_phase =
+                tavily_hikari::observability::begin_request_phase("persistence");
             state
                 .proxy
                 .release_business_calls_1h_reservation(business_calls_reservation.take())
