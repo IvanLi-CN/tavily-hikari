@@ -289,7 +289,18 @@ use tower::ServiceExt;
         // Keep env stable across proxy creation + quota warmup.
         let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "2");
 
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        let expected_api_key = "tvly-http-search-429-quota-key";
+        let (upstream_addr, _hits) =
+            spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{upstream_addr}");
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            &usage_base,
+            &db_str,
+        )
             .await
             .expect("proxy created");
         let token = proxy
@@ -310,8 +321,8 @@ use tower::ServiceExt;
             );
         }
 
-        let usage_base = "http://127.0.0.1:58088".to_string();
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
 
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
@@ -355,6 +366,13 @@ use tower::ServiceExt;
         assert_eq!(http_status, Some(429));
         assert_eq!(mcp_status, None);
         assert_eq!(result_status, "quota_exhausted");
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "rate_limited",
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

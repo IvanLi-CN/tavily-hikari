@@ -1352,22 +1352,8 @@ pub async fn start_exporter(metrics: Arc<Metrics>) -> Option<ExporterHandle> {
     })
 }
 
-pub async fn http_metrics_middleware(req: Request<Body>, next: Next) -> Response {
-    let path = req.uri().path().to_owned();
-    let method = req.method().as_str().to_owned();
-    let scope = RequestTimingScope::new(global_metrics(), &path, &method);
-    REQUEST_TIMING_SCOPE
-        .scope(scope, async move {
-            let response = next.run(req).await;
-            REQUEST_TIMING_SCOPE.with(|scope| scope.finish(response.status()));
-            response
-        })
-        .await
-}
-
-#[doc(hidden)]
-pub async fn http_metrics_middleware_with_metrics(
-    Extension(metrics): Extension<Arc<Metrics>>,
+async fn http_metrics_middleware_core(
+    metrics: Arc<Metrics>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -1381,6 +1367,19 @@ pub async fn http_metrics_middleware_with_metrics(
             response
         })
         .await
+}
+
+pub async fn http_metrics_middleware(req: Request<Body>, next: Next) -> Response {
+    http_metrics_middleware_core(global_metrics(), req, next).await
+}
+
+#[doc(hidden)]
+pub async fn http_metrics_middleware_with_metrics(
+    Extension(metrics): Extension<Arc<Metrics>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    http_metrics_middleware_core(metrics, req, next).await
 }
 
 async fn metrics_handler(
@@ -1830,6 +1829,52 @@ fn process_cpu_seconds() -> Option<f64> {
 mod tests {
     use super::*;
 
+    fn request_timing_histogram_value(output: &str, metric: &str, phase: &str) -> f64 {
+        output
+            .lines()
+            .find(|line| line.starts_with(metric) && line.contains(&format!("phase=\"{phase}\"")))
+            .and_then(|line| line.rsplit_once(' ').map(|(_, value)| value))
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or_else(|| panic!("missing {metric} for phase {phase}: {output}"))
+    }
+
+    fn assert_terminal_request_timing(output: &str) -> ([f64; REQUEST_PHASE_COUNT], f64) {
+        let mut phase_sums = [0.0; REQUEST_PHASE_COUNT];
+        for (index, phase) in REQUEST_PHASES.iter().enumerate() {
+            let count = request_timing_histogram_value(
+                output,
+                "hikari_http_request_duration_seconds_count{",
+                phase,
+            );
+            assert_eq!(count, 1.0, "expected one terminal {phase} sample: {output}");
+            phase_sums[index] = request_timing_histogram_value(
+                output,
+                "hikari_http_request_duration_seconds_sum{",
+                phase,
+            );
+        }
+        let total_count = request_timing_histogram_value(
+            output,
+            "hikari_http_request_duration_seconds_count{",
+            "total",
+        );
+        assert_eq!(
+            total_count, 1.0,
+            "expected one terminal total sample: {output}"
+        );
+        let total = request_timing_histogram_value(
+            output,
+            "hikari_http_request_duration_seconds_sum{",
+            "total",
+        );
+        let leaf_sum: f64 = phase_sums.iter().sum();
+        assert!(
+            (leaf_sum - total).abs() <= 1e-9,
+            "terminal total must equal the leaf phases: {output}"
+        );
+        (phase_sums, total)
+    }
+
     #[test]
     fn route_and_method_values_are_bounded() {
         assert_eq!(route_family("/api/tavily/search"), "http_search");
@@ -1899,10 +1944,14 @@ mod tests {
                 let outer = begin_request_phase("preflight").expect("preflight phase");
                 let upstream = begin_request_phase("upstream").expect("upstream phase");
                 drop(upstream);
-                let repeated_preflight =
-                    begin_request_phase("preflight").expect("repeated preflight phase");
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                drop(repeated_preflight);
+                let first_repeated_preflight =
+                    begin_request_phase("preflight").expect("first repeated preflight phase");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                drop(first_repeated_preflight);
+                let second_repeated_preflight =
+                    begin_request_phase("preflight").expect("second repeated preflight phase");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                drop(second_repeated_preflight);
                 let billing_lock =
                     begin_request_phase("billing_lock_wait").expect("billing lock phase");
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -1921,39 +1970,22 @@ mod tests {
             1,
             "terminal request must be counted once"
         );
-        assert_eq!(
-            output
-                .matches("hikari_http_request_duration_seconds_count{")
-                .count(),
-            REQUEST_PHASE_COUNT + 1,
-            "one total plus every leaf phase must be exported"
-        );
-        for phase in REQUEST_PHASES {
-            assert!(
-                output.contains(&format!("phase=\"{phase}\"")),
-                "missing phase {phase}"
-            );
-        }
-        let histogram_sum = |phase: &str| {
-            output
-                .lines()
-                .find(|line| {
-                    line.starts_with("hikari_http_request_duration_seconds_sum{")
-                        && line.contains(&format!("phase=\"{phase}\""))
-                })
-                .and_then(|line| line.rsplit_once(' ').map(|(_, value)| value))
-                .and_then(|value| value.parse::<f64>().ok())
-                .expect("phase histogram sum")
-        };
-        let total_sum = histogram_sum("total");
-        let leaf_sum: f64 = REQUEST_PHASES
+        let (phase_sums, _total_sum) = assert_terminal_request_timing(&output);
+        let preflight_index = REQUEST_PHASES
             .iter()
-            .map(|phase| histogram_sum(phase))
-            .sum();
-        assert!((leaf_sum - total_sum).abs() <= 1e-9);
-        assert!(histogram_sum("preflight") > 0.0);
-        assert!(histogram_sum("billing_lock_wait") > 0.0);
-        assert!(histogram_sum("settlement") > 0.0);
+            .position(|phase| *phase == "preflight")
+            .expect("preflight phase index");
+        assert!(
+            phase_sums[preflight_index] >= Duration::from_millis(25).as_secs_f64(),
+            "repeated preflight segments must accumulate: {output}"
+        );
+        for phase in ["billing_lock_wait", "settlement"] {
+            let index = REQUEST_PHASES
+                .iter()
+                .position(|candidate| *candidate == phase)
+                .expect("phase index");
+            assert!(phase_sums[index] > 0.0, "missing elapsed time for {phase}");
+        }
         assert!(output.contains("operation=\"search\""));
         assert!(!output.contains("request_id"));
     }
@@ -1986,12 +2018,7 @@ mod tests {
         drop(scope);
         let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
         assert!(output.contains("outcome=\"cancelled\""));
-        assert_eq!(
-            output
-                .matches("hikari_http_request_duration_seconds_count{")
-                .count(),
-            REQUEST_PHASE_COUNT + 1
-        );
+        assert_terminal_request_timing(&output);
     }
 
     #[tokio::test]
@@ -2018,13 +2045,12 @@ mod tests {
 
         let output = metrics.gather_test_metrics();
         assert!(output.contains("outcome=\"cancelled\""));
-        assert!(output.contains("phase=\"upstream\""));
-        assert_eq!(
-            output
-                .matches("hikari_http_request_duration_seconds_count{")
-                .count(),
-            REQUEST_PHASE_COUNT + 1
-        );
+        let (phase_sums, _total) = assert_terminal_request_timing(&output);
+        let upstream_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "upstream")
+            .expect("upstream phase index");
+        assert!(phase_sums[upstream_index] > 0.0);
     }
 
     #[test]
