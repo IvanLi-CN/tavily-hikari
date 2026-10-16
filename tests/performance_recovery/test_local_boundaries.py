@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import threading
 import urllib.request
 from pathlib import Path
 import sqlite3
@@ -1205,6 +1206,71 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             (proc_root / "pressure" / "io").unlink()
             incomplete = HARNESS.collect_system_snapshot(42, proc_root)
             self.assertIn("psi_io:FileNotFoundError", incomplete["errors"])
+
+    def test_system_diagnostics_blocked_capture_is_unavailable_until_joined(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc_root = Path(temporary)
+            (proc_root / "pressure").mkdir()
+            (proc_root / "42").mkdir()
+            (proc_root / "stat").write_text(
+                "cpu 10 2 3 40 5 6 7 8 0 0\n", encoding="ascii"
+            )
+            (proc_root / "pressure" / "cpu").write_text(
+                "some avg10=0.10 avg60=0.20 avg300=0.30 total=4\n", encoding="ascii"
+            )
+            (proc_root / "pressure" / "io").write_text(
+                "full avg10=0.01 avg60=0.02 avg300=0.03 total=2\n", encoding="ascii"
+            )
+            (proc_root / "loadavg").write_text("0.10 0.20 0.30 2/100 42\n", encoding="ascii")
+            (proc_root / "42" / "stat").write_text(
+                "42 (service worker) S " + " ".join(["0"] * 21) + "\n", encoding="ascii"
+            )
+            (proc_root / "42" / "io").write_text(
+                "read_bytes: 12\nwrite_bytes: 34\n", encoding="ascii"
+            )
+            (proc_root / "diskstats").write_text(
+                "8 0 vda 1 0 2 3 4 0 5 6 0 7 8 9\n", encoding="ascii"
+            )
+
+            original_collect = HARNESS.collect_system_snapshot
+            capture_count = 0
+            capture_entered = threading.Event()
+            release_capture = threading.Event()
+
+            def controlled_capture(pid: int, proc_root: Path) -> dict[str, object]:
+                nonlocal capture_count
+                capture_count += 1
+                if capture_count == 3:
+                    capture_entered.set()
+                    release_capture.wait(timeout=2)
+                return original_collect(pid, proc_root)
+
+            collector = HARNESS.SystemDiagnosticsCollector(
+                42, interval_seconds=0.01, proc_root=proc_root
+            )
+            with mock.patch.object(
+                HARNESS, "collect_system_snapshot", side_effect=controlled_capture
+            ):
+                collector.start()
+                try:
+                    self.assertTrue(capture_entered.wait(timeout=2))
+                    collector.stop()
+                    evidence = collector.evidence()
+                    self.assertEqual(evidence["status"], "unavailable")
+                    self.assertEqual(evidence["reason"], "collector_join_timeout")
+                    self.assertIn("collector_join_timeout", evidence["errors"])
+                    self.assertFalse(evidence["joined"])
+                    self.assertIsNotNone(collector._thread)
+                    self.assertTrue(collector._thread.is_alive())
+                finally:
+                    release_capture.set()
+                    collector.stop()
+                    thread = collector._thread
+                    if thread is not None:
+                        thread.join(timeout=2)
+                    collector.stop()
+
+            self.assertIsNone(collector._thread)
 
     def test_interrupted_variant_checkpoint_remains_readable_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

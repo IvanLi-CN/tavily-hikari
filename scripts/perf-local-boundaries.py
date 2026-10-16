@@ -1070,7 +1070,12 @@ class SystemDiagnosticsCollector:
         if self._thread is None:
             return
         self._stop.set()
-        self._thread.join(timeout=max(1.0, self.interval_seconds + 1.0))
+        thread = self._thread
+        thread.join(timeout=max(1.0, self.interval_seconds + 1.0))
+        if thread.is_alive():
+            if "collector_join_timeout" not in self._errors:
+                self._errors.append("collector_join_timeout")
+            return
         self._thread = None
 
     def evidence(self) -> dict[str, Any]:
@@ -1087,9 +1092,14 @@ class SystemDiagnosticsCollector:
         observed = {key for sample in self._samples for key in sample}
         missing = [key for key in required if key not in observed]
         status = "validated" if self._samples and not missing and not self._errors else "unavailable"
+        reason = (
+            "collector_join_timeout"
+            if "collector_join_timeout" in self._errors
+            else None if status == "validated" else "system_diagnostics_incomplete"
+        )
         return {
             "status": status,
-            "reason": None if status == "validated" else "system_diagnostics_incomplete",
+            "reason": reason,
             "pid": self.pid,
             "proc_root": str(self.proc_root),
             "cadence_seconds": self.interval_seconds,
@@ -1098,6 +1108,7 @@ class SystemDiagnosticsCollector:
             "missing": missing,
             "errors": sorted(set(self._errors)),
             "samples": self._samples,
+            "joined": self._thread is None or not self._thread.is_alive(),
         }
 
 
