@@ -88,12 +88,24 @@ SERVICE_COMMAND_BINDING = {
 SYSTEM_DIAGNOSTICS = {
     "status": "validated",
     "reason": None,
+    "pid": 42,
     "cadence_seconds": 1.0,
     "sample_count": 2,
     "dropped_samples": 0,
     "missing": [],
     "errors": [],
     "samples": [],
+}
+SERVICE_PROCESS = {
+    "status": "verified",
+    "reason": None,
+    "launcher_pid": 41,
+    "service_pid": 42,
+    "service_exe": "/tmp/perf-service",
+    "service_sha256": "b" * 64,
+    "descendant_pids": [42],
+    "candidate_processes": [],
+    "errors": [],
 }
 
 
@@ -212,6 +224,7 @@ def measured_result(
         "resource_observation": resource_observation or RESOURCES,
         "binary_provenance": BINARY_PROVENANCE,
         "service_command_binding": SERVICE_COMMAND_BINDING,
+        "service_process": SERVICE_PROCESS,
         "system_diagnostics": SYSTEM_DIAGNOSTICS,
         "warmup": {
             "duration_seconds": 1,
@@ -296,6 +309,7 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
             unrelated_p95=100,
         )
         result.pop("binary_provenance")
+        result.pop("service_process")
         result["system_diagnostics"] = {
             "status": "unavailable",
             "reason": "system_diagnostics_incomplete",
@@ -304,6 +318,7 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
         reasons = HARNESS.measurement_reasons(1, "candidate", result, min_samples=30)
 
         self.assertIn("round-1/candidate/binary_provenance/missing", reasons)
+        self.assertIn("round-1/candidate/service_process/missing", reasons)
         self.assertIn(
             "round-1/candidate/system_diagnostics/system_diagnostics_incomplete", reasons
         )
@@ -993,6 +1008,35 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             self.assertNotIn("split-secret-value", split_content)
             self.assertIn("Bearer <REDACTED>", split_content)
 
+            boundary_path = Path(temporary) / "boundary.log"
+            boundary_writer = HARNESS.BoundedLogWriter(boundary_path)
+            complete_records = b"prefix\nAuthorization: Bearer <synthetic-secret>\n"
+            partial_record = b"+padding" + b"p" * (
+                HARNESS.MAX_LOG_REDACTION_CARRY - len(b"+padding")
+            )
+            boundary_writer.write(
+                complete_records + partial_record
+            )
+            boundary_writer.write(b"B" * len(b"prefix\nAuthorization: Bearer "))
+            boundary_writer.close()
+            boundary_content = boundary_path.read_text(encoding="utf-8")
+            self.assertNotIn("synthetic-secret", boundary_content)
+            self.assertIn("Bearer <REDACTED>", boundary_content)
+            self.assertGreater(boundary_writer.evidence()["redaction_gap_bytes"], 0)
+            self.assertEqual(boundary_writer.evidence()["redaction_gap_count"], 1)
+
+            oversized_path = Path(temporary) / "oversized.log"
+            oversized_writer = HARNESS.BoundedLogWriter(oversized_path)
+            oversized_writer.write(
+                b"Authorization: Bearer " + b"s" * HARNESS.MAX_LOG_REDACTION_CARRY
+            )
+            oversized_writer.write(b"\n")
+            oversized_writer.close()
+            oversized_content = oversized_path.read_text(encoding="utf-8")
+            self.assertNotIn("s" * 64, oversized_content)
+            self.assertGreater(oversized_writer.evidence()["redaction_gap_bytes"], 0)
+            self.assertEqual(oversized_writer.evidence()["redaction_gap_count"], 1)
+
     def test_binary_manifest_requires_hash_and_build_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1050,6 +1094,49 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             )
             self.assertEqual(mismatch["status"], "invalid")
             self.assertEqual(mismatch["reason"], "binary_manifest_source_mismatch")
+
+    def test_service_process_binding_selects_manifest_matching_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            proc_root = root / "proc"
+            binary = root / "service"
+            launcher = root / "launcher"
+            binary.write_bytes(b"synthetic-service")
+            launcher.write_bytes(b"synthetic-launcher")
+            for pid in (41, 42):
+                task_root = proc_root / str(pid) / "task" / str(pid)
+                task_root.mkdir(parents=True)
+                (task_root / "children").write_text(
+                    "42\n" if pid == 41 else "", encoding="ascii"
+                )
+            (proc_root / "41" / "exe").symlink_to(launcher)
+            (proc_root / "42" / "exe").symlink_to(binary)
+            provenance = {
+                "status": "verified",
+                "binary_path": str(binary),
+                "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            }
+
+            evidence = HARNESS.service_process_binary_binding(41, provenance, proc_root)
+
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["launcher_pid"], 41)
+            self.assertEqual(evidence["service_pid"], 42)
+            self.assertEqual(evidence["service_exe"], str(binary))
+            self.assertEqual(evidence["service_sha256"], provenance["binary_sha256"])
+            launcher_candidate = next(
+                candidate
+                for candidate in evidence["candidate_processes"]
+                if candidate["pid"] == 41
+            )
+            self.assertFalse(launcher_candidate["matches_manifest"])
+            unavailable = HARNESS.service_process_binary_binding(
+                41,
+                {**provenance, "binary_sha256": "0" * 64},
+                proc_root,
+            )
+            self.assertEqual(unavailable["status"], "unavailable")
+            self.assertEqual(unavailable["reason"], "service_binary_process_not_found")
 
     def test_system_snapshot_reports_fixed_sources_and_missing_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1164,6 +1251,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                 "mock_upstream",
                 "binary_provenance",
                 "service_command_binding",
+                "service_process",
                 "system_diagnostics",
                 "logs",
             ):

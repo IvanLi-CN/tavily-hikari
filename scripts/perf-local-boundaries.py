@@ -49,12 +49,16 @@ DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
 LOG_TRUNCATION_MARKER = b"\n<LOG_TRUNCATED_HEAD_TAIL>\n"
 MAX_LOG_REDACTION_CARRY = MAX_SERVICE_LOG_BYTES
+LOG_REDACTION_GAP_MARKER = b"\n<LOG_REDACTION_GAP>\n"
+MAX_LOG_REDACTION_GAPS = 64
 MAX_RESPONSE_EVIDENCE = 12
 MAX_METRICS_SCRAPES = 256
 MAX_METRICS_SCRAPE_ERRORS = 64
 DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS = 1.0
 MAX_SYSTEM_DIAGNOSTIC_SAMPLES = 4096
 MAX_SYSTEM_DIAGNOSTIC_DEVICES = 64
+MAX_SERVICE_PROCESS_DESCENDANTS = 128
+MAX_SERVICE_PROCESS_CANDIDATES = MAX_SERVICE_PROCESS_DESCENDANTS + 1
 PHASE_SCHEMA_LEGACY = "legacy"
 PHASE_SCHEMA_OPERATION = "operation"
 PHASE_SCHEMA_UNSUPPORTED = "unsupported"
@@ -347,7 +351,14 @@ class BoundedLogWriter:
         self._tail = bytearray()
         self._input_bytes = 0
         self._redacted_bytes = 0
-        self._redaction_carry = ""
+        self._record = bytearray()
+        self._record_start_byte: int | None = None
+        self._dropping_record = False
+        self._redaction_gap_start: int | None = None
+        self._redaction_gap_bytes = 0
+        self._redaction_gap_count = 0
+        self._redaction_gaps: list[dict[str, int | str]] = []
+        self._redaction_gap_overflow_bytes = 0
         self._closed = False
         self._handle = path.open("wb")
 
@@ -364,27 +375,116 @@ class BoundedLogWriter:
             if len(self._tail) > self._tail_capacity:
                 del self._tail[: len(self._tail) - self._tail_capacity]
 
+    def _begin_redaction_gap(self, start_byte: int) -> None:
+        if not self._dropping_record:
+            self._dropping_record = True
+            self._redaction_gap_start = start_byte
+            self._redaction_gap_bytes = 0
+
+    def _add_redaction_gap_bytes(self, count: int) -> None:
+        self._redaction_gap_bytes += count
+
+    def _finish_redaction_gap(self, end_byte: int) -> None:
+        if not self._dropping_record:
+            return
+        start_byte = self._redaction_gap_start
+        if start_byte is None:
+            start_byte = max(0, end_byte - self._redaction_gap_bytes)
+        gap = {
+            "kind": "oversized_record",
+            "start_byte": start_byte,
+            "end_byte": end_byte,
+            "bytes": self._redaction_gap_bytes,
+        }
+        self._redaction_gap_count += 1
+        if len(self._redaction_gaps) < MAX_LOG_REDACTION_GAPS:
+            self._redaction_gaps.append(gap)
+        else:
+            self._redaction_gap_overflow_bytes += self._redaction_gap_bytes
+        self._retain(LOG_REDACTION_GAP_MARKER)
+        self._dropping_record = False
+        self._redaction_gap_start = None
+        self._redaction_gap_bytes = 0
+
+    def _process_record(self, record: bytes) -> None:
+        self._retain(redact_output(record.decode("utf-8", errors="replace")).encode("utf-8"))
+
+    def _consume_fragment(self, fragment: bytes, start_byte: int) -> None:
+        if not fragment:
+            return
+        if self._dropping_record:
+            self._add_redaction_gap_bytes(len(fragment))
+            return
+        record_size = len(self._record) + len(fragment)
+        if record_size > MAX_LOG_REDACTION_CARRY:
+            self._begin_redaction_gap(
+                self._record_start_byte
+                if self._record_start_byte is not None
+                else start_byte
+            )
+            self._add_redaction_gap_bytes(record_size)
+            self._record.clear()
+            self._record_start_byte = None
+            return
+        if not self._record:
+            self._record_start_byte = start_byte
+        self._record.extend(fragment)
+
+    def _consume_complete_record(
+        self, record: bytes, start_byte: int, end_byte: int
+    ) -> None:
+        if self._dropping_record:
+            self._add_redaction_gap_bytes(len(record))
+            self._finish_redaction_gap(end_byte)
+            return
+        record_size = len(self._record) + len(record)
+        if record_size > MAX_LOG_REDACTION_CARRY:
+            self._begin_redaction_gap(
+                self._record_start_byte
+                if self._record_start_byte is not None
+                else start_byte
+            )
+            self._add_redaction_gap_bytes(record_size)
+            self._record.clear()
+            self._record_start_byte = None
+            self._finish_redaction_gap(end_byte)
+            return
+        if self._record:
+            combined = bytes(self._record) + record
+            self._record.clear()
+            self._record_start_byte = None
+            self._process_record(combined)
+        else:
+            self._process_record(record)
+
     def write(self, chunk: bytes) -> None:
         if self._closed:
             raise ValueError("cannot write to a closed log")
         if not chunk:
             return
+        chunk_start = self._input_bytes
         self._input_bytes += len(chunk)
-        text = self._redaction_carry + chunk.decode("utf-8", errors="replace")
-        if len(text) > MAX_LOG_REDACTION_CARRY:
-            split_at = len(text) - MAX_LOG_REDACTION_CARRY
-            self._redaction_carry = text[split_at:]
-            text = text[:split_at]
-        else:
-            self._redaction_carry = text
-            text = ""
-        self._retain(redact_output(text).encode("utf-8"))
+        position = 0
+        while position < len(chunk):
+            newline = chunk.find(b"\n", position)
+            if newline < 0:
+                self._consume_fragment(chunk[position:], chunk_start + position)
+                return
+            end = newline + 1
+            self._consume_complete_record(
+                chunk[position:end], chunk_start + position, chunk_start + end
+            )
+            position = end
 
     def close(self) -> None:
         if self._closed:
             return
-        self._retain(redact_output(self._redaction_carry).encode("utf-8"))
-        self._redaction_carry = ""
+        if self._dropping_record:
+            self._finish_redaction_gap(self._input_bytes)
+        elif self._record:
+            self._process_record(bytes(self._record))
+            self._record.clear()
+            self._record_start_byte = None
         retained_bytes = len(self._head) + len(self._tail)
         truncated = self._redacted_bytes > retained_bytes
         payload = bytes(self._head)
@@ -433,6 +533,12 @@ class BoundedLogWriter:
             "truncated": truncated,
             "retained_ranges": ranges,
             "dropped_ranges": dropped_ranges,
+            "redaction_gap_bytes": sum(
+                int(gap["bytes"]) for gap in self._redaction_gaps
+            ) + self._redaction_gap_overflow_bytes,
+            "redaction_gap_count": self._redaction_gap_count,
+            "redaction_gaps": self._redaction_gaps,
+            "redaction_gap_overflow_bytes": self._redaction_gap_overflow_bytes,
             "closed": self._closed,
         }
 
@@ -602,6 +708,135 @@ def service_command_binary_binding(
     if "$PERF_LOCAL_BINARY_PATH" in command_template or "${PERF_LOCAL_BINARY_PATH}" in command_template:
         return {"status": "explicit_environment", "source": "PERF_LOCAL_BINARY_PATH"}
     return {"status": "unbound", "reason": "service_command_binary_binding_missing"}
+
+
+def unavailable_service_process(
+    reason: str, launcher_pid: int | None = None
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "launcher_pid": launcher_pid,
+        "service_pid": None,
+        "service_exe": None,
+        "service_sha256": None,
+        "descendant_pids": [],
+        "candidate_processes": [],
+        "errors": [reason],
+    }
+
+
+def process_descendant_observation(
+    root_pid: int, proc_root: Path = Path("/proc")
+) -> dict[str, Any]:
+    """Bound process-tree discovery to the launcher and its descendants."""
+
+    queue = [root_pid]
+    seen = {root_pid}
+    descendants: list[int] = []
+    errors: list[str] = []
+    truncated = False
+    while queue:
+        parent_pid = queue.pop(0)
+        children_path = proc_root / str(parent_pid) / "task" / str(parent_pid) / "children"
+        try:
+            children = children_path.read_text(encoding="ascii").split()
+        except (FileNotFoundError, OSError, UnicodeError) as error:
+            errors.append(f"pid_{parent_pid}_children:{type(error).__name__}")
+            continue
+        for child_text in children:
+            try:
+                child_pid = int(child_text)
+            except ValueError:
+                errors.append(f"pid_{parent_pid}_child_invalid")
+                continue
+            if child_pid <= 0 or child_pid in seen:
+                continue
+            if len(descendants) >= MAX_SERVICE_PROCESS_DESCENDANTS:
+                truncated = True
+                break
+            seen.add(child_pid)
+            descendants.append(child_pid)
+            queue.append(child_pid)
+        if truncated:
+            break
+    return {
+        "root_pid": root_pid,
+        "descendant_pids": descendants,
+        "errors": errors,
+        "truncated": truncated,
+    }
+
+
+def service_process_binary_binding(
+    launcher_pid: int,
+    provenance: dict[str, Any],
+    proc_root: Path = Path("/proc"),
+) -> dict[str, Any]:
+    """Bind the ready listener to a live process whose executable matches the build manifest."""
+
+    expected_hash = provenance.get("binary_sha256")
+    if provenance.get("status") != "verified" or not isinstance(expected_hash, str):
+        return unavailable_service_process("binary_provenance_unavailable", launcher_pid)
+
+    process_tree = process_descendant_observation(launcher_pid, proc_root)
+    candidate_pids = [launcher_pid, *process_tree["descendant_pids"]]
+    candidates: list[dict[str, Any]] = []
+    matched: dict[str, Any] | None = None
+    for pid in candidate_pids[:MAX_SERVICE_PROCESS_CANDIDATES]:
+        candidate: dict[str, Any] = {
+            "pid": pid,
+            "role": "launcher" if pid == launcher_pid else "descendant",
+            "exe": None,
+            "sha256": None,
+            "matches_manifest": False,
+        }
+        try:
+            raw_exe = os.readlink(proc_root / str(pid) / "exe")
+            exe = raw_exe.removesuffix(" (deleted)")
+            candidate["exe"] = exe
+            actual_hash = sha256_file(Path(exe))
+            candidate["sha256"] = actual_hash
+            candidate["matches_manifest"] = actual_hash.lower() == expected_hash.lower()
+            if candidate["matches_manifest"] and matched is None:
+                matched = candidate
+        except (FileNotFoundError, OSError, UnicodeError) as error:
+            candidate["error"] = type(error).__name__
+        candidates.append(candidate)
+
+    if matched is None:
+        evidence = unavailable_service_process("service_binary_process_not_found", launcher_pid)
+        evidence.update(
+            {
+                "descendant_pids": process_tree["descendant_pids"],
+                "candidate_processes": candidates,
+                "errors": [
+                    *process_tree["errors"],
+                    *(["process_tree_truncated"] if process_tree["truncated"] else []),
+                    "service_binary_process_not_found",
+                ],
+            }
+        )
+        return evidence
+
+    launcher = next((candidate for candidate in candidates if candidate["pid"] == launcher_pid), None)
+    return {
+        "status": "verified",
+        "reason": None,
+        "launcher_pid": launcher_pid,
+        "launcher": launcher,
+        "service_pid": matched["pid"],
+        "service_exe": matched["exe"],
+        "service_sha256": matched["sha256"],
+        "manifest_binary_path": provenance.get("binary_path"),
+        "manifest_binary_sha256": expected_hash,
+        "descendant_pids": process_tree["descendant_pids"],
+        "candidate_processes": candidates,
+        "errors": [
+            *process_tree["errors"],
+            *(["process_tree_truncated"] if process_tree["truncated"] else []),
+        ],
+    }
 
 
 def parse_proc_cpu_stat(text: str) -> dict[str, int]:
@@ -973,6 +1208,7 @@ class CheckpointStore:
                     "status": "pending",
                     "reason": "variant_not_started",
                 },
+                "service_process": unavailable_service_process("variant_not_started"),
                 "system_diagnostics": unavailable_system_diagnostics("variant_not_started"),
                 "logs": None,
             },
@@ -1018,6 +1254,7 @@ class CheckpointStore:
             "resource_observation": result.get("resource_observation"),
             "binary_provenance": result.get("binary_provenance"),
             "service_command_binding": result.get("service_command_binding"),
+            "service_process": result.get("service_process"),
             "system_diagnostics": result.get("system_diagnostics"),
             "logs": result.get("logs"),
         }
@@ -1099,6 +1336,9 @@ class CheckpointStore:
                     "status": "unavailable",
                     "reason": "interrupted_before_completion",
                 },
+                "service_process": unavailable_service_process(
+                    "interrupted_before_completion"
+                ),
                 "system_diagnostics": unavailable_system_diagnostics(
                     "interrupted_before_completion"
                 ),
@@ -2413,6 +2653,7 @@ def run_variant(
 ) -> dict[str, Any]:
     result: dict[str, Any] | None = None
     system_collector: SystemDiagnosticsCollector | None = None
+    service_process = unavailable_service_process("service_not_started")
 
     def finish(payload: dict[str, Any]) -> dict[str, Any]:
         nonlocal result
@@ -2460,6 +2701,7 @@ def run_variant(
             "resource_observation": None,
             "binary_provenance": binary_provenance,
             "service_command_binding": service_command_binding,
+            "service_process": service_process,
             "system_diagnostics": unavailable_system_diagnostics("service_command_missing"),
         })
     service_command_binding = service_command_binary_binding(
@@ -2490,6 +2732,7 @@ def run_variant(
             "resource_observation": None,
             "binary_provenance": binary_provenance,
             "service_command_binding": service_command_binding,
+            "service_process": service_process,
             "system_diagnostics": unavailable_system_diagnostics(reason),
         })
     environment = dict(os.environ)
@@ -2551,8 +2794,6 @@ def run_variant(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    system_collector = SystemDiagnosticsCollector(process.pid)
-    system_collector.start()
     output_threads = [
         threading.Thread(
             target=drain_process_output,
@@ -2616,6 +2857,38 @@ def run_variant(
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
             })
+        service_process = service_process_binary_binding(process.pid, binary_provenance)
+        if service_process.get("status") != "verified":
+            return finish({
+                "variant": variant,
+                "round": round_number,
+                "ref": resolved,
+                "status": "unvalidated",
+                "reason": "service_process_unverified",
+                "duration_seconds": duration_seconds,
+                "request": None,
+                "unrelated_cohort": None,
+                "phases": {},
+                "accepted_progress": {"responses": 0, "reported": 0},
+                "cohort": logical_cohort(
+                    tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                ),
+                "scenarios": scenario_shape,
+                "scenario_contract": scenario_shape,
+                "credential_mapping": synthetic_mapping,
+                "resource_observation": resource_observation,
+                "service_readiness": service_readiness,
+                "service_process": service_process,
+            })
+        resource_observation["process"].update(
+            {
+                "service_pid": service_process["service_pid"],
+                "service_exe": service_process["service_exe"],
+                "service_binary_sha256": service_process["service_sha256"],
+            }
+        )
+        system_collector = SystemDiagnosticsCollector(int(service_process["service_pid"]))
+        system_collector.start()
         fixture_settings = dict(SYNTHETIC_FIXTURE_SETTINGS)
         fixture_setup: dict[str, Any]
         try:
@@ -2803,6 +3076,7 @@ def run_variant(
         if result is not None:
             result["binary_provenance"] = binary_provenance
             result["service_command_binding"] = service_command_binding
+            result["service_process"] = service_process
             result["system_diagnostics"] = (
                 system_collector.evidence()
                 if system_collector is not None
@@ -3285,6 +3559,28 @@ def measurement_reasons(
         reasons.append(
             f"{prefix}/service_command/{command_binding.get('reason') or 'binary_binding_unverified'}"
         )
+    service_process = result.get("service_process")
+    if not isinstance(service_process, dict):
+        reasons.append(f"{prefix}/service_process/missing")
+    elif service_process.get("status") != "verified":
+        reasons.append(
+            f"{prefix}/service_process/{service_process.get('reason') or 'unverified'}"
+        )
+    else:
+        service_pid = service_process.get("service_pid")
+        if not isinstance(service_pid, int) or service_pid <= 0:
+            reasons.append(f"{prefix}/service_process/service_pid_invalid")
+        if not isinstance(service_process.get("service_exe"), str) or not service_process.get(
+            "service_exe"
+        ):
+            reasons.append(f"{prefix}/service_process/service_exe_missing")
+        expected_binary_sha256 = (
+            binary_provenance.get("binary_sha256")
+            if isinstance(binary_provenance, dict)
+            else None
+        )
+        if service_process.get("service_sha256") != expected_binary_sha256:
+            reasons.append(f"{prefix}/service_process/binary_hash_mismatch")
     system_diagnostics = result.get("system_diagnostics")
     if not isinstance(system_diagnostics, dict):
         reasons.append(f"{prefix}/system_diagnostics/missing")
@@ -3292,6 +3588,10 @@ def measurement_reasons(
         reasons.append(
             f"{prefix}/system_diagnostics/{system_diagnostics.get('reason') or 'incomplete'}"
         )
+    elif isinstance(service_process, dict) and system_diagnostics.get("pid") != service_process.get(
+        "service_pid"
+    ):
+        reasons.append(f"{prefix}/system_diagnostics/service_pid_mismatch")
     if cohort_key(result) is None:
         reasons.append(f"{prefix}/cohort.missing")
     return reasons
@@ -3557,6 +3857,7 @@ def variant_exception_result(
             "status": "unavailable",
             "reason": "variant_exception",
         },
+        "service_process": unavailable_service_process("variant_exception"),
         "system_diagnostics": unavailable_system_diagnostics("variant_exception"),
     }
 
