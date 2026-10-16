@@ -1,6 +1,18 @@
 use super::jobs_and_request_log_retention::RequestLogsRetentionEnvGuard;
 use super::*;
 
+fn request_phase_sum(output: &str, phase: &str) -> f64 {
+    output
+        .lines()
+        .find(|line| {
+            line.starts_with("hikari_http_request_duration_seconds_sum{")
+                && line.contains(&format!("phase=\"{phase}\""))
+        })
+        .and_then(|line| line.rsplit_once(' ').map(|(_, value)| value))
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("missing request phase histogram for {phase}: {output}"))
+}
+
 #[tokio::test]
 async fn create_access_token_returns_secret_when_post_commit_cleanup_fails() {
     let db_path = temp_db_path("access-token-post-commit-cleanup");
@@ -2157,6 +2169,148 @@ async fn token_billing_lock_serializes_across_proxy_instances() {
         .expect("second proxy acquires after release")
         .expect("waiter joins");
 
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_timing_attributes_real_billing_lock_and_pending_replay() {
+    let db_path = temp_db_path("request-timing-billing-attribution");
+    let db_str = db_path.to_string_lossy().to_string();
+    let mock_upstream = "http://127.0.0.1:9";
+    let proxy_a = TavilyProxy::with_endpoint(Vec::<String>::new(), mock_upstream, &db_str)
+        .await
+        .expect("proxy a created");
+    let proxy_b = TavilyProxy::with_endpoint(Vec::<String>::new(), mock_upstream, &db_str)
+        .await
+        .expect("proxy b created");
+    let token = proxy_a
+        .create_access_token(Some("request-timing-billing-attribution"))
+        .await
+        .expect("create token");
+
+    let held_guard = proxy_a
+        .lock_token_billing(&token.id)
+        .await
+        .expect("acquire first billing lock");
+    let waiter_proxy = proxy_b.clone();
+    let waiter_token_id = token.id.clone();
+    let waiter = tokio::spawn(async move {
+        crate::observability::with_test_request_timing_scope(
+            "/api/tavily/search",
+            "POST",
+            "search",
+            StatusCode::OK,
+            async move {
+                let result = {
+                    let _preflight = crate::observability::begin_request_phase("preflight");
+                    waiter_proxy.lock_token_billing(&waiter_token_id).await
+                };
+                result
+            },
+        )
+        .await
+    });
+    let mut waiter = waiter;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut waiter)
+            .await
+            .is_err(),
+        "same-subject lock_token_billing must wait for the held lock"
+    );
+    drop(held_guard);
+    let (waiter_result, lock_output) = tokio::time::timeout(Duration::from_secs(2), waiter)
+        .await
+        .expect("billing lock waiter completes after release")
+        .expect("billing lock waiter joins");
+    drop(waiter_result.expect("second billing lock succeeds"));
+    let billing_lock_wait = request_phase_sum(&lock_output, "billing_lock_wait");
+    assert!(
+        billing_lock_wait > 0.1,
+        "controlled same-subject wait must be recorded as billing_lock_wait: {lock_output}"
+    );
+
+    let log_id = proxy_a
+        .record_pending_billing_attempt(
+            &token.id,
+            &Method::POST,
+            "/api/tavily/search",
+            None,
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            Some("request timing attribution"),
+            1,
+            None,
+        )
+        .await
+        .expect("record pending billing attempt");
+    assert!(log_id > 0);
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let holder_proxy = proxy_a.clone();
+    let holder_release = Arc::clone(&release);
+    let holder = tokio::spawn(async move {
+        holder_proxy
+            .key_store
+            .hold_sqlite_pool_until_for_test(ready_tx, holder_release)
+            .await
+            .expect("hold SQLite pool");
+    });
+    ready_rx.await.expect("SQLite pool holder ready");
+
+    let replay_proxy = proxy_a.clone();
+    let replay_subject = format!("token:{}", token.id);
+    let replay = tokio::spawn(async move {
+        crate::observability::with_test_request_timing_scope(
+            "/api/tavily/search",
+            "POST",
+            "search",
+            StatusCode::OK,
+            async move {
+                let guard = {
+                    let _preflight = crate::observability::begin_request_phase("preflight");
+                    replay_proxy.lock_billing_subject(&replay_subject).await?
+                };
+                replay_proxy
+                    .reconcile_pending_billing_for_subject(guard.billing_subject())
+                    .await?;
+                drop(guard);
+                Ok::<(), ProxyError>(())
+            },
+        )
+        .await
+    });
+    let mut replay = replay;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut replay)
+            .await
+            .is_err(),
+        "pending replay must wait for the held SQLite pool"
+    );
+    release.notify_one();
+    let (replay_result, replay_output) = tokio::time::timeout(Duration::from_secs(2), replay)
+        .await
+        .expect("pending replay completes after pool release")
+        .expect("pending replay joins");
+    replay_result.expect("pending replay succeeds");
+    holder.await.expect("SQLite pool holder joins");
+
+    let settlement = request_phase_sum(&replay_output, "settlement");
+    let replay_billing_lock_wait = request_phase_sum(&replay_output, "billing_lock_wait");
+    let replay_preflight = request_phase_sum(&replay_output, "preflight");
+    assert!(
+        settlement > replay_billing_lock_wait + 0.1,
+        "pending replay DB wait must be settlement, not billing_lock_wait: {replay_output}"
+    );
+    assert!(
+        settlement > replay_preflight + 0.1,
+        "pending replay DB wait must not remain in preflight: {replay_output}"
+    );
+
+    drop(proxy_b);
+    drop(proxy_a);
     let _ = std::fs::remove_file(db_path);
 }
 

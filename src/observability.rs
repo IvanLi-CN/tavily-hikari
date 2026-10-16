@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::future::Future;
+
 use axum::{
     Router,
     body::Body,
@@ -380,6 +383,32 @@ pub fn set_mcp_request_operation_kind(method_is_tool_call: bool, billable: bool)
     } else {
         "mcp_control"
     });
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_request_timing_scope<F>(
+    path: &str,
+    method: &str,
+    operation: &str,
+    status: StatusCode,
+    future: F,
+) -> (F::Output, String)
+where
+    F: Future,
+{
+    let metrics = Arc::new(Metrics::new(None).expect("test metrics"));
+    let scope = RequestTimingScope::new(metrics.clone(), path, method);
+    let result = REQUEST_TIMING_SCOPE
+        .scope(scope, async {
+            set_request_operation(operation);
+            let result = future.await;
+            REQUEST_TIMING_SCOPE.with(|scope| scope.finish(status));
+            result
+        })
+        .await;
+    let output = String::from_utf8(metrics.gather().expect("gather test metrics"))
+        .expect("test metrics are utf8");
+    (result, output)
 }
 
 #[derive(Debug)]
