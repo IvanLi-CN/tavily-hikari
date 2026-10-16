@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import urllib.request
 from pathlib import Path
@@ -61,6 +62,38 @@ RESOURCES = {
         "source": "src/lib.rs:SQLITE_POOL_MAX_CONNECTIONS_DEFAULT",
     },
     "enforcement": ["sched_setaffinity", "RLIMIT_AS"],
+}
+BINARY_PROVENANCE = {
+    "status": "verified",
+    "reason": None,
+    "manifest_path": "/tmp/perf-build.json",
+    "manifest_sha256": "a" * 64,
+    "source_sha": "candidate-ref",
+    "build_input_sha": "candidate-ref",
+    "binary_path": "/tmp/perf-service",
+    "binary_sha256": "b" * 64,
+    "compiler": "rustc 1.91.0",
+    "profile": "release",
+    "flags": ["--locked"],
+    "ci": {
+        "run_id": "123",
+        "run_head_sha": "candidate-ref",
+        "checkout_sha": "candidate-ref",
+    },
+}
+SERVICE_COMMAND_BINDING = {
+    "status": "explicit_placeholder",
+    "source": "{binary}",
+}
+SYSTEM_DIAGNOSTICS = {
+    "status": "validated",
+    "reason": None,
+    "cadence_seconds": 1.0,
+    "sample_count": 2,
+    "dropped_samples": 0,
+    "missing": [],
+    "errors": [],
+    "samples": [],
 }
 
 
@@ -177,6 +210,9 @@ def measured_result(
         "scenario_contract": SCENARIOS,
         "credential_mapping": MAPPING,
         "resource_observation": resource_observation or RESOURCES,
+        "binary_provenance": BINARY_PROVENANCE,
+        "service_command_binding": SERVICE_COMMAND_BINDING,
+        "system_diagnostics": SYSTEM_DIAGNOSTICS,
         "warmup": {
             "duration_seconds": 1,
             "request": success_request,
@@ -250,6 +286,26 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
                 reason.endswith("identity/subject_reused_with_cross_account_concurrency_4")
                 for reason in reasons
             )
+        )
+
+    def test_missing_runtime_provenance_is_unvalidated(self) -> None:
+        result = measured_result(
+            variant="candidate",
+            round_number=1,
+            request_p95=100,
+            unrelated_p95=100,
+        )
+        result.pop("binary_provenance")
+        result["system_diagnostics"] = {
+            "status": "unavailable",
+            "reason": "system_diagnostics_incomplete",
+        }
+
+        reasons = HARNESS.measurement_reasons(1, "candidate", result, min_samples=30)
+
+        self.assertIn("round-1/candidate/binary_provenance/missing", reasons)
+        self.assertIn(
+            "round-1/candidate/system_diagnostics/system_diagnostics_incomplete", reasons
         )
 
     def test_single_round_regression_is_preserved_instead_of_hidden_by_aggregate_p95(self) -> None:
@@ -914,10 +970,136 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             writer.close()
 
             content = path.read_text(encoding="utf-8")
+            evidence = writer.evidence()
 
             self.assertLessEqual(path.stat().st_size, 64)
             self.assertNotIn("tvly-secret-value", content)
             self.assertNotIn("raw-token", content)
+            self.assertIn("<LOG_TRUNCATED_HEAD_TAIL>", content)
+            self.assertTrue(content.endswith("x" * 10))
+            self.assertTrue(evidence["truncated"])
+            self.assertGreater(evidence["dropped_bytes"], 0)
+            self.assertEqual(evidence["strategy"], "head_tail")
+            self.assertEqual(len(evidence["retained_ranges"]), 2)
+            self.assertEqual(len(evidence["dropped_ranges"]), 1)
+            self.assertTrue(evidence["closed"])
+
+            split_path = Path(temporary) / "split.log"
+            split_writer = HARNESS.BoundedLogWriter(split_path, max_bytes=128)
+            split_writer.write(b"Authorization: Bearer tvly-")
+            split_writer.write(b"split-secret-value\n")
+            split_writer.close()
+            split_content = split_path.read_text(encoding="utf-8")
+            self.assertNotIn("split-secret-value", split_content)
+            self.assertIn("Bearer <REDACTED>", split_content)
+
+    def test_binary_manifest_requires_hash_and_build_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "service"
+            binary.write_bytes(b"synthetic-service")
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "source_sha": "candidate-ref",
+                        "run_head_sha": "pull-request-head",
+                        "checkout_sha": "candidate-ref",
+                        "ci": {
+                            "run_id": "38766352037",
+                            "run_head_sha": "pull-request-head",
+                            "checkout_sha": "candidate-ref",
+                        },
+                        "binary": {
+                            "path": binary.name,
+                            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                        },
+                        "build": {
+                            "compiler": "rustc 1.91.0",
+                            "profile": "release",
+                            "flags": ["--locked", "-j2"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            evidence = HARNESS.binary_manifest_evidence(
+                str(manifest), root / "repo", "candidate", "candidate-ref"
+            )
+            binding = HARNESS.service_command_binary_binding("{binary} --help", evidence)
+
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["source_sha"], "candidate-ref")
+            self.assertEqual(evidence["build_input_sha"], "candidate-ref")
+            self.assertEqual(evidence["ci"]["run_head_sha"], "pull-request-head")
+            self.assertEqual(evidence["ci"]["checkout_sha"], "candidate-ref")
+            self.assertEqual(binding["status"], "explicit_placeholder")
+
+            manifest_text = manifest.read_text(encoding="utf-8")
+            manifest.write_text(
+                manifest_text.replace(
+                    '"source_sha": "candidate-ref"', '"source_sha": "other-ref"'
+                ).replace(
+                    '"checkout_sha": "candidate-ref"', '"checkout_sha": "other-ref"'
+                ),
+                encoding="utf-8",
+            )
+            mismatch = HARNESS.binary_manifest_evidence(
+                str(manifest), root / "repo", "candidate", "candidate-ref"
+            )
+            self.assertEqual(mismatch["status"], "invalid")
+            self.assertEqual(mismatch["reason"], "binary_manifest_source_mismatch")
+
+    def test_system_snapshot_reports_fixed_sources_and_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            proc_root = Path(temporary)
+            (proc_root / "pressure").mkdir()
+            (proc_root / "42").mkdir()
+            (proc_root / "stat").write_text(
+                "cpu 10 2 3 40 5 6 7 8 0 0\n", encoding="ascii"
+            )
+            (proc_root / "pressure" / "cpu").write_text(
+                "some avg10=0.10 avg60=0.20 avg300=0.30 total=4\n", encoding="ascii"
+            )
+            (proc_root / "pressure" / "io").write_text(
+                "full avg10=0.01 avg60=0.02 avg300=0.03 total=2\n", encoding="ascii"
+            )
+            (proc_root / "loadavg").write_text("0.10 0.20 0.30 2/100 42\n", encoding="ascii")
+            (proc_root / "42" / "stat").write_text(
+                "42 (service worker) S " + " ".join(["0"] * 21) + "\n", encoding="ascii"
+            )
+            (proc_root / "42" / "io").write_text(
+                "read_bytes: 12\nwrite_bytes: 34\n", encoding="ascii"
+            )
+            (proc_root / "diskstats").write_text(
+                "8 0 vda 1 0 2 3 4 0 5 6 0 7 8 9\n", encoding="ascii"
+            )
+
+            snapshot = HARNESS.collect_system_snapshot(42, proc_root)
+
+            self.assertEqual(snapshot["cpu"]["steal"], 8)
+            self.assertEqual(snapshot["load"]["runnable"], 2)
+            self.assertEqual(snapshot["process_io"]["read_bytes"], 12)
+            self.assertIn("storage", snapshot)
+            self.assertEqual(snapshot["errors"], [])
+
+            collector = HARNESS.SystemDiagnosticsCollector(
+                42, interval_seconds=1.0, proc_root=proc_root
+            )
+            collector._capture()
+            (proc_root / "stat").write_text(
+                "cpu 20 2 3 50 5 6 7 10 0 0\n", encoding="ascii"
+            )
+            collector._capture()
+            diagnostics = collector.evidence()
+            self.assertEqual(diagnostics["status"], "validated")
+            self.assertEqual(diagnostics["sample_count"], 2)
+            self.assertIsNotNone(diagnostics["samples"][1]["cpu_delta"]["steal_percent"])
+
+            (proc_root / "pressure" / "io").unlink()
+            incomplete = HARNESS.collect_system_snapshot(42, proc_root)
+            self.assertIn("psi_io:FileNotFoundError", incomplete["errors"])
 
     def test_interrupted_variant_checkpoint_remains_readable_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -980,6 +1162,10 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                 "warmup",
                 "fixture_settings",
                 "mock_upstream",
+                "binary_provenance",
+                "service_command_binding",
+                "system_diagnostics",
+                "logs",
             ):
                 self.assertIn(field, variant)
 

@@ -9,6 +9,7 @@ temporary fixture paths and fixed workload settings through PERF_LOCAL_* environ
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -46,9 +47,14 @@ DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 15))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 15))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
 MAX_SERVICE_LOG_BYTES = 64 * 1024
+LOG_TRUNCATION_MARKER = b"\n<LOG_TRUNCATED_HEAD_TAIL>\n"
+MAX_LOG_REDACTION_CARRY = MAX_SERVICE_LOG_BYTES
 MAX_RESPONSE_EVIDENCE = 12
 MAX_METRICS_SCRAPES = 256
 MAX_METRICS_SCRAPE_ERRORS = 64
+DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS = 1.0
+MAX_SYSTEM_DIAGNOSTIC_SAMPLES = 4096
+MAX_SYSTEM_DIAGNOSTIC_DEVICES = 64
 PHASE_SCHEMA_LEGACY = "legacy"
 PHASE_SCHEMA_OPERATION = "operation"
 PHASE_SCHEMA_UNSUPPORTED = "unsupported"
@@ -329,33 +335,554 @@ def redact_output(text: str) -> str:
 
 class BoundedLogWriter:
     def __init__(self, path: Path, max_bytes: int = MAX_SERVICE_LOG_BYTES) -> None:
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
         self.path = path
         self.max_bytes = max_bytes
-        self._written = 0
-        self._truncated = False
+        self._marker = LOG_TRUNCATION_MARKER[:max_bytes]
+        self._capacity = max(0, max_bytes - len(self._marker))
+        self._head_capacity = (self._capacity + 1) // 2
+        self._tail_capacity = self._capacity - self._head_capacity
+        self._head = bytearray()
+        self._tail = bytearray()
+        self._input_bytes = 0
+        self._redacted_bytes = 0
+        self._redaction_carry = ""
+        self._closed = False
         self._handle = path.open("wb")
 
+    def _retain(self, encoded: bytes) -> None:
+        if not encoded:
+            return
+        self._redacted_bytes += len(encoded)
+        head_remaining = self._head_capacity - len(self._head)
+        if head_remaining > 0:
+            self._head.extend(encoded[:head_remaining])
+        tail = encoded[head_remaining:]
+        if self._tail_capacity > 0 and tail:
+            self._tail.extend(tail)
+            if len(self._tail) > self._tail_capacity:
+                del self._tail[: len(self._tail) - self._tail_capacity]
+
     def write(self, chunk: bytes) -> None:
-        if self._truncated:
+        if self._closed:
+            raise ValueError("cannot write to a closed log")
+        if not chunk:
             return
-        encoded = redact_output(chunk.decode("utf-8", errors="replace")).encode("utf-8")
-        remaining = self.max_bytes - self._written
-        if remaining <= 0:
-            self._truncated = True
-            return
-        if len(encoded) > remaining:
-            encoded = encoded[:remaining]
-            self._truncated = True
-        self._handle.write(encoded)
-        self._written += len(encoded)
+        self._input_bytes += len(chunk)
+        text = self._redaction_carry + chunk.decode("utf-8", errors="replace")
+        if len(text) > MAX_LOG_REDACTION_CARRY:
+            split_at = len(text) - MAX_LOG_REDACTION_CARRY
+            self._redaction_carry = text[split_at:]
+            text = text[:split_at]
+        else:
+            self._redaction_carry = text
+            text = ""
+        self._retain(redact_output(text).encode("utf-8"))
 
     def close(self) -> None:
-        if self._truncated and self._written < self.max_bytes:
-            marker = b"\n<LOG_TRUNCATED>\n"
-            self._handle.write(marker[: self.max_bytes - self._written])
+        if self._closed:
+            return
+        self._retain(redact_output(self._redaction_carry).encode("utf-8"))
+        self._redaction_carry = ""
+        retained_bytes = len(self._head) + len(self._tail)
+        truncated = self._redacted_bytes > retained_bytes
+        payload = bytes(self._head)
+        if truncated:
+            payload += self._marker
+        payload += bytes(self._tail)
+        self._handle.write(payload[: self.max_bytes])
         self._handle.flush()
         os.fsync(self._handle.fileno())
         self._handle.close()
+        self._closed = True
+
+    def evidence(self) -> dict[str, Any]:
+        retained_bytes = len(self._head) + len(self._tail)
+        truncated = self._redacted_bytes > retained_bytes
+        ranges: list[dict[str, int | str]] = []
+        if self._head:
+            ranges.append({"kind": "head", "start_byte": 0, "end_byte": len(self._head)})
+        if self._tail:
+            tail_start = max(0, self._redacted_bytes - len(self._tail))
+            ranges.append(
+                {
+                    "kind": "tail",
+                    "start_byte": tail_start,
+                    "end_byte": self._redacted_bytes,
+                }
+            )
+        dropped_bytes = max(0, self._redacted_bytes - retained_bytes)
+        dropped_ranges: list[dict[str, int | str]] = []
+        if dropped_bytes:
+            dropped_ranges.append(
+                {
+                    "kind": "dropped",
+                    "start_byte": len(self._head),
+                    "end_byte": max(len(self._head), self._redacted_bytes - len(self._tail)),
+                }
+            )
+        return {
+            "path": str(self.path),
+            "max_bytes": self.max_bytes,
+            "strategy": "head_tail",
+            "input_bytes": self._input_bytes,
+            "redacted_bytes": self._redacted_bytes,
+            "retained_bytes": retained_bytes,
+            "dropped_bytes": dropped_bytes,
+            "truncated": truncated,
+            "retained_ranges": ranges,
+            "dropped_ranges": dropped_ranges,
+            "closed": self._closed,
+        }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_value(manifest: dict[str, Any], build: dict[str, Any], key: str) -> Any:
+    if key in build:
+        return build[key]
+    return manifest.get(key)
+
+
+def binary_manifest_evidence(
+    manifest_template: str | None,
+    repo: Path,
+    variant: str,
+    resolved_revision: str,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "status": "missing" if not manifest_template else "invalid",
+        "reason": "binary_manifest_not_supplied" if not manifest_template else None,
+        "manifest_path": None,
+        "source_sha": None,
+        "build_input_sha": None,
+        "binary_path": None,
+        "binary_sha256": None,
+        "compiler": None,
+        "profile": None,
+        "flags": None,
+        "ci": {},
+    }
+    if not manifest_template:
+        return evidence
+    try:
+        rendered = manifest_template.format(
+            repo=str(repo),
+            variant=variant,
+            revision=resolved_revision,
+        )
+        manifest_path = Path(rendered).expanduser().resolve()
+    except (KeyError, ValueError) as error:
+        evidence["reason"] = f"binary_manifest_template_invalid:{type(error).__name__}"
+        return evidence
+    evidence["manifest_path"] = str(manifest_path)
+    if not manifest_path.is_file():
+        evidence["reason"] = "binary_manifest_missing"
+        return evidence
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        evidence["reason"] = f"binary_manifest_unreadable:{type(error).__name__}"
+        return evidence
+    if not isinstance(manifest, dict):
+        evidence["reason"] = "binary_manifest_not_object"
+        return evidence
+
+    build = manifest.get("build")
+    if not isinstance(build, dict):
+        build = {}
+    binary = manifest.get("binary")
+    if not isinstance(binary, dict):
+        binary = {}
+    source_sha = (
+        manifest.get("source_sha")
+        or manifest.get("source_revision")
+        or build.get("source_sha")
+    )
+    ci = manifest.get("ci")
+    if not isinstance(ci, dict):
+        ci = {}
+    run_head_sha = manifest.get("run_head_sha") or ci.get("run_head_sha")
+    checkout_sha = manifest.get("checkout_sha") or ci.get("checkout_sha")
+    build_input_sha = manifest.get("build_input_sha") or build.get("input_sha") or checkout_sha
+    if source_sha is not None:
+        evidence["source_sha"] = source_sha
+    if build_input_sha is not None:
+        evidence["build_input_sha"] = build_input_sha
+    evidence["ci"] = {
+        key: value
+        for key, value in {
+            "run_id": manifest.get("run_id") or ci.get("run_id"),
+            "run_head_sha": run_head_sha,
+            "checkout_sha": checkout_sha,
+            "artifact_id": manifest.get("artifact_id") or ci.get("artifact_id"),
+            "artifact_name": manifest.get("artifact_name") or ci.get("artifact_name"),
+        }.items()
+        if value is not None
+    }
+    identity_values = [source_sha, build_input_sha]
+    if resolved_revision not in identity_values:
+        evidence["reason"] = "binary_manifest_source_mismatch"
+        return evidence
+
+    binary_path_value = binary.get("path") or manifest.get("binary_path")
+    expected_hash = binary.get("sha256") or manifest.get("binary_sha256")
+    compiler = _manifest_value(manifest, build, "compiler")
+    profile = _manifest_value(manifest, build, "profile")
+    flags = _manifest_value(manifest, build, "flags")
+    if not isinstance(binary_path_value, str) or not binary_path_value:
+        evidence["reason"] = "binary_manifest_binary_path_missing"
+        return evidence
+    binary_path = Path(binary_path_value).expanduser()
+    if not binary_path.is_absolute():
+        binary_path = manifest_path.parent / binary_path
+    binary_path = binary_path.resolve()
+    evidence["binary_path"] = str(binary_path)
+    if not binary_path.is_file():
+        evidence["reason"] = "binary_manifest_binary_missing"
+        return evidence
+    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+        evidence["reason"] = "binary_manifest_binary_hash_missing"
+        return evidence
+    try:
+        actual_hash = sha256_file(binary_path)
+    except OSError as error:
+        evidence["reason"] = f"binary_manifest_binary_unreadable:{type(error).__name__}"
+        return evidence
+    evidence["binary_sha256"] = actual_hash
+    if actual_hash.lower() != expected_hash.lower():
+        evidence["reason"] = "binary_manifest_binary_hash_mismatch"
+        return evidence
+    if (
+        not isinstance(compiler, str)
+        or not compiler.strip()
+        or not isinstance(profile, str)
+        or not profile.strip()
+        or flags is None
+    ):
+        evidence["reason"] = "binary_manifest_build_provenance_missing"
+        return evidence
+    if isinstance(flags, str):
+        flags = [flags]
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        evidence["reason"] = "binary_manifest_build_flags_invalid"
+        return evidence
+    try:
+        manifest_hash = sha256_file(manifest_path)
+    except OSError as error:
+        evidence["reason"] = f"binary_manifest_unreadable:{type(error).__name__}"
+        return evidence
+    evidence.update(
+        {
+            "status": "verified",
+            "reason": None,
+            "manifest_sha256": manifest_hash,
+            "compiler": compiler,
+            "profile": profile,
+            "flags": flags,
+        }
+    )
+    return evidence
+
+
+def service_command_binary_binding(
+    command_template: str, provenance: dict[str, Any]
+) -> dict[str, str]:
+    if provenance.get("status") != "verified":
+        return {"status": "unavailable", "reason": "binary_provenance_unavailable"}
+    if "{binary}" in command_template:
+        return {"status": "explicit_placeholder", "source": "{binary}"}
+    if "$PERF_LOCAL_BINARY_PATH" in command_template or "${PERF_LOCAL_BINARY_PATH}" in command_template:
+        return {"status": "explicit_environment", "source": "PERF_LOCAL_BINARY_PATH"}
+    return {"status": "unbound", "reason": "service_command_binary_binding_missing"}
+
+
+def parse_proc_cpu_stat(text: str) -> dict[str, int]:
+    line = next((line for line in text.splitlines() if line.startswith("cpu ")), "")
+    fields = line.split()
+    if len(fields) < 9:
+        raise ValueError("cpu_stat_missing")
+    names = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice")
+    values = [int(value) for value in fields[1 : 1 + len(names)]]
+    return dict(zip(names, values, strict=False))
+
+
+def parse_proc_psi(text: str) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        values: dict[str, float] = {}
+        for field_value in fields[1:]:
+            key, separator, value = field_value.partition("=")
+            if separator and key in {"avg10", "avg60", "avg300"}:
+                values[key] = float(value)
+        if values:
+            result[fields[0]] = values
+    if not result:
+        raise ValueError("psi_missing")
+    return result
+
+
+def parse_proc_loadavg(text: str) -> dict[str, float | int]:
+    fields = text.split()
+    if len(fields) < 4:
+        raise ValueError("loadavg_missing")
+    runnable, separator, total = fields[3].partition("/")
+    if not separator:
+        raise ValueError("loadavg_runnable_missing")
+    return {
+        "load_1m": float(fields[0]),
+        "load_5m": float(fields[1]),
+        "load_15m": float(fields[2]),
+        "runnable": int(runnable),
+        "processes": int(total),
+        "last_pid": int(fields[4]) if len(fields) > 4 else 0,
+    }
+
+
+def parse_proc_process_stat(text: str, clock_ticks: int) -> dict[str, int]:
+    closing_parenthesis = text.rfind(")")
+    if closing_parenthesis < 0:
+        raise ValueError("process_stat_missing")
+    fields = text[closing_parenthesis + 2 :].split()
+    if len(fields) < 22:
+        raise ValueError("process_stat_fields_missing")
+    return {
+        "utime_ticks": int(fields[11]),
+        "stime_ticks": int(fields[12]),
+        "rss_bytes": int(fields[21]) * os.sysconf("SC_PAGE_SIZE"),
+        "clock_ticks": clock_ticks,
+    }
+
+
+def parse_proc_process_io(text: str) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            try:
+                result[key.strip()] = int(value.strip())
+            except ValueError:
+                continue
+    if not result:
+        raise ValueError("process_io_missing")
+    return result
+
+
+def parse_proc_diskstats(text: str) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 14:
+            continue
+        try:
+            result[fields[2]] = {
+                "reads_completed": int(fields[3]),
+                "sectors_read": int(fields[5]),
+                "writes_completed": int(fields[7]),
+                "sectors_written": int(fields[9]),
+                "io_ms": int(fields[12]),
+                "weighted_io_ms": int(fields[13]),
+            }
+        except ValueError:
+            continue
+    if not result:
+        raise ValueError("diskstats_missing")
+    return dict(list(result.items())[:MAX_SYSTEM_DIAGNOSTIC_DEVICES])
+
+
+def collect_system_snapshot(pid: int, proc_root: Path = Path("/proc")) -> dict[str, Any]:
+    errors: list[str] = []
+
+    def read(path: Path, label: str) -> str | None:
+        try:
+            return path.read_text(encoding="ascii")
+        except (FileNotFoundError, OSError, UnicodeError) as error:
+            errors.append(f"{label}:{type(error).__name__}")
+            return None
+
+    cpu_text = read(proc_root / "stat", "cpu")
+    psi_cpu_text = read(proc_root / "pressure" / "cpu", "psi_cpu")
+    psi_io_text = read(proc_root / "pressure" / "io", "psi_io")
+    load_text = read(proc_root / "loadavg", "load")
+    process_stat_text = read(proc_root / str(pid) / "stat", "process_stat")
+    process_io_text = read(proc_root / str(pid) / "io", "process_io")
+    diskstats_text = read(proc_root / "diskstats", "diskstats")
+    snapshot: dict[str, Any] = {"captured_at_unix": time.time()}
+    try:
+        if cpu_text is not None:
+            snapshot["cpu"] = parse_proc_cpu_stat(cpu_text)
+    except (TypeError, ValueError) as error:
+        errors.append(f"cpu_parse:{type(error).__name__}")
+    for key, text, label in (
+        ("psi_cpu", psi_cpu_text, "psi_cpu"),
+        ("psi_io", psi_io_text, "psi_io"),
+    ):
+        try:
+            if text is not None:
+                snapshot[key] = parse_proc_psi(text)
+        except (TypeError, ValueError) as error:
+            errors.append(f"{label}_parse:{type(error).__name__}")
+    try:
+        if load_text is not None:
+            snapshot["load"] = parse_proc_loadavg(load_text)
+    except (TypeError, ValueError) as error:
+        errors.append(f"load_parse:{type(error).__name__}")
+    try:
+        if process_stat_text is not None:
+            snapshot["process"] = parse_proc_process_stat(
+                process_stat_text, int(os.sysconf("SC_CLK_TCK"))
+            )
+    except (TypeError, ValueError, OSError) as error:
+        errors.append(f"process_stat_parse:{type(error).__name__}")
+    try:
+        if process_io_text is not None:
+            snapshot["process_io"] = parse_proc_process_io(process_io_text)
+    except (TypeError, ValueError) as error:
+        errors.append(f"process_io_parse:{type(error).__name__}")
+    try:
+        if diskstats_text is not None:
+            snapshot["storage"] = parse_proc_diskstats(diskstats_text)
+    except (TypeError, ValueError) as error:
+        errors.append(f"diskstats_parse:{type(error).__name__}")
+    snapshot["errors"] = errors
+    return snapshot
+
+
+class SystemDiagnosticsCollector:
+    """Collect low-frequency, same-cadence guest diagnostics without changing limits."""
+
+    def __init__(
+        self,
+        pid: int,
+        interval_seconds: float = DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS,
+        proc_root: Path = Path("/proc"),
+    ) -> None:
+        self.pid = pid
+        self.interval_seconds = interval_seconds
+        self.proc_root = proc_root
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._samples: list[dict[str, Any]] = []
+        self._errors: list[str] = []
+        self._previous_cpu: dict[str, int] | None = None
+        self._dropped_samples = 0
+
+    def _capture(self) -> None:
+        try:
+            snapshot = collect_system_snapshot(self.pid, self.proc_root)
+        except (OSError, TypeError, ValueError) as error:
+            snapshot = {
+                "captured_at_unix": time.time(),
+                "errors": [f"collector_capture:{type(error).__name__}"],
+            }
+        cpu = snapshot.get("cpu")
+        if isinstance(cpu, dict):
+            if self._previous_cpu is not None:
+                total_fields = (
+                    "user",
+                    "nice",
+                    "system",
+                    "idle",
+                    "iowait",
+                    "irq",
+                    "softirq",
+                    "steal",
+                )
+                total_delta = sum(
+                    int(cpu.get(name, 0)) - int(self._previous_cpu.get(name, 0))
+                    for name in total_fields
+                )
+                steal_delta = int(cpu.get("steal", 0)) - int(self._previous_cpu.get("steal", 0))
+                snapshot["cpu_delta"] = {
+                    "total_jiffies": max(0, total_delta),
+                    "steal_jiffies": max(0, steal_delta),
+                    "steal_percent": (
+                        round(max(0, steal_delta) / total_delta * 100, 6)
+                        if total_delta > 0
+                        else None
+                    ),
+                }
+            self._previous_cpu = cpu
+        if len(self._samples) >= MAX_SYSTEM_DIAGNOSTIC_SAMPLES:
+            self._dropped_samples += 1
+        else:
+            self._samples.append(snapshot)
+        self._errors.extend(snapshot.get("errors", []))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self._capture()
+
+    def start(self) -> None:
+        self._capture()
+        self._thread = threading.Thread(target=self._run, name="perf-system-diagnostics", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self.interval_seconds + 1.0))
+        self._thread = None
+
+    def evidence(self) -> dict[str, Any]:
+        required = (
+            "cpu",
+            "cpu_delta",
+            "psi_cpu",
+            "psi_io",
+            "load",
+            "process",
+            "process_io",
+            "storage",
+        )
+        observed = {key for sample in self._samples for key in sample}
+        missing = [key for key in required if key not in observed]
+        status = "validated" if self._samples and not missing and not self._errors else "unavailable"
+        return {
+            "status": status,
+            "reason": None if status == "validated" else "system_diagnostics_incomplete",
+            "pid": self.pid,
+            "proc_root": str(self.proc_root),
+            "cadence_seconds": self.interval_seconds,
+            "sample_count": len(self._samples),
+            "dropped_samples": self._dropped_samples,
+            "missing": missing,
+            "errors": sorted(set(self._errors)),
+            "samples": self._samples,
+        }
+
+
+def unavailable_system_diagnostics(reason: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "cadence_seconds": DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS,
+        "sample_count": 0,
+        "dropped_samples": 0,
+        "missing": [
+            "process",
+            "process_io",
+            "cpu",
+            "cpu_delta",
+            "psi_cpu",
+            "psi_io",
+            "load",
+            "storage",
+        ],
+        "errors": [reason],
+        "samples": [],
+    }
 
 
 def drain_process_output(stream: Any, sink: BoundedLogWriter) -> None:
@@ -438,6 +965,16 @@ class CheckpointStore:
                 "scenario_contract": self.contract_scenarios,
                 "credential_mapping": None,
                 "resource_observation": None,
+                "binary_provenance": {
+                    "status": "pending",
+                    "reason": "variant_not_started",
+                },
+                "service_command_binding": {
+                    "status": "pending",
+                    "reason": "variant_not_started",
+                },
+                "system_diagnostics": unavailable_system_diagnostics("variant_not_started"),
+                "logs": None,
             },
         )
         self._write_progress("variant_running")
@@ -479,6 +1016,10 @@ class CheckpointStore:
             "scenario_contract": result.get("scenario_contract"),
             "credential_mapping": result.get("credential_mapping"),
             "resource_observation": result.get("resource_observation"),
+            "binary_provenance": result.get("binary_provenance"),
+            "service_command_binding": result.get("service_command_binding"),
+            "system_diagnostics": result.get("system_diagnostics"),
+            "logs": result.get("logs"),
         }
         if result.get("error_type") is not None:
             payload["error_type"] = result["error_type"]
@@ -550,6 +1091,18 @@ class CheckpointStore:
                 "scenario_contract": self.contract_scenarios,
                 "credential_mapping": None,
                 "resource_observation": None,
+                "binary_provenance": {
+                    "status": "missing",
+                    "reason": "interrupted_before_completion",
+                },
+                "service_command_binding": {
+                    "status": "unavailable",
+                    "reason": "interrupted_before_completion",
+                },
+                "system_diagnostics": unavailable_system_diagnostics(
+                    "interrupted_before_completion"
+                ),
+                "logs": None,
             }
             atomic_write_json(
                 self.variant_path(
@@ -1858,10 +2411,21 @@ def run_variant(
     duration_seconds: int,
     log_directory: Path,
 ) -> dict[str, Any]:
+    result: dict[str, Any] | None = None
+    system_collector: SystemDiagnosticsCollector | None = None
+
+    def finish(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal result
+        result = payload
+        return payload
+
     workdir.mkdir(parents=True, exist_ok=True)
     repo = workdir / f"{variant}-repo"
     repo.mkdir()
     resolved = archive_revision(root, revision, repo)
+    binary_provenance = binary_manifest_evidence(
+        getattr(args, "binary_manifest", None), repo, variant, resolved
+    )
     resource_spec = getattr(args, "resource_spec", parse_resource_spec(args.resources))
     scenario_shape = scenario_contract(args.request_interval_seconds)
     synthetic_mapping = credential_mapping_evidence(synthetic_credentials(tuple(args.tokens)))
@@ -1874,7 +2438,11 @@ def run_variant(
     metrics_token_path.chmod(0o600)
     log_directory.mkdir(parents=True, exist_ok=True)
     if not args.service_command:
-        return {
+        service_command_binding = {
+            "status": "missing",
+            "reason": "service_command_missing",
+        }
+        return finish({
             "variant": variant,
             "round": round_number,
             "ref": resolved,
@@ -1890,7 +2458,40 @@ def run_variant(
             "scenario_contract": scenario_shape,
             "credential_mapping": synthetic_mapping,
             "resource_observation": None,
-        }
+            "binary_provenance": binary_provenance,
+            "service_command_binding": service_command_binding,
+            "system_diagnostics": unavailable_system_diagnostics("service_command_missing"),
+        })
+    service_command_binding = service_command_binary_binding(
+        args.service_command, binary_provenance
+    )
+    if binary_provenance.get("status") != "verified" or service_command_binding.get("status") not in {
+        "explicit_placeholder",
+        "explicit_environment",
+    }:
+        reason = binary_provenance.get("reason") or service_command_binding.get(
+            "reason", "binary_provenance_unavailable"
+        )
+        return finish({
+            "variant": variant,
+            "round": round_number,
+            "ref": resolved,
+            "status": "unvalidated",
+            "reason": reason,
+            "duration_seconds": duration_seconds,
+            "request": None,
+            "unrelated_cohort": None,
+            "phases": {},
+            "accepted_progress": {"responses": 0, "reported": 0},
+            "cohort": logical_cohort(tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds),
+            "scenarios": scenario_shape,
+            "scenario_contract": scenario_shape,
+            "credential_mapping": synthetic_mapping,
+            "resource_observation": None,
+            "binary_provenance": binary_provenance,
+            "service_command_binding": service_command_binding,
+            "system_diagnostics": unavailable_system_diagnostics(reason),
+        })
     environment = dict(os.environ)
     environment.update(
         {
@@ -1907,6 +2508,11 @@ def run_variant(
             "PERF_LOCAL_TOKENS": ",".join(args.tokens),
             "PERF_LOCAL_RESOURCES": args.resources,
             "PERF_LOCAL_RESOURCE_SPEC": json.dumps(resource_spec, sort_keys=True),
+            "PERF_LOCAL_BINARY_MANIFEST": str(binary_provenance["manifest_path"]),
+            "PERF_LOCAL_BINARY_PATH": str(binary_provenance["binary_path"]),
+            "PERF_LOCAL_BINARY_SHA256": str(binary_provenance["binary_sha256"]),
+            "PERF_LOCAL_SOURCE_SHA": str(binary_provenance.get("source_sha") or ""),
+            "PERF_LOCAL_BUILD_INPUT_SHA": str(binary_provenance.get("build_input_sha") or ""),
             "TAVILY_UPSTREAM": mock.url,
             "TAVILY_USAGE_BASE": mock.url,
             "PROXY_DB_PATH": str(core),
@@ -1930,6 +2536,9 @@ def run_variant(
         port=port,
         upstream=shlex.quote(mock.url),
         variant=variant,
+        binary=shlex.quote(str(binary_provenance["binary_path"])),
+        manifest=shlex.quote(str(binary_provenance["manifest_path"])),
+        revision=resolved,
     )
     stdout_log = BoundedLogWriter(log_directory / "stdout.log")
     stderr_log = BoundedLogWriter(log_directory / "stderr.log")
@@ -1942,6 +2551,8 @@ def run_variant(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    system_collector = SystemDiagnosticsCollector(process.pid)
+    system_collector.start()
     output_threads = [
         threading.Thread(
             target=drain_process_output,
@@ -1964,7 +2575,7 @@ def run_variant(
             if not error.startswith("sqlite_pool_requested_")
         ]
         if hard_resource_errors:
-            return {
+            return finish({
                 "variant": variant,
                 "round": round_number,
                 "ref": resolved,
@@ -1982,10 +2593,10 @@ def run_variant(
                 "scenario_contract": scenario_shape,
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
-            }
+            })
         service_readiness = wait_for_service(port, args.readiness_timeout_seconds)
         if not service_readiness["listener_ready"]:
-            return {
+            return finish({
                 "variant": variant,
                 "round": round_number,
                 "ref": resolved,
@@ -2004,7 +2615,7 @@ def run_variant(
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
-            }
+            })
         fixture_settings = dict(SYNTHETIC_FIXTURE_SETTINGS)
         fixture_setup: dict[str, Any]
         try:
@@ -2014,7 +2625,7 @@ def run_variant(
                 "status": "failed",
                 "reason": str(error),
             }
-            return {
+            return finish({
                 "variant": variant,
                 "round": round_number,
                 "ref": resolved,
@@ -2034,7 +2645,7 @@ def run_variant(
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
                 "fixture_setup": fixture_setup,
-            }
+            })
         fixture_settings.update(configured_settings)
         fixture_setup = {
             "status": "configured",
@@ -2046,7 +2657,7 @@ def run_variant(
             credentials, bootstrap_evidence = bootstrap_business_tokens(port, tuple(args.tokens))
             fixture_setup["bootstrap"] = bootstrap_evidence
             if bootstrap_evidence["status"] != "ready":
-                return {
+                return finish({
                     "variant": variant,
                     "round": round_number,
                     "ref": resolved,
@@ -2068,13 +2679,13 @@ def run_variant(
                     "resource_observation": resource_observation,
                     "service_readiness": service_readiness,
                     "fixture_setup": fixture_setup,
-                }
+                })
             credential_mapping = credential_mapping_evidence(credentials)
             binding_check = verify_credential_bindings(core, credentials)
             credential_mapping["runtime_binding_check"] = binding_check
             if binding_check.get("status") != "passed":
                 credential_mapping["status"] = "unverified"
-                return {
+                return finish({
                     "variant": variant,
                     "round": round_number,
                     "ref": resolved,
@@ -2094,13 +2705,13 @@ def run_variant(
                     "resource_observation": resource_observation,
                     "service_readiness": service_readiness,
                     "fixture_setup": fixture_setup,
-                }
+                })
         else:
             fixture_setup["bootstrap"] = {
                 "status": "skipped",
                 "reason": "business_credentials_not_bootstrapped",
             }
-            return {
+            return finish({
                 "variant": variant,
                 "round": round_number,
                 "ref": resolved,
@@ -2120,7 +2731,7 @@ def run_variant(
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
                 "fixture_setup": fixture_setup,
-            }
+            })
         mock_before = mock.evidence()
         metrics_collector = MetricsCollector(
             metrics_port,
@@ -2174,15 +2785,33 @@ def run_variant(
                 },
             }
         )
-        return result
+        return finish(result)
+    except HarnessInterrupted:
+        raise
+    except Exception as error:
+        return finish(variant_exception_result(variant, round_number, resolved, args, error))
     finally:
         if "metrics_collector" in locals():
             metrics_collector.stop()
+        if system_collector is not None:
+            system_collector.stop()
         terminate_process(process)
         for thread in output_threads:
             thread.join(timeout=2)
         stdout_log.close()
         stderr_log.close()
+        if result is not None:
+            result["binary_provenance"] = binary_provenance
+            result["service_command_binding"] = service_command_binding
+            result["system_diagnostics"] = (
+                system_collector.evidence()
+                if system_collector is not None
+                else unavailable_system_diagnostics("system_collector_not_started")
+            )
+            result["logs"] = {
+                "stdout": stdout_log.evidence(),
+                "stderr": stderr_log.evidence(),
+            }
 
 
 def parse_args() -> argparse.Namespace:
@@ -2204,7 +2833,17 @@ def parse_args() -> argparse.Namespace:
         help="bounded metrics collector cadence; zero keeps boundary-only scrapes",
     )
     parser.add_argument("--readiness-timeout-seconds", type=float, default=60)
-    parser.add_argument("--service-command", help="shell template; supports {repo}, {db}, {sidecar}, {port}, {upstream}, {variant}")
+    parser.add_argument(
+        "--service-command",
+        help=(
+            "shell template; supports {repo}, {db}, {sidecar}, {port}, {upstream}, "
+            "{variant}, {binary}, {manifest}, {revision}"
+        ),
+    )
+    parser.add_argument(
+        "--binary-manifest",
+        help="JSON build manifest template; supports {repo}, {variant}, {revision}",
+    )
     parser.add_argument("--comparison-entry", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("artifacts/perf-local-boundaries.json"))
     parser.add_argument(
@@ -2629,6 +3268,30 @@ def measurement_reasons(
         reasons.append(f"{prefix}/resources/observation_missing")
     elif resource_observation.get("status") != "validated":
         reasons.append(f"{prefix}/resources/constraints_unverified")
+    binary_provenance = result.get("binary_provenance")
+    if not isinstance(binary_provenance, dict):
+        reasons.append(f"{prefix}/binary_provenance/missing")
+    elif binary_provenance.get("status") != "verified":
+        reasons.append(
+            f"{prefix}/binary_provenance/{binary_provenance.get('reason') or 'unverified'}"
+        )
+    command_binding = result.get("service_command_binding")
+    if not isinstance(command_binding, dict):
+        reasons.append(f"{prefix}/service_command/binary_binding_missing")
+    elif command_binding.get("status") not in {
+        "explicit_placeholder",
+        "explicit_environment",
+    }:
+        reasons.append(
+            f"{prefix}/service_command/{command_binding.get('reason') or 'binary_binding_unverified'}"
+        )
+    system_diagnostics = result.get("system_diagnostics")
+    if not isinstance(system_diagnostics, dict):
+        reasons.append(f"{prefix}/system_diagnostics/missing")
+    elif system_diagnostics.get("status") != "validated":
+        reasons.append(
+            f"{prefix}/system_diagnostics/{system_diagnostics.get('reason') or 'incomplete'}"
+        )
     if cohort_key(result) is None:
         reasons.append(f"{prefix}/cohort.missing")
     return reasons
@@ -2886,6 +3549,15 @@ def variant_exception_result(
             synthetic_credentials(tuple(args.tokens))
         ),
         "resource_observation": None,
+        "binary_provenance": {
+            "status": "missing",
+            "reason": "variant_exception",
+        },
+        "service_command_binding": {
+            "status": "unavailable",
+            "reason": "variant_exception",
+        },
+        "system_diagnostics": unavailable_system_diagnostics("variant_exception"),
     }
 
 
@@ -2920,6 +3592,7 @@ def main() -> int:
             "request_interval_seconds": args.request_interval_seconds,
             "control_interval_seconds": DEFAULT_CONTROL_INTERVAL_SECONDS,
             "metrics_scrape_interval_seconds": args.metrics_scrape_interval_seconds,
+            "system_diagnostics_interval_seconds": DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS,
             "measurement_window": "shared_per_variant",
         },
         "min_samples": args.min_samples,
@@ -2927,6 +3600,7 @@ def main() -> int:
         "bootstrap_business_tokens": args.bootstrap_business_tokens,
         "metrics_enabled": args.metrics_enabled,
         "comparison_entry": str(args.comparison_entry.resolve()),
+        "binary_manifest": args.binary_manifest,
         "upstream_kind": "loopback-synthetic-mock",
         "phase_metric_selector": PHASE_METRIC_SELECTOR,
         "phase_metric_schema_selectors": {
