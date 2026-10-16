@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import sys
@@ -957,7 +958,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
     def test_runtime_binding_check_rejects_bound_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "tokens.db"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection:
                 connection.executescript(
                     """
                     CREATE TABLE auth_tokens (id TEXT PRIMARY KEY);
@@ -971,11 +972,212 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             )
 
             self.assertEqual(HARNESS.verify_credential_bindings(database, credentials)["status"], "passed")
-            with sqlite3.connect(database) as connection:
-                connection.execute(
-                    "INSERT INTO user_token_bindings (token_id, user_id) VALUES ('0002', 'user-2')"
-                )
+            with closing(sqlite3.connect(database)) as connection:
+                with connection:
+                    connection.execute(
+                        "INSERT INTO user_token_bindings (token_id, user_id) VALUES ('0002', 'user-2')"
+                    )
             self.assertEqual(HARNESS.verify_credential_bindings(database, credentials)["status"], "failed")
+
+    def test_bound_fixture_uses_management_binding_and_records_account_quota(self) -> None:
+        labels = tuple(f"token-{index}" for index in range(1, 15))
+        responses = iter(
+            [
+                type(
+                    "Response",
+                    (),
+                    {
+                        "status": 201,
+                        "read": lambda self, index=index: json.dumps(
+                            {"token": f"th-{index:04d}-{'x' * 24}"}
+                        ).encode(),
+                    },
+                )()
+                for index in range(1, 15)
+            ]
+        )
+
+        class Connection:
+            requests: list[tuple[str, str]] = []
+            database: Path | None = None
+            token_index = 0
+
+            def request(self, method: str, path: str, **_kwargs: object) -> None:
+                self.requests.append((method, path))
+
+            def getresponse(self) -> object:
+                Connection.token_index += 1
+                index = Connection.token_index
+                token_id = f"{index:04d}"
+                account_id = f"perf-account-{index:02d}"
+                assert self.database is not None
+                with closing(sqlite3.connect(self.database)) as database:
+                    with database:
+                        database.execute(
+                            """
+                            INSERT INTO auth_tokens
+                                (id, secret, enabled, note, total_requests, created_at)
+                            VALUES (?, ?, 1, ?, 0, 1)
+                            """,
+                            (token_id, "x" * 24, f"perf-local-bound-{index:02d}"),
+                        )
+                        database.execute(
+                            """
+                            INSERT INTO user_token_bindings
+                                (user_id, token_id, created_at, updated_at)
+                            VALUES (?, ?, 1, 1)
+                            """,
+                            (account_id, token_id),
+                        )
+                return next(responses)
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "bound-fixture.db"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.executescript(
+                    """
+                    PRAGMA foreign_keys = ON;
+                    CREATE TABLE users (
+                        id TEXT PRIMARY KEY,
+                        display_name TEXT,
+                        username TEXT,
+                        avatar_template TEXT,
+                        active INTEGER NOT NULL DEFAULT 1,
+                        debug_info_shared INTEGER NOT NULL DEFAULT 0,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        last_login_at INTEGER
+                    );
+                    CREATE TABLE auth_tokens (
+                        id TEXT PRIMARY KEY,
+                        secret TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        note TEXT,
+                        group_name TEXT,
+                        total_requests INTEGER NOT NULL DEFAULT 0,
+                        created_at INTEGER NOT NULL,
+                        last_used_at INTEGER,
+                        deleted_at INTEGER
+                    );
+                    CREATE TABLE user_token_bindings (
+                        user_id TEXT NOT NULL,
+                        token_id TEXT NOT NULL UNIQUE,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, token_id),
+                        FOREIGN KEY (user_id) REFERENCES users(id),
+                        FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+                    );
+                    CREATE TABLE account_quota_limits (
+                        user_id TEXT PRIMARY KEY,
+                        business_calls_1h_limit INTEGER NOT NULL,
+                        daily_credits_limit INTEGER NOT NULL,
+                        monthly_credits_limit INTEGER NOT NULL,
+                        monthly_broken_limit INTEGER NOT NULL DEFAULT 5,
+                        monthly_blocked_key_limit_delta INTEGER NOT NULL DEFAULT 0,
+                        inherits_defaults INTEGER NOT NULL DEFAULT 1,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id)
+                    );
+                    """
+                )
+            connection = Connection()
+            connection.database = database
+            with mock.patch.object(
+                HARNESS.http.client, "HTTPConnection", return_value=connection
+            ):
+                credentials, evidence = HARNESS.bootstrap_bound_business_accounts(
+                    12345, database, labels, 0.25
+                )
+
+            self.assertEqual(evidence["status"], "ready")
+            self.assertEqual(len(credentials), 14)
+            self.assertEqual(
+                [credential.billing_subject for credential in credentials[:2]],
+                ["account:perf-account-01", "account:perf-account-02"],
+            )
+            self.assertEqual(credentials[-1].label, "token-14")
+            self.assertEqual(evidence["runtime_binding_check"]["status"], "passed")
+            self.assertEqual(evidence["quota_headroom"], HARNESS.BOUND_FIXTURE_QUOTA_HEADROOM)
+            self.assertEqual(len(connection.requests), 14)
+            self.assertEqual(connection.requests[0], ("POST", "/api/users/perf-account-01/tokens"))
+            self.assertEqual(connection.requests[-1], ("POST", "/api/users/perf-account-14/tokens"))
+            self.assertEqual(
+                HARNESS.credential_mapping_evidence(credentials, 0.25)["billing_subject_kind"],
+                "account",
+            )
+            self.assertNotIn(credentials[0].secret, json.dumps(evidence))
+            self.assertEqual(
+                HARNESS.verify_bound_credential_bindings(database, credentials)["status"],
+                "passed",
+            )
+
+    def test_bound_fixture_precheck_requires_account_billing_and_one_credit(self) -> None:
+        credential = HARNESS.Credential(
+            "token-14",
+            "th-0014-xxxxxxxxxxxxxxxxxxxxxxxx",
+            "0014",
+            "account:perf-account-14",
+        )
+
+        class Response:
+            status = 200
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"results":[{"title":"synthetic"}],"usage":{"credits":1}}'
+
+        class Connection:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            @staticmethod
+            def getresponse() -> Response:
+                return Response()
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "billing.db"
+            with closing(sqlite3.connect(database)) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        CREATE TABLE auth_token_logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            token_id TEXT NOT NULL,
+                            billing_subject TEXT,
+                            business_credits INTEGER,
+                            result_status TEXT,
+                            billing_state TEXT
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO auth_token_logs
+                            (token_id, billing_subject, business_credits, result_status, billing_state)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("0014", "account:perf-account-14", 1, "success", "pending"),
+                    )
+            with mock.patch.object(
+                HARNESS.http.client, "HTTPConnection", return_value=Connection()
+            ):
+                evidence = HARNESS.run_bound_fixture_precheck(
+                    12345, database, credential, "subject-14"
+                )
+
+        self.assertEqual(evidence["status"], "passed")
+        self.assertEqual(evidence["response_usage_credits"], 1)
+        self.assertEqual(evidence["billing_subject"], "account:perf-account-14")
 
     def test_service_logs_are_bounded_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

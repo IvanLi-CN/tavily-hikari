@@ -9,6 +9,7 @@ temporary fixture paths and fixed workload settings through PERF_LOCAL_* environ
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import http.client
 import json
@@ -43,6 +44,15 @@ DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
 DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = 0.0
 TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS = 5.0
 TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL = 3
+BOUND_FIXTURE_SOURCE = (
+    "SQLite synthetic users + account_quota_limits seed; management API token binding"
+)
+BOUND_FIXTURE_ACCOUNT_PREFIX = "perf-account-"
+BOUND_FIXTURE_QUOTA_HEADROOM = {
+    "business_calls_1h_limit": 100000,
+    "daily_credits_limit": 100000,
+    "monthly_credits_limit": 1000000,
+}
 DEFAULT_SUBJECTS = tuple(f"subject-{index}" for index in range(1, 15))
 DEFAULT_TOKENS = tuple(f"token-{index}" for index in range(1, 15))
 DEFAULT_RESOURCES = "cpu=2,memory=1GiB,sqlite_pool=3"
@@ -204,16 +214,42 @@ def logical_cohort(subjects: tuple[str, ...], tokens: tuple[str, ...], interval:
     }
 
 
-def credential_mapping_evidence(credentials: tuple[Credential, ...]) -> dict[str, Any]:
+def scenario_digest(
+    credentials: tuple[Credential, ...],
+    interval_seconds: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
+) -> str:
+    payload = {
+        "scenario_contract": scenario_contract(interval_seconds),
+        "credentials": [
+            {
+                "label": credential.label,
+                "token_id": credential.token_id,
+                "billing_subject": credential.billing_subject,
+            }
+            for credential in credentials
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def credential_mapping_evidence(
+    credentials: tuple[Credential, ...],
+    interval_seconds: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
+) -> dict[str, Any]:
     verified = bool(credentials) and all(
         credential.token_id and credential.billing_subject for credential in credentials
     )
-    return {
+    bound_account = verified and all(
+        credential.billing_subject.startswith("account:") for credential in credentials
+    )
+    evidence: dict[str, Any] = {
         "status": "verified" if verified else "synthetic_labels_only",
-        "source": "POST /api/tokens response token id + billing_subject_for_token",
-        "credential_kind": "unbound_access_token",
-        "billing_subject_kind": "token",
+        "source": BOUND_FIXTURE_SOURCE if bound_account else "POST /api/tokens response token id + billing_subject_for_token",
+        "credential_kind": "bound_access_token" if bound_account else "unbound_access_token",
+        "billing_subject_kind": "account" if bound_account else "token",
         "secret_persisted": False,
+        "scenario_digest": scenario_digest(credentials, interval_seconds),
         "credentials": [
             {
                 "label": credential.label,
@@ -225,6 +261,13 @@ def credential_mapping_evidence(credentials: tuple[Credential, ...]) -> dict[str
         "same_account_definition": "same token_id and billing_subject reused by every queue worker",
         "cross_account_definition": "one distinct token_id and billing_subject per worker",
     }
+    if bound_account:
+        evidence["account_ids"] = [
+            credential.billing_subject.removeprefix("account:")
+            for credential in credentials
+        ]
+        evidence["quota_headroom"] = dict(BOUND_FIXTURE_QUOTA_HEADROOM)
+    return evidence
 
 
 class MockUpstreamHandler(BaseHTTPRequestHandler):
@@ -1584,7 +1627,7 @@ def create_fixture(directory: Path) -> tuple[Path, Path]:
     sidecar = directory / "tavily_proxy-observability.db"
     # Leave both databases schema-empty so the service owns migration/bootstrap state.
     for path in (core, sidecar):
-        with sqlite3.connect(path):
+        with closing(sqlite3.connect(path)):
             pass
     core.chmod(0o600)
     sidecar.chmod(0o600)
@@ -2002,6 +2045,17 @@ def synthetic_credentials(labels: tuple[str, ...]) -> tuple[Credential, ...]:
     )
 
 
+def bound_fixture_account_ids(labels: tuple[str, ...]) -> tuple[str, ...]:
+    if len(labels) < REQUIRED_IDENTITY_COUNT:
+        raise ValueError(
+            f"bound fixture requires {REQUIRED_IDENTITY_COUNT} token labels"
+        )
+    return tuple(
+        f"{BOUND_FIXTURE_ACCOUNT_PREFIX}{index:02d}"
+        for index in range(1, REQUIRED_IDENTITY_COUNT + 1)
+    )
+
+
 def scenario_bindings(
     name: str,
     credentials: tuple[Credential, ...],
@@ -2216,7 +2270,10 @@ def run_load(
     result = recorder.result(duration_seconds)
     result["scenarios"] = scenarios_result
     result["scenario_contract"] = scenario_contract(interval_seconds)
-    result["credential_mapping"] = credential_mapping_evidence(credentials)
+    result["credential_mapping"] = credential_mapping_evidence(
+        credentials, interval_seconds
+    )
+    result["scenario_digest"] = scenario_digest(credentials, interval_seconds)
     result["fixture_settings"] = dict(SYNTHETIC_FIXTURE_SETTINGS)
     result["warmup"] = warmup_observation
     return result, phase_baseline
@@ -2365,7 +2422,7 @@ def verify_credential_bindings(
         return {"status": "failed", "reason": "missing_token_id"}
     placeholders = ",".join("?" for _ in token_ids)
     try:
-        with sqlite3.connect(database_path, timeout=5) as connection:
+        with closing(sqlite3.connect(database_path, timeout=5)) as connection:
             rows = connection.execute(
                 f"SELECT t.id, b.user_id "
                 f"FROM auth_tokens t LEFT JOIN user_token_bindings b ON b.token_id = t.id "
@@ -2384,6 +2441,420 @@ def verify_credential_bindings(
         "observed_token_ids": sorted(observed),
         "missing_token_ids": missing,
         "bound_token_ids": bound,
+    }
+
+
+def verify_bound_credential_bindings(
+    database_path: Path, credentials: tuple[Credential, ...]
+) -> dict[str, Any]:
+    expected: dict[str, dict[str, Any]] = {}
+    for index, credential in enumerate(credentials, start=1):
+        token_id = credential.token_id
+        billing_subject = credential.billing_subject
+        expected_account_id = f"{BOUND_FIXTURE_ACCOUNT_PREFIX}{index:02d}"
+        if not token_id or not billing_subject:
+            return {"status": "failed", "reason": "missing_bound_identity"}
+        if token_id in expected:
+            return {"status": "failed", "reason": "duplicate_bound_token_id"}
+        if billing_subject != f"account:{expected_account_id}":
+            return {"status": "failed", "reason": "bound_billing_subject_mismatch"}
+        expected[token_id] = {
+            "account_id": expected_account_id,
+            "billing_subject": f"account:{expected_account_id}",
+        }
+
+    if not expected:
+        return {"status": "failed", "reason": "empty_bound_identity"}
+
+    placeholders = ",".join("?" for _ in expected)
+    try:
+        with closing(sqlite3.connect(database_path, timeout=10)) as connection:
+            connection.execute("PRAGMA busy_timeout = 10000")
+            rows = connection.execute(
+                f"""
+                SELECT t.id,
+                       b.user_id,
+                       q.business_calls_1h_limit,
+                       q.daily_credits_limit,
+                       q.monthly_credits_limit,
+                       q.inherits_defaults,
+                       q.created_at,
+                       q.updated_at
+                FROM auth_tokens t
+                LEFT JOIN user_token_bindings b ON b.token_id = t.id
+                LEFT JOIN account_quota_limits q ON q.user_id = b.user_id
+                WHERE t.id IN ({placeholders})
+                """,
+                list(expected),
+            ).fetchall()
+    except sqlite3.Error as error:
+        return {"status": "failed", "reason": f"database_query:{type(error).__name__}"}
+
+    observed: dict[str, dict[str, Any]] = {}
+    mismatches: list[dict[str, Any]] = []
+    for token_id, user_id, hourly, daily, monthly, inherits_defaults, created_at, updated_at in rows:
+        observed[token_id] = {
+            "token_id": token_id,
+            "user_id": user_id,
+            "billing_subject": f"account:{user_id}" if user_id else None,
+            "quota_headroom": {
+                "business_calls_1h_limit": hourly,
+                "daily_credits_limit": daily,
+                "monthly_credits_limit": monthly,
+            },
+            "inherits_defaults": inherits_defaults,
+            "quota_created_at": created_at,
+            "quota_updated_at": updated_at,
+        }
+        expected_identity = expected.get(token_id)
+        if expected_identity is None:
+            mismatches.append({"token_id": token_id, "reason": "unexpected_token_id"})
+            continue
+        observed_identity = observed[token_id]
+        if (
+            observed_identity["user_id"] != expected_identity["account_id"]
+            or observed_identity["billing_subject"] != expected_identity["billing_subject"]
+            or observed_identity["quota_headroom"] != BOUND_FIXTURE_QUOTA_HEADROOM
+            or observed_identity["inherits_defaults"] != 0
+            or not isinstance(observed_identity["quota_created_at"], int)
+            or observed_identity["quota_created_at"] <= 0
+            or not isinstance(observed_identity["quota_updated_at"], int)
+            or observed_identity["quota_updated_at"] <= 0
+        ):
+            mismatches.append(
+                {
+                    "token_id": token_id,
+                    "expected": {
+                        "user_id": expected_identity["account_id"],
+                        "billing_subject": expected_identity["billing_subject"],
+                        "quota_headroom": dict(BOUND_FIXTURE_QUOTA_HEADROOM),
+                        "inherits_defaults": 0,
+                        "quota_timestamp": "positive_unix_seconds",
+                    },
+                    "observed": observed_identity,
+                }
+            )
+
+    missing = sorted(set(expected) - set(observed))
+    return {
+        "status": "passed" if not missing and not mismatches else "failed",
+        "source": BOUND_FIXTURE_SOURCE,
+        "expected_binding": "bound_account",
+        "observed": [observed[token_id] for token_id in sorted(observed)],
+        "missing_token_ids": missing,
+        "mismatches": mismatches,
+    }
+
+
+def seed_bound_account_users(
+    database_path: Path, account_ids: tuple[str, ...]
+) -> dict[str, Any]:
+    now = int(time.time())
+    try:
+        with closing(sqlite3.connect(database_path, timeout=10)) as connection:
+            with connection:
+                connection.execute("PRAGMA busy_timeout = 10000")
+                connection.execute("PRAGMA foreign_keys = ON")
+                for index, account_id in enumerate(account_ids, start=1):
+                    connection.execute(
+                    """
+                    INSERT INTO users (
+                        id, display_name, username, avatar_template, active,
+                        debug_info_shared, created_at, updated_at, last_login_at
+                    ) VALUES (?, ?, ?, NULL, 1, 0, ?, ?, NULL)
+                    ON CONFLICT(id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        username = excluded.username,
+                        active = 1,
+                        debug_info_shared = 0,
+                        updated_at = excluded.updated_at,
+                        last_login_at = NULL
+                    """,
+                        (
+                            account_id,
+                            f"Performance account {index:02d}",
+                            f"perf-account-{index:02d}",
+                            now,
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                    """
+                    INSERT INTO account_quota_limits (
+                        user_id,
+                        business_calls_1h_limit,
+                        daily_credits_limit,
+                        monthly_credits_limit,
+                        monthly_broken_limit,
+                        monthly_blocked_key_limit_delta,
+                        inherits_defaults,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, 5, 0, 0, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        business_calls_1h_limit = excluded.business_calls_1h_limit,
+                        daily_credits_limit = excluded.daily_credits_limit,
+                        monthly_credits_limit = excluded.monthly_credits_limit,
+                        monthly_broken_limit = excluded.monthly_broken_limit,
+                        monthly_blocked_key_limit_delta = excluded.monthly_blocked_key_limit_delta,
+                        inherits_defaults = 0,
+                        updated_at = excluded.updated_at
+                    """,
+                        (
+                            account_id,
+                            BOUND_FIXTURE_QUOTA_HEADROOM["business_calls_1h_limit"],
+                            BOUND_FIXTURE_QUOTA_HEADROOM["daily_credits_limit"],
+                            BOUND_FIXTURE_QUOTA_HEADROOM["monthly_credits_limit"],
+                            now,
+                            now,
+                        ),
+                    )
+    except sqlite3.Error as error:
+        return {
+            "status": "failed",
+            "reason": f"database_seed:{type(error).__name__}",
+            "source": BOUND_FIXTURE_SOURCE,
+            "elapsed_ms": None,
+        }
+    return {
+        "status": "ready",
+        "source": "SQLite users + account_quota_limits synthetic account seed",
+        "account_ids": list(account_ids),
+        "quota_headroom": dict(BOUND_FIXTURE_QUOTA_HEADROOM),
+        "inherits_defaults": 0,
+        "seeded_at_unix": now,
+    }
+
+
+def create_bound_token_via_admin(
+    port: int, account_id: str
+) -> tuple[Credential | None, dict[str, Any]]:
+    connection: http.client.HTTPConnection | None = None
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request(
+            "POST",
+            f"/api/users/{account_id}/tokens",
+            body=b"",
+            headers={"Content-Length": "0"},
+        )
+        response = connection.getresponse()
+        body = response.read()
+    except (OSError, http.client.HTTPException, TimeoutError) as error:
+        return None, {
+            "account_id": account_id,
+            "status": None,
+            "decision": "fail",
+            "reason": "management_interface_transport",
+            "error_type": type(error).__name__,
+        }
+    finally:
+        if connection is not None:
+            connection.close()
+
+    try:
+        token = json.loads(body).get("token")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        token = None
+    if response.status != 201 or not isinstance(token, str) or not token:
+        return None, {
+            "account_id": account_id,
+            "status": response.status,
+            "decision": "fail",
+            "reason": "management_interface_status_or_token_invalid",
+        }
+    parts = token.split("-", 2)
+    if (
+        len(parts) != 3
+        or parts[0] != "th"
+        or len(parts[1]) != 4
+        or not parts[1].isalnum()
+        or len(parts[2]) not in {12, 24}
+        or not parts[2].isalnum()
+    ):
+        return None, {
+            "account_id": account_id,
+            "status": response.status,
+            "decision": "fail",
+            "reason": "management_interface_token_identity_invalid",
+        }
+    return (
+        Credential(
+            label=account_id,
+            secret=token,
+            token_id=parts[1],
+            billing_subject=f"account:{account_id}",
+        ),
+        {
+            "account_id": account_id,
+            "status": response.status,
+            "token_id": parts[1],
+            "decision": "accept",
+            "secret_persisted": False,
+        },
+    )
+
+
+def bootstrap_bound_business_accounts(
+    port: int,
+    database_path: Path,
+    labels: tuple[str, ...],
+    interval_seconds: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
+) -> tuple[tuple[Credential, ...], dict[str, Any]]:
+    started = time.monotonic()
+    try:
+        account_ids = bound_fixture_account_ids(labels)
+    except ValueError as error:
+        return (), {
+            "status": "failed",
+            "reason": str(error),
+            "source": BOUND_FIXTURE_SOURCE,
+        }
+
+    user_seed = seed_bound_account_users(database_path, account_ids)
+    if user_seed["status"] != "ready":
+        user_seed["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+        return (), user_seed
+
+    credentials: list[Credential] = []
+    management_attempts: list[dict[str, Any]] = []
+    for label, account_id in zip(labels[:REQUIRED_IDENTITY_COUNT], account_ids, strict=True):
+        credential, attempt = create_bound_token_via_admin(port, account_id)
+        management_attempts.append({**attempt, "label": label})
+        if credential is None:
+            return (), {
+                "status": "failed",
+                "reason": attempt.get("reason", "management_interface_binding_failed"),
+                "source": BOUND_FIXTURE_SOURCE,
+                "binding_path": "POST /api/users/<account-id>/tokens",
+                "user_seed": user_seed,
+                "management_attempts": management_attempts,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            }
+        credentials.append(
+            Credential(
+                label=label,
+                secret=credential.secret,
+                token_id=credential.token_id,
+                billing_subject=credential.billing_subject,
+            )
+        )
+
+    actual_credentials = tuple(credentials)
+    runtime_binding_check = verify_bound_credential_bindings(
+        database_path, actual_credentials
+    )
+    mapping = credential_mapping_evidence(actual_credentials, interval_seconds)
+    evidence = {
+        "status": "ready" if runtime_binding_check["status"] == "passed" else "failed",
+        "source": BOUND_FIXTURE_SOURCE,
+        "binding_path": "POST /api/users/<account-id>/tokens",
+        "binding_kind": "bound_account",
+        "billing_subject_kind": "account",
+        "account_ids": list(account_ids),
+        "quota_headroom": dict(BOUND_FIXTURE_QUOTA_HEADROOM),
+        "credentials": mapping["credentials"],
+        "scenario_digest": mapping["scenario_digest"],
+        "secret_persisted": False,
+        "user_seed": user_seed,
+        "management_attempts": management_attempts,
+        "runtime_binding_check": runtime_binding_check,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+    }
+    if evidence["status"] != "ready":
+        evidence["reason"] = "bound_fixture_verification_failed"
+    return actual_credentials, evidence
+
+
+def run_bound_fixture_precheck(
+    port: int,
+    database_path: Path,
+    credential: Credential,
+    subject: str,
+) -> dict[str, Any]:
+    if not credential.token_id or not credential.billing_subject:
+        return {"status": "failed", "reason": "bound_identity_missing"}
+    payload = b'{"query":"synthetic","search_depth":"basic","max_results":1}'
+    connection: http.client.HTTPConnection | None = None
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request(
+            "POST",
+            "/api/tavily/search",
+            body=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {credential.secret}",
+                "X-Perf-Subject": subject,
+            },
+        )
+        response = connection.getresponse()
+        body = response.read()
+    except (OSError, http.client.HTTPException, TimeoutError) as error:
+        return {
+            "status": "failed",
+            "reason": "transport",
+            "error_type": type(error).__name__,
+        }
+    finally:
+        if connection is not None:
+            connection.close()
+
+    try:
+        decoded = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        decoded = None
+    usage_credits = (
+        decoded.get("usage", {}).get("credits")
+        if isinstance(decoded, dict) and isinstance(decoded.get("usage"), dict)
+        else None
+    )
+    billing_observation: dict[str, Any] | None = None
+    try:
+        with closing(sqlite3.connect(database_path, timeout=10)) as database:
+            database.execute("PRAGMA busy_timeout = 10000")
+            row = database.execute(
+                """
+                SELECT billing_subject, business_credits, result_status, billing_state
+                FROM auth_token_logs
+                WHERE token_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (credential.token_id,),
+            ).fetchone()
+            if row is not None:
+                billing_observation = {
+                    "billing_subject": row[0],
+                    "business_credits": row[1],
+                    "result_status": row[2],
+                    "billing_state": row[3],
+                }
+    except sqlite3.Error as error:
+        return {
+            "status": "failed",
+            "reason": f"billing_query:{type(error).__name__}",
+            "http_status": response.status,
+            "response_usage_credits": usage_credits,
+        }
+
+    passed = (
+        response.status == 200
+        and usage_credits == 1
+        and billing_observation is not None
+        and billing_observation["billing_subject"] == credential.billing_subject
+        and billing_observation["business_credits"] == 1
+        and billing_observation["result_status"] == "success"
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "reason": None if passed else "bound_request_or_billing_mismatch",
+        "upstream_kind": "loopback_synthetic_mock",
+        "http_status": response.status,
+        "response_usage_credits": usage_credits,
+        "billing_subject": credential.billing_subject,
+        "billing_observation": billing_observation,
+        "secret_persisted": False,
     }
 
 
@@ -2683,7 +3154,9 @@ def run_variant(
     )
     resource_spec = getattr(args, "resource_spec", parse_resource_spec(args.resources))
     scenario_shape = scenario_contract(args.request_interval_seconds)
-    synthetic_mapping = credential_mapping_evidence(synthetic_credentials(tuple(args.tokens)))
+    synthetic_mapping = credential_mapping_evidence(
+        synthetic_credentials(tuple(args.tokens)), args.request_interval_seconds
+    )
     core, sidecar = create_fixture(workdir / f"{variant}-fixture")
     port = find_free_port()
     metrics_port = find_free_port()
@@ -2940,7 +3413,45 @@ def run_variant(
         }
         credentials = synthetic_credentials(tuple(args.tokens))
         credential_mapping = synthetic_mapping
-        if args.bootstrap_business_tokens:
+        if args.bootstrap_bound_business_tokens:
+            credentials, bound_fixture_evidence = bootstrap_bound_business_accounts(
+                port,
+                core,
+                tuple(args.tokens),
+                args.request_interval_seconds,
+            )
+            fixture_setup["bound_account_fixture"] = bound_fixture_evidence
+            credential_mapping = credential_mapping_evidence(
+                credentials, args.request_interval_seconds
+            )
+            if bound_fixture_evidence["status"] != "ready":
+                return finish({
+                    "variant": variant,
+                    "round": round_number,
+                    "ref": resolved,
+                    "status": "unvalidated",
+                    "reason": bound_fixture_evidence.get(
+                        "reason", "bound_business_fixture_failed"
+                    ),
+                    "duration_seconds": duration_seconds,
+                    "request": None,
+                    "unrelated_cohort": None,
+                    "phases": {},
+                    "accepted_progress": {"responses": 0, "reported": 0},
+                    "cohort": logical_cohort(
+                        tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds
+                    ),
+                    "scenarios": scenario_shape,
+                    "scenario_contract": scenario_shape,
+                    "credential_mapping": credential_mapping,
+                    "resource_observation": resource_observation,
+                    "service_readiness": service_readiness,
+                    "fixture_setup": fixture_setup,
+                })
+            credential_mapping["runtime_binding_check"] = bound_fixture_evidence.get(
+                "runtime_binding_check"
+            )
+        elif args.bootstrap_business_tokens:
             credentials, bootstrap_evidence = bootstrap_business_tokens(port, tuple(args.tokens))
             fixture_setup["bootstrap"] = bootstrap_evidence
             if bootstrap_evidence["status"] != "ready":
@@ -2967,7 +3478,9 @@ def run_variant(
                     "service_readiness": service_readiness,
                     "fixture_setup": fixture_setup,
                 })
-            credential_mapping = credential_mapping_evidence(credentials)
+            credential_mapping = credential_mapping_evidence(
+                credentials, args.request_interval_seconds
+            )
             binding_check = verify_credential_bindings(core, credentials)
             credential_mapping["runtime_binding_check"] = binding_check
             if binding_check.get("status") != "passed":
@@ -3014,7 +3527,9 @@ def run_variant(
                 ),
                 "scenarios": scenario_shape,
                 "scenario_contract": scenario_shape,
-                "credential_mapping": credential_mapping_evidence(credentials),
+                "credential_mapping": credential_mapping_evidence(
+                    credentials, args.request_interval_seconds
+                ),
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
                 "fixture_setup": fixture_setup,
@@ -3149,6 +3664,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="create one temporary dev-open-admin access token per synthetic token label",
     )
+    parser.add_argument(
+        "--bootstrap-bound-business-tokens",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="seed 14 deterministic access tokens bound to synthetic accounts with quota headroom",
+    )
     return parser.parse_args()
 
 
@@ -3171,6 +3692,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("metrics scrape interval must be between 0 and 60 seconds")
     if args.mock_delay_ms != DEFAULT_MOCK_DELAY_MS:
         raise SystemExit("the local boundary contract fixes mock delay at 200ms")
+    if args.bootstrap_bound_business_tokens and args.bootstrap_business_tokens:
+        raise SystemExit("bound and unbound business token bootstrap are mutually exclusive")
     if not args.subjects or not args.tokens:
         raise SystemExit("subject and token distributions must be non-empty")
     if len(args.subjects) < REQUIRED_IDENTITY_COUNT or len(args.tokens) < REQUIRED_IDENTITY_COUNT:
@@ -3338,10 +3861,12 @@ def measurement_view(result: dict[str, Any]) -> dict[str, Any]:
         "cohort": result.get("cohort"),
         "scenarios": result.get("scenarios"),
         "scenario_contract": result.get("scenario_contract"),
+        "scenario_digest": result.get("scenario_digest"),
         "credential_mapping": result.get("credential_mapping"),
         "resource_observation": result.get("resource_observation"),
         "accepted_progress": result.get("accepted_progress"),
         "fixture_settings": result.get("fixture_settings"),
+        "fixture_setup": result.get("fixture_setup"),
     }
 
 
@@ -3859,9 +4384,26 @@ def variant_exception_result(
         ),
         "scenarios": scenario_contract(args.request_interval_seconds),
         "scenario_contract": scenario_contract(args.request_interval_seconds),
-        "credential_mapping": credential_mapping_evidence(
-            synthetic_credentials(tuple(args.tokens))
-        ),
+        "credential_mapping": {
+            "source": (
+                BOUND_FIXTURE_SOURCE
+                if args.bootstrap_bound_business_tokens
+                else "per-variant POST /api/tokens bootstrap"
+            ),
+            "binding_path": (
+                "POST /api/users/<account-id>/tokens"
+                if args.bootstrap_bound_business_tokens
+                else None
+            ),
+            "account_ids": (
+                list(bound_fixture_account_ids(tuple(args.tokens)))
+                if args.bootstrap_bound_business_tokens
+                else None
+            ),
+            "cross_account_definition": "distinct billing subjects",
+            "same_account_definition": "one billing subject shared by queue workers",
+            "secret_persisted": False,
+        },
         "resource_observation": None,
         "binary_provenance": {
             "status": "missing",
