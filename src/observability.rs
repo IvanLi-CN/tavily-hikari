@@ -635,13 +635,14 @@ impl Metrics {
         });
     }
 
-    pub fn record_http_phase(
+    fn record_http_phase_internal(
         &self,
         path: &str,
         method: &str,
         outcome: &str,
         phase: &str,
         elapsed: Duration,
+        record_request_timing: bool,
     ) {
         if !self.recording_enabled {
             return;
@@ -654,7 +655,7 @@ impl Metrics {
         let method = metric_method(path, method);
         let outcome = normalize_outcome(outcome);
         let phase = normalize_phase(phase);
-        if phase != "none" {
+        if record_request_timing && phase != "none" {
             let _ = REQUEST_TIMING_SCOPE.try_with(|scope| {
                 scope.record_phase_duration(legacy_request_phase(phase), elapsed)
             });
@@ -677,6 +678,29 @@ impl Metrics {
             phase,
             elapsed_seconds: elapsed.as_secs_f64(),
         });
+    }
+
+    pub fn record_http_phase(
+        &self,
+        path: &str,
+        method: &str,
+        outcome: &str,
+        phase: &str,
+        elapsed: Duration,
+    ) {
+        self.record_http_phase_internal(path, method, outcome, phase, elapsed, true);
+    }
+
+    /// Emits the legacy phase histogram without attributing elapsed time to the terminal request.
+    pub(crate) fn record_http_phase_legacy(
+        &self,
+        path: &str,
+        method: &str,
+        outcome: &str,
+        phase: &str,
+        elapsed: Duration,
+    ) {
+        self.record_http_phase_internal(path, method, outcome, phase, elapsed, false);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1988,6 +2012,124 @@ mod tests {
         }
         assert!(output.contains("operation=\"search\""));
         assert!(!output.contains("request_id"));
+    }
+
+    #[tokio::test]
+    async fn legacy_http_phase_recording_does_not_overlap_real_phase_guards() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/mcp", "POST");
+        let mut key_selection_elapsed = Duration::ZERO;
+        let mut upstream_elapsed = Duration::ZERO;
+        REQUEST_TIMING_SCOPE
+            .scope(scope, async {
+                let key_selection = begin_request_phase("key_selection").expect("key selection");
+                let key_selection_started = Instant::now();
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                key_selection_elapsed = key_selection_started.elapsed();
+                drop(key_selection);
+                metrics.record_http_phase_legacy(
+                    "/mcp",
+                    "POST",
+                    "success",
+                    "key_selection",
+                    key_selection_elapsed,
+                );
+
+                let upstream = begin_request_phase("upstream").expect("upstream phase");
+                let upstream_started = Instant::now();
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                upstream_elapsed = upstream_started.elapsed();
+                drop(upstream);
+                metrics.record_http_phase_legacy(
+                    "/mcp",
+                    "POST",
+                    "success",
+                    "upstream",
+                    upstream_elapsed,
+                );
+                REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::OK));
+            })
+            .await;
+
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        let (phase_sums, _total) = assert_terminal_request_timing(&output);
+        for (phase, expected) in [
+            ("key_selection", key_selection_elapsed),
+            ("upstream", upstream_elapsed),
+        ] {
+            let index = REQUEST_PHASES
+                .iter()
+                .position(|candidate| *candidate == phase)
+                .expect("phase index");
+            let actual = phase_sums[index];
+            let expected = expected.as_secs_f64();
+            assert!(
+                actual >= expected * 0.7 && actual <= expected * 1.35,
+                "{phase} must retain its own elapsed segment: actual={actual:.3}s expected={expected:.3}s output={output}"
+            );
+        }
+        assert!(output.contains("hikari_http_duration_seconds_sum{"));
+        assert!(output.contains("phase=\"key_selection\""));
+        assert!(output.contains("phase=\"upstream\""));
+    }
+
+    #[tokio::test]
+    async fn request_timing_scope_handles_completed_nested_phase_guards_without_overlap() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/mcp", "POST");
+        let mut upstream_before_nested = Duration::ZERO;
+        let mut configuration_elapsed = Duration::ZERO;
+        let mut upstream_after_nested = Duration::ZERO;
+        REQUEST_TIMING_SCOPE
+            .scope(scope, async {
+                let upstream = begin_request_phase("upstream").expect("upstream phase");
+                let upstream_before_started = Instant::now();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                upstream_before_nested = upstream_before_started.elapsed();
+
+                let configuration =
+                    begin_request_phase("configuration").expect("configuration phase");
+                let configuration_started = Instant::now();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                configuration_elapsed = configuration_started.elapsed();
+                drop(configuration);
+
+                let upstream_after_started = Instant::now();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                upstream_after_nested = upstream_after_started.elapsed();
+                drop(upstream);
+                REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::OK));
+            })
+            .await;
+
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        let (phase_sums, _total) = assert_terminal_request_timing(&output);
+        let upstream_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "upstream")
+            .expect("upstream phase index");
+        let configuration_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "configuration")
+            .expect("configuration phase index");
+        let upstream_expected = upstream_before_nested + upstream_after_nested;
+        for (phase, actual, expected) in [
+            (
+                "upstream",
+                phase_sums[upstream_index],
+                upstream_expected.as_secs_f64(),
+            ),
+            (
+                "configuration",
+                phase_sums[configuration_index],
+                configuration_elapsed.as_secs_f64(),
+            ),
+        ] {
+            assert!(
+                actual >= expected * 0.7 && actual <= expected * 1.35,
+                "{phase} must retain only its own nested segments: actual={actual:.3}s expected={expected:.3}s output={output}"
+            );
+        }
     }
 
     #[tokio::test]

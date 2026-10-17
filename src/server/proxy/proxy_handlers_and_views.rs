@@ -1134,7 +1134,6 @@ async fn proxy_handler(
         && is_mcp_initialize
         && planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
     {
-        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         match handle_rebalance_mcp_request_body(
             &state,
             &method,
@@ -1165,7 +1164,6 @@ async fn proxy_handler(
             }
         }
     } else if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
-        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         match handle_rebalance_mcp_request_body(
             &state,
             &method,
@@ -1198,10 +1196,8 @@ async fn proxy_handler(
             }
         }
     } else if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
-        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         proxy_mcp_follow_up_with_retry(&state, proxy_session_id, proxy_request).await
     } else {
-        let _upstream_phase = tavily_hikari::observability::begin_request_phase("upstream");
         state.proxy.proxy_request(proxy_request).await
     };
 

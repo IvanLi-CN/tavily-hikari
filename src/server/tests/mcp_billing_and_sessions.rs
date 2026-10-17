@@ -60,8 +60,9 @@ async fn mcp_control_initialize_records_one_terminal_request_timing() {
         "mcp_control",
         "success",
     );
-    assert!(phase_sums["upstream"] > 0.0);
-    assert!(phase_sums["persistence"] > 0.0);
+    for phase in ["key_selection", "upstream", "response_body", "persistence"] {
+        assert!(phase_sums[phase] > 0.0, "expected {phase} phase to execute");
+    }
 
     let _ = std::fs::remove_file(db_path);
 }
