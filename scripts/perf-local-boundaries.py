@@ -44,6 +44,7 @@ DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
 DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = 0.0
 TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS = 5.0
 TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL = 3
+BOUND_TOKEN_BOOTSTRAP_RETRY_DELAY_SECONDS = 0.25
 BOUND_FIXTURE_SOURCE = (
     "SQLite synthetic users + account_quota_limits seed; management API token binding"
 )
@@ -2656,12 +2657,24 @@ def create_bound_token_via_admin(
         token = json.loads(body).get("token")
     except (ValueError, UnicodeDecodeError, AttributeError):
         token = None
+    retry_after = retry_after_seconds(response)
+    database_locked = b"database is locked" in body.lower()
+    retryable = database_locked or (response.status == 503 and retry_after is not None)
     if response.status != 201 or not isinstance(token, str) or not token:
         return None, {
             "account_id": account_id,
             "status": response.status,
             "decision": "fail",
             "reason": "management_interface_status_or_token_invalid",
+            "retryable": retryable,
+            "retry_after_seconds": retry_after,
+            "retry_basis": (
+                "sqlite_database_locked"
+                if database_locked
+                else "http_503_retry_after"
+                if retryable
+                else None
+            ),
         }
     parts = token.split("-", 2)
     if (
@@ -2677,6 +2690,9 @@ def create_bound_token_via_admin(
             "status": response.status,
             "decision": "fail",
             "reason": "management_interface_token_identity_invalid",
+            "retryable": False,
+            "retry_after_seconds": retry_after,
+            "retry_basis": None,
         }
     return (
         Credential(
@@ -2719,18 +2735,44 @@ def bootstrap_bound_business_accounts(
     credentials: list[Credential] = []
     management_attempts: list[dict[str, Any]] = []
     for label, account_id in zip(labels[:REQUIRED_IDENTITY_COUNT], account_ids, strict=True):
-        credential, attempt = create_bound_token_via_admin(port, account_id)
-        management_attempts.append({**attempt, "label": label})
-        if credential is None:
-            return (), {
-                "status": "failed",
-                "reason": attempt.get("reason", "management_interface_binding_failed"),
-                "source": BOUND_FIXTURE_SOURCE,
-                "binding_path": "POST /api/users/<account-id>/tokens",
-                "user_seed": user_seed,
-                "management_attempts": management_attempts,
-                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
-            }
+        retry_count = 0
+        while True:
+            credential, attempt = create_bound_token_via_admin(port, account_id)
+            attempt_record = {**attempt, "label": label}
+            management_attempts.append(attempt_record)
+            if credential is not None:
+                break
+
+            remaining_budget = TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS - (
+                time.monotonic() - started
+            )
+            if (
+                not attempt.get("retryable")
+                or retry_count >= TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL
+                or remaining_budget <= 0
+            ):
+                return (), {
+                    "status": "failed",
+                    "reason": attempt.get("reason", "management_interface_binding_failed"),
+                    "source": BOUND_FIXTURE_SOURCE,
+                    "binding_path": "POST /api/users/<account-id>/tokens",
+                    "user_seed": user_seed,
+                    "management_attempts": management_attempts,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                }
+
+            retry_after = attempt.get("retry_after_seconds")
+            sleep_seconds = (
+                retry_after
+                if isinstance(retry_after, (int, float)) and retry_after >= 0
+                else BOUND_TOKEN_BOOTSTRAP_RETRY_DELAY_SECONDS
+            )
+            sleep_seconds = min(float(sleep_seconds), remaining_budget)
+            attempt_record["decision"] = "retry"
+            attempt_record["sleep_seconds"] = sleep_seconds
+            retry_count += 1
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
         credentials.append(
             Credential(
                 label=label,

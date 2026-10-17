@@ -987,13 +987,25 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                     "Response",
                     (),
                     {
-                        "status": 201,
-                        "read": lambda self, index=index: json.dumps(
-                            {"token": f"th-{index:04d}-{'x' * 24}"}
-                        ).encode(),
+                        "status": 500,
+                        "headers": {},
+                        "read": lambda self: b"database is locked",
                     },
-                )()
-                for index in range(1, 15)
+                )(),
+                *[
+                    type(
+                        "Response",
+                        (),
+                        {
+                            "status": 201,
+                            "headers": {},
+                            "read": lambda self, index=index: json.dumps(
+                                {"token": f"th-{index:04d}-{'x' * 24}"}
+                            ).encode(),
+                        },
+                    )()
+                    for index in range(1, 15)
+                ]
             ]
         )
 
@@ -1006,6 +1018,9 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                 self.requests.append((method, path))
 
             def getresponse(self) -> object:
+                response = next(responses)
+                if response.status != 201:
+                    return response
                 Connection.token_index += 1
                 index = Connection.token_index
                 token_id = f"{index:04d}"
@@ -1029,7 +1044,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
                             """,
                             (account_id, token_id),
                         )
-                return next(responses)
+                return response
 
             @staticmethod
             def close() -> None:
@@ -1091,9 +1106,10 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             with mock.patch.object(
                 HARNESS.http.client, "HTTPConnection", return_value=connection
             ):
-                credentials, evidence = HARNESS.bootstrap_bound_business_accounts(
-                    12345, database, labels, 0.25
-                )
+                with mock.patch.object(HARNESS.time, "sleep"):
+                    credentials, evidence = HARNESS.bootstrap_bound_business_accounts(
+                        12345, database, labels, 0.25
+                    )
 
             self.assertEqual(evidence["status"], "ready")
             self.assertEqual(len(credentials), 14)
@@ -1104,9 +1120,11 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             self.assertEqual(credentials[-1].label, "token-14")
             self.assertEqual(evidence["runtime_binding_check"]["status"], "passed")
             self.assertEqual(evidence["quota_headroom"], HARNESS.BOUND_FIXTURE_QUOTA_HEADROOM)
-            self.assertEqual(len(connection.requests), 14)
+            self.assertEqual(len(connection.requests), 15)
             self.assertEqual(connection.requests[0], ("POST", "/api/users/perf-account-01/tokens"))
             self.assertEqual(connection.requests[-1], ("POST", "/api/users/perf-account-14/tokens"))
+            self.assertEqual(evidence["management_attempts"][0]["retry_basis"], "sqlite_database_locked")
+            self.assertEqual(evidence["management_attempts"][0]["decision"], "retry")
             self.assertEqual(
                 HARNESS.credential_mapping_evidence(credentials, 0.25)["billing_subject_kind"],
                 "account",
