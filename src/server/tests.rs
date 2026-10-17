@@ -58,6 +58,7 @@ mod tests {
     mod system_settings_reconciliation_status;
     mod tavily_http_free_account_boundary;
     mod tavily_http_search;
+    mod tavily_http_search_timing;
     mod token_log_details;
     mod upstream_support_and_manual_jobs;
 }

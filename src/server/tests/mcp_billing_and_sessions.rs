@@ -3,6 +3,164 @@ use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn mcp_control_initialize_records_one_terminal_request_timing() {
+    let db_path = temp_db_path("mcp-control-request-timing");
+    let db_str = db_path.to_string_lossy().to_string();
+    let expected_api_key = "tvly-mcp-control-request-timing-key";
+    let (upstream_addr, calls) =
+        spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+    let upstream = format!("http://{}", upstream_addr);
+    let metrics = Arc::new(
+        tavily_hikari::observability::Metrics::new(None).expect("control request metrics"),
+    );
+    let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+        .await
+        .expect("proxy created");
+    let access_token = proxy
+        .create_access_token(Some("mcp-control-request-timing"))
+        .await
+        .expect("create access token");
+    let proxy_addr =
+        spawn_proxy_server_with_metrics(proxy, upstream, metrics.clone()).await;
+    let client = Client::new();
+    let response = client
+        .post(format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        ))
+        .header("content-type", "application/json")
+        .header("mcp-protocol-version", "2025-03-26")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "timing-control-init",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("initialize response json");
+    assert_eq!(body.get("jsonrpc"), Some(&serde_json::json!("2.0")));
+    assert!(body.get("result").is_some(), "initialize should return result");
+    assert_eq!(
+        calls.lock().expect("control calls lock").len(),
+        1,
+        "initialize should reach the upstream exactly once"
+    );
+
+    let phase_sums = assert_single_request_timing(
+        &metrics.gather_test_metrics(),
+        "mcp",
+        "MCP",
+        "mcp_control",
+        "success",
+    );
+    for phase in ["key_selection", "upstream", "response_body", "persistence"] {
+        assert!(phase_sums[phase] > 0.0, "expected {phase} phase to execute");
+    }
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn mcp_business_tools_call_records_billing_leaf_phases() {
+    let db_path = temp_db_path("mcp-business-request-timing");
+    let db_str = db_path.to_string_lossy().to_string();
+    let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+    let expected_api_key = "tvly-mcp-business-request-timing-key";
+    let (upstream_addr, hits) =
+        spawn_mock_mcp_upstream_for_tavily_search(expected_api_key.to_string()).await;
+    let upstream = format!("http://{}", upstream_addr);
+    let metrics = Arc::new(
+        tavily_hikari::observability::Metrics::new(None).expect("business request metrics"),
+    );
+    let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "test".to_string(),
+            provider_user_id: "mcp-business-request-timing-user".to_string(),
+            username: Some("mcp-business-request-timing".to_string()),
+            name: Some("MCP Business Request Timing".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: None,
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert business account");
+    let access_token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("mcp-business-request-timing"))
+        .await
+        .expect("bind business token");
+    proxy
+        .update_account_business_quota_limits(&user.user_id, 100, 1_000, 10_000)
+        .await
+        .expect("set business account quota");
+
+    let proxy_addr =
+        spawn_proxy_server_with_metrics(proxy.clone(), upstream, metrics.clone()).await;
+    let response = Client::new()
+        .post(format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        ))
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "timing-business-call",
+            "method": "tools/call",
+            "params": {
+                "name": "tavily-search",
+                "arguments": {
+                    "query": "timing business",
+                    "search_depth": "basic"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("business request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.expect("business response json");
+    assert_eq!(
+        body.pointer("/result/structuredContent/status"),
+        Some(&serde_json::json!(200))
+    );
+    assert_eq!(
+        body.pointer("/result/structuredContent/usage/credits"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek business quota")
+            .hourly_used,
+        1
+    );
+
+    let phase_sums = assert_single_request_timing(
+        &metrics.gather_test_metrics(),
+        "mcp",
+        "MCP",
+        "mcp_business",
+        "success",
+    );
+    for phase in ["upstream", "persistence", "settlement"] {
+        assert!(phase_sums[phase] > 0.0, "expected {phase} phase to execute");
+    }
+
+    let _ = std::fs::remove_file(db_path);
+}
+
     #[tokio::test]
     async fn mcp_batch_without_ids_search_and_research_charge_full_reserved_fallback_when_usage_missing()
      {

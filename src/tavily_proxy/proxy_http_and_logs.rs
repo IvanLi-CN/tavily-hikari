@@ -21,7 +21,7 @@ fn record_http_upstream_phase(
         Ok((response, _)) => crate::observability::outcome_for_status_code(response.status()),
         Err(error) => crate::observability::outcome_for_proxy_error(error),
     };
-    crate::observability::global_metrics().record_http_phase(
+    crate::observability::global_metrics().record_http_phase_legacy(
         path,
         method,
         outcome,
@@ -37,12 +37,15 @@ async fn read_response_body_with_phase(
     status: StatusCode,
 ) -> Result<Bytes, ProxyError> {
     let started = std::time::Instant::now();
-    let result = response.bytes().await.map_err(ProxyError::Http);
+    let result = {
+        let _phase = crate::observability::begin_request_phase("response_body");
+        response.bytes().await.map_err(ProxyError::Http)
+    };
     let outcome = result
         .as_ref()
         .map(|_| crate::observability::outcome_for_status_code(status))
         .unwrap_or_else(|error| crate::observability::outcome_for_proxy_error(error));
-    crate::observability::global_metrics().record_http_phase(
+    crate::observability::global_metrics().record_http_phase_legacy(
         path,
         method,
         outcome,
@@ -100,22 +103,25 @@ impl TavilyProxy {
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
         let mut mcp_session_init_effect = KeyEffect::none();
         let key_selection_started = std::time::Instant::now();
-        let lease = if let Some(key_id) = request.pinned_api_key_id.as_deref() {
-            let Some(lease) = self.key_store.try_acquire_specific_key(key_id).await? else {
-                return Err(ProxyError::PinnedMcpSessionUnavailable);
-            };
-            lease
-        } else if request.prefer_mcp_session_affinity {
-            let selection = self
-                .acquire_key_for_mcp_session_init(request.auth_token_id.as_deref())
-                .await?;
-            mcp_session_init_effect = selection.key_effect;
-            selection.lease
-        } else {
-            self.acquire_key_for(request.auth_token_id.as_deref())
-                .await?
+        let lease = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            if let Some(key_id) = request.pinned_api_key_id.as_deref() {
+                let Some(lease) = self.key_store.try_acquire_specific_key(key_id).await? else {
+                    return Err(ProxyError::PinnedMcpSessionUnavailable);
+                };
+                lease
+            } else if request.prefer_mcp_session_affinity {
+                let selection = self
+                    .acquire_key_for_mcp_session_init(request.auth_token_id.as_deref())
+                    .await?;
+                mcp_session_init_effect = selection.key_effect;
+                selection.lease
+            } else {
+                self.acquire_key_for(request.auth_token_id.as_deref())
+                    .await?
+            }
         };
-        crate::observability::global_metrics().record_http_phase(
+        crate::observability::global_metrics().record_http_phase_legacy(
             request.path.as_str(),
             request.method.as_str(),
             "success",
@@ -162,8 +168,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let tavily_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, "mcp", |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, "mcp", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -175,7 +182,8 @@ impl TavilyProxy {
                     .header("Tavily-Api-Key", tavily_secret.as_str())
                     .body(request_body.clone())
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             request.path.as_str(),
             request.method.as_str(),
@@ -368,15 +376,17 @@ impl TavilyProxy {
             api_route_selection_effect,
             used_api_rebalance,
             used_http_project_affinity,
-        ) = self
-            .select_http_json_key(
+        ) = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            self.select_http_json_key(
                 auth_token_id,
                 use_api_rebalance,
                 api_routing_key,
                 http_project_id,
             )
-            .await?;
-        crate::observability::global_metrics().record_http_phase(
+            .await?
+        };
+        crate::observability::global_metrics().record_http_phase_legacy(
             display_path,
             method.as_str(),
             "success",
@@ -438,8 +448,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -453,7 +464,8 @@ impl TavilyProxy {
                 }
                 builder.body(request_body.clone())
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             display_path,
             method.as_str(),
@@ -738,8 +750,11 @@ impl TavilyProxy {
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
         let key_selection_started = std::time::Instant::now();
-        let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
-        crate::observability::global_metrics().record_http_phase(
+        let lease = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            self.acquire_key_for_rebalance_mcp_http_call().await?
+        };
+        crate::observability::global_metrics().record_http_phase_legacy(
             display_path,
             method.as_str(),
             "success",
@@ -787,8 +802,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -800,7 +816,8 @@ impl TavilyProxy {
                     .header("Authorization", format!("Bearer {}", upstream_secret))
                     .body(request_body.clone())
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             display_path,
             method.as_str(),
@@ -1003,8 +1020,11 @@ impl TavilyProxy {
         client_ip: Option<&ClientIpInfo>,
     ) -> Result<ProxyResponse, ProxyError> {
         let key_selection_started = std::time::Instant::now();
-        let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
-        crate::observability::global_metrics().record_http_phase(
+        let lease = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            self.acquire_key_for_rebalance_mcp_http_call().await?
+        };
+        crate::observability::global_metrics().record_http_phase_legacy(
             display_path,
             method.as_str(),
             "success",
@@ -1050,8 +1070,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, "research", |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, "research", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -1063,7 +1084,8 @@ impl TavilyProxy {
                     .header("Authorization", format!("Bearer {}", upstream_secret))
                     .body(request_body.clone())
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             display_path,
             method.as_str(),
@@ -1284,15 +1306,17 @@ impl TavilyProxy {
             api_route_selection_effect,
             used_api_rebalance,
             used_http_project_affinity,
-        ) = self
-            .select_http_json_key(
+        ) = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            self.select_http_json_key(
                 auth_token_id,
                 use_api_rebalance,
                 api_routing_key,
                 http_project_id,
             )
-            .await?;
-        crate::observability::global_metrics().record_http_phase(
+            .await?
+        };
+        crate::observability::global_metrics().record_http_phase_legacy(
             display_path,
             method.as_str(),
             "success",
@@ -1342,8 +1366,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, "research", |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, "research", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -1357,7 +1382,8 @@ impl TavilyProxy {
                 }
                 builder.body(request_body.clone())
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             display_path,
             method.as_str(),
@@ -1578,16 +1604,19 @@ impl TavilyProxy {
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let research_request_id = extract_research_request_id_from_path(upstream_path);
         let key_selection_started = std::time::Instant::now();
-        let lease = if let Some(fixed_key_id) = fixed_research_request_key_id {
-            self.key_store
-                .try_acquire_specific_key(fixed_key_id)
-                .await?
-                .ok_or(ProxyError::NoAvailableKeys)?
-        } else {
-            self.acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
-                .await?
+        let lease = {
+            let _phase = crate::observability::begin_request_phase("key_selection");
+            if let Some(fixed_key_id) = fixed_research_request_key_id {
+                self.key_store
+                    .try_acquire_specific_key(fixed_key_id)
+                    .await?
+                    .ok_or(ProxyError::NoAvailableKeys)?
+            } else {
+                self.acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
+                    .await?
+            }
         };
-        crate::observability::global_metrics().record_http_phase(
+        crate::observability::global_metrics().record_http_phase_legacy(
             display_path,
             method.as_str(),
             "success",
@@ -1616,8 +1645,9 @@ impl TavilyProxy {
         let request_url = url.clone();
         let upstream_secret = lease.secret.clone();
         let upstream_started = std::time::Instant::now();
-        let response = self
-            .send_with_forward_proxy(&lease.id, "research_result", |client| {
+        let response = {
+            let _phase = crate::observability::begin_request_phase("upstream");
+            self.send_with_forward_proxy(&lease.id, "research_result", |client| {
                 let mut builder = client.request(request_method.clone(), request_url.clone());
                 for (name, value) in sanitized_headers.headers.iter() {
                     if name == HOST || name == CONTENT_LENGTH {
@@ -1631,7 +1661,8 @@ impl TavilyProxy {
                 }
                 builder
             })
-            .await;
+            .await
+        };
         record_http_upstream_phase(
             display_path,
             method.as_str(),

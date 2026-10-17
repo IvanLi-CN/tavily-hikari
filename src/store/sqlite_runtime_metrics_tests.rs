@@ -89,6 +89,72 @@ async fn workload_window_keeps_dashboard_quota_read_defers_out_of_alerts_warm_me
     );
 }
 
+#[test]
+fn deferred_reason_observability_keeps_blocking_causes_distinct() {
+    assert_eq!(
+        SqliteAdmissionDeferReason::CoverageReadiness.observability_as_str(),
+        "coverage_readiness"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::SourceBaseline.observability_as_str(),
+        "source_baseline"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::QueryDeadline.observability_as_str(),
+        "native_query_deadline"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::PoolPressure.observability_as_str(),
+        "pool_pressure"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::RecentContention.observability_as_str(),
+        "writer_contention"
+    );
+}
+
+#[tokio::test]
+async fn deferred_error_reason_mapping_does_not_mask_readiness_or_source_baseline() {
+    for (reason, expected) in [
+        (
+            "groups_build_in_progress",
+            SqliteAdmissionDeferReason::CoverageReadiness,
+        ),
+        (
+            "deleted_source_baseline_unavailable",
+            SqliteAdmissionDeferReason::SourceBaseline,
+        ),
+        ("read_budget", SqliteAdmissionDeferReason::QueryDeadline),
+        (
+            "native_query_deadline",
+            SqliteAdmissionDeferReason::QueryDeadline,
+        ),
+        (
+            "sqlite_contention",
+            SqliteAdmissionDeferReason::RecentContention,
+        ),
+        (
+            "writer_contention",
+            SqliteAdmissionDeferReason::RecentContention,
+        ),
+    ] {
+        let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+        let error = ProxyError::Deferred {
+            operation: "test_operation",
+            reason: reason.to_owned(),
+        };
+        runtime.record_deferred_error(SqliteOperation::RequestStatsFlush, &error);
+        let window = runtime.inner.workload.lock().unwrap();
+        assert_eq!(
+            window.operations[&SqliteOperation::RequestStatsFlush]
+                .deferred_by_reason
+                .get(&expected),
+            Some(&1)
+        );
+        drop(window);
+    }
+}
+
 #[tokio::test]
 async fn workload_window_reports_canonical_alerts_warm_events_without_sensitive_fields() {
     let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
