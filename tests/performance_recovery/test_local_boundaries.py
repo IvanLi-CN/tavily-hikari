@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import hashlib
 import json
+import os
+import shlex
+import subprocess
 import threading
+import time
 import urllib.request
 from contextlib import closing
 from pathlib import Path
@@ -14,6 +19,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 
@@ -264,6 +270,30 @@ def paired_round(
     candidate: dict[str, object],
 ) -> dict[str, object]:
     return {"round": round_number, "baseline": baseline, "candidate": candidate}
+
+
+def create_test_git_repo(parent: Path) -> tuple[Path, str]:
+    source = parent / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "Boundary Test"],
+        check=True,
+    )
+    (source / "fixture.txt").write_text("synthetic fixture\n", encoding="ascii")
+    subprocess.run(["git", "-C", str(source), "add", "fixture.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "commit", "--quiet", "-m", "test fixture"],
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
+    return source, revision
 
 
 class LocalBoundaryComparatorTests(unittest.TestCase):
@@ -1257,6 +1287,464 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             self.assertNotIn("s" * 64, oversized_content)
             self.assertGreater(oversized_writer.evidence()["redaction_gap_bytes"], 0)
             self.assertEqual(oversized_writer.evidence()["redaction_gap_count"], 1)
+
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX")
+    def test_process_group_cleanup_handles_exited_launcher_with_live_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout_log = HARNESS.BoundedLogWriter(root / "stdout.log")
+            stderr_log = HARNESS.BoundedLogWriter(root / "stderr.log")
+            child = (
+                f"{shlex.quote(sys.executable)} -c "
+                f"{shlex.quote('import sys,time; sys.stdout.write(\"child\\\\n\"); sys.stdout.flush(); time.sleep(30)')}"
+            )
+            process = subprocess.Popen(
+                f"{child} & exit 0",
+                shell=True,
+                start_new_session=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertIsNotNone(process.stdout)
+            self.assertIsNotNone(process.stderr)
+            output_threads = [
+                threading.Thread(
+                    target=HARNESS.drain_process_output,
+                    args=(process.stdout, stdout_log),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=HARNESS.drain_process_output,
+                    args=(process.stderr, stderr_log),
+                    daemon=True,
+                ),
+            ]
+            for thread in output_threads:
+                thread.start()
+
+            try:
+                deadline = time.monotonic() + 2
+                while process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIsNotNone(process.poll())
+                cleanup = HARNESS.terminate_process(process, output_threads)
+
+                self.assertEqual(cleanup["status"], "validated")
+                self.assertEqual(cleanup["remaining_pids"], [])
+                self.assertTrue(cleanup["output_threads_joined"])
+                self.assertTrue(all(not thread.is_alive() for thread in output_threads))
+                stdout_log.close()
+                stderr_log.close()
+            finally:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, 9)
+                    except ProcessLookupError:
+                        pass
+                for thread in output_threads:
+                    thread.join(timeout=2)
+                if not stdout_log.evidence()["closed"]:
+                    stdout_log.close()
+                if not stderr_log.evidence()["closed"]:
+                    stderr_log.close()
+
+    def test_archive_revision_reaps_archive_child_when_extraction_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, revision = create_test_git_repo(Path(temporary))
+            destination = Path(temporary) / "archive"
+            destination.mkdir()
+            spawned: list[subprocess.Popen[bytes]] = []
+            real_popen = HARNESS.subprocess.Popen
+
+            def fake_archive_popen(command: object, **kwargs: object) -> subprocess.Popen[bytes]:
+                if not isinstance(command, list) or "archive" not in command:
+                    return real_popen(command, **kwargs)
+                process = real_popen(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    **kwargs,
+                )
+                spawned.append(process)
+                return process
+
+            with mock.patch.object(
+                HARNESS.subprocess,
+                "Popen",
+                side_effect=fake_archive_popen,
+            ):
+                with mock.patch.object(
+                    HARNESS.tarfile,
+                    "open",
+                    side_effect=OSError(errno.ENOSPC, "No space left on device"),
+                ):
+                    with self.assertRaises(OSError) as raised:
+                        HARNESS.archive_revision(source, revision, destination)
+
+            self.assertEqual(len(spawned), 1)
+            archive_process = spawned[0]
+            self.assertIsNotNone(archive_process.poll())
+            self.assertIsNotNone(archive_process.returncode)
+            self.assertIsNotNone(archive_process.stdout)
+            self.assertTrue(archive_process.stdout.closed)
+            self.assertIn("OSError", HARNESS.exception_evidence(raised.exception)["traceback"])
+
+    def test_run_variant_preserves_archive_failure_stage_and_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, revision = create_test_git_repo(Path(temporary))
+            args = type(
+                "Args",
+                (),
+                {
+                    "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                    "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                    "request_interval_seconds": 0.25,
+                    "bootstrap_bound_business_tokens": False,
+                    "resources": HARNESS.DEFAULT_RESOURCES,
+                    "resource_spec": HARNESS.parse_resource_spec(HARNESS.DEFAULT_RESOURCES),
+                    "service_command": None,
+                    "binary_manifest": None,
+                },
+            )()
+            workdir = Path(temporary) / "run" / ".work" / "initial" / "round-1" / "candidate"
+            log_directory = Path(temporary) / "logs"
+            error = OSError(errno.ENOSPC, "No space left on device", str(workdir / "repo"))
+            with mock.patch.object(HARNESS, "archive_revision", side_effect=error):
+                with HARNESS.MockUpstream(HARNESS.DEFAULT_MOCK_DELAY_MS) as mock_upstream:
+                    result = HARNESS.run_variant(
+                        source,
+                        revision,
+                        "candidate",
+                        workdir,
+                        mock_upstream,
+                        args,
+                        1,
+                        1,
+                        log_directory,
+                    )
+
+            self.assertEqual(result["reason"], "variant_exception")
+            self.assertEqual(result["failure_stage"], "archive_revision")
+            self.assertEqual(result["error"]["errno"], errno.ENOSPC)
+            self.assertIn("OSError", result["error"]["traceback"])
+            self.assertEqual(result["cleanup"]["process"]["status"], "validated")
+            self.assertEqual(result["workspace"]["cleanup"]["status"], "preserved")
+            self.assertTrue(workdir.exists())
+
+    def test_real_paired_rounds_use_and_release_variant_workspaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, revision = create_test_git_repo(Path(temporary))
+            run_directory = Path(temporary) / "run"
+            args = type(
+                "Args",
+                (),
+                {
+                    "rounds": 1,
+                    "baseline_ref": revision,
+                    "candidate_ref": revision,
+                    "min_samples": 1,
+                    "min_control_samples": 1,
+                    "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                    "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                    "request_interval_seconds": 0.25,
+                    "bootstrap_bound_business_tokens": False,
+                    "bootstrap_business_tokens": False,
+                    "resources": HARNESS.DEFAULT_RESOURCES,
+                    "resource_spec": HARNESS.parse_resource_spec(HARNESS.DEFAULT_RESOURCES),
+                    "service_command": None,
+                    "binary_manifest": None,
+                },
+            )()
+            checkpoint = HARNESS.CheckpointStore(
+                run_directory, {"kind": "test", "scenarios": SCENARIOS}
+            )
+            with HARNESS.MockUpstream(HARNESS.DEFAULT_MOCK_DELAY_MS) as mock_upstream:
+                rounds = HARNESS.run_paired_rounds(
+                    source,
+                    run_directory,
+                    mock_upstream,
+                    args,
+                    1,
+                    "initial",
+                    checkpoint,
+                )
+
+            self.assertEqual(len(rounds), 1)
+            for variant in ("baseline", "candidate"):
+                workspace = HARNESS.variant_workspace_path(
+                    run_directory, "initial", 1, variant
+                )
+                checkpoint_path = (
+                    run_directory / "variants" / f"initial-round-1-{variant}.json"
+                )
+                result = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                self.assertEqual(result["workspace"]["path"], str(workspace.resolve()))
+                self.assertEqual(result["workspace"]["cleanup"]["status"], "released")
+                self.assertFalse(workspace.exists())
+
+    def test_cleanup_unvalidated_from_real_run_variant_blocks_next_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, revision = create_test_git_repo(root)
+            service = root / "service.py"
+            service.write_text(
+                "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+                encoding="ascii",
+            )
+            service.chmod(0o755)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "source_sha": revision,
+                        "build_input_sha": revision,
+                        "binary": {
+                            "path": str(service),
+                            "sha256": HARNESS.sha256_file(service),
+                        },
+                        "build": {
+                            "compiler": "test",
+                            "profile": "debug",
+                            "flags": [],
+                        },
+                    }
+                ),
+                encoding="ascii",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "rounds": 2,
+                    "baseline_ref": revision,
+                    "candidate_ref": revision,
+                    "min_samples": 1,
+                    "min_control_samples": 1,
+                    "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                    "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                    "request_interval_seconds": 0.25,
+                    "bootstrap_bound_business_tokens": False,
+                    "bootstrap_business_tokens": False,
+                    "resources": HARNESS.DEFAULT_RESOURCES,
+                    "resource_spec": HARNESS.parse_resource_spec(HARNESS.DEFAULT_RESOURCES),
+                    "service_command": "{binary}",
+                    "binary_manifest": str(manifest),
+                    "metrics_enabled": True,
+                    "metrics_scrape_interval_seconds": 0.0,
+                    "readiness_timeout_seconds": 0.0,
+                },
+            )()
+            run_directory = root / "run"
+            checkpoint = HARNESS.CheckpointStore(
+                run_directory, {"kind": "test", "scenarios": SCENARIOS}
+            )
+            real_terminate = HARNESS.terminate_process
+
+            def report_unvalidated_cleanup(
+                process: subprocess.Popen[bytes],
+                output_threads: object = (),
+                process_group_id: int | None = None,
+            ) -> dict[str, object]:
+                cleanup = real_terminate(process, output_threads, process_group_id)
+                cleanup["status"] = "unvalidated"
+                cleanup["output_threads_joined"] = False
+                cleanup["errors"] = [
+                    {"stage": "output_thread_cleanup", "reason": "test_drain_not_joined"}
+                ]
+                return cleanup
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                with mock.patch.object(
+                    HARNESS,
+                    "apply_resource_constraints",
+                    return_value=RESOURCES,
+                ), mock.patch.object(
+                    HARNESS,
+                    "terminate_process",
+                    side_effect=report_unvalidated_cleanup,
+                ), HARNESS.MockUpstream(HARNESS.DEFAULT_MOCK_DELAY_MS) as mock_upstream:
+                    rounds = HARNESS.run_paired_rounds(
+                        source,
+                        run_directory,
+                        mock_upstream,
+                        args,
+                        1,
+                        "initial",
+                        checkpoint,
+                    )
+
+            baseline = rounds[0]["baseline"]
+            candidate = rounds[0]["candidate"]
+            self.assertEqual(baseline["cleanup"]["status"], "unvalidated")
+            self.assertEqual(baseline["cleanup"]["process"]["output_threads_joined"], False)
+            self.assertEqual(baseline["cleanup"]["process"]["remaining_pids"], [])
+            self.assertEqual(candidate["reason"], "prior_cleanup_unvalidated")
+            self.assertEqual(candidate["cleanup"]["status"], "not_run")
+            self.assertIsNone(candidate["request"])
+            self.assertEqual(candidate["system_diagnostics"]["status"], "unavailable")
+            self.assertIsNone(candidate["resource_observation"])
+            candidate_workspace = HARNESS.variant_workspace_path(
+                run_directory, "initial", 1, "candidate"
+            )
+            self.assertFalse(candidate_workspace.exists())
+
+    def test_variant_exception_preserves_stage_errno_traceback_and_bound_metadata(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "bootstrap_bound_business_tokens": True,
+                "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                "request_interval_seconds": 0.25,
+            },
+        )()
+        error = OSError(errno.ENOSPC, "No space left on device", "/tmp/candidate-repo")
+
+        try:
+            raise error
+        except OSError as caught:
+            result = HARNESS.variant_exception_result(
+                "candidate",
+                3,
+                "candidate-ref",
+                args,
+                caught,
+                stage="archive_revision",
+            )
+
+        self.assertEqual(result["reason"], "variant_exception")
+        self.assertEqual(result["error_type"], "OSError")
+        self.assertEqual(result["error"]["errno"], errno.ENOSPC)
+        self.assertEqual(result["error"]["strerror"], "No space left on device")
+        self.assertEqual(result["error"]["filename"], "/tmp/candidate-repo")
+        self.assertEqual(result["error"]["stage"], "archive_revision")
+        self.assertIn("OSError", result["error"]["traceback"])
+        mapping = result["credential_mapping"]
+        self.assertEqual(mapping["credential_kind"], "bound_access_token")
+        self.assertEqual(mapping["billing_subject_kind"], "account")
+        self.assertEqual(mapping["binding_path"], "POST /api/users/<account-id>/tokens")
+        self.assertEqual(len(mapping["account_ids"]), 14)
+
+    def test_run_directory_workspace_records_storage_and_releases_variant_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_directory = Path(temporary) / "run"
+            workspace = HARNESS.variant_workspace_path(
+                run_directory, "initial", 3, "candidate"
+            )
+            workspace.mkdir(parents=True)
+            (workspace / "partial-archive").write_bytes(b"synthetic")
+
+            storage = HARNESS.workspace_storage_evidence(workspace)
+            self.assertEqual(storage["path"], str(workspace))
+            self.assertGreater(storage["available_bytes"], 0)
+            self.assertGreater(storage["available_inodes"], 0)
+            self.assertIn("mount", storage)
+            self.assertEqual(
+                storage["tempdir"],
+                HARNESS.temp_directory_evidence()["path"],
+            )
+
+            released = HARNESS.release_variant_workspace(workspace, cleanup_validated=True)
+
+            self.assertEqual(released["status"], "released")
+            self.assertFalse(workspace.exists())
+            self.assertEqual(released["after"]["exists"], False)
+
+    def test_failure_checkpoint_preserves_error_cleanup_and_workspace_evidence(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "bootstrap_bound_business_tokens": False,
+                "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                "request_interval_seconds": 0.25,
+            },
+        )()
+        try:
+            raise OSError(errno.ENOSPC, "No space left on device", "/tmp/archive")
+        except OSError as error:
+            result = HARNESS.variant_exception_result(
+                "candidate",
+                1,
+                "candidate-ref",
+                args,
+                error,
+                stage="archive_revision",
+            )
+        result["cleanup"] = {"status": "unvalidated", "reason": "process_cleanup_unvalidated"}
+        result["workspace"] = {"cleanup": {"status": "preserved"}}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = HARNESS.CheckpointStore(Path(temporary) / "run", {"kind": "test"})
+            checkpoint.write_variant_result("initial", 1, "candidate", result)
+            payload = json.loads(
+                (Path(temporary) / "run" / "variants" / "initial-round-1-candidate.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(payload["error"]["errno"], errno.ENOSPC)
+        self.assertEqual(payload["failure_stage"], "archive_revision")
+        self.assertEqual(payload["cleanup"]["status"], "unvalidated")
+        self.assertEqual(payload["workspace"]["cleanup"]["status"], "preserved")
+
+    def test_paired_rounds_isolate_workspaces_and_stop_after_unvalidated_cleanup(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "rounds": 3,
+                "baseline_ref": "baseline-ref",
+                "candidate_ref": "candidate-ref",
+                "min_samples": 1,
+                "min_control_samples": 1,
+                "subjects": tuple(f"subject-{index}" for index in range(1, 15)),
+                "tokens": tuple(f"token-{index}" for index in range(1, 15)),
+                "request_interval_seconds": 0.25,
+                "bootstrap_bound_business_tokens": False,
+            },
+        )()
+        baseline = measured_result(
+            variant="baseline", round_number=1, request_p95=100, unrelated_p95=100
+        )
+        baseline["cleanup"] = {
+            "status": "unvalidated",
+            "reason": "process_cleanup_unvalidated",
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checkpoint = HARNESS.CheckpointStore(Path(temporary) / "run", {"kind": "test"})
+            with mock.patch.object(HARNESS, "run_variant", return_value=baseline) as run:
+                rounds = HARNESS.run_paired_rounds(
+                    ROOT,
+                    Path(temporary) / "run",
+                    object(),
+                    args,
+                    1,
+                    "initial",
+                    checkpoint,
+                )
+
+            candidate_path = (
+                Path(temporary)
+                / "run"
+                / "variants"
+                / "initial-round-1-candidate.json"
+            )
+            candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            run.call_args.args[3],
+            HARNESS.variant_workspace_path(
+                Path(temporary) / "run", "initial", 1, "baseline"
+            ),
+        )
+        self.assertEqual(len(rounds), 1)
+        self.assertEqual(rounds[0]["candidate"]["reason"], "prior_cleanup_unvalidated")
+        self.assertEqual(candidate["blocked_by"], "baseline")
+        self.assertEqual(candidate["cleanup"]["status"], "not_run")
 
     def test_binary_manifest_requires_hash_and_build_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

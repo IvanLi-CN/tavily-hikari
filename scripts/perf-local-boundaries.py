@@ -18,6 +18,7 @@ import re
 import resource as posix_resource
 import shlex
 import signal
+import shutil
 import socket
 import sqlite3
 import statistics
@@ -26,10 +27,11 @@ import tarfile
 import tempfile
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
 DEFAULT_BASELINE_REF = "b1bb1043823b9260b18389854e6b90b2cdedbd70"
@@ -62,6 +64,7 @@ LOG_TRUNCATION_MARKER = b"\n<LOG_TRUNCATED_HEAD_TAIL>\n"
 MAX_LOG_REDACTION_CARRY = MAX_SERVICE_LOG_BYTES
 LOG_REDACTION_GAP_MARKER = b"\n<LOG_REDACTION_GAP>\n"
 MAX_LOG_REDACTION_GAPS = 64
+MAX_EXCEPTION_TRACEBACK_BYTES = 16 * 1024
 MAX_RESPONSE_EVIDENCE = 12
 MAX_METRICS_SCRAPES = 256
 MAX_METRICS_SCRAPE_ERRORS = 64
@@ -70,6 +73,8 @@ MAX_SYSTEM_DIAGNOSTIC_SAMPLES = 4096
 MAX_SYSTEM_DIAGNOSTIC_DEVICES = 64
 MAX_SERVICE_PROCESS_DESCENDANTS = 128
 MAX_SERVICE_PROCESS_CANDIDATES = MAX_SERVICE_PROCESS_DESCENDANTS + 1
+PROCESS_CLEANUP_TERM_TIMEOUT_SECONDS = 10.0
+PROCESS_CLEANUP_KILL_TIMEOUT_SECONDS = 5.0
 PHASE_SCHEMA_LEGACY = "legacy"
 PHASE_SCHEMA_OPERATION = "operation"
 PHASE_SCHEMA_UNSUPPORTED = "unsupported"
@@ -249,6 +254,11 @@ def credential_mapping_evidence(
         "source": BOUND_FIXTURE_SOURCE if bound_account else "POST /api/tokens response token id + billing_subject_for_token",
         "credential_kind": "bound_access_token" if bound_account else "unbound_access_token",
         "billing_subject_kind": "account" if bound_account else "token",
+        "binding_path": (
+            "POST /api/users/<account-id>/tokens"
+            if bound_account
+            else "POST /api/tokens"
+        ),
         "secret_persisted": False,
         "scenario_digest": scenario_digest(credentials, interval_seconds),
         "credentials": [
@@ -269,6 +279,36 @@ def credential_mapping_evidence(
         ]
         evidence["quota_headroom"] = dict(BOUND_FIXTURE_QUOTA_HEADROOM)
     return evidence
+
+
+def credential_mapping_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    bound_account = bool(getattr(args, "bootstrap_bound_business_tokens", False))
+    tokens = tuple(getattr(args, "tokens", ()))
+    mapping: dict[str, Any] = {
+        "status": "unvalidated",
+        "source": (
+            BOUND_FIXTURE_SOURCE
+            if bound_account
+            else "POST /api/tokens response token id + billing_subject_for_token"
+        ),
+        "credential_kind": (
+            "bound_access_token" if bound_account else "unbound_access_token"
+        ),
+        "billing_subject_kind": "account" if bound_account else "token",
+        "binding_path": (
+            "POST /api/users/<account-id>/tokens"
+            if bound_account
+            else "POST /api/tokens"
+        ),
+        "secret_persisted": False,
+        "same_account_definition": "same token_id and billing_subject reused by every queue worker",
+        "cross_account_definition": "one distinct token_id and billing_subject per worker",
+    }
+    if bound_account:
+        mapping["account_ids"] = list(bound_fixture_account_ids(tokens))
+        mapping["expected_credential_count"] = len(tokens)
+        mapping["binding_kind"] = "bound_account"
+    return mapping
 
 
 class MockUpstreamHandler(BaseHTTPRequestHandler):
@@ -379,6 +419,251 @@ def redact_output(text: str) -> str:
         r"\1<REDACTED>",
         redacted,
     )
+
+
+def _decode_mountinfo_field(value: str) -> str:
+    return (
+        value.replace(r"\040", " ")
+        .replace(r"\011", "\t")
+        .replace(r"\012", "\n")
+        .replace(r"\134", "\\")
+    )
+
+
+def mount_observation(path: Path) -> dict[str, Any]:
+    requested = path.resolve()
+    probe = requested
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    evidence: dict[str, Any] = {
+        "status": "unavailable",
+        "path": str(requested),
+        "probe_path": str(probe),
+    }
+    try:
+        evidence["device"] = os.stat(probe).st_dev
+    except OSError as error:
+        evidence["error"] = {
+            "type": type(error).__name__,
+            "errno": getattr(error, "errno", None),
+            "message": redact_output(str(error)),
+        }
+        return evidence
+
+    mountinfo_path = Path("/proc/self/mountinfo")
+    if not mountinfo_path.is_file():
+        evidence["reason"] = "mountinfo_unavailable"
+        return evidence
+    best: dict[str, Any] | None = None
+    try:
+        lines = mountinfo_path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        evidence["reason"] = f"mountinfo_read:{type(error).__name__}"
+        return evidence
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 10 or "-" not in fields:
+            continue
+        mount_point = Path(_decode_mountinfo_field(fields[4]))
+        if not (probe == mount_point or mount_point in probe.parents):
+            continue
+        separator = fields.index("-")
+        if len(fields) <= separator + 3:
+            continue
+        candidate = {
+            "mount_point": str(mount_point),
+            "filesystem_type": fields[separator + 1],
+            "source": _decode_mountinfo_field(fields[separator + 2]),
+            "super_options": fields[separator + 3],
+        }
+        if best is None or len(mount_point.parts) > len(Path(best["mount_point"]).parts):
+            best = candidate
+    if best is None:
+        evidence["reason"] = "mount_not_found"
+        return evidence
+    evidence.update({"status": "observed", **best})
+    return evidence
+
+
+def _filesystem_storage_observation(path: Path) -> dict[str, Any]:
+    requested = path.resolve()
+    probe = requested
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    evidence: dict[str, Any] = {
+        "path": str(requested),
+        "probe_path": str(probe),
+        "exists": requested.exists(),
+        "mount": mount_observation(probe),
+    }
+    try:
+        stat = os.statvfs(probe)
+    except OSError as error:
+        evidence["status"] = "unavailable"
+        evidence["error"] = {
+            "type": type(error).__name__,
+            "errno": getattr(error, "errno", None),
+            "strerror": getattr(error, "strerror", None),
+            "message": redact_output(str(error)),
+        }
+        return evidence
+    evidence.update(
+        {
+            "status": "observed",
+            "available_bytes": stat.f_bavail * stat.f_frsize,
+            "free_bytes": stat.f_bfree * stat.f_frsize,
+            "total_bytes": stat.f_blocks * stat.f_frsize,
+            "available_inodes": stat.f_favail,
+            "free_inodes": stat.f_ffree,
+            "total_inodes": stat.f_files,
+        }
+    )
+    return evidence
+
+
+def temp_directory_evidence() -> dict[str, Any]:
+    path = Path(tempfile.gettempdir()).resolve()
+    evidence = _filesystem_storage_observation(path)
+    evidence["path"] = str(path)
+    return evidence
+
+
+def workspace_storage_evidence(path: Path) -> dict[str, Any]:
+    evidence = _filesystem_storage_observation(path)
+    evidence["tempdir"] = str(Path(tempfile.gettempdir()).resolve())
+    evidence["tempdir_storage"] = temp_directory_evidence()
+    return evidence
+
+
+def workspace_directory_evidence(path: Path) -> dict[str, Any]:
+    requested = path.resolve()
+    evidence: dict[str, Any] = {
+        "path": str(requested),
+        "exists": requested.exists(),
+        "files": 0,
+        "directories": 0,
+        "bytes": 0,
+    }
+    if not requested.exists():
+        return evidence
+    try:
+        for current, directories, files in os.walk(requested):
+            evidence["directories"] += len(directories)
+            for name in files:
+                evidence["files"] += 1
+                try:
+                    evidence["bytes"] += (Path(current) / name).stat().st_size
+                except OSError:
+                    pass
+    except OSError as error:
+        evidence["error"] = {
+            "type": type(error).__name__,
+            "errno": getattr(error, "errno", None),
+            "message": redact_output(str(error)),
+        }
+    return evidence
+
+
+def variant_workspace_path(
+    run_directory: Path, phase: str, round_number: int, variant: str
+) -> Path:
+    return (
+        run_directory.resolve()
+        / ".work"
+        / phase
+        / f"round-{round_number}"
+        / variant
+    )
+
+
+def release_variant_workspace(
+    path: Path, *, cleanup_validated: bool
+) -> dict[str, Any]:
+    before = workspace_directory_evidence(path)
+    if not cleanup_validated:
+        return {
+            "status": "preserved",
+            "reason": "cleanup_unvalidated",
+            "before": before,
+            "after": workspace_directory_evidence(path),
+        }
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except OSError as error:
+        return {
+            "status": "unvalidated",
+            "reason": "workspace_remove_failed",
+            "error": {
+                "type": type(error).__name__,
+                "errno": getattr(error, "errno", None),
+                "strerror": getattr(error, "strerror", None),
+                "message": redact_output(str(error)),
+            },
+            "before": before,
+            "after": workspace_directory_evidence(path),
+        }
+    return {
+        "status": "released",
+        "before": before,
+        "after": workspace_directory_evidence(path),
+    }
+
+
+def exception_evidence(error: BaseException, stage: str | None = None) -> dict[str, Any]:
+    traceback_text = redact_output(
+        "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    )
+    if len(traceback_text) > MAX_EXCEPTION_TRACEBACK_BYTES:
+        traceback_text = (
+            traceback_text[:MAX_EXCEPTION_TRACEBACK_BYTES]
+            + "\n<TRACEBACK_TRUNCATED>\n"
+        )
+    evidence: dict[str, Any] = {
+        "type": type(error).__name__,
+        "errno": getattr(error, "errno", None),
+        "strerror": redact_output(str(getattr(error, "strerror", "") or "")),
+        "filename": redact_output(str(getattr(error, "filename", "") or "")),
+        "filename2": redact_output(str(getattr(error, "filename2", "") or "")),
+        "message": redact_output(str(error)),
+        "traceback": traceback_text,
+    }
+    if stage is not None:
+        evidence["stage"] = stage
+    return evidence
+
+
+class VariantPreparationError(RuntimeError):
+    def __init__(
+        self, stage: str, error: BaseException, context: dict[str, Any]
+    ) -> None:
+        super().__init__(str(error))
+        self.stage = stage
+        self.error = error
+        self.context = context
+
+
+def close_bounded_logs(
+    stdout_log: BoundedLogWriter | None,
+    stderr_log: BoundedLogWriter | None,
+) -> dict[str, Any]:
+    errors: list[dict[str, Any]] = []
+    for name, writer in (("stdout", stdout_log), ("stderr", stderr_log)):
+        if writer is None or writer.evidence().get("closed"):
+            continue
+        try:
+            writer.close()
+        except BaseException as error:
+            errors.append(exception_evidence(error, f"{name}_log.close"))
+    closed = all(
+        writer is None or writer.evidence().get("closed")
+        for writer in (stdout_log, stderr_log)
+    )
+    return {
+        "status": "validated" if closed and not errors else "unvalidated",
+        "closed": closed,
+        "errors": errors,
+    }
 
 
 class BoundedLogWriter:
@@ -810,6 +1095,64 @@ def process_descendant_observation(
         "errors": errors,
         "truncated": truncated,
     }
+
+
+def process_group_observation(group_id: int) -> dict[str, Any]:
+    """Observe members of one process group without widening to unrelated PIDs."""
+
+    members: set[int] = set()
+    errors: list[str] = []
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        try:
+            entries = list(proc_root.iterdir())
+        except OSError as error:
+            entries = []
+            errors.append(f"proc_iter:{type(error).__name__}")
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            try:
+                if os.getpgid(pid) == group_id:
+                    members.add(pid)
+            except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+                continue
+    else:
+        try:
+            completed = subprocess.run(
+                ["ps", "-eo", "pid=,pgid="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                errors.append(f"ps_exit_{completed.returncode}")
+            for line in completed.stdout.splitlines():
+                fields = line.split()
+                if len(fields) != 2:
+                    continue
+                try:
+                    pid, observed_group = (int(value) for value in fields)
+                except ValueError:
+                    continue
+                if observed_group == group_id:
+                    members.add(pid)
+        except OSError as error:
+            errors.append(f"ps:{type(error).__name__}")
+    return {
+        "group_id": group_id,
+        "pids": sorted(members),
+        "errors": errors,
+    }
+
+
+def _cleanup_process_ids(process: subprocess.Popen[bytes], group_id: int) -> list[int]:
+    group = process_group_observation(group_id)
+    observed = set(group["pids"])
+    if process.poll() is None:
+        observed.add(process.pid)
+    return sorted(observed)
 
 
 def service_process_binary_binding(
@@ -1269,6 +1612,9 @@ class CheckpointStore:
                 "service_process": unavailable_service_process("variant_not_started"),
                 "system_diagnostics": unavailable_system_diagnostics("variant_not_started"),
                 "logs": None,
+                "cleanup": None,
+                "workspace": None,
+                "error": None,
             },
         )
         self._write_progress("variant_running")
@@ -1315,9 +1661,17 @@ class CheckpointStore:
             "service_process": result.get("service_process"),
             "system_diagnostics": result.get("system_diagnostics"),
             "logs": result.get("logs"),
+            "cleanup": result.get("cleanup"),
+            "workspace": result.get("workspace"),
         }
         if result.get("error_type") is not None:
             payload["error_type"] = result["error_type"]
+        if result.get("error") is not None:
+            payload["error"] = result["error"]
+        if result.get("failure_stage") is not None:
+            payload["failure_stage"] = result["failure_stage"]
+        if result.get("blocked_by") is not None:
+            payload["blocked_by"] = result["blocked_by"]
         atomic_write_json(self.variant_path(phase, round_number, variant), payload)
         self.active = None
         self._write_progress("variant_complete", phase=phase, round=round_number, variant=variant)
@@ -1640,15 +1994,29 @@ def archive_revision(root: Path, revision: str, destination: Path) -> str:
         ["git", "-C", str(root), "rev-parse", "--verify", f"{revision}^{{commit}}"],
         text=True,
     ).strip()
-    archive = subprocess.Popen(
-        ["git", "-C", str(root), "archive", resolved], stdout=subprocess.PIPE
-    )
-    assert archive.stdout is not None
-    with tarfile.open(fileobj=archive.stdout, mode="r|") as stream:
-        stream.extractall(destination, filter="data")
-    if archive.wait() != 0:
-        raise RuntimeError(f"unable to archive revision {revision}")
-    return resolved
+    archive: subprocess.Popen[bytes] | None = None
+    try:
+        archive = subprocess.Popen(
+            ["git", "-C", str(root), "archive", resolved], stdout=subprocess.PIPE
+        )
+        assert archive.stdout is not None
+        with tarfile.open(fileobj=archive.stdout, mode="r|") as stream:
+            stream.extractall(destination, filter="data")
+        if archive.wait() != 0:
+            raise RuntimeError(f"unable to archive revision {revision}")
+        return resolved
+    except BaseException:
+        if archive is not None and archive.poll() is None:
+            archive.terminate()
+            try:
+                archive.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                archive.kill()
+                archive.wait(timeout=2)
+        raise
+    finally:
+        if archive is not None and archive.stdout is not None:
+            archive.stdout.close()
 
 
 def find_free_port() -> int:
@@ -3150,21 +3518,360 @@ def apply_resource_constraints(
     }
 
 
-def terminate_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
+def terminate_process(
+    process: subprocess.Popen[bytes],
+    output_threads: Iterable[threading.Thread] = (),
+    process_group_id: int | None = None,
+) -> dict[str, Any]:
+    """Stop one launcher's group and prove its pipes are drained before log close."""
+
+    threads = tuple(output_threads)
+    group_id = process_group_id if process_group_id is not None else process.pid
+    initial_pids = _cleanup_process_ids(process, group_id)
+    signals_sent: list[str] = []
+    errors: list[dict[str, Any]] = []
+
+    def send_group_signal(signum: signal.Signals) -> None:
+        current_pids = _cleanup_process_ids(process, group_id)
+        if not current_pids and process.poll() is not None:
+            return
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(group_id, signum)
+            signals_sent.append(signum.name)
         except ProcessLookupError:
-            pass
-        process.wait(timeout=5)
+            if _cleanup_process_ids(process, group_id):
+                errors.append(
+                    {
+                        "stage": "process_group_signal",
+                        "signal": signum.name,
+                        "reason": "process_group_disappeared",
+                    }
+                )
+        except OSError as error:
+            errors.append(
+                {
+                    "stage": "process_group_signal",
+                    "signal": signum.name,
+                    **exception_evidence(error, "process_group_signal"),
+                }
+            )
+
+    def wait_for_processes(timeout_seconds: float) -> list[int]:
+        deadline = time.monotonic() + timeout_seconds
+        remaining = _cleanup_process_ids(process, group_id)
+        while remaining and time.monotonic() < deadline:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+                except OSError as error:
+                    errors.append(exception_evidence(error, "process_wait"))
+            remaining = _cleanup_process_ids(process, group_id)
+            if remaining:
+                time.sleep(0.02)
+        return remaining
+
+    send_group_signal(signal.SIGTERM)
+    remaining_pids = wait_for_processes(PROCESS_CLEANUP_TERM_TIMEOUT_SECONDS)
+    if remaining_pids:
+        send_group_signal(signal.SIGKILL)
+        remaining_pids = wait_for_processes(PROCESS_CLEANUP_KILL_TIMEOUT_SECONDS)
+
+    thread_deadline = time.monotonic() + PROCESS_CLEANUP_KILL_TIMEOUT_SECONDS
+    for thread in threads:
+        thread.join(timeout=max(0.0, thread_deadline - time.monotonic()))
+    output_threads_joined = all(not thread.is_alive() for thread in threads)
+    remaining_pids = _cleanup_process_ids(process, group_id)
+    status = "validated" if not remaining_pids and output_threads_joined else "unvalidated"
+    if remaining_pids:
+        errors.append(
+            {
+                "stage": "process_group_cleanup",
+                "reason": "processes_remain",
+                "remaining_pids": remaining_pids,
+            }
+        )
+    if not output_threads_joined:
+        errors.append(
+            {
+                "stage": "output_thread_cleanup",
+                "reason": "output_threads_remain",
+                "threads": [
+                    {"name": thread.name, "ident": thread.ident}
+                    for thread in threads
+                    if thread.is_alive()
+                ],
+            }
+        )
+    return {
+        "status": status,
+        "launcher_pid": process.pid,
+        "process_group_id": group_id,
+        "initial_pids": initial_pids,
+        "remaining_pids": remaining_pids,
+        "signals_sent": signals_sent,
+        "output_threads_joined": output_threads_joined,
+        "errors": errors,
+        "returncode": process.returncode,
+    }
+
+
+def prepare_variant(
+    root: Path,
+    revision: str,
+    variant: str,
+    workdir: Path,
+    mock: MockUpstream,
+    args: argparse.Namespace,
+    round_number: int,
+    log_directory: Path,
+) -> dict[str, Any]:
+    """Prepare one isolated variant and retain the exact failing stage."""
+
+    context: dict[str, Any] = {
+        "workdir": workdir,
+        "variant": variant,
+        "round": round_number,
+        "stdout_log": None,
+        "stderr_log": None,
+    }
+    stage = "workdir.mkdir"
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+        context["workspace_storage_before"] = workspace_storage_evidence(workdir)
+        stage = "repo.mkdir"
+        repo = workdir / f"{variant}-repo"
+        repo.mkdir()
+        context["repo"] = repo
+        stage = "archive_revision"
+        resolved = archive_revision(root, revision, repo)
+        context["resolved"] = resolved
+        stage = "binary_manifest_evidence"
+        binary_provenance = binary_manifest_evidence(
+            getattr(args, "binary_manifest", None), repo, variant, resolved
+        )
+        context["binary_provenance"] = binary_provenance
+        stage = "resource_spec"
+        resource_spec = getattr(
+            args, "resource_spec", parse_resource_spec(args.resources)
+        )
+        context["resource_spec"] = resource_spec
+        context["scenario_shape"] = scenario_contract(args.request_interval_seconds)
+        context["synthetic_mapping"] = credential_mapping_evidence(
+            synthetic_credentials(tuple(args.tokens)), args.request_interval_seconds
+        )
+        stage = "create_fixture"
+        core, sidecar = create_fixture(workdir / f"{variant}-fixture")
+        context["core"] = core
+        context["sidecar"] = sidecar
+        stage = "find_free_port"
+        context["port"] = find_free_port()
+        stage = "find_metrics_port"
+        context["metrics_port"] = find_free_port()
+        metrics_token = "perf-metrics-token"
+        stage = "metrics_token.write"
+        metrics_token_path = workdir / "metrics.token"
+        metrics_token_path.write_text(metrics_token + "\n", encoding="ascii")
+        stage = "metrics_token.chmod"
+        metrics_token_path.chmod(0o600)
+        context["metrics_token"] = metrics_token
+        context["metrics_token_path"] = metrics_token_path
+        stage = "log_directory.mkdir"
+        log_directory.mkdir(parents=True, exist_ok=True)
+        context["log_directory"] = log_directory
+        if not args.service_command:
+            context.update(
+                {
+                    "service_command_binding": {
+                        "status": "missing",
+                        "reason": "service_command_missing",
+                    },
+                    "early_reason": "service_command_missing",
+                }
+            )
+            return context
+        stage = "service_command_binding"
+        service_command_binding = service_command_binary_binding(
+            args.service_command, binary_provenance
+        )
+        context["service_command_binding"] = service_command_binding
+        if (
+            binary_provenance.get("status") != "verified"
+            or service_command_binding.get("status")
+            not in {"explicit_placeholder", "explicit_environment"}
+        ):
+            context["early_reason"] = binary_provenance.get(
+                "reason",
+                service_command_binding.get("reason", "binary_provenance_unavailable"),
+            )
+            return context
+
+        stage = "service_environment"
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "PERF_LOCAL_VARIANT": variant,
+                "PERF_LOCAL_ROUND": str(round_number),
+                "PERF_LOCAL_REPO": str(repo),
+                "PERF_LOCAL_DB_PATH": str(core),
+                "PERF_LOCAL_SIDECAR_DB_PATH": str(sidecar),
+                "PERF_LOCAL_UPSTREAM_URL": mock.url,
+                "PERF_LOCAL_PORT": str(context["port"]),
+                "PERF_LOCAL_METRICS_PORT": str(context["metrics_port"]),
+                "PERF_LOCAL_METRICS_ENABLED": "1" if args.metrics_enabled else "0",
+                "PERF_LOCAL_SUBJECTS": ",".join(args.subjects),
+                "PERF_LOCAL_TOKENS": ",".join(args.tokens),
+                "PERF_LOCAL_RESOURCES": args.resources,
+                "PERF_LOCAL_RESOURCE_SPEC": json.dumps(resource_spec, sort_keys=True),
+                "PERF_LOCAL_BINARY_MANIFEST": str(binary_provenance["manifest_path"]),
+                "PERF_LOCAL_BINARY_PATH": str(binary_provenance["binary_path"]),
+                "PERF_LOCAL_BINARY_SHA256": str(binary_provenance["binary_sha256"]),
+                "PERF_LOCAL_SOURCE_SHA": str(binary_provenance.get("source_sha") or ""),
+                "PERF_LOCAL_BUILD_INPUT_SHA": str(
+                    binary_provenance.get("build_input_sha") or ""
+                ),
+                "TAVILY_UPSTREAM": mock.url,
+                "TAVILY_USAGE_BASE": mock.url,
+                "PROXY_DB_PATH": str(core),
+                "PROXY_BIND": "127.0.0.1",
+                "PROXY_PORT": str(context["port"]),
+                "OBSERVABILITY_ENABLED": "true" if args.metrics_enabled else "false",
+                "OBSERVABILITY_ENVIRONMENT": "test",
+                "OBSERVABILITY_INSTANCE": "local",
+                "METRICS_BIND": f"127.0.0.1:{context['metrics_port']}",
+                "METRICS_TOKEN_FILE": str(metrics_token_path),
+                "TAVILY_API_KEYS": "tvly-synthetic-test-key",
+                **SYNTHETIC_FIXTURE_ENV,
+                "HA_MODE": "single",
+                "DEV_OPEN_ADMIN": "true",
+            }
+        )
+        context["environment"] = environment
+        stage = "service_command.format"
+        context["command"] = args.service_command.format(
+            repo=shlex.quote(str(repo)),
+            db=shlex.quote(str(core)),
+            sidecar=shlex.quote(str(sidecar)),
+            port=context["port"],
+            upstream=shlex.quote(mock.url),
+            variant=variant,
+            binary=shlex.quote(str(binary_provenance["binary_path"])),
+            manifest=shlex.quote(str(binary_provenance["manifest_path"])),
+            revision=resolved,
+        )
+        stage = "stdout_log.open"
+        context["stdout_log"] = BoundedLogWriter(log_directory / "stdout.log")
+        stage = "stderr_log.open"
+        context["stderr_log"] = BoundedLogWriter(log_directory / "stderr.log")
+        context["workspace_storage_after_preparation"] = workspace_storage_evidence(workdir)
+        return context
+    except (HarnessInterrupted, KeyboardInterrupt):
+        raise
+    except BaseException as error:
+        raise VariantPreparationError(stage, error, context) from error
+
+
+def finalize_variant_result(
+    result: dict[str, Any],
+    *,
+    workdir: Path,
+    workspace_before: dict[str, Any],
+    prepared: dict[str, Any] | None,
+    process: subprocess.Popen[bytes] | None,
+    process_group_id: int | None,
+    output_threads: Iterable[threading.Thread],
+    stdout_log: BoundedLogWriter | None,
+    stderr_log: BoundedLogWriter | None,
+    system_collector: SystemDiagnosticsCollector | None,
+    binary_provenance: dict[str, Any],
+    service_command_binding: dict[str, Any],
+    service_process: dict[str, Any],
+    preserve_workspace: bool = False,
+) -> dict[str, Any]:
+    """Finalize process, pipe, diagnostic, and workspace evidence for one variant."""
+
+    if process is None:
+        process_cleanup = {
+            "status": "validated",
+            "reason": "process_not_started",
+            "remaining_pids": [],
+            "output_threads_joined": True,
+            "errors": [],
+        }
+    else:
+        process_cleanup = terminate_process(
+            process, output_threads, process_group_id
+        )
+    if process_cleanup["status"] == "validated":
+        log_cleanup = close_bounded_logs(stdout_log, stderr_log)
+    else:
+        log_cleanup = {
+            "status": "unvalidated",
+            "closed": False,
+            "reason": "process_cleanup_unvalidated",
+            "errors": [],
+        }
+    system_evidence = (
+        system_collector.evidence()
+        if system_collector is not None
+        else unavailable_system_diagnostics("system_collector_not_started")
+    )
+    cleanup_status = (
+        "validated"
+        if process_cleanup["status"] == "validated"
+        and log_cleanup["status"] == "validated"
+        and system_evidence.get("joined", True)
+        else "unvalidated"
+    )
+    cleanup = {
+        "status": cleanup_status,
+        "process": process_cleanup,
+        "logs": log_cleanup,
+        "errors": (
+            process_cleanup.get("errors", [])
+            + log_cleanup.get("errors", [])
+            + (
+                [{"stage": "system_diagnostics", "reason": "thread_remains"}]
+                if not system_evidence.get("joined", True)
+                else []
+            )
+        ),
+    }
+    if cleanup_status != "validated":
+        result["status"] = "unvalidated"
+        result["reason"] = "process_cleanup_unvalidated"
+    result["cleanup"] = cleanup
+    result["binary_provenance"] = binary_provenance
+    result["service_command_binding"] = service_command_binding
+    result["service_process"] = service_process
+    result["system_diagnostics"] = system_evidence
+    result["logs"] = {
+        "stdout": stdout_log.evidence() if stdout_log is not None else None,
+        "stderr": stderr_log.evidence() if stderr_log is not None else None,
+    }
+    workspace_cleanup_validated = (
+        cleanup_status == "validated"
+        and not preserve_workspace
+        and result.get("reason") != "variant_exception"
+    )
+    workspace_cleanup = release_variant_workspace(
+        workdir, cleanup_validated=workspace_cleanup_validated
+    )
+    result["workspace"] = {
+        "strategy": "run_directory_local",
+        "path": str(workdir),
+        "storage_before": (
+            prepared.get("workspace_storage_before", workspace_before)
+            if prepared is not None
+            else workspace_before
+        ),
+        "storage_after": workspace_storage_evidence(workdir),
+        "tempdir": temp_directory_evidence(),
+        "directory": workspace_directory_evidence(workdir),
+        "cleanup": workspace_cleanup,
+    }
+    return result
 
 
 def run_variant(
@@ -3187,63 +3894,78 @@ def run_variant(
         result = payload
         return payload
 
-    workdir.mkdir(parents=True, exist_ok=True)
-    repo = workdir / f"{variant}-repo"
-    repo.mkdir()
-    resolved = archive_revision(root, revision, repo)
-    binary_provenance = binary_manifest_evidence(
-        getattr(args, "binary_manifest", None), repo, variant, resolved
-    )
-    resource_spec = getattr(args, "resource_spec", parse_resource_spec(args.resources))
-    scenario_shape = scenario_contract(args.request_interval_seconds)
-    synthetic_mapping = credential_mapping_evidence(
-        synthetic_credentials(tuple(args.tokens)), args.request_interval_seconds
-    )
-    core, sidecar = create_fixture(workdir / f"{variant}-fixture")
-    port = find_free_port()
-    metrics_port = find_free_port()
-    metrics_token = "perf-metrics-token"
-    metrics_token_path = workdir / "metrics.token"
-    metrics_token_path.write_text(metrics_token + "\n", encoding="ascii")
-    metrics_token_path.chmod(0o600)
-    log_directory.mkdir(parents=True, exist_ok=True)
-    if not args.service_command:
-        service_command_binding = {
-            "status": "missing",
-            "reason": "service_command_missing",
-        }
-        return finish({
-            "variant": variant,
-            "round": round_number,
-            "ref": resolved,
-            "status": "unvalidated",
-            "reason": "service_command_missing",
-            "duration_seconds": duration_seconds,
-            "request": None,
-            "unrelated_cohort": None,
-            "phases": {},
-            "accepted_progress": {"responses": 0, "reported": 0},
-            "cohort": logical_cohort(tuple(args.subjects), tuple(args.tokens), args.request_interval_seconds),
-            "scenarios": scenario_shape,
-            "scenario_contract": scenario_shape,
-            "credential_mapping": synthetic_mapping,
-            "resource_observation": None,
-            "binary_provenance": binary_provenance,
-            "service_command_binding": service_command_binding,
-            "service_process": service_process,
-            "system_diagnostics": unavailable_system_diagnostics("service_command_missing"),
-        })
-    service_command_binding = service_command_binary_binding(
-        args.service_command, binary_provenance
-    )
-    if binary_provenance.get("status") != "verified" or service_command_binding.get("status") not in {
-        "explicit_placeholder",
-        "explicit_environment",
-    }:
-        reason = binary_provenance.get("reason") or service_command_binding.get(
-            "reason", "binary_provenance_unavailable"
+    process: subprocess.Popen[bytes] | None = None
+    process_group_id: int | None = None
+    output_threads: list[threading.Thread] = []
+    stdout_log: BoundedLogWriter | None = None
+    stderr_log: BoundedLogWriter | None = None
+    prepared: dict[str, Any] | None = None
+    stage = "prepare_variant"
+    workspace_before = workspace_storage_evidence(workdir)
+    try:
+        prepared = prepare_variant(
+            root, revision, variant, workdir, mock, args, round_number, log_directory
         )
-        return finish({
+    except VariantPreparationError as failure:
+        context = failure.context
+        stdout_log = context.get("stdout_log")
+        stderr_log = context.get("stderr_log")
+        log_cleanup = close_bounded_logs(stdout_log, stderr_log)
+        workspace = {
+            "strategy": "run_directory_local",
+            "path": str(workdir),
+            "storage_before": context.get("workspace_storage_before", workspace_before),
+            "storage_after": workspace_storage_evidence(workdir),
+            "tempdir": temp_directory_evidence(),
+            "directory": workspace_directory_evidence(workdir),
+            "cleanup": release_variant_workspace(workdir, cleanup_validated=False),
+        }
+        result = variant_exception_result(
+            variant,
+            round_number,
+            revision,
+            args,
+            failure.error,
+            stage=failure.stage,
+            workspace=workspace,
+        )
+        result["logs"] = {
+            "stdout": stdout_log.evidence() if stdout_log is not None else None,
+            "stderr": stderr_log.evidence() if stderr_log is not None else None,
+        }
+        result["cleanup"] = {
+            "status": log_cleanup["status"],
+            "process": {
+                "status": "validated",
+                "reason": "service_process_not_started",
+                "remaining_pids": [],
+                "output_threads_joined": True,
+                "errors": [],
+            },
+            "logs": log_cleanup,
+            "errors": log_cleanup.get("errors", []),
+        }
+        return finish(result)
+
+    workdir = prepared["workdir"]
+    repo = prepared["repo"]
+    resolved = prepared["resolved"]
+    binary_provenance = prepared["binary_provenance"]
+    resource_spec = prepared["resource_spec"]
+    scenario_shape = prepared["scenario_shape"]
+    synthetic_mapping = prepared["synthetic_mapping"]
+    core = prepared["core"]
+    sidecar = prepared["sidecar"]
+    port = prepared["port"]
+    metrics_port = prepared["metrics_port"]
+    metrics_token = prepared["metrics_token"]
+    metrics_token_path = prepared["metrics_token_path"]
+    service_command_binding = prepared["service_command_binding"]
+    stdout_log = prepared["stdout_log"]
+    stderr_log = prepared["stderr_log"]
+    if prepared.get("early_reason"):
+        reason = prepared["early_reason"]
+        early_result = {
             "variant": variant,
             "round": round_number,
             "ref": resolved,
@@ -3263,81 +3985,109 @@ def run_variant(
             "service_command_binding": service_command_binding,
             "service_process": service_process,
             "system_diagnostics": unavailable_system_diagnostics(reason),
-        })
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "PERF_LOCAL_VARIANT": variant,
-            "PERF_LOCAL_ROUND": str(round_number),
-            "PERF_LOCAL_REPO": str(repo),
-            "PERF_LOCAL_DB_PATH": str(core),
-            "PERF_LOCAL_SIDECAR_DB_PATH": str(sidecar),
-            "PERF_LOCAL_UPSTREAM_URL": mock.url,
-            "PERF_LOCAL_PORT": str(port),
-            "PERF_LOCAL_METRICS_PORT": str(metrics_port),
-            "PERF_LOCAL_METRICS_ENABLED": "1" if args.metrics_enabled else "0",
-            "PERF_LOCAL_SUBJECTS": ",".join(args.subjects),
-            "PERF_LOCAL_TOKENS": ",".join(args.tokens),
-            "PERF_LOCAL_RESOURCES": args.resources,
-            "PERF_LOCAL_RESOURCE_SPEC": json.dumps(resource_spec, sort_keys=True),
-            "PERF_LOCAL_BINARY_MANIFEST": str(binary_provenance["manifest_path"]),
-            "PERF_LOCAL_BINARY_PATH": str(binary_provenance["binary_path"]),
-            "PERF_LOCAL_BINARY_SHA256": str(binary_provenance["binary_sha256"]),
-            "PERF_LOCAL_SOURCE_SHA": str(binary_provenance.get("source_sha") or ""),
-            "PERF_LOCAL_BUILD_INPUT_SHA": str(binary_provenance.get("build_input_sha") or ""),
-            "TAVILY_UPSTREAM": mock.url,
-            "TAVILY_USAGE_BASE": mock.url,
-            "PROXY_DB_PATH": str(core),
-            "PROXY_BIND": "127.0.0.1",
-            "PROXY_PORT": str(port),
-            "OBSERVABILITY_ENABLED": "true" if args.metrics_enabled else "false",
-            "OBSERVABILITY_ENVIRONMENT": "test",
-            "OBSERVABILITY_INSTANCE": "local",
-            "METRICS_BIND": f"127.0.0.1:{metrics_port}",
-            "METRICS_TOKEN_FILE": str(metrics_token_path),
-            "TAVILY_API_KEYS": "tvly-synthetic-test-key",
-            **SYNTHETIC_FIXTURE_ENV,
-            "HA_MODE": "single",
-            "DEV_OPEN_ADMIN": "true",
         }
-    )
-    command = args.service_command.format(
-        repo=shlex.quote(str(repo)),
-        db=shlex.quote(str(core)),
-        sidecar=shlex.quote(str(sidecar)),
-        port=port,
-        upstream=shlex.quote(mock.url),
-        variant=variant,
-        binary=shlex.quote(str(binary_provenance["binary_path"])),
-        manifest=shlex.quote(str(binary_provenance["manifest_path"])),
-        revision=resolved,
-    )
-    stdout_log = BoundedLogWriter(log_directory / "stdout.log")
-    stderr_log = BoundedLogWriter(log_directory / "stderr.log")
-    process = subprocess.Popen(
-        command,
-        cwd=repo,
-        env=environment,
-        shell=True,
-        start_new_session=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    output_threads = [
-        threading.Thread(
-            target=drain_process_output,
-            args=(process.stdout, stdout_log),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=drain_process_output,
-            args=(process.stderr, stderr_log),
-            daemon=True,
-        ),
-    ]
-    for thread in output_threads:
-        thread.start()
+        return finish(
+            finalize_variant_result(
+                early_result,
+                workdir=workdir,
+                workspace_before=workspace_before,
+                prepared=prepared,
+                process=process,
+                process_group_id=process_group_id,
+                output_threads=output_threads,
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+                system_collector=system_collector,
+                binary_provenance=binary_provenance,
+                service_command_binding=service_command_binding,
+                service_process=service_process,
+            )
+        )
+    stage = "service_process.start"
     try:
+        process = subprocess.Popen(
+            prepared["command"],
+            cwd=repo,
+            env=prepared["environment"],
+            shell=True,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        process_group_id = os.getpgid(process.pid)
+        stage = "output_threads.create"
+        assert process.stdout is not None
+        assert process.stderr is not None
+        output_threads = [
+            threading.Thread(
+                target=drain_process_output,
+                args=(process.stdout, stdout_log),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=drain_process_output,
+                args=(process.stderr, stderr_log),
+                daemon=True,
+            ),
+        ]
+        stage = "output_threads.start"
+        for thread in output_threads:
+            thread.start()
+    except (HarnessInterrupted, KeyboardInterrupt):
+        interrupted_result = variant_exception_result(
+            variant,
+            round_number,
+            resolved,
+            args,
+            None,
+            stage=stage,
+            reason="variant_interrupted",
+        )
+        finalize_variant_result(
+            interrupted_result,
+            workdir=workdir,
+            workspace_before=workspace_before,
+            prepared=prepared,
+            process=process,
+            process_group_id=process_group_id,
+            output_threads=output_threads,
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            system_collector=system_collector,
+            binary_provenance=binary_provenance,
+            service_command_binding=service_command_binding,
+            service_process=service_process,
+            preserve_workspace=True,
+        )
+        raise
+    except BaseException as error:
+        failed_result = variant_exception_result(
+            variant,
+            round_number,
+            resolved,
+            args,
+            error,
+            stage=stage,
+        )
+        return finish(
+            finalize_variant_result(
+                failed_result,
+                workdir=workdir,
+                workspace_before=workspace_before,
+                prepared=prepared,
+                process=process,
+                process_group_id=process_group_id,
+                output_threads=output_threads,
+                stdout_log=stdout_log,
+                stderr_log=stderr_log,
+                system_collector=system_collector,
+                binary_provenance=binary_provenance,
+                service_command_binding=service_command_binding,
+                service_process=service_process,
+            )
+        )
+    try:
+        stage = "resource_constraints"
         resource_observation = apply_resource_constraints(process, repo, resource_spec)
         hard_resource_errors = [
             error
@@ -3364,6 +4114,7 @@ def run_variant(
                 "credential_mapping": synthetic_mapping,
                 "resource_observation": resource_observation,
             })
+        stage = "service_readiness"
         service_readiness = wait_for_service(port, args.readiness_timeout_seconds)
         if not service_readiness["listener_ready"]:
             return finish({
@@ -3386,6 +4137,7 @@ def run_variant(
                 "resource_observation": resource_observation,
                 "service_readiness": service_readiness,
             })
+        stage = "service_process_binding"
         service_process = service_process_binary_binding(process.pid, binary_provenance)
         if service_process.get("status") != "verified":
             return finish({
@@ -3416,11 +4168,13 @@ def run_variant(
                 "service_binary_sha256": service_process["service_sha256"],
             }
         )
+        stage = "system_diagnostics.start"
         system_collector = SystemDiagnosticsCollector(int(service_process["service_pid"]))
         system_collector.start()
         fixture_settings = dict(SYNTHETIC_FIXTURE_SETTINGS)
         fixture_setup: dict[str, Any]
         try:
+            stage = "synthetic_fixture_setup"
             configured_settings = configure_synthetic_fixture(port)
         except RuntimeError as error:
             fixture_setup = {
@@ -3456,6 +4210,7 @@ def run_variant(
         credentials = synthetic_credentials(tuple(args.tokens))
         credential_mapping = synthetic_mapping
         if args.bootstrap_bound_business_tokens:
+            stage = "bound_business_token_bootstrap"
             credentials, bound_fixture_evidence = bootstrap_bound_business_accounts(
                 port,
                 core,
@@ -3494,6 +4249,7 @@ def run_variant(
                 "runtime_binding_check"
             )
         elif args.bootstrap_business_tokens:
+            stage = "business_token_bootstrap"
             credentials, bootstrap_evidence = bootstrap_business_tokens(port, tuple(args.tokens))
             fixture_setup["bootstrap"] = bootstrap_evidence
             if bootstrap_evidence["status"] != "ready":
@@ -3577,12 +4333,14 @@ def run_variant(
                 "fixture_setup": fixture_setup,
             })
         mock_before = mock.evidence()
+        stage = "metrics_collector.start"
         metrics_collector = MetricsCollector(
             metrics_port,
             metrics_token,
             args.metrics_scrape_interval_seconds,
         )
         metrics_collector.start()
+        stage = "load"
         result, phase_baseline = run_load(
             port,
             args.warmup_seconds,
@@ -3633,30 +4391,43 @@ def run_variant(
     except HarnessInterrupted:
         raise
     except Exception as error:
-        return finish(variant_exception_result(variant, round_number, resolved, args, error))
+        return finish(
+            variant_exception_result(
+                variant, round_number, resolved, args, error, stage=stage
+            )
+        )
     finally:
         if "metrics_collector" in locals():
             metrics_collector.stop()
         if system_collector is not None:
             system_collector.stop()
-        terminate_process(process)
-        for thread in output_threads:
-            thread.join(timeout=2)
-        stdout_log.close()
-        stderr_log.close()
-        if result is not None:
-            result["binary_provenance"] = binary_provenance
-            result["service_command_binding"] = service_command_binding
-            result["service_process"] = service_process
-            result["system_diagnostics"] = (
-                system_collector.evidence()
-                if system_collector is not None
-                else unavailable_system_diagnostics("system_collector_not_started")
+        cleanup_result = result
+        if cleanup_result is None:
+            cleanup_result = variant_exception_result(
+                variant,
+                round_number,
+                resolved,
+                args,
+                None,
+                stage=stage,
+                reason="variant_interrupted",
             )
-            result["logs"] = {
-                "stdout": stdout_log.evidence(),
-                "stderr": stderr_log.evidence(),
-            }
+        finalize_variant_result(
+            cleanup_result,
+            workdir=workdir,
+            workspace_before=workspace_before,
+            prepared=prepared,
+            process=process,
+            process_group_id=process_group_id,
+            output_threads=output_threads,
+            stdout_log=stdout_log,
+            stderr_log=stderr_log,
+            system_collector=system_collector,
+            binary_provenance=binary_provenance,
+            service_command_binding=service_command_binding,
+            service_process=service_process,
+            preserve_workspace=result is None,
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -3811,7 +4582,6 @@ def run_paired_rounds(
 ) -> list[dict[str, Any]]:
     paired_rounds: list[dict[str, Any]] = []
     for round_number in range(1, args.rounds + 1):
-        round_dir = workdir / f"round-{round_number}"
         checkpoint.write_variant_started(
             phase, round_number, "baseline", args.baseline_ref, duration_seconds
         )
@@ -3820,7 +4590,7 @@ def run_paired_rounds(
                 root,
                 args.baseline_ref,
                 "baseline",
-                round_dir,
+                variant_workspace_path(workdir, phase, round_number, "baseline"),
                 mock,
                 args,
                 round_number,
@@ -3831,31 +4601,57 @@ def run_paired_rounds(
             raise
         except Exception as error:  # keep a precise, bounded failure checkpoint
             baseline = variant_exception_result(
-                "baseline", round_number, args.baseline_ref, args, error
+                "baseline",
+                round_number,
+                args.baseline_ref,
+                args,
+                error,
+                stage="run_variant.wrapper",
             )
         checkpoint.write_variant_result(phase, round_number, "baseline", baseline)
 
         checkpoint.write_variant_started(
             phase, round_number, "candidate", args.candidate_ref, duration_seconds
         )
-        try:
-            candidate = run_variant(
-                root,
-                args.candidate_ref,
-                "candidate",
-                round_dir,
-                mock,
-                args,
-                round_number,
-                duration_seconds,
-                checkpoint.log_directory(phase, round_number, "candidate"),
-            )
-        except HarnessInterrupted:
-            raise
-        except Exception as error:  # keep a precise, bounded failure checkpoint
+        if baseline.get("cleanup", {}).get("status") != "validated":
             candidate = variant_exception_result(
-                "candidate", round_number, args.candidate_ref, args, error
+                "candidate",
+                round_number,
+                args.candidate_ref,
+                args,
+                None,
+                stage="baseline.cleanup",
+                reason="prior_cleanup_unvalidated",
             )
+            candidate["blocked_by"] = "baseline"
+            candidate["cleanup"] = {
+                "status": "not_run",
+                "reason": "blocked_by_baseline_cleanup",
+            }
+        else:
+            try:
+                candidate = run_variant(
+                    root,
+                    args.candidate_ref,
+                    "candidate",
+                    variant_workspace_path(workdir, phase, round_number, "candidate"),
+                    mock,
+                    args,
+                    round_number,
+                    duration_seconds,
+                    checkpoint.log_directory(phase, round_number, "candidate"),
+                )
+            except HarnessInterrupted:
+                raise
+            except Exception as error:  # keep a precise, bounded failure checkpoint
+                candidate = variant_exception_result(
+                    "candidate",
+                    round_number,
+                    args.candidate_ref,
+                    args,
+                    error,
+                    stage="run_variant.wrapper",
+                )
         checkpoint.write_variant_result(phase, round_number, "candidate", candidate)
 
         round_record = {"round": round_number, "baseline": baseline, "candidate": candidate}
@@ -3864,6 +4660,8 @@ def run_paired_rounds(
             [round_record], args.min_samples, args.min_control_samples
         )["rounds"][0]
         checkpoint.write_pair(phase, round_number, baseline, candidate, round_comparison)
+        if candidate.get("cleanup", {}).get("status") != "validated":
+            break
     return paired_rounds
 
 
@@ -4405,15 +5203,19 @@ def variant_exception_result(
     round_number: int,
     ref: str,
     args: argparse.Namespace,
-    error: Exception,
+    error: BaseException | None,
+    *,
+    stage: str | None = None,
+    reason: str = "variant_exception",
+    cleanup: dict[str, Any] | None = None,
+    workspace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "variant": variant,
         "round": round_number,
         "ref": ref,
         "status": "unvalidated",
-        "reason": "variant_exception",
-        "error_type": type(error).__name__,
+        "reason": reason,
         "duration_seconds": 0,
         "request": None,
         "unrelated_cohort": None,
@@ -4426,26 +5228,7 @@ def variant_exception_result(
         ),
         "scenarios": scenario_contract(args.request_interval_seconds),
         "scenario_contract": scenario_contract(args.request_interval_seconds),
-        "credential_mapping": {
-            "source": (
-                BOUND_FIXTURE_SOURCE
-                if args.bootstrap_bound_business_tokens
-                else "per-variant POST /api/tokens bootstrap"
-            ),
-            "binding_path": (
-                "POST /api/users/<account-id>/tokens"
-                if args.bootstrap_bound_business_tokens
-                else None
-            ),
-            "account_ids": (
-                list(bound_fixture_account_ids(tuple(args.tokens)))
-                if args.bootstrap_bound_business_tokens
-                else None
-            ),
-            "cross_account_definition": "distinct billing subjects",
-            "same_account_definition": "one billing subject shared by queue workers",
-            "secret_persisted": False,
-        },
+        "credential_mapping": credential_mapping_metadata(args),
         "resource_observation": None,
         "binary_provenance": {
             "status": "missing",
@@ -4458,6 +5241,16 @@ def variant_exception_result(
         "service_process": unavailable_service_process("variant_exception"),
         "system_diagnostics": unavailable_system_diagnostics("variant_exception"),
     }
+    if error is not None:
+        result["error_type"] = type(error).__name__
+        result["error"] = exception_evidence(error, stage)
+    if stage is not None:
+        result["failure_stage"] = stage
+    if cleanup is not None:
+        result["cleanup"] = cleanup
+    if workspace is not None:
+        result["workspace"] = workspace
+    return result
 
 
 def main() -> int:
@@ -4466,6 +5259,8 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
     run_directory = create_run_directory(output, args.run_directory)
+    workspace_root = run_directory / ".work"
+    workspace_root.mkdir(parents=True, exist_ok=True)
     contract = {
         "baseline_ref": args.baseline_ref,
         "candidate_ref": args.candidate_ref,
@@ -4480,12 +5275,7 @@ def main() -> int:
         "scenarios": scenario_contract(args.request_interval_seconds),
         "cohort_path": "variants[*].scenarios[*].request",
         "control_path": "variants[*].unrelated_cohort",
-        "credential_mapping": {
-            "source": "per-variant POST /api/tokens bootstrap",
-            "cross_account_definition": "distinct token billing subjects",
-            "same_account_definition": "one token billing subject shared by queue workers",
-            "secret_persisted": False,
-        },
+        "credential_mapping": credential_mapping_metadata(args),
         "fixture_settings": dict(SYNTHETIC_FIXTURE_SETTINGS),
         "scheduling": {
             "request_interval_seconds": args.request_interval_seconds,
@@ -4507,6 +5297,12 @@ def main() -> int:
             PHASE_SCHEMA_OPERATION: PHASE_METRIC_SELECTOR,
         },
         "run_directory": str(run_directory),
+        "workspace": {
+            "strategy": "run_directory_local",
+            "root": str(workspace_root),
+            "storage": workspace_storage_evidence(workspace_root),
+            "tempdir": temp_directory_evidence(),
+        },
         "checkpoint_schema": 1,
     }
     checkpoint = CheckpointStore(run_directory, contract)
@@ -4515,6 +5311,13 @@ def main() -> int:
         "rounds": [],
         "comparison": None,
         "status": "running",
+        "workspace": {
+            "strategy": "run_directory_local",
+            "root": str(workspace_root),
+            "storage": workspace_storage_evidence(workspace_root),
+            "tempdir": temp_directory_evidence(),
+            "directory": workspace_directory_evidence(workspace_root),
+        },
         "checkpoint": {
             "run_directory": str(run_directory),
             "contract": str(run_directory / "contract.json"),
@@ -4528,75 +5331,91 @@ def main() -> int:
     previous_handlers = install_interrupt_handlers()
     exit_code = 0
     try:
-        with tempfile.TemporaryDirectory(prefix="perf-local-boundaries-") as temporary:
-            workdir = Path(temporary)
-            with MockUpstream(args.mock_delay_ms) as mock:
-                evidence["rounds"] = run_paired_rounds(
-                    root,
-                    workdir / "initial",
-                    mock,
-                    args,
-                    args.duration_seconds,
-                    "initial",
-                    checkpoint,
+        with MockUpstream(args.mock_delay_ms) as mock:
+            evidence["rounds"] = run_paired_rounds(
+                root,
+                run_directory,
+                mock,
+                args,
+                args.duration_seconds,
+                "initial",
+                checkpoint,
+            )
+            comparison = compare_rounds(
+                evidence["rounds"], args.min_samples, args.min_control_samples
+            )
+            evidence["comparison"] = comparison
+            evidence["status"] = comparison["status"]
+            checkpoint.write_phase_comparison("initial", evidence["rounds"], comparison)
+            if comparison["status"] == "unvalidated" and args.duration_seconds < args.extension_seconds:
+                cleanup_blocked = any(
+                    variant.get("cleanup", {}).get("status") != "validated"
+                    for round_record in evidence["rounds"]
+                    for variant in (round_record["baseline"], round_record["candidate"])
                 )
-                comparison = compare_rounds(
-                    evidence["rounds"], args.min_samples, args.min_control_samples
-                )
-                evidence["comparison"] = comparison
-                evidence["status"] = comparison["status"]
-                checkpoint.write_phase_comparison("initial", evidence["rounds"], comparison)
-                if comparison["status"] == "unvalidated" and args.duration_seconds < args.extension_seconds:
-                    if args.service_command and extension_allowed(comparison):
-                        extension_rounds = run_paired_rounds(
-                            root,
-                            workdir / "extension",
-                            mock,
-                            args,
-                            args.extension_seconds,
-                            "extension",
-                            checkpoint,
-                        )
-                        extension_comparison = compare_rounds(
-                            extension_rounds, args.min_samples, args.min_control_samples
-                        )
-                        checkpoint.write_phase_comparison(
-                            "extension", extension_rounds, extension_comparison
-                        )
-                        evidence["extension"] = {
-                            "status": extension_comparison["status"],
-                            "duration_seconds": args.extension_seconds,
-                            "reason": "sample_or_control_uncertainty",
-                            "initial_reasons": comparison["reasons"],
-                            "rounds": extension_rounds,
-                            "comparison": extension_comparison,
-                        }
-                        if extension_comparison["status"] != "unvalidated":
-                            evidence["comparison"] = extension_comparison
-                            evidence["status"] = extension_comparison["status"]
-                    elif not args.service_command:
-                        evidence["extension"] = {
-                            "status": "unavailable",
-                            "duration_seconds": args.extension_seconds,
-                            "reason": "service_command_missing",
-                            "initial_reasons": comparison["reasons"],
-                        }
-                    else:
-                        evidence["extension"] = {
-                            "status": "not_allowed",
-                            "duration_seconds": args.extension_seconds,
-                            "reason": "non_extendable_failure",
-                            "initial_reasons": comparison["reasons"],
-                        }
-                elif comparison["status"] == "unvalidated":
+                if cleanup_blocked:
                     evidence["extension"] = {
-                        "status": "exhausted",
+                        "status": "not_allowed",
                         "duration_seconds": args.extension_seconds,
-                        "reason": "extension_window_unavailable",
+                        "reason": "cleanup_unvalidated",
+                        "initial_reasons": comparison["reasons"],
+                    }
+                elif args.service_command and extension_allowed(comparison):
+                    extension_rounds = run_paired_rounds(
+                        root,
+                        run_directory,
+                        mock,
+                        args,
+                        args.extension_seconds,
+                        "extension",
+                        checkpoint,
+                    )
+                    extension_comparison = compare_rounds(
+                        extension_rounds, args.min_samples, args.min_control_samples
+                    )
+                    checkpoint.write_phase_comparison(
+                        "extension", extension_rounds, extension_comparison
+                    )
+                    evidence["extension"] = {
+                        "status": extension_comparison["status"],
+                        "duration_seconds": args.extension_seconds,
+                        "reason": "sample_or_control_uncertainty",
+                        "initial_reasons": comparison["reasons"],
+                        "rounds": extension_rounds,
+                        "comparison": extension_comparison,
+                    }
+                    if extension_comparison["status"] != "unvalidated":
+                        evidence["comparison"] = extension_comparison
+                        evidence["status"] = extension_comparison["status"]
+                elif not args.service_command:
+                    evidence["extension"] = {
+                        "status": "unavailable",
+                        "duration_seconds": args.extension_seconds,
+                        "reason": "service_command_missing",
                         "initial_reasons": comparison["reasons"],
                     }
                 else:
-                    evidence["extension"] = {"status": "not_needed"}
+                    evidence["extension"] = {
+                        "status": "not_allowed",
+                        "duration_seconds": args.extension_seconds,
+                        "reason": "non_extendable_failure",
+                        "initial_reasons": comparison["reasons"],
+                    }
+            elif comparison["status"] == "unvalidated":
+                evidence["extension"] = {
+                    "status": "exhausted",
+                    "duration_seconds": args.extension_seconds,
+                    "reason": "extension_window_unavailable",
+                    "initial_reasons": comparison["reasons"],
+                }
+            else:
+                evidence["extension"] = {"status": "not_needed"}
+        evidence["workspace"].update(
+            {
+                "storage": workspace_storage_evidence(workspace_root),
+                "directory": workspace_directory_evidence(workspace_root),
+            }
+        )
         checkpoint.mark_finished(evidence["status"])
     except HarnessInterrupted as error:
         checkpoint.mark_interrupted(str(error))
@@ -4616,6 +5435,12 @@ def main() -> int:
         evidence["error_reason"] = reason
         exit_code = 2
     finally:
+        evidence["workspace"].update(
+            {
+                "storage": workspace_storage_evidence(workspace_root),
+                "directory": workspace_directory_evidence(workspace_root),
+            }
+        )
         restore_interrupt_handlers(previous_handlers)
     atomic_write_json(output, evidence)
     print(json.dumps(evidence, indent=2, sort_keys=True))
