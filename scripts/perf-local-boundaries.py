@@ -44,7 +44,6 @@ DEFAULT_MOCK_DELAY_MS = 200
 DEFAULT_MIN_SAMPLES = 30
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.25
 DEFAULT_CONTROL_INTERVAL_SECONDS = 1.0
-DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = 0.0
 TOKEN_BOOTSTRAP_RETRY_BUDGET_SECONDS = 5.0
 TOKEN_BOOTSTRAP_MAX_RETRIES_PER_LABEL = 3
 BOUND_TOKEN_BOOTSTRAP_RETRY_DELAY_SECONDS = 0.25
@@ -69,6 +68,9 @@ MAX_EXCEPTION_TRACEBACK_BYTES = 16 * 1024
 MAX_RESPONSE_EVIDENCE = 12
 MAX_METRICS_SCRAPES = 256
 MAX_METRICS_SCRAPE_ERRORS = 64
+MIN_METRICS_SCRAPE_INTERVAL_SECONDS = 1.0
+MAX_METRICS_SCRAPE_INTERVAL_SECONDS = 60.0
+DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS = MIN_METRICS_SCRAPE_INTERVAL_SECONDS
 DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS = 1.0
 MAX_SYSTEM_DIAGNOSTIC_SAMPLES = 4096
 MAX_SYSTEM_DIAGNOSTIC_DEVICES = 64
@@ -2318,10 +2320,8 @@ class MetricsCollector:
         self._thread.start()
 
     def _run(self) -> None:
-        next_scrape = time.monotonic() + self.interval_seconds
-        while not self._stop_event.wait(max(0.0, next_scrape - time.monotonic())):
+        while not self._stop_event.wait(self.interval_seconds):
             self.scrape("cadence")
-            next_scrape += self.interval_seconds
 
     def scrape(self, boundary: str) -> dict[str, Any]:
         started = time.monotonic()
@@ -2370,6 +2370,9 @@ class MetricsCollector:
             retained_sequences = [entry["sequence"] for entry in self._snapshots]
             return {
                 "interval_seconds": self.interval_seconds,
+                "cadence_mode": (
+                    "bounded_post_scrape" if self.interval_seconds > 0 else "boundary_only"
+                ),
                 "max_snapshots": MAX_METRICS_SCRAPES,
                 "scrapes": list(self._snapshots),
                 "errors": list(self._errors),
@@ -4527,6 +4530,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_metrics_scrape_interval(interval_seconds: float, metrics_enabled: bool) -> None:
+    if (
+        interval_seconds != interval_seconds
+        or interval_seconds < 0
+        or interval_seconds > MAX_METRICS_SCRAPE_INTERVAL_SECONDS
+    ):
+        raise SystemExit(
+            "metrics scrape interval must be between 1 and 60 seconds when enabled"
+        )
+    if interval_seconds == 0:
+        if metrics_enabled:
+            raise SystemExit(
+                "metrics-enabled runs require a positive bounded metrics scrape cadence"
+            )
+        return
+    if interval_seconds < MIN_METRICS_SCRAPE_INTERVAL_SECONDS:
+        raise SystemExit(
+            "metrics scrape interval must be 0 when disabled or between 1 and 60 seconds"
+        )
+
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.rounds < 1:
         raise SystemExit("--rounds must be positive")
@@ -4538,12 +4562,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("sample minimums must be positive")
     if args.request_interval_seconds <= 0:
         raise SystemExit("request interval must be positive")
-    if (
-        args.metrics_scrape_interval_seconds != args.metrics_scrape_interval_seconds
-        or args.metrics_scrape_interval_seconds < 0
-        or args.metrics_scrape_interval_seconds > 60
-    ):
-        raise SystemExit("metrics scrape interval must be between 0 and 60 seconds")
+    validate_metrics_scrape_interval(
+        args.metrics_scrape_interval_seconds,
+        args.metrics_enabled,
+    )
     if args.mock_delay_ms != DEFAULT_MOCK_DELAY_MS:
         raise SystemExit("the local boundary contract fixes mock delay at 200ms")
     if args.bootstrap_bound_business_tokens and args.bootstrap_business_tokens:
@@ -5322,8 +5344,18 @@ def main() -> int:
             "request_interval_seconds": args.request_interval_seconds,
             "control_interval_seconds": DEFAULT_CONTROL_INTERVAL_SECONDS,
             "metrics_scrape_interval_seconds": args.metrics_scrape_interval_seconds,
+            "metrics_scrape_cadence_mode": (
+                "bounded_post_scrape"
+                if args.metrics_scrape_interval_seconds > 0
+                else "boundary_only"
+            ),
             "system_diagnostics_interval_seconds": DEFAULT_SYSTEM_DIAGNOSTICS_INTERVAL_SECONDS,
             "measurement_window": "shared_per_variant",
+        },
+        "metrics_coverage_contract": {
+            "minimum_scrape_interval_seconds": MIN_METRICS_SCRAPE_INTERVAL_SECONDS,
+            "maximum_scrape_interval_seconds": MAX_METRICS_SCRAPE_INTERVAL_SECONDS,
+            "requirement": "phase_schema.coverage_count >= success_request.samples",
         },
         "min_samples": args.min_samples,
         "min_control_samples": args.min_control_samples,

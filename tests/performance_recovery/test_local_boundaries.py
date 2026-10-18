@@ -607,6 +607,42 @@ class LocalBoundaryComparatorTests(unittest.TestCase):
         self.assertIn("round-1/cohort/mismatch", comparison["reasons"])
 
 
+class MetricsCadenceContractTests(unittest.TestCase):
+    def test_metrics_enabled_defaults_to_one_second_bounded_scrapes(self) -> None:
+        self.assertEqual(HARNESS.DEFAULT_METRICS_SCRAPE_INTERVAL_SECONDS, 1.0)
+        HARNESS.validate_metrics_scrape_interval(1.0, True)
+
+    def test_metrics_enabled_rejects_boundary_only_and_subsecond_scrapes(self) -> None:
+        with self.assertRaisesRegex(
+            SystemExit, "metrics-enabled runs require a positive bounded metrics scrape cadence"
+        ):
+            HARNESS.validate_metrics_scrape_interval(0.0, True)
+        with self.assertRaisesRegex(
+            SystemExit, "metrics scrape interval must be 0 when disabled or between 1 and 60 seconds"
+        ):
+            HARNESS.validate_metrics_scrape_interval(0.5, True)
+
+    def test_disabled_metrics_can_keep_boundary_only_mode(self) -> None:
+        HARNESS.validate_metrics_scrape_interval(0.0, False)
+
+    def test_metrics_collector_does_not_catch_up_after_a_slow_scrape(self) -> None:
+        class StopEvent:
+            def __init__(self) -> None:
+                self.waits: list[float] = []
+
+            def wait(self, timeout: float) -> bool:
+                self.waits.append(timeout)
+                return len(self.waits) >= 3
+
+        stop_event = StopEvent()
+        collector = HARNESS.MetricsCollector(0, "test-token", 1.0)
+        collector._stop_event = stop_event
+        with mock.patch.object(collector, "scrape"):
+            collector._run()
+
+        self.assertEqual(stop_event.waits, [1.0, 1.0, 1.0])
+
+
 class LocalBoundaryCheckpointTests(unittest.TestCase):
     def test_mock_upstream_evidence_counts_requests_and_usage(self) -> None:
         with HARNESS.MockUpstream(0) as mock:
@@ -810,6 +846,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
 
         evidence = collector.evidence()
 
+        self.assertEqual(evidence["cadence_mode"], "bounded_post_scrape")
         self.assertEqual(evidence["scrape_attempts"], 601)
         self.assertEqual(evidence["scrape_successes"], 601)
         self.assertEqual(evidence["scrape_failures"], 0)
@@ -844,6 +881,7 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
 
         evidence = collector.evidence()
 
+        self.assertEqual(evidence["cadence_mode"], "bounded_post_scrape")
         self.assertEqual(evidence["scrape_attempts"], 2)
         self.assertEqual(evidence["scrape_successes"], 1)
         self.assertEqual(evidence["scrape_failures"], 1)
