@@ -322,29 +322,73 @@ async fn recovery_fails_closed_when_legacy_gc_deleted_source_baseline_is_missing
     insert_visible_dashboard_log(&proxy, day + 60).await;
     insert_visible_dashboard_log(&proxy, day + 120).await;
 
+    let mut gc_reason_counts = std::collections::BTreeMap::<&'static str, usize>::new();
+    let mut slice_counts = std::collections::BTreeMap::<(&'static str, i64), usize>::new();
+    let mut slice_summary = Vec::with_capacity(300);
     for _ in 0..300 {
-        if proxy
+        let decision = proxy
             .key_store
-            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .dashboard_rollup_integrity_request_log_gc_decision(threshold)
             .await
-            .expect("check source seal")
-            .is_some()
-        {
+            .expect("check source seal");
+        let cutoff = match decision {
+            crate::store::DashboardRollupRequestLogGcDecision::Allowed { cutoff, .. } => {
+                *gc_reason_counts.entry("allowed").or_default() += 1;
+                Some(cutoff)
+            }
+            crate::store::DashboardRollupRequestLogGcDecision::Blocked { reason, .. } => {
+                *gc_reason_counts.entry(reason).or_default() += 1;
+                None
+            }
+        };
+        if cutoff.is_some() {
             break;
         }
-        proxy
+        let run = proxy
             .run_dashboard_rollup_integrity_slice()
             .await
             .expect("build source seal");
+        let state = match run.state.as_str() {
+            "verified" => "verified",
+            "deferred" => "deferred",
+            "repaired" => "repaired",
+            _ => "other",
+        };
+        *slice_counts
+            .entry((state, run.next_delay_secs))
+            .or_default() += 1;
+        slice_summary.push((run.state, run.next_delay_secs));
     }
-    assert_eq!(
-        proxy
+    let final_cutoff = {
+        let decision = proxy
             .key_store
-            .dashboard_rollup_integrity_request_log_gc_cutoff(threshold)
+            .dashboard_rollup_integrity_request_log_gc_decision(threshold)
             .await
-            .expect("read source seal"),
-        Some(day_end)
-    );
+            .expect("read source seal");
+        match decision {
+            crate::store::DashboardRollupRequestLogGcDecision::Allowed { cutoff, .. } => {
+                *gc_reason_counts.entry("allowed").or_default() += 1;
+                Some(cutoff)
+            }
+            crate::store::DashboardRollupRequestLogGcDecision::Blocked { reason, .. } => {
+                *gc_reason_counts.entry(reason).or_default() += 1;
+                None
+            }
+        }
+    };
+    if final_cutoff != Some(day_end) {
+        emit_dashboard_rollup_integrity_failure_snapshot(
+            &proxy.key_store.pool,
+            day,
+            day_end,
+            final_cutoff,
+            &gc_reason_counts,
+            &slice_counts,
+            &slice_summary,
+        )
+        .await;
+    }
+    assert_eq!(final_cutoff, Some(day_end));
 
     sqlx::query("UPDATE dashboard_rollup_gc_delete_state SET active = 1 WHERE id = 1")
         .execute(&proxy.key_store.pool)
@@ -1270,6 +1314,120 @@ async fn dashboard_window_marks_unscanned_history_as_unverified() {
         window.unverified_bucket_starts.contains(&historical_bucket),
         "the history range below its cursor must not render as verified"
     );
+}
+
+async fn emit_dashboard_rollup_integrity_failure_snapshot(
+    pool: &SqlitePool,
+    day_start: i64,
+    day_end: i64,
+    final_cutoff: Option<i64>,
+    gc_reason_counts: &std::collections::BTreeMap<&'static str, usize>,
+    slice_counts: &std::collections::BTreeMap<(&'static str, i64), usize>,
+    slice_summary: &[(String, i64)],
+) {
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
+        let state: Option<(
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor, last_day_reaudit_attempt_at, last_seal_attempt_at, seal_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
+        )
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| "query")?;
+        let reaudit: Option<(String, i64, i64, i64, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT status, cursor, bucket_end, gc_blocking, source_fence, updated_at FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? LIMIT 1",
+        )
+        .bind(day_start)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| "query")?;
+        let work_items: Vec<(
+            i64,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            i64,
+        )> = sqlx::query_as(
+            "SELECT range_start, range_end, status, priority, recovery, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, updated_at FROM dashboard_rollup_integrity_work_items WHERE range_start < ? AND range_end > ? ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, range_start ASC LIMIT 8",
+        )
+        .bind(day_end)
+        .bind(day_start)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| "query")?;
+        let seal: Option<(Option<i64>, i64, i64)> = sqlx::query_as(
+            "SELECT source_fence, source_version, durable_source_version FROM dashboard_rollup_daily_seals WHERE bucket_start = ? LIMIT 1",
+        )
+        .bind(day_start)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| "query")?;
+        let current_versions: (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(MAX(id), 0), COALESCE((SELECT SUM(revision) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?), 0) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| "query")?;
+        let recovery: Option<(
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            i64,
+        )> = sqlx::query_as(
+            "SELECT status, range_start, range_end, source_fence, cursor, updated_at FROM dashboard_rollup_rebalance_recovery WHERE id = 1 LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| "query")?;
+        Ok::<_, &'static str>((state, reaudit, work_items, seal, current_versions, recovery))
+    })
+    .await;
+
+    match snapshot {
+        Ok(Ok((state, reaudit, work_items, seal, current_versions, recovery))) => {
+            let (
+                final_hot_cursor,
+                final_hot_fence,
+                final_hot_reaudit_cursor,
+                final_history_cursor,
+                final_last_day_reaudit_attempt_at,
+                final_last_seal_attempt_at,
+                final_seal_cursor,
+            ) = state.unwrap_or((None, None, None, None, None, None, None));
+            eprintln!(
+                "dashboard_rollup_integrity_failure_snapshot day_start={day_start} day_end={day_end} final_cutoff={final_cutoff:?} initial_hot=unavailable gc_reason_counts={gc_reason_counts:?} slice_counts={slice_counts:?} last_300_slices={slice_summary:?} final_hot_cursor={final_hot_cursor:?} final_hot_fence={final_hot_fence:?} final_hot_reaudit_cursor={final_hot_reaudit_cursor:?} final_history_cursor={final_history_cursor:?} final_last_day_reaudit_attempt_at={final_last_day_reaudit_attempt_at:?} final_last_seal_attempt_at={final_last_seal_attempt_at:?} final_seal_cursor={final_seal_cursor:?} reaudit={reaudit:?} work_items={work_items:?} seal={seal:?} current_versions={current_versions:?} recovery={recovery:?}"
+            );
+        }
+        Ok(Err(kind)) => {
+            eprintln!(
+                "dashboard_rollup_integrity_failure_snapshot day_start={day_start} day_end={day_end} final_cutoff={final_cutoff:?} initial_hot=unavailable gc_reason_counts={gc_reason_counts:?} slice_counts={slice_counts:?} last_300_slices={slice_summary:?} diagnostic_error={kind}"
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "dashboard_rollup_integrity_failure_snapshot day_start={day_start} day_end={day_end} final_cutoff={final_cutoff:?} initial_hot=unavailable gc_reason_counts={gc_reason_counts:?} slice_counts={slice_counts:?} last_300_slices={slice_summary:?} diagnostic_error=timeout"
+            );
+        }
+    }
 }
 
 async fn insert_visible_dashboard_log(proxy: &TavilyProxy, created_at: i64) {
