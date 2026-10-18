@@ -23,6 +23,7 @@ import socket
 import sqlite3
 import statistics
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -1989,6 +1990,46 @@ def create_fixture(directory: Path) -> tuple[Path, Path]:
     return core, sidecar
 
 
+def extract_archive_safely(stream: tarfile.TarFile, destination: Path) -> None:
+    if sys.version_info >= (3, 12):
+        stream.extractall(destination, filter="data")
+        return
+
+    destination_path = os.path.realpath(destination)
+    for member in stream:
+        member_name = member.name
+        if not member_name:
+            raise ValueError("archive member path is empty")
+        if os.path.isabs(member_name) or Path(member_name).is_absolute():
+            raise ValueError(f"archive member path is absolute: {member_name!r}")
+        if member.issym() or member.islnk():
+            raise ValueError(f"archive member links are not allowed: {member_name!r}")
+        if not (member.isfile() or member.isdir()):
+            raise ValueError(f"archive member special files are not allowed: {member_name!r}")
+
+        target_path = os.path.realpath(os.path.join(destination_path, member_name))
+        try:
+            within_destination = os.path.commonpath([target_path, destination_path]) == destination_path
+        except ValueError as error:
+            raise ValueError(f"archive member path escapes destination: {member_name!r}") from error
+        if not within_destination:
+            raise ValueError(f"archive member path escapes destination: {member_name!r}")
+
+        safe_mode: int | None = None
+        if member.mode is not None:
+            mode = member.mode & 0o755
+            if member.isfile():
+                if not mode & 0o100:
+                    mode &= ~0o111
+                mode |= 0o600
+            else:
+                mode = None
+            safe_mode = mode
+        stream.extract(member, destination, set_attrs=False)
+        if safe_mode is not None and member.isfile():
+            os.chmod(target_path, safe_mode)
+
+
 def archive_revision(root: Path, revision: str, destination: Path) -> str:
     resolved = subprocess.check_output(
         ["git", "-C", str(root), "rev-parse", "--verify", f"{revision}^{{commit}}"],
@@ -2001,7 +2042,7 @@ def archive_revision(root: Path, revision: str, destination: Path) -> str:
         )
         assert archive.stdout is not None
         with tarfile.open(fileobj=archive.stdout, mode="r|") as stream:
-            stream.extractall(destination, filter="data")
+            extract_archive_safely(stream, destination)
         if archive.wait() != 0:
             raise RuntimeError(f"unable to archive revision {revision}")
         return resolved

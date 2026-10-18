@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import importlib.util
 import errno
 import hashlib
@@ -1294,10 +1295,8 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             root = Path(temporary)
             stdout_log = HARNESS.BoundedLogWriter(root / "stdout.log")
             stderr_log = HARNESS.BoundedLogWriter(root / "stderr.log")
-            child = (
-                f"{shlex.quote(sys.executable)} -c "
-                f"{shlex.quote('import sys,time; sys.stdout.write(\"child\\\\n\"); sys.stdout.flush(); time.sleep(30)')}"
-            )
+            child_script = 'import sys,time; sys.stdout.write("child\\n"); sys.stdout.flush(); time.sleep(30)'
+            child = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_script)}"
             process = subprocess.Popen(
                 f"{child} & exit 0",
                 shell=True,
@@ -1386,6 +1385,59 @@ class LocalBoundaryCheckpointTests(unittest.TestCase):
             self.assertIsNotNone(archive_process.stdout)
             self.assertTrue(archive_process.stdout.closed)
             self.assertIn("OSError", HARNESS.exception_evidence(raised.exception)["traceback"])
+
+    def test_archive_revision_python311_fallback_is_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, revision = create_test_git_repo(Path(temporary))
+            destination = Path(temporary) / "archive"
+            destination.mkdir()
+
+            with mock.patch.object(HARNESS.sys, "version_info", (3, 11)):
+                resolved = HARNESS.archive_revision(source, revision, destination)
+
+            self.assertEqual(resolved, revision)
+            self.assertEqual(
+                (destination / "fixture.txt").read_text(encoding="ascii"),
+                "synthetic fixture\n",
+            )
+
+            unsafe_members = (
+                ("absolute", "/absolute.txt", HARNESS.tarfile.REGTYPE, ""),
+                ("traversal", "../escape.txt", HARNESS.tarfile.REGTYPE, ""),
+                ("symlink", "link", HARNESS.tarfile.SYMTYPE, "../escape.txt"),
+                ("hardlink", "hardlink", HARNESS.tarfile.LNKTYPE, "fixture.txt"),
+                ("fifo", "fifo", HARNESS.tarfile.FIFOTYPE, ""),
+            )
+            for label, name, member_type, linkname in unsafe_members:
+                with self.subTest(label=label):
+                    archive_bytes = io.BytesIO()
+                    with HARNESS.tarfile.open(fileobj=archive_bytes, mode="w") as stream:
+                        member = HARNESS.tarfile.TarInfo(name)
+                        member.type = member_type
+                        member.linkname = linkname
+                        if member.isfile():
+                            payload = b"unsafe"
+                            member.size = len(payload)
+                            stream.addfile(member, io.BytesIO(payload))
+                        else:
+                            stream.addfile(member)
+                    archive_bytes.seek(0)
+                    unsafe_destination = Path(temporary) / f"unsafe-{label}"
+                    unsafe_destination.mkdir()
+
+                    with mock.patch.object(HARNESS.sys, "version_info", (3, 11)):
+                        with mock.patch.object(
+                            HARNESS.tarfile.TarFile,
+                            "extractall",
+                            side_effect=AssertionError("Python 3.11 fallback used extractall"),
+                        ):
+                            with HARNESS.tarfile.open(
+                                fileobj=archive_bytes, mode="r|"
+                            ) as stream:
+                                with self.assertRaises(ValueError):
+                                    HARNESS.extract_archive_safely(stream, unsafe_destination)
+
+                    self.assertFalse((Path(temporary) / "escape.txt").exists())
 
     def test_run_variant_preserves_archive_failure_stage_and_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
