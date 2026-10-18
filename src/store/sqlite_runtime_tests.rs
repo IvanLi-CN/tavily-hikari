@@ -2091,7 +2091,7 @@ async fn maintenance_control_pool_timeout_is_a_typed_defer() {
     assert_eq!(
         metrics
             .deferred_by_reason
-            .get(&SqliteAdmissionDeferReason::RecentContention),
+            .get(&SqliteAdmissionDeferReason::PoolPressure),
         Some(&1)
     );
     drop(held);

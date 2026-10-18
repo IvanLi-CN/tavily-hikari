@@ -2664,6 +2664,7 @@ impl SqliteRuntime {
     ) {
         let transient = is_transient_sqlite_write_error(err);
         let pool_timeout = matches!(err, ProxyError::Database(sqlx::Error::PoolTimedOut));
+        let acquire_timeout = pool_timeout && begin_wait.is_zero();
         let contention_entered = if transient {
             *self
                 .inner
@@ -2730,7 +2731,7 @@ impl SqliteRuntime {
                     SqliteOperation::ScheduledJobControl | SqliteOperation::HaOutboxGcWatchdog
                 ));
         let maintenance_defer_reason = maintenance_transient_defer.then_some(
-            if matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
+            if acquire_timeout || matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
                 SqliteAdmissionDeferReason::PoolPressure
             } else {
                 SqliteAdmissionDeferReason::RecentContention

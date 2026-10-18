@@ -442,6 +442,10 @@ async fn recovery_fails_closed_when_legacy_gc_deleted_source_baseline_is_missing
         .prepare_request_statistics_recovery_target(day)
         .await
         .expect("prepare legacy baseline recovery");
+    let source_baseline_defers_before = proxy.key_store.sqlite_runtime.deferred_count_for_test(
+        crate::store::SqliteOperation::DashboardIntegrityWrite,
+        crate::store::SqliteAdmissionDeferReason::SourceBaseline,
+    );
     let slice = proxy
         .key_store
         .run_request_statistics_recovery_integrity_slice(
@@ -458,6 +462,14 @@ async fn recovery_fails_closed_when_legacy_gc_deleted_source_baseline_is_missing
             ..
         }
     ));
+    assert_eq!(
+        proxy.key_store.sqlite_runtime.deferred_count_for_test(
+            crate::store::SqliteOperation::DashboardIntegrityWrite,
+            crate::store::SqliteAdmissionDeferReason::SourceBaseline,
+        ),
+        source_baseline_defers_before + 1,
+        "missing deleted-source baseline must enter typed source-baseline metrics",
+    );
     let after_daily: i64 = sqlx::query_scalar(
         "SELECT total_requests FROM dashboard_request_rollup_buckets WHERE bucket_secs = ? AND bucket_start = ?",
     )
@@ -1316,6 +1328,37 @@ async fn dashboard_window_marks_unscanned_history_as_unverified() {
     );
 }
 
+type DashboardRollupIntegrityStateRow = (
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+);
+type DashboardRollupIntegrityWorkItemRow = (
+    i64,
+    i64,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    Option<i64>,
+    Option<i64>,
+    i64,
+);
+type DashboardRollupIntegrityRecoveryRow = (
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    i64,
+);
+
 async fn emit_dashboard_rollup_integrity_failure_snapshot(
     pool: &SqlitePool,
     day_start: i64,
@@ -1326,15 +1369,7 @@ async fn emit_dashboard_rollup_integrity_failure_snapshot(
     slice_summary: &[(String, i64)],
 ) {
     let snapshot = tokio::time::timeout(Duration::from_secs(2), async {
-        let state: Option<(
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        )> = sqlx::query_as(
+        let state: Option<DashboardRollupIntegrityStateRow> = sqlx::query_as(
             "SELECT hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor, last_day_reaudit_attempt_at, last_seal_attempt_at, seal_cursor FROM dashboard_rollup_integrity_state WHERE id = 1",
         )
         .fetch_optional(pool)
@@ -1347,19 +1382,7 @@ async fn emit_dashboard_rollup_integrity_failure_snapshot(
         .fetch_optional(pool)
         .await
         .map_err(|_| "query")?;
-        let work_items: Vec<(
-            i64,
-            i64,
-            String,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            i64,
-        )> = sqlx::query_as(
+        let work_items: Vec<DashboardRollupIntegrityWorkItemRow> = sqlx::query_as(
             "SELECT range_start, range_end, status, priority, recovery, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, updated_at FROM dashboard_rollup_integrity_work_items WHERE range_start < ? AND range_end > ? ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, range_start ASC LIMIT 8",
         )
         .bind(day_end)
@@ -1385,14 +1408,7 @@ async fn emit_dashboard_rollup_integrity_failure_snapshot(
         .fetch_one(pool)
         .await
         .map_err(|_| "query")?;
-        let recovery: Option<(
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            i64,
-        )> = sqlx::query_as(
+        let recovery: Option<DashboardRollupIntegrityRecoveryRow> = sqlx::query_as(
             "SELECT status, range_start, range_end, source_fence, cursor, updated_at FROM dashboard_rollup_rebalance_recovery WHERE id = 1 LIMIT 1",
         )
         .fetch_optional(pool)

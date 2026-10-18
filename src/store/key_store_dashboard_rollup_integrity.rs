@@ -1638,6 +1638,10 @@ impl KeyStore {
             .dashboard_rollup_gc_deleted_source_baseline_missing(day_start, day_end)
             .await?
         {
+            self.sqlite_runtime.record_deferred(
+                SqliteOperation::DashboardIntegrityWrite,
+                SqliteAdmissionDeferReason::SourceBaseline,
+            );
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
                 reason: "deleted_source_baseline_unavailable",
