@@ -1,5 +1,54 @@
 const META_KEY_HA_FULL_MASTER_NODE_ID_V1: &str = "ha_full_master_node_id_v1";
 
+#[cfg(test)]
+tokio::task_local! {
+    static META_SELECT_COUNT: std::sync::Arc<std::sync::atomic::AtomicUsize>;
+}
+
+#[cfg(test)]
+fn record_meta_select() {
+    let _ = META_SELECT_COUNT.try_with(|count| {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(test)]
+pub(crate) async fn with_meta_select_count<F, T>(
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    META_SELECT_COUNT.scope(count, future).await
+}
+
+#[cfg(test)]
+mod key_store_meta_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn system_settings_load_uses_one_meta_select() {
+        let temp_dir = tempdir().expect("create temp directory");
+        let db_path = temp_dir.path().join("system-settings-one-meta-select.db");
+        let store = KeyStore::new(&db_path.to_string_lossy())
+            .await
+            .expect("create key store");
+        let select_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        with_meta_select_count(select_count.clone(), store.get_system_settings())
+            .await
+            .expect("load system settings");
+
+        assert_eq!(
+            select_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a complete system-settings load must execute one meta SELECT"
+        );
+    }
+}
+
 impl KeyStore {
     pub(crate) async fn derive_upstream_project_id(
         &self,
@@ -48,11 +97,42 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
+        #[cfg(test)]
+        record_meta_select();
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(key)
             .fetch_optional(&self.pool)
             .await
             .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn get_meta_values(
+        &self,
+        keys: &[&str],
+    ) -> Result<StdHashMap<String, String>, ProxyError> {
+        if keys.is_empty() {
+            return Ok(StdHashMap::new());
+        }
+
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT key, value FROM meta WHERE key IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for key in keys {
+                separated.push_bind(*key);
+            }
+        }
+        query.push(")");
+
+        #[cfg(test)]
+        record_meta_select();
+        let rows = query
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ProxyError::Database)?;
+        Ok(rows.into_iter().collect())
     }
 
     pub(crate) async fn get_meta_i64(&self, key: &str) -> Result<Option<i64>, ProxyError> {

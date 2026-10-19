@@ -3,6 +3,31 @@ use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 
     #[tokio::test]
+    async fn system_settings_put_is_visible_to_next_load() {
+        let db_path = temp_db_path("system-settings-next-load");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+        let mut updated = proxy
+            .get_system_settings()
+            .await
+            .expect("load initial system settings");
+        updated.request_rate_limit += 17;
+        proxy
+            .set_system_settings(&updated)
+            .await
+            .expect("persist system settings");
+
+        let next = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings after PUT");
+        assert_eq!(next.request_rate_limit, updated.request_rate_limit);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_system_settings_put_preserves_request_rate_limit_when_legacy_payload_omits_it() {
         let db_path = temp_db_path("admin-system-settings-legacy-request-rate");
         let db_str = db_path.to_string_lossy().to_string();
