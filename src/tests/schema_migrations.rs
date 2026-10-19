@@ -32,7 +32,7 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         ]
     );
     let source_revision_triggers: i64 = sqlx::query_scalar(
@@ -307,6 +307,16 @@ async fn versioned_schema_migrations_are_idempotent_and_fail_closed_on_drift() {
         full_history_cursor_sources, 3,
         "the administrator sidecar starts from a durable full-history cursor without startup scans"
     );
+    let alert_source_indexes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN (\
+         'idx_auth_token_logs_alert_time', \
+         'idx_api_key_maintenance_records_alert_time', \
+         'idx_scheduled_jobs_alert_time')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read alert projection source indexes");
+    assert_eq!(alert_source_indexes, 3);
     sqlx::query("UPDATE schema_migrations SET checksum = 'drifted' WHERE version = 2")
         .execute(&pool)
         .await
@@ -2295,8 +2305,84 @@ async fn baseline_adoption_records_compatible_existing_schema_without_full_boots
         versions,
         vec![
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
         ]
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn alert_projection_source_indexes_upgrade_and_validate_existing_database() {
+    let db_path = temp_db_path("alert-projection-source-indexes-v45");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-alert-projection-source-indexes-v45".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+
+    for index_name in [
+        "idx_auth_token_logs_alert_time",
+        "idx_api_key_maintenance_records_alert_time",
+        "idx_scheduled_jobs_alert_time",
+    ] {
+        sqlx::query(&format!("DROP INDEX IF EXISTS {index_name}"))
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("drop alert projection source index");
+    }
+    sqlx::query("DELETE FROM schema_migrations WHERE version = 45")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate an interrupted v45 ledger write");
+    assert!(
+        !proxy
+            .key_store
+            .prepare_versioned_schema()
+            .await
+            .expect("repair the v45 alert projection source indexes"),
+        "a warm database must repair v45 without requesting full bootstrap"
+    );
+    let repaired_indexes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN (\
+         'idx_auth_token_logs_alert_time', \
+         'idx_api_key_maintenance_records_alert_time', \
+         'idx_scheduled_jobs_alert_time')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read repaired alert projection source indexes");
+    assert_eq!(repaired_indexes, 3);
+    let v45_checksum: String =
+        sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE version = 45")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read v45 migration checksum");
+    assert_eq!(
+        v45_checksum,
+        "sha256:5ac91a3fd7243f45b1cbc7af95c6defd7378ad5c06e693156b516594412ae56c"
+    );
+
+    sqlx::query("DROP INDEX idx_scheduled_jobs_alert_time")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("drop v45 scheduled-job index for validation");
+    let validation_error = proxy
+        .key_store
+        .prepare_versioned_schema()
+        .await
+        .expect_err("missing v45 source index must fail closed");
+    assert!(
+        validation_error
+            .to_string()
+            .contains("schema migration object validation failed at version 45"),
+        "unexpected v45 validation error: {validation_error}"
     );
 
     drop(proxy);
