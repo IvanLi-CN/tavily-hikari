@@ -12,6 +12,36 @@ const DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS: i64 = 2 * SECS_PER_HOUR;
 pub(crate) const DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY: i64 = 5;
 const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
 
+fn dashboard_integrity_read_budget(deadline: Option<tokio::time::Instant>) -> Duration {
+    deadline
+        .map(|deadline| {
+            DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now()))
+        })
+        .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET)
+}
+
+fn dashboard_integrity_deferred(
+    next_delay_secs: i64,
+    reason: &'static str,
+) -> DashboardRollupIntegritySlice {
+    DashboardRollupIntegritySlice::Deferred {
+        next_delay_secs,
+        reason,
+    }
+}
+
+fn dashboard_integrity_budget_reason(deadline: Option<tokio::time::Instant>) -> &'static str {
+    if deadline
+        .map(|deadline| tokio::time::Instant::now() >= deadline)
+        .unwrap_or(false)
+    {
+        "recovery_budget"
+    } else {
+        "read_budget"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardRollupIntegritySlice {
     Verified { next_delay_secs: i64 },
@@ -1598,10 +1628,7 @@ impl KeyStore {
             .await
         {
             let close = snapshot.close_after_query(Some(&error)).await;
-            return match close {
-                Ok(()) => Err(error),
-                Err(close_error) => Err(close_error),
-            };
+            return Err(close.err().unwrap_or(error));
         }
         Ok(snapshot)
     }
@@ -1624,23 +1651,11 @@ impl KeyStore {
             .map(|deadline| tokio::time::Instant::now() >= deadline)
             .unwrap_or(false)
         {
-            return Ok(DashboardRollupIntegritySlice::Deferred {
-                next_delay_secs: 1,
-                reason: "recovery_budget",
-            });
+            return Ok(dashboard_integrity_deferred(1, "recovery_budget"));
         }
-        let work_delay_budget = deadline
-            .map(|deadline| {
-                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
-                    deadline.saturating_duration_since(tokio::time::Instant::now()),
-                )
-            })
-            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        let work_delay_budget = dashboard_integrity_read_budget(deadline);
         if work_delay_budget.is_zero() {
-            return Ok(DashboardRollupIntegritySlice::Deferred {
-                next_delay_secs: 1,
-                reason: "recovery_budget",
-            });
+            return Ok(dashboard_integrity_deferred(1, "recovery_budget"));
         }
         let next_delay_secs = match tokio::time::timeout(
             work_delay_budget,
@@ -1650,34 +1665,17 @@ impl KeyStore {
         {
             Ok(value) => value?,
             Err(_) => {
-                let reason = if deadline
-                    .map(|deadline| tokio::time::Instant::now() >= deadline)
-                    .unwrap_or(false)
-                {
-                    "recovery_budget"
-                } else {
-                    "read_budget"
-                };
-                return Ok(DashboardRollupIntegritySlice::Deferred {
-                    next_delay_secs: 1,
-                    reason,
-                });
+                return Ok(dashboard_integrity_deferred(
+                    1,
+                    dashboard_integrity_budget_reason(deadline),
+                ));
             }
         };
         let day_start = local_day_bucket_start_utc_ts(item.range_start);
         let day_end = next_local_day_start_utc_ts(day_start);
-        let baseline_read_budget = deadline
-            .map(|deadline| {
-                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
-                    deadline.saturating_duration_since(tokio::time::Instant::now()),
-                )
-            })
-            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        let baseline_read_budget = dashboard_integrity_read_budget(deadline);
         if baseline_read_budget.is_zero() {
-            return Ok(DashboardRollupIntegritySlice::Deferred {
-                next_delay_secs,
-                reason: "recovery_budget",
-            });
+            return Ok(dashboard_integrity_deferred(next_delay_secs, "recovery_budget"));
         }
         match self
             .dashboard_rollup_gc_deleted_source_baseline_missing(
@@ -1695,18 +1693,10 @@ impl KeyStore {
             }
             Ok(false) => {}
             Err(error) if error.is_deferred() => {
-                let reason = if deadline
-                    .map(|deadline| tokio::time::Instant::now() >= deadline)
-                    .unwrap_or(false)
-                {
-                    "recovery_budget"
-                } else {
-                    "read_budget"
-                };
-                return Ok(DashboardRollupIntegritySlice::Deferred {
+                return Ok(dashboard_integrity_deferred(
                     next_delay_secs,
-                    reason,
-                });
+                    dashboard_integrity_budget_reason(deadline),
+                ));
             }
             Err(error) => return Err(error),
         }
@@ -1722,35 +1712,17 @@ impl KeyStore {
             "started a source-backed bounded integrity slice"
         );
         let read_started = StdInstant::now();
-        let mut read_budget = deadline
-            .map(|deadline| {
-                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
-                    deadline.saturating_duration_since(tokio::time::Instant::now()),
-                )
-            })
-            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        let mut read_budget = dashboard_integrity_read_budget(deadline);
         if read_budget.is_zero() {
-            return Ok(DashboardRollupIntegritySlice::Deferred {
-                next_delay_secs,
-                reason: "recovery_budget",
-            });
+            return Ok(dashboard_integrity_deferred(next_delay_secs, "recovery_budget"));
         }
         if item.cursor_created_at.is_none()
             && item.cursor_id.is_none()
             && item.counts.is_empty()
         {
-            let counts_read_budget = deadline
-                .map(|deadline| {
-                    DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
-                        deadline.saturating_duration_since(tokio::time::Instant::now()),
-                    )
-                })
-                .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+            let counts_read_budget = dashboard_integrity_read_budget(deadline);
             if counts_read_budget.is_zero() {
-                return Ok(DashboardRollupIntegritySlice::Deferred {
-                    next_delay_secs,
-                    reason: "recovery_budget",
-                });
+                return Ok(dashboard_integrity_deferred(next_delay_secs, "recovery_budget"));
             }
             let deleted_counts = match self
                 .load_dashboard_rollup_gc_deleted_source_counts(
@@ -1762,18 +1734,10 @@ impl KeyStore {
             {
                 Ok(counts) => counts,
                 Err(error) if error.is_deferred() => {
-                    let reason = if deadline
-                        .map(|deadline| tokio::time::Instant::now() >= deadline)
-                        .unwrap_or(false)
-                    {
-                        "recovery_budget"
-                    } else {
-                        "read_budget"
-                    };
-                    return Ok(DashboardRollupIntegritySlice::Deferred {
+                    return Ok(dashboard_integrity_deferred(
                         next_delay_secs,
-                        reason,
-                    });
+                        dashboard_integrity_budget_reason(deadline),
+                    ));
                 }
                 Err(error) => return Err(error),
             };
@@ -1781,18 +1745,9 @@ impl KeyStore {
                 item.counts.entry(minute_start).or_default().add(counts);
             }
         }
-        read_budget = deadline
-            .map(|deadline| {
-                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
-                    deadline.saturating_duration_since(tokio::time::Instant::now()),
-                )
-            })
-            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        read_budget = dashboard_integrity_read_budget(deadline);
         if read_budget.is_zero() {
-            return Ok(DashboardRollupIntegritySlice::Deferred {
-                next_delay_secs,
-                reason: "recovery_budget",
-            });
+            return Ok(dashboard_integrity_deferred(next_delay_secs, "recovery_budget"));
         }
         let mut snapshot = self.begin_dashboard_integrity_read(read_budget).await?;
         let result = sqlx::query(
@@ -1823,18 +1778,10 @@ impl KeyStore {
         let rows = match snapshot.complete_native_read(result).await? {
             crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(rows) => rows,
             crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
-                let reason = if deadline
-                    .map(|deadline| tokio::time::Instant::now() >= deadline)
-                    .unwrap_or(false)
-                {
-                    "recovery_budget"
-                } else {
-                    "read_budget"
-                };
-                return Ok(DashboardRollupIntegritySlice::Deferred {
+                return Ok(dashboard_integrity_deferred(
                     next_delay_secs,
-                    reason,
-                });
+                    dashboard_integrity_budget_reason(deadline),
+                ));
             }
         };
         for row in &rows {
