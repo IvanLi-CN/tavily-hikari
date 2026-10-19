@@ -65,7 +65,12 @@ const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME: &str =
     "admin-alert-canonical-groups-payload-read-owner-v1";
 const ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM: &str =
     "sha256:7b8c9d0e1f23456789abcdef0123456789abcdef0123456789abcdef01234567";
-fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 14] {
+const ALERT_PROJECTION_SOURCE_INDEXES_VERSION: i64 = 45;
+const ALERT_PROJECTION_SOURCE_INDEXES_NAME: &str = "alert-projection-source-indexes-v1";
+const ALERT_PROJECTION_SOURCE_INDEXES_CHECKSUM: &str =
+    "sha256:5ac91a3fd7243f45b1cbc7af95c6defd7378ad5c06e693156b516594412ae56c";
+
+fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str); 15] {
     [
         (
             ADMIN_ALERT_CANONICAL_GROUPS_VERSION,
@@ -136,6 +141,11 @@ fn convergence_schema_migration_records() -> [(i64, &'static str, &'static str);
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM,
+        ),
+        (
+            ALERT_PROJECTION_SOURCE_INDEXES_VERSION,
+            ALERT_PROJECTION_SOURCE_INDEXES_NAME,
+            ALERT_PROJECTION_SOURCE_INDEXES_CHECKSUM,
         ),
     ]
 }
@@ -239,6 +249,12 @@ impl KeyStore {
             self.apply_admin_alert_canonical_groups_payload_read_owner_migration()
                 .await?;
         }
+        if !self
+            .schema_migration_applied(ALERT_PROJECTION_SOURCE_INDEXES_VERSION)
+            .await?
+        {
+            self.apply_alert_projection_source_indexes_migration().await?;
+        }
         Ok(())
     }
 
@@ -268,7 +284,8 @@ impl KeyStore {
         self.apply_admin_alert_canonical_groups_payload_read_chunks_migration()
             .await?;
         self.apply_admin_alert_canonical_groups_payload_read_owner_migration()
-            .await
+            .await?;
+        self.apply_alert_projection_source_indexes_migration().await
     }
 
     async fn validate_convergence_schema_migration_objects(&self) -> Result<(), ProxyError> {
@@ -619,6 +636,31 @@ impl KeyStore {
         if payload_read_owner_migration_applied && !payload_read_owner_present {
             return Err(ProxyError::Other(
                 "schema migration object validation failed at version 44".to_string(),
+            ));
+        }
+        if self
+            .schema_migration_applied(ALERT_PROJECTION_SOURCE_INDEXES_VERSION)
+            .await?
+            && (!self
+                .schema_named_object_exists(
+                    "main",
+                    "index",
+                    "idx_auth_token_logs_alert_time",
+                )
+                .await?
+                || !self
+                    .schema_named_object_exists(
+                        "main",
+                        "index",
+                        "idx_api_key_maintenance_records_alert_time",
+                    )
+                    .await?
+                || !self
+                    .schema_named_object_exists("main", "index", "idx_scheduled_jobs_alert_time")
+                    .await?)
+        {
+            return Err(ProxyError::Other(
+                "schema migration object validation failed at version 45".to_string(),
             ));
         }
         Ok(())
@@ -1559,6 +1601,40 @@ impl KeyStore {
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_VERSION,
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_NAME,
             ADMIN_ALERT_CANONICAL_GROUPS_PAYLOAD_READ_OWNER_CHECKSUM,
+        )
+        .await
+    }
+
+    async fn apply_alert_projection_source_indexes_migration(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_auth_token_logs_alert_time \
+             ON auth_token_logs(created_at DESC, id DESC) \
+             WHERE failure_kind = 'upstream_rate_limited_429' \
+                OR result_status = 'quota_exhausted'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_alert_time \
+             ON api_key_maintenance_records(created_at DESC, id DESC) \
+             WHERE COALESCE(reason_code, '') IN \
+                 ('account_deactivated', 'key_revoked', 'invalid_api_key') \
+                OR (source = 'system' AND operation_code = 'auto_mark_exhausted' \
+                    AND reason_code = 'quota_exhausted')",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_alert_time \
+             ON scheduled_jobs(COALESCE(finished_at, started_at, queued_at) ASC, id ASC) \
+             WHERE LOWER(TRIM(status)) IN ('error', 'failed')",
+        )
+        .execute(&self.pool)
+        .await?;
+        self.record_schema_migration(
+            ALERT_PROJECTION_SOURCE_INDEXES_VERSION,
+            ALERT_PROJECTION_SOURCE_INDEXES_NAME,
+            ALERT_PROJECTION_SOURCE_INDEXES_CHECKSUM,
         )
         .await
     }

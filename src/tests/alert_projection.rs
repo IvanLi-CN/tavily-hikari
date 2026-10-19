@@ -2381,6 +2381,103 @@ async fn alert_projection_preempts_backlog_for_a_new_idle_source() {
 }
 
 #[tokio::test]
+async fn alert_projection_pages_same_second_scheduled_jobs_with_bounded_cursor_seek() {
+    let db_path = temp_db_path("alert-projection-scheduled-same-second-page");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_575_075;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-projection-scheduled-same-second-page".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', generation = 100, fence_occurred_at = NULL, fence_row_sort_id = NULL",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset non-scheduled source lanes");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET cursor_occurred_at = ?, cursor_row_sort_id = 'job:00000000000000000000', \
+                fence_occurred_at = NULL, fence_row_sort_id = NULL, phase = 'catching_up', generation = 0 \
+          WHERE source_kind = 'scheduled_job'",
+    )
+    .bind(now - 2)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed the scheduled-job cursor before its fence");
+
+    for (index, occurred_at) in std::iter::once(now - 1)
+        .chain(std::iter::repeat_n(now, 30))
+        .enumerate()
+    {
+        sqlx::query(
+            r#"INSERT INTO scheduled_jobs
+                (job_type, trigger_source, status, attempt, message, queued_at, started_at, finished_at)
+           VALUES (?, 'scheduler', 'failed', 1, 'same-second projection failure', ?, ?, ?)"#,
+        )
+        .bind(format!("projection_same_second_{index}"))
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert scheduled-job projection source row");
+    }
+
+    let first = advance_alert_projection_slice_until_admitted(&proxy).await;
+    assert!(matches!(
+        first,
+        AlertProjectionSliceOutcome::Advanced {
+            rows: 25,
+            complete: false,
+            ..
+        }
+    ));
+    let second = advance_alert_projection_slice_until_admitted(&proxy).await;
+    assert!(matches!(
+        second,
+        AlertProjectionSliceOutcome::Advanced {
+            rows: 6,
+            complete: true,
+            ..
+        }
+    ));
+
+    let projected_rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT occurred_at, row_sort_id \
+           FROM observability.dashboard_alert_projection_events \
+          WHERE source_kind = 'scheduled_job' \
+          ORDER BY occurred_at ASC, row_sort_id ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read scheduled-job projection rows");
+    assert_eq!(projected_rows.len(), 31);
+    assert_eq!(projected_rows[0].0, now - 1);
+    assert_eq!(
+        projected_rows
+            .iter()
+            .filter(|(occurred_at, _)| *occurred_at == now)
+            .count(),
+        30
+    );
+    assert!(projected_rows.windows(2).all(|rows| rows[0] < rows[1]));
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn alert_projection_idle_probe_does_not_persist_empty_cursors() {
     let db_path = temp_db_path("alert-projection-idle-no-write");
     let db_string = db_path.to_string_lossy().to_string();
