@@ -637,6 +637,12 @@ async fn reconciliation_research_not_found_is_unavailable_without_repoll_wake() 
         .await
         .expect("claim Research drain")
         .expect("Research drain becomes running");
+    // Keep this regression focused on the unavailable outcome rather than the
+    // first lazy maintenance-pool admission under hosted-runner load.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let outcome = proxy
         .run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{address}"),
@@ -790,6 +796,12 @@ async fn reconciliation_research_missing_secret_uses_key_scoped_cooldown_without
         .await
         .expect("claim Research drain")
         .expect("Research drain becomes running");
+    // Keep this regression focused on credential cooldown persistence rather
+    // than the first lazy maintenance-pool admission under hosted-runner load.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let outcome = proxy
         .run_upstream_reconciliation_research_drain_claimed(
             &format!("http://{address}"),
