@@ -3,35 +3,6 @@ use super::core_support_and_parsing::*;
 use super::upstream_support_and_manual_jobs::*;
 
     #[tokio::test]
-    async fn system_settings_put_is_visible_to_next_load() {
-        let db_path = temp_db_path("system-settings-next-load");
-        let db_str = db_path.to_string_lossy().to_string();
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), DEFAULT_UPSTREAM, &db_str)
-            .await
-            .expect("create proxy");
-        let mut updated = proxy
-            .get_system_settings()
-            .await
-            .expect("load initial system settings");
-        updated.request_rate_limit += 17;
-        proxy
-            .set_system_settings(&updated)
-            .await
-            .expect("persist system settings");
-
-        let (next, meta_select_count) = proxy
-            .get_system_settings_with_meta_select_count_for_test()
-            .await
-            .expect("load system settings after PUT");
-        assert_eq!(next.request_rate_limit, updated.request_rate_limit);
-        assert_eq!(
-            meta_select_count, 1,
-            "a complete system-settings load must execute one meta SELECT"
-        );
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[tokio::test]
     async fn admin_system_settings_put_preserves_request_rate_limit_when_legacy_payload_omits_it() {
         let db_path = temp_db_path("admin-system-settings-legacy-request-rate");
         let db_str = db_path.to_string_lossy().to_string();
@@ -66,6 +37,7 @@ use super::upstream_support_and_manual_jobs::*;
             })
             .await
             .expect("seed system settings");
+        let proxy_for_count = proxy.clone();
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -93,6 +65,16 @@ use super::upstream_support_and_manual_jobs::*;
         assert_eq!(updated_body["apiRebalancePercent"].as_i64(), Some(0));
         assert_eq!(updated_body["userBlockedKeyBaseLimit"].as_i64(), Some(7));
         assert_eq!(updated_body["globalIpLimit"].as_i64(), Some(tavily_hikari::GLOBAL_IP_LIMIT_DEFAULT));
+
+        let (reloaded, meta_select_count) = proxy_for_count
+            .get_system_settings_with_meta_select_count_for_test()
+            .await
+            .expect("load system settings after PUT");
+        assert_eq!(reloaded.request_rate_limit, 88);
+        assert_eq!(
+            meta_select_count, 1,
+            "a complete system-settings load must execute one meta SELECT"
+        );
 
         let persisted = client
             .get(format!("http://{addr}/api/settings"))

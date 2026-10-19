@@ -1,11 +1,9 @@
 const fn normalized_mcp_rebalance_percent(enabled: bool) -> i64 {
     if enabled { 100 } else { 0 }
 }
-
 const fn normalized_api_rebalance_percent(enabled: bool) -> i64 {
     if enabled { 100 } else { 0 }
 }
-
 const SYSTEM_SETTINGS_META_KEYS: &[&str] = &[
     META_KEY_REQUEST_RATE_LIMIT_V1,
     META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1,

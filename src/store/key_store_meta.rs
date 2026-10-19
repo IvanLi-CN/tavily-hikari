@@ -1,18 +1,18 @@
 const META_KEY_HA_FULL_MASTER_NODE_ID_V1: &str = "ha_full_master_node_id_v1";
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(debug_assertions)]
 tokio::task_local! {
     static META_SELECT_COUNT: std::sync::Arc<std::sync::atomic::AtomicUsize>;
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(debug_assertions)]
 fn record_meta_select() {
     let _ = META_SELECT_COUNT.try_with(|count| {
         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     });
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(debug_assertions)]
 pub(crate) async fn with_meta_select_count<F, T>(
     count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     future: F,
@@ -71,7 +71,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
-        #[cfg(any(test, debug_assertions))]
+        #[cfg(debug_assertions)]
         record_meta_select();
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(key)
@@ -99,7 +99,7 @@ impl KeyStore {
         }
         query.push(")");
 
-        #[cfg(any(test, debug_assertions))]
+        #[cfg(debug_assertions)]
         record_meta_select();
         let rows = query
             .build_query_as::<(String, String)>()
