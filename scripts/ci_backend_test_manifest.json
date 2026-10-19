@@ -232,6 +232,7 @@
       "coverage_target": "lib",
       "run_args": ["--lib"],
       "filtered_test_threads": 2,
+      "isolated_prefixes": ["tests::dashboard_rollup_integrity::"],
       "serial_prefixes": ["tests::dashboard_rollup_integrity::"],
       "include_prefixes": ["tests::dashboard_rollup_integrity::"]
     },
@@ -596,7 +597,8 @@
         "tavily_proxy::reconciliation_engine_tests::",
         "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
         "upstream_privacy::tests::"
-      ]
+      ],
+      "isolated_prefixes": ["tests::upstream_reconciliation_fencing::"]
     },
     {
       "id": "bin-support",
