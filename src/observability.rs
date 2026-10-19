@@ -1428,9 +1428,17 @@ async fn http_metrics_middleware_core(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    if !metrics.recording_enabled {
+        return next.run(req).await;
+    }
     let path = req.uri().path().to_owned();
     let method = req.method().as_str().to_owned();
     let scope = RequestTimingScope::new(metrics, &path, &method);
+    if path == "/health" {
+        let response = next.run(req).await;
+        scope.finish(response.status());
+        return response;
+    }
     REQUEST_TIMING_SCOPE
         .scope(scope, async move {
             let response = next.run(req).await;
@@ -1899,6 +1907,7 @@ fn process_cpu_seconds() -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
 
     fn request_timing_histogram_value(output: &str, metric: &str, phase: &str) -> f64 {
         output
@@ -2103,6 +2112,87 @@ mod tests {
             }
         }
         assert!((phase_sums[other_index] - total).abs() <= 1e-9);
+    }
+
+    #[tokio::test]
+    async fn http_metrics_middleware_health_fast_path_preserves_response_and_metrics() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let app = Router::new()
+            .route(
+                "/health",
+                get(|| async {
+                    assert!(begin_request_phase("preflight").is_none());
+                    (StatusCode::OK, "healthy")
+                }),
+            )
+            .layer(axum::middleware::from_fn(
+                http_metrics_middleware_with_metrics,
+            ))
+            .layer(Extension(metrics.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("health request"),
+            )
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("health response body");
+        assert_eq!(body.as_ref(), b"healthy");
+
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert_eq!(
+            output.matches("hikari_http_requests_total{").count(),
+            1,
+            "health request must be counted once"
+        );
+        let (phase_sums, total) = assert_terminal_request_timing(&output);
+        let other_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "other")
+            .expect("other phase index");
+        assert!((phase_sums[other_index] - total).abs() <= 1e-9);
+        assert!(output.contains("route_family=\"public\""));
+        assert!(output.contains("method=\"GET\""));
+        assert!(output.contains("operation=\"public\""));
+    }
+
+    #[tokio::test]
+    async fn http_metrics_middleware_disabled_recording_bypasses_timing_scope() {
+        let metrics = Arc::new(Metrics::new_with_recording(None, false).expect("metrics"));
+        let app = Router::new()
+            .route(
+                "/disabled",
+                get(|| async {
+                    assert!(begin_request_phase("preflight").is_none());
+                    (StatusCode::OK, "disabled")
+                }),
+            )
+            .layer(axum::middleware::from_fn(
+                http_metrics_middleware_with_metrics,
+            ))
+            .layer(Extension(metrics.clone()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/disabled")
+                    .body(Body::empty())
+                    .expect("disabled request"),
+            )
+            .await
+            .expect("disabled response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("disabled response body");
+        assert_eq!(body.as_ref(), b"disabled");
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert!(!output.contains("hikari_http_requests_total{"));
+        assert!(!output.contains("hikari_http_request_duration_seconds_count{"));
     }
 
     #[tokio::test]
