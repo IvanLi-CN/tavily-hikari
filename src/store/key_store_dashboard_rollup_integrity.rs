@@ -694,7 +694,11 @@ impl KeyStore {
             return Ok(false);
         }
         if self
-            .dashboard_rollup_gc_deleted_source_baseline_missing(day_start, day_end)
+            .dashboard_rollup_gc_deleted_source_baseline_missing(
+                day_start,
+                day_end,
+                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET,
+            )
             .await?
         {
             return Ok(false);
@@ -1581,6 +1585,34 @@ impl KeyStore {
         }
     }
 
+    async fn begin_dashboard_integrity_read(
+        &self,
+        read_budget: Duration,
+    ) -> Result<SqliteReadSnapshot, ProxyError> {
+        let mut snapshot = self
+            .sqlite_runtime
+            .begin_read_snapshot(SqliteOperation::DashboardIntegrityWrite)
+            .await?;
+        if let Err(error) = snapshot
+            .arm_cooperative_run_budget_with_cadence(read_budget, 1_000)
+            .await
+        {
+            let close = snapshot.close_after_query(Some(&error)).await;
+            return match close {
+                Ok(()) => Err(error),
+                Err(close_error) => Err(close_error),
+            };
+        }
+        Ok(snapshot)
+    }
+
+    fn dashboard_integrity_read_deferred() -> ProxyError {
+        ProxyError::Deferred {
+            operation: "dashboard_integrity",
+            reason: "read_budget".to_string(),
+        }
+    }
+
     async fn process_dashboard_rollup_integrity_work_item_inner(
         &self,
         mut item: DashboardRollupIntegrityWorkItem,
@@ -1634,14 +1666,49 @@ impl KeyStore {
         };
         let day_start = local_day_bucket_start_utc_ts(item.range_start);
         let day_end = next_local_day_start_utc_ts(day_start);
-        if self
-            .dashboard_rollup_gc_deleted_source_baseline_missing(day_start, day_end)
-            .await?
-        {
+        let baseline_read_budget = deadline
+            .map(|deadline| {
+                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+            })
+            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        if baseline_read_budget.is_zero() {
             return Ok(DashboardRollupIntegritySlice::Deferred {
                 next_delay_secs,
-                reason: "deleted_source_baseline_unavailable",
+                reason: "recovery_budget",
             });
+        }
+        match self
+            .dashboard_rollup_gc_deleted_source_baseline_missing(
+                day_start,
+                day_end,
+                baseline_read_budget,
+            )
+            .await
+        {
+            Ok(true) => {
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason: "deleted_source_baseline_unavailable",
+                });
+            }
+            Ok(false) => {}
+            Err(error) if error.is_deferred() => {
+                let reason = if deadline
+                    .map(|deadline| tokio::time::Instant::now() >= deadline)
+                    .unwrap_or(false)
+                {
+                    "recovery_budget"
+                } else {
+                    "read_budget"
+                };
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason,
+                });
+            }
+            Err(error) => return Err(error),
         }
         tracing::debug!(
             component = "dashboard_rollup_integrity",
@@ -1655,7 +1722,7 @@ impl KeyStore {
             "started a source-backed bounded integrity slice"
         );
         let read_started = StdInstant::now();
-        let read_budget = deadline
+        let mut read_budget = deadline
             .map(|deadline| {
                 DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
                     deadline.saturating_duration_since(tokio::time::Instant::now()),
@@ -1672,16 +1739,63 @@ impl KeyStore {
             && item.cursor_id.is_none()
             && item.counts.is_empty()
         {
-            for (minute_start, counts) in self
-                .load_dashboard_rollup_gc_deleted_source_counts(item.range_start, item.range_end)
-                .await?
+            let counts_read_budget = deadline
+                .map(|deadline| {
+                    DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
+                        deadline.saturating_duration_since(tokio::time::Instant::now()),
+                    )
+                })
+                .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+            if counts_read_budget.is_zero() {
+                return Ok(DashboardRollupIntegritySlice::Deferred {
+                    next_delay_secs,
+                    reason: "recovery_budget",
+                });
+            }
+            let deleted_counts = match self
+                .load_dashboard_rollup_gc_deleted_source_counts(
+                    item.range_start,
+                    item.range_end,
+                    counts_read_budget,
+                )
+                .await
             {
+                Ok(counts) => counts,
+                Err(error) if error.is_deferred() => {
+                    let reason = if deadline
+                        .map(|deadline| tokio::time::Instant::now() >= deadline)
+                        .unwrap_or(false)
+                    {
+                        "recovery_budget"
+                    } else {
+                        "read_budget"
+                    };
+                    return Ok(DashboardRollupIntegritySlice::Deferred {
+                        next_delay_secs,
+                        reason,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            for (minute_start, counts) in deleted_counts {
                 item.counts.entry(minute_start).or_default().add(counts);
             }
         }
-        let rows = match tokio::time::timeout(
-            read_budget,
-            sqlx::query(
+        read_budget = deadline
+            .map(|deadline| {
+                DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET.min(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+            })
+            .unwrap_or(DASHBOARD_ROLLUP_INTEGRITY_READ_BUDGET);
+        if read_budget.is_zero() {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "recovery_budget",
+            });
+        }
+        let mut snapshot = self.begin_dashboard_integrity_read(read_budget).await?;
+        let result = sqlx::query(
             r#"
             SELECT id, created_at, result_status, failure_kind, request_kind_key, request_body,
                    path, business_credits, counts_business_quota
@@ -1701,15 +1815,14 @@ impl KeyStore {
         .bind(item.source_fence_id)
         .bind(item.cursor_created_at)
         .bind(item.cursor_created_at)
-            .bind(item.cursor_created_at)
-            .bind(item.cursor_id)
-            .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
-                .fetch_all(&self.pool),
-        )
-        .await
-        {
-            Ok(rows) => rows?,
-            Err(_) => {
+        .bind(item.cursor_created_at)
+        .bind(item.cursor_id)
+        .bind(DASHBOARD_ROLLUP_INTEGRITY_SOURCE_PAGE_ROWS)
+        .fetch_all(&mut *snapshot)
+        .await;
+        let rows = match snapshot.complete_native_read(result).await? {
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(rows) => rows,
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
                 let reason = if deadline
                     .map(|deadline| tokio::time::Instant::now() >= deadline)
                     .unwrap_or(false)
@@ -2219,8 +2332,10 @@ impl KeyStore {
         &self,
         range_start: i64,
         range_end: i64,
+        read_budget: Duration,
     ) -> Result<BTreeMap<i64, DashboardRequestRollupCounts>, ProxyError> {
-        let rows = sqlx::query(
+        let mut snapshot = self.begin_dashboard_integrity_read(read_budget).await?;
+        let result = sqlx::query(
             r#"
             SELECT bucket_start, counts_json
             FROM dashboard_rollup_gc_deleted_source_contributions
@@ -2230,8 +2345,14 @@ impl KeyStore {
         )
         .bind(range_start)
         .bind(range_end)
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch_all(&mut *snapshot)
+        .await;
+        let rows = match snapshot.complete_native_read(result).await? {
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(rows) => rows,
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                return Err(Self::dashboard_integrity_read_deferred());
+            }
+        };
         rows.into_iter()
             .map(|row| {
                 let bucket_start: i64 = row.try_get("bucket_start")?;
@@ -2250,14 +2371,47 @@ impl KeyStore {
         &self,
         day_start: i64,
         day_end: i64,
+        read_budget: Duration,
     ) -> Result<bool, ProxyError> {
-        let Some(counts_json): Option<String> = sqlx::query_scalar(
-            "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
-        )
-        .bind(day_start)
-        .fetch_optional(&self.pool)
-        .await?
-        else {
+        let mut snapshot = self.begin_dashboard_integrity_read(read_budget).await?;
+        let result: Result<(Option<String>, i64, i64), sqlx::Error> = async {
+            let counts_json = sqlx::query_scalar::<_, String>(
+                "SELECT counts_json FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
+            )
+            .bind(day_start)
+            .fetch_optional(&mut *snapshot)
+            .await?;
+            let Some(counts_json) = counts_json else {
+                return Ok((None, 0, 0));
+            };
+            let retained_source_rows = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *snapshot)
+            .await?;
+            let deleted_source_rows = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *snapshot)
+            .await?;
+            Ok((Some(counts_json), retained_source_rows, deleted_source_rows))
+        }
+        .await;
+        let (counts_json, retained_source_rows, deleted_source_rows) =
+            match snapshot.complete_native_read(result).await? {
+                crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(values) => {
+                    values
+                }
+                crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                    return Err(Self::dashboard_integrity_read_deferred());
+                }
+            };
+        let Some(counts_json) = counts_json else {
             return Ok(false);
         };
         let sealed_counts: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
@@ -2265,21 +2419,6 @@ impl KeyStore {
         if sealed_counts.total_requests <= 0 {
             return Ok(false);
         }
-        let retained_source_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(day_start)
-        .bind(day_end)
-        .fetch_one(&self.pool)
-        .await?;
-        let deleted_source_rows: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
-        )
-        .bind(day_start)
-        .bind(day_end)
-        .fetch_one(&self.pool)
-        .await?;
         Ok(retained_source_rows.saturating_add(deleted_source_rows) < sealed_counts.total_requests)
     }
 

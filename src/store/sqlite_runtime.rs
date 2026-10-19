@@ -2045,20 +2045,19 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
-        let cooperative_run_deadline = if matches!(
-            operation,
+        let cooperative_run_deadline = match operation {
             SqliteOperation::AdminAlertsRead
-                | SqliteOperation::AdminAlertsCacheWarm
-                | SqliteOperation::DashboardQuotaRead
-        ) {
-            let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
-            let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
-            handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
-                Instant::now() < deadline
-            });
-            Some(deadline)
-        } else {
-            None
+            | SqliteOperation::AdminAlertsCacheWarm
+            | SqliteOperation::DashboardQuotaRead
+            | SqliteOperation::AlertProjection => {
+                let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
+                let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
+                handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
+                    Instant::now() < deadline
+                });
+                Some(deadline)
+            }
+            _ => None,
         };
         let cache_write_pages_start = connection_cache_write_pages(&mut conn).await;
         Ok(SqliteOperationConnection {
@@ -2109,8 +2108,9 @@ impl SqliteRuntime {
                 | SqliteOperation::AdminAlertsRead
                 | SqliteOperation::AdminAlertsCacheWarm
                 | SqliteOperation::DashboardQuotaRead
+                | SqliteOperation::AlertProjection
         ) {
-            // Admin privacy refreshes are detached from the HTTP budget. Its
+            // These reads are detached from the caller's future budget. Their
             // connection-local busy timeout is the bounded defer mechanism;
             // cancelling this future would leave a physical connection in an
             // unknown transaction state and turn discard into normal flow.
@@ -2168,6 +2168,10 @@ impl SqliteRuntime {
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
             SqliteOperation::DashboardQuotaRead => Some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            )),
+            SqliteOperation::AlertProjection => Some((
                 ADMIN_ALERTS_READ_RUN_BUDGET,
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
@@ -3085,6 +3089,11 @@ pub(crate) struct SqliteOperationConnection {
 }
 
 impl SqliteOperationConnection {
+    #[cfg(test)]
+    pub(crate) fn expire_cooperative_run_deadline_for_test(&mut self) {
+        self.cooperative_run_deadline = Some(Instant::now());
+    }
+
     pub(crate) async fn complete_query<T>(
         mut self,
         query_result: Result<T, sqlx::Error>,
@@ -3462,58 +3471,18 @@ impl SqliteReadSnapshot {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn complete_query<T>(
-        mut self,
+        self,
         query_result: Result<T, sqlx::Error>,
     ) -> Result<T, ProxyError> {
-        let rollback_result = sqlx::query("ROLLBACK").execute(&mut *self).await;
-        match (query_result, rollback_result) {
-            (Ok(value), Ok(_)) => {
-                let mut conn = self.conn.take().expect("SQLite read snapshot connection");
-                record_connection_cache_write_delta(
-                    &self.runtime,
-                    self.operation,
-                    self.cache_write_pages_start,
-                    &mut conn,
-                )
-                .await;
-                if let Err(restore_err) =
-                    restore_operation_connection(conn, self.restore_busy_timeout).await
-                {
-                    let err = ProxyError::Database(restore_err);
-                    self.runtime.record_error(
-                        self.operation,
-                        self.pool_wait,
-                        self.begin_wait,
-                        &err,
-                    );
-                    return Err(err);
-                }
-                self.runtime.record_success(
-                    self.operation,
-                    self.pool_wait,
-                    self.begin_wait,
-                    self.started_at.elapsed(),
-                    0,
-                );
-                Ok(value)
-            }
-            (Err(query_err), _) => {
-                let conn = self.conn.take().expect("SQLite read snapshot connection");
-                conn.detach().close().await.ok();
-                let err = ProxyError::Database(query_err);
-                self.runtime
-                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
-                Err(err)
-            }
-            (Ok(_), Err(rollback_err)) => {
-                let conn = self.conn.take().expect("SQLite read snapshot connection");
-                conn.detach().close().await.ok();
-                let err = ProxyError::Database(rollback_err);
-                self.runtime
-                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
-                Err(err)
-            }
+        let operation = self.operation;
+        match self.complete_native_read(query_result).await? {
+            SqliteCooperativeQueryOutcome::Completed(value) => Ok(value),
+            SqliteCooperativeQueryOutcome::DeadlineExceeded => Err(ProxyError::Deferred {
+                operation: operation.as_str(),
+                reason: "read_budget".to_string(),
+            }),
         }
     }
 
