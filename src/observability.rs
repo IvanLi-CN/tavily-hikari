@@ -1,10 +1,11 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     env, fs,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
     },
     time::{Duration, Instant},
 };
@@ -126,12 +127,10 @@ enum MetricEvent {
 
 #[derive(Debug)]
 struct RequestTimingState {
-    operation: &'static str,
     phases: [Duration; REQUEST_PHASE_COUNT],
     active: [Option<ActiveRequestPhase>; REQUEST_PHASE_COUNT],
     active_len: usize,
     next_token: u64,
-    terminal: bool,
 }
 
 #[derive(Debug)]
@@ -146,13 +145,19 @@ struct RequestTimingInner {
     metrics: Arc<Metrics>,
     route_family: &'static str,
     method: &'static str,
-    started: Instant,
+    terminal: AtomicBool,
     state: Mutex<RequestTimingState>,
 }
 
 #[derive(Debug)]
 pub(crate) struct RequestTimingScope {
-    inner: Arc<RequestTimingInner>,
+    metrics: Arc<Metrics>,
+    route_family: &'static str,
+    method: &'static str,
+    started: Instant,
+    operation: Cell<&'static str>,
+    terminal: AtomicBool,
+    phase_state: OnceLock<Arc<RequestTimingInner>>,
 }
 
 #[derive(Debug)]
@@ -171,21 +176,31 @@ impl RequestTimingScope {
         let method = metric_method(path, method);
         let operation = default_request_operation(route_family);
         Self {
-            inner: Arc::new(RequestTimingInner {
-                metrics,
-                route_family,
-                method,
-                started: Instant::now(),
+            metrics,
+            route_family,
+            method,
+            started: Instant::now(),
+            operation: Cell::new(operation),
+            terminal: AtomicBool::new(false),
+            phase_state: OnceLock::new(),
+        }
+    }
+
+    fn phase_inner(&self) -> &Arc<RequestTimingInner> {
+        self.phase_state.get_or_init(|| {
+            Arc::new(RequestTimingInner {
+                metrics: self.metrics.clone(),
+                route_family: self.route_family,
+                method: self.method,
+                terminal: AtomicBool::new(false),
                 state: Mutex::new(RequestTimingState {
-                    operation,
                     phases: [Duration::ZERO; REQUEST_PHASE_COUNT],
                     active: std::array::from_fn(|_| None),
                     active_len: 0,
                     next_token: 1,
-                    terminal: false,
                 }),
-            }),
-        }
+            })
+        })
     }
 
     fn finish(&self, status: StatusCode) {
@@ -197,27 +212,52 @@ impl RequestTimingScope {
     }
 
     fn finish_with_labels(&self, status_class: &'static str, outcome: &'static str) {
-        let (operation, total, phases) = {
-            let mut state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.terminal {
-                return;
-            }
-            let now = Instant::now();
-            pause_active_phase(&mut state, now);
-            state.terminal = true;
-            let total = now.saturating_duration_since(self.inner.started);
-            let phases = reconcile_request_phases(state.phases, total);
-            (state.operation, total, phases)
-        };
-        self.inner.metrics.enqueue_request_timing(
-            self.inner.route_family,
-            self.inner.method,
+        if let Some(inner) = self.phase_state.get() {
+            let (operation, total, phases) = {
+                let mut state = inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if inner
+                    .terminal
+                    .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+                    .is_err()
+                {
+                    return;
+                }
+                let now = Instant::now();
+                pause_active_phase(&mut state, now);
+                let total = now.saturating_duration_since(self.started);
+                let phases = reconcile_request_phases(state.phases, total);
+                (self.operation.get(), total, phases)
+            };
+            inner.metrics.enqueue_request_timing(
+                inner.route_family,
+                inner.method,
+                status_class,
+                operation,
+                outcome,
+                total,
+                phases,
+            );
+            return;
+        }
+
+        if self
+            .terminal
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let now = Instant::now();
+        let total = now.saturating_duration_since(self.started);
+        let phases = reconcile_request_phases([Duration::ZERO; REQUEST_PHASE_COUNT], total);
+        self.metrics.enqueue_request_timing(
+            self.route_family,
+            self.method,
             status_class,
-            operation,
+            self.operation.get(),
             outcome,
             total,
             phases,
@@ -225,24 +265,28 @@ impl RequestTimingScope {
     }
 
     fn set_operation(&self, operation: &str) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !state.terminal {
-            state.operation = normalize_request_operation(operation);
+        if self.terminal.load(AtomicOrdering::Acquire)
+            || self
+                .phase_state
+                .get()
+                .is_some_and(|inner| inner.terminal.load(AtomicOrdering::Acquire))
+        {
+            return;
         }
+        self.operation.set(normalize_request_operation(operation));
     }
 
     fn begin_phase(&self, phase: &str) -> Option<RequestPhaseGuard> {
         let phase = request_phase_index(phase)?;
-        let mut state = self
-            .inner
+        if self.terminal.load(AtomicOrdering::Acquire) {
+            return None;
+        }
+        let inner = self.phase_inner();
+        let mut state = inner
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.terminal {
+        if inner.terminal.load(AtomicOrdering::Acquire) {
             return None;
         }
         if state.active_len == REQUEST_PHASE_COUNT {
@@ -260,7 +304,7 @@ impl RequestTimingScope {
         });
         state.active_len += 1;
         Some(RequestPhaseGuard {
-            inner: self.inner.clone(),
+            inner: inner.clone(),
             token,
         })
     }
@@ -269,12 +313,15 @@ impl RequestTimingScope {
         let Some(phase) = request_phase_index(phase) else {
             return;
         };
-        let mut state = self
-            .inner
+        if self.terminal.load(AtomicOrdering::Acquire) {
+            return;
+        }
+        let inner = self.phase_inner();
+        let mut state = inner
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.terminal {
+        if inner.terminal.load(AtomicOrdering::Acquire) {
             return;
         }
         let now = Instant::now();
@@ -297,7 +344,7 @@ impl Drop for RequestPhaseGuard {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.terminal {
+        if self.inner.terminal.load(AtomicOrdering::Acquire) {
             return;
         }
         if state.active_len == 0 {
@@ -1966,6 +2013,7 @@ mod tests {
             .scope(scope, async {
                 set_request_operation("search");
                 let outer = begin_request_phase("preflight").expect("preflight phase");
+                assert!(REQUEST_TIMING_SCOPE.with(|scope| scope.phase_state.get().is_some()));
                 let upstream = begin_request_phase("upstream").expect("upstream phase");
                 drop(upstream);
                 let first_repeated_preflight =
@@ -2012,6 +2060,49 @@ mod tests {
         }
         assert!(output.contains("operation=\"search\""));
         assert!(!output.contains("request_id"));
+    }
+
+    #[tokio::test]
+    async fn request_timing_scope_health_is_terminal_only() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let scope = RequestTimingScope::new(metrics.clone(), "/health", "GET");
+        assert!(scope.phase_state.get().is_none());
+        REQUEST_TIMING_SCOPE
+            .scope(scope, async {
+                assert!(REQUEST_TIMING_SCOPE.with(|scope| scope.phase_state.get().is_none()));
+                REQUEST_TIMING_SCOPE.with(|scope| scope.finish(StatusCode::NO_CONTENT));
+            })
+            .await;
+
+        let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
+        assert_eq!(
+            output.matches("hikari_http_requests_total{").count(),
+            1,
+            "health request must be counted once"
+        );
+        assert_eq!(
+            output
+                .matches("hikari_http_duration_seconds_count{")
+                .count(),
+            1,
+            "health request must retain one legacy total sample"
+        );
+        assert!(output.contains("route_family=\"public\""));
+        assert!(output.contains("method=\"GET\""));
+        assert!(output.contains("operation=\"public\""));
+        let (phase_sums, total) = assert_terminal_request_timing(&output);
+        let other_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "other")
+            .expect("other phase index");
+        for (index, phase_sum) in phase_sums.iter().enumerate() {
+            if index == other_index {
+                assert!(*phase_sum > 0.0, "health elapsed time must be retained");
+            } else {
+                assert_eq!(*phase_sum, 0.0, "health must not emit phase time");
+            }
+        }
+        assert!((phase_sums[other_index] - total).abs() <= 1e-9);
     }
 
     #[tokio::test]
@@ -2195,6 +2286,43 @@ mod tests {
         assert!(phase_sums[upstream_index] > 0.0);
     }
 
+    #[tokio::test]
+    async fn request_timing_scope_health_abort_is_terminal_once() {
+        let metrics = Arc::new(Metrics::new(None).expect("metrics"));
+        let entered = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let metrics = metrics.clone();
+            let entered = entered.clone();
+            async move {
+                let scope = RequestTimingScope::new(metrics, "/health", "GET");
+                REQUEST_TIMING_SCOPE
+                    .scope(scope, async move {
+                        entered.notify_one();
+                        std::future::pending::<()>().await;
+                    })
+                    .await;
+            }
+        });
+        entered.notified().await;
+        task.abort();
+        assert!(task.await.expect_err("aborted task").is_cancelled());
+
+        let output = metrics.gather_test_metrics();
+        assert_eq!(
+            output.matches("hikari_http_requests_total{").count(),
+            1,
+            "aborted health request must emit one terminal event"
+        );
+        assert!(output.contains("status_class=\"none\""));
+        assert!(output.contains("outcome=\"cancelled\""));
+        let (phase_sums, total) = assert_terminal_request_timing(&output);
+        let other_index = REQUEST_PHASES
+            .iter()
+            .position(|phase| *phase == "other")
+            .expect("other phase index");
+        assert!((phase_sums[other_index] - total).abs() <= 1e-9);
+    }
+
     #[test]
     fn request_timing_scope_disabled_recording_is_empty() {
         let metrics = Arc::new(Metrics::new_with_recording(None, false).expect("metrics"));
@@ -2211,7 +2339,8 @@ mod tests {
         for _ in 0..EVENT_QUEUE_CAPACITY {
             metrics.record_background("background_tasks", "success", "started");
         }
-        let scope = RequestTimingScope::new(metrics.clone(), "/api/tavily/search", "POST");
+        let scope = RequestTimingScope::new(metrics.clone(), "/health", "GET");
+        assert!(scope.phase_state.get().is_none());
         drop(scope);
         let output = String::from_utf8(metrics.gather().expect("gather")).expect("utf8");
         assert!(!output.contains("hikari_http_request_duration_seconds_count{"));
