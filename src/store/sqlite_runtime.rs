@@ -3473,16 +3473,57 @@ impl SqliteReadSnapshot {
 
     #[allow(dead_code)]
     pub(crate) async fn complete_query<T>(
-        self,
+        mut self,
         query_result: Result<T, sqlx::Error>,
     ) -> Result<T, ProxyError> {
-        let operation = self.operation;
-        match self.complete_native_read(query_result).await? {
-            SqliteCooperativeQueryOutcome::Completed(value) => Ok(value),
-            SqliteCooperativeQueryOutcome::DeadlineExceeded => Err(ProxyError::Deferred {
-                operation: operation.as_str(),
-                reason: "read_budget".to_string(),
-            }),
+        let rollback_result = sqlx::query("ROLLBACK").execute(&mut *self).await;
+        match (query_result, rollback_result) {
+            (Ok(value), Ok(_)) => {
+                let mut conn = self.conn.take().expect("SQLite read snapshot connection");
+                record_connection_cache_write_delta(
+                    &self.runtime,
+                    self.operation,
+                    self.cache_write_pages_start,
+                    &mut conn,
+                )
+                .await;
+                if let Err(restore_err) =
+                    restore_operation_connection(conn, self.restore_busy_timeout).await
+                {
+                    let err = ProxyError::Database(restore_err);
+                    self.runtime.record_error(
+                        self.operation,
+                        self.pool_wait,
+                        self.begin_wait,
+                        &err,
+                    );
+                    return Err(err);
+                }
+                self.runtime.record_success(
+                    self.operation,
+                    self.pool_wait,
+                    self.begin_wait,
+                    self.started_at.elapsed(),
+                    0,
+                );
+                Ok(value)
+            }
+            (Err(query_err), _) => {
+                let conn = self.conn.take().expect("SQLite read snapshot connection");
+                conn.detach().close().await.ok();
+                let err = ProxyError::Database(query_err);
+                self.runtime
+                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
+                Err(err)
+            }
+            (Ok(_), Err(rollback_err)) => {
+                let conn = self.conn.take().expect("SQLite read snapshot connection");
+                conn.detach().close().await.ok();
+                let err = ProxyError::Database(rollback_err);
+                self.runtime
+                    .record_error(self.operation, self.pool_wait, self.begin_wait, &err);
+                Err(err)
+            }
         }
     }
 
