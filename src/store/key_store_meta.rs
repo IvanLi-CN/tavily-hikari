@@ -1,18 +1,18 @@
 const META_KEY_HA_FULL_MASTER_NODE_ID_V1: &str = "ha_full_master_node_id_v1";
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 tokio::task_local! {
     static META_SELECT_COUNT: std::sync::Arc<std::sync::atomic::AtomicUsize>;
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 fn record_meta_select() {
     let _ = META_SELECT_COUNT.try_with(|count| {
         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 pub(crate) async fn with_meta_select_count<F, T>(
     count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     future: F,
@@ -21,32 +21,6 @@ where
     F: std::future::Future<Output = T>,
 {
     META_SELECT_COUNT.scope(count, future).await
-}
-
-#[cfg(test)]
-mod key_store_meta_tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn system_settings_load_uses_one_meta_select() {
-        let temp_dir = tempdir().expect("create temp directory");
-        let db_path = temp_dir.path().join("system-settings-one-meta-select.db");
-        let store = KeyStore::new(&db_path.to_string_lossy())
-            .await
-            .expect("create key store");
-        let select_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        with_meta_select_count(select_count.clone(), store.get_system_settings())
-            .await
-            .expect("load system settings");
-
-        assert_eq!(
-            select_count.load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "a complete system-settings load must execute one meta SELECT"
-        );
-    }
 }
 
 impl KeyStore {
@@ -97,7 +71,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         record_meta_select();
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(key)
@@ -125,7 +99,7 @@ impl KeyStore {
         }
         query.push(")");
 
-        #[cfg(test)]
+        #[cfg(any(test, debug_assertions))]
         record_meta_select();
         let rows = query
             .build_query_as::<(String, String)>()

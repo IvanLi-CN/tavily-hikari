@@ -688,3 +688,21 @@ impl KeyStore {
         self.set_admin_totp_failure_state(0, 0).await
     }
 }
+
+#[cfg(debug_assertions)]
+impl crate::TavilyProxy {
+    pub async fn get_system_settings_with_meta_select_count_for_test(
+        &self,
+    ) -> Result<(SystemSettings, usize), ProxyError> {
+        let select_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let settings = crate::store::with_meta_select_count(
+            select_count.clone(),
+            self.key_store.get_system_settings(),
+        )
+        .await?;
+        Ok((
+            settings,
+            select_count.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+}

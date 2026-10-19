@@ -19,11 +19,15 @@ use super::upstream_support_and_manual_jobs::*;
             .await
             .expect("persist system settings");
 
-        let next = proxy
-            .get_system_settings()
+        let (next, meta_select_count) = proxy
+            .get_system_settings_with_meta_select_count_for_test()
             .await
             .expect("load system settings after PUT");
         assert_eq!(next.request_rate_limit, updated.request_rate_limit);
+        assert_eq!(
+            meta_select_count, 1,
+            "a complete system-settings load must execute one meta SELECT"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 
