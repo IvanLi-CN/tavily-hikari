@@ -1,5 +1,28 @@
 const META_KEY_HA_FULL_MASTER_NODE_ID_V1: &str = "ha_full_master_node_id_v1";
 
+#[cfg(debug_assertions)]
+tokio::task_local! {
+    static META_SELECT_COUNT: std::sync::Arc<std::sync::atomic::AtomicUsize>;
+}
+
+#[cfg(debug_assertions)]
+fn record_meta_select() {
+    let _ = META_SELECT_COUNT.try_with(|count| {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(debug_assertions)]
+pub(crate) async fn with_meta_select_count<F, T>(
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    META_SELECT_COUNT.scope(count, future).await
+}
+
 impl KeyStore {
     pub(crate) async fn derive_upstream_project_id(
         &self,
@@ -48,11 +71,42 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
+        #[cfg(debug_assertions)]
+        record_meta_select();
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(key)
             .fetch_optional(&self.pool)
             .await
             .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn get_meta_values(
+        &self,
+        keys: &[&str],
+    ) -> Result<StdHashMap<String, String>, ProxyError> {
+        if keys.is_empty() {
+            return Ok(StdHashMap::new());
+        }
+
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT key, value FROM meta WHERE key IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for key in keys {
+                separated.push_bind(*key);
+            }
+        }
+        query.push(")");
+
+        #[cfg(debug_assertions)]
+        record_meta_select();
+        let rows = query
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(ProxyError::Database)?;
+        Ok(rows.into_iter().collect())
     }
 
     pub(crate) async fn get_meta_i64(&self, key: &str) -> Result<Option<i64>, ProxyError> {
