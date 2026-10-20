@@ -9,6 +9,7 @@ const DASHBOARD_ROLLUP_INTEGRITY_WRITE_TARGET: Duration = Duration::from_millis(
 const DASHBOARD_ROLLUP_INTEGRITY_WRITE_WARN: Duration = Duration::from_millis(250);
 const DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS: i64 = SECS_PER_DAY;
 const DASHBOARD_ROLLUP_INTEGRITY_STALLED_SECS: i64 = 2 * SECS_PER_HOUR;
+const DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_PROBE_SECS: i64 = SECS_PER_FIVE_MINUTES;
 pub(crate) const DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY: i64 = 5;
 const DASHBOARD_ROLLUP_REBALANCE_RECOVERY_VERSION: i64 = 1;
 
@@ -248,6 +249,9 @@ impl KeyStore {
             .fetch_optional(&mut *conn)
             .await?
             .unwrap_or_default();
+            let (blocked_range_count, blocked_range) = self
+                .dashboard_rollup_integrity_blocked_status(&mut conn)
+                .await?;
             let DashboardRollupIntegrityStateRow {
             last_verified_at,
             stalled_since,
@@ -299,7 +303,11 @@ impl KeyStore {
                 .unwrap_or(false)
             {
                 "degraded"
-            } else if unverified_bucket_count > 0 || audit_incomplete || last_verified_at.is_none() {
+            } else if blocked_range_count > 0
+                || unverified_bucket_count > 0
+                || audit_incomplete
+                || last_verified_at.is_none()
+            {
                 "repairing"
             } else {
                 "healthy"
@@ -312,6 +320,9 @@ impl KeyStore {
                     + hot_backlog_bucket_count
                     + history_backlog_bucket_count
                     + recovery_backlog_bucket_count,
+                blocked_reason: blocked_range.as_ref().map(|(reason, _)| reason.clone()),
+                next_probe_at: blocked_range.map(|(_, next_probe_at)| next_probe_at),
+                blocked_range_count,
             })
         }
         .await;
@@ -321,58 +332,6 @@ impl KeyStore {
             (Err(err), _) => Err(err),
             (Ok(_), Err(err)) => Err(err),
         }
-    }
-
-    pub(crate) async fn run_dashboard_rollup_integrity_slice(
-        &self,
-    ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
-        let now = self.backend_time.now_ts();
-        self.ensure_dashboard_rollup_integrity_state(now).await?;
-        self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
-        // Materialize newly due priority work before selecting the next durable page.
-        // Existing hot and GC pages keep their checkpoints and outrank ordinary work.
-        if self.dashboard_rollup_integrity_hot_work_due(now).await?
-            || self.dashboard_rollup_integrity_gc_work_due().await?
-        {
-            self.create_next_dashboard_rollup_integrity_work_item(now)
-                .await?;
-        }
-        if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
-            return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
-                .await;
-        }
-        if self.dashboard_rollup_integrity_seal_verification_due(now).await? {
-            self.verify_next_dashboard_rollup_daily_seal(now).await?;
-            self.mark_dashboard_rollup_integrity_seal_attempt(now).await?;
-            if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
-                return self
-                    .process_dashboard_rollup_integrity_work_item(item, now, None, false)
-                    .await;
-            }
-        }
-        if let Some(item) = self
-            .create_next_dashboard_rollup_integrity_work_item(now)
-            .await?
-        {
-            return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
-                .await;
-        }
-        if let Some(item) = self
-            .create_next_dashboard_rollup_rebalance_recovery_work_item(now)
-            .await?
-        {
-            return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
-                .await;
-        }
-        self.complete_dashboard_rollup_rebalance_recovery_if_ready(now)
-            .await?;
-        self.mark_dashboard_rollup_integrity_success(now, 60).await?;
-        Ok(DashboardRollupIntegritySlice::Verified {
-            next_delay_secs: 60,
-        })
     }
 
     pub(crate) async fn prepare_request_statistics_recovery_target(
@@ -3219,20 +3178,6 @@ impl KeyStore {
         )
     }
 
-    async fn block_request_log_gc_for_day(
-        &self,
-        day_start: i64,
-        reason: &'static str,
-    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
-        self.enqueue_dashboard_rollup_integrity_day_reaudit(
-            day_start,
-            self.backend_time.now_ts(),
-            true,
-        )
-        .await?;
-        Ok(DashboardRollupRequestLogGcDecision::Blocked { day_start, reason })
-    }
-
     pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision(
         &self,
         threshold: i64,
@@ -3494,7 +3439,20 @@ impl KeyStore {
                 | "source_changed"
                 | "deleted_source_baseline_unavailable"),
             } => self.block_request_log_gc_for_day(day_start, reason).await,
+            DashboardRollupRequestLogGcDecision::Allowed {
+                cutoff,
+                guard: Some(guard),
+            } => {
+                self.clear_dashboard_rollup_integrity_blocked_range(guard.day_start)
+                    .await?;
+                Ok(DashboardRollupRequestLogGcDecision::Allowed {
+                    cutoff,
+                    guard: Some(guard),
+                })
+            }
             decision => Ok(decision),
         }
     }
 }
+
+include!("key_store_dashboard_rollup_integrity_blocked.rs");
