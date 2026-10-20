@@ -869,10 +869,19 @@ pub(crate) async fn open_sqlite_pool_with_observability(
         .min_connections(1)
         .max_connections(attach_plan.max_connections);
     if let Some(observability_database_path) = attach_plan.target_path {
+        let core_database_path = database_path.to_string();
         pool_options = pool_options.after_connect(move |conn, _meta| {
+            let core_database_path = core_database_path.clone();
             let observability_database_path = observability_database_path.clone();
             Box::pin(async move {
                 attach_observability_database(conn, &observability_database_path).await?;
+                configure_observability_journal_mode(
+                    conn,
+                    &core_database_path,
+                    &observability_database_path,
+                    read_only,
+                )
+                .await?;
                 Ok(())
             })
         });
@@ -1002,11 +1011,20 @@ pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
         .min_connections(1)
         .max_connections(max_connections);
     if let Some(observability_database_path) = observability_database_path {
+        let core_database_path = core_database_path.to_string();
         let observability_database_path = observability_database_path.to_string();
         pool_options = pool_options.after_connect(move |conn, _meta| {
+            let core_database_path = core_database_path.clone();
             let observability_database_path = observability_database_path.clone();
             Box::pin(async move {
                 attach_observability_database(conn, &observability_database_path).await?;
+                configure_observability_journal_mode(
+                    conn,
+                    &core_database_path,
+                    &observability_database_path,
+                    read_only,
+                )
+                .await?;
                 Ok(())
             })
         });
@@ -1184,6 +1202,27 @@ async fn attach_observability_database(
         database_path.replace('\'', "''")
     );
     conn.execute(attach_sql.as_str()).await?;
+    Ok(())
+}
+
+async fn configure_observability_journal_mode(
+    conn: &mut sqlx::SqliteConnection,
+    core_database_path: &str,
+    observability_database_path: &str,
+    read_only: bool,
+) -> Result<(), sqlx::Error> {
+    if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode = WAL")
+        .fetch_one(&mut *conn)
+        .await?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(sqlx::Error::Protocol(format!(
+            "observability sidecar journal mode is {journal_mode:?}, expected WAL"
+        )));
+    }
     Ok(())
 }
 

@@ -89,6 +89,13 @@ pub async fn connect_sqlite_pool(
                 .await?
                 {
                     attach_observability(conn, &target_path).await?;
+                    configure_observability_journal_mode(
+                        conn,
+                        &core_database_path,
+                        &target_path,
+                        read_only,
+                    )
+                    .await?;
                 }
                 Ok(())
             })
@@ -120,6 +127,13 @@ pub async fn connect_immediate_sqlite_connection(
         .await?
     {
         attach_observability(&mut connection, &target_path).await?;
+        configure_observability_journal_mode(
+            &mut connection,
+            &layout.core_database_path,
+            &target_path,
+            false,
+        )
+        .await?;
     }
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut connection)
@@ -172,6 +186,36 @@ async fn attach_observability(
     );
     connection.execute(attach_sql.as_str()).await?;
     Ok(())
+}
+
+async fn configure_observability_journal_mode(
+    connection: &mut SqliteConnection,
+    core_database_path: &str,
+    observability_database_path: &str,
+    read_only: bool,
+) -> Result<(), sqlx::Error> {
+    if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode = WAL")
+        .fetch_one(&mut *connection)
+        .await?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(sqlx::Error::Protocol(format!(
+            "observability sidecar journal mode is {journal_mode:?}, expected WAL"
+        )));
+    }
+    Ok(())
+}
+
+fn sqlite_paths_match(lhs: &str, rhs: &str) -> bool {
+    let lhs_path = Path::new(lhs);
+    let rhs_path = Path::new(rhs);
+    match (lhs_path.canonicalize(), rhs_path.canonicalize()) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => lhs == rhs,
+    }
 }
 
 fn sqlite_sidecar_path(database_path: &str, file_name: &str) -> String {
