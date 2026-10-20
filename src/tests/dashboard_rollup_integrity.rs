@@ -2797,4 +2797,74 @@ async fn integrity_gc_migrates_legacy_reaudit_without_resetting_its_cursor() {
     let marked: (i64, i64) = sqlx::query_as("SELECT cursor, gc_blocking FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?")
         .bind(day).fetch_one(&reopened.key_store.pool).await.expect("read idempotent registration");
     assert_eq!(marked, (cursor, 1));
+    let blocked: (String, i64, i64) = sqlx::query_as(
+        "SELECT reason, next_probe_at, probe_generation FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+    )
+    .bind(day)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("read persisted blocked range");
+    assert_eq!(blocked.0, "reaudit_pending");
+    assert!(blocked.1 >= now + SECS_PER_FIVE_MINUTES);
+    assert_eq!(blocked.2, 0);
+    let status = reopened
+        .key_store
+        .dashboard_rollup_integrity_status()
+        .await
+        .expect("read blocked integrity status");
+    assert_eq!(status.blocked_reason.as_deref(), Some("reaudit_pending"));
+    assert_eq!(status.blocked_range_count, 1);
+    assert_eq!(status.next_probe_at, Some(blocked.1));
+}
+
+#[tokio::test]
+async fn blocked_integrity_range_probe_is_reserved_for_five_minutes() {
+    let db_path = temp_db_path("integrity-blocked-range-probe");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create blocked-range fixture");
+    let now = proxy.backend_time().now_ts();
+    let day_start = local_day_bucket_start_utc_ts(now - 3 * SECS_PER_DAY);
+    let day_end = next_local_day_start_utc_ts(day_start);
+    sqlx::query(
+        r#"INSERT INTO dashboard_rollup_integrity_blocked_ranges (
+               day_start, day_end, reason, next_probe_at, source_fence,
+               source_revision, probe_generation, updated_at
+           ) VALUES (?, ?, 'source_baseline', ?, NULL, 0, 0, ?)"#,
+    )
+    .bind(day_start)
+    .bind(day_end)
+    .bind(now - 1)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due blocked range");
+
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("claim due blocked range");
+    let first: (i64, i64) = sqlx::query_as(
+        "SELECT next_probe_at, probe_generation FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read reserved probe");
+    assert!(first.0 >= now + SECS_PER_FIVE_MINUTES);
+    assert_eq!(first.1, 1);
+
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("skip not-yet-due blocked range");
+    let second_generation: i64 = sqlx::query_scalar(
+        "SELECT probe_generation FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read skipped probe");
+    assert_eq!(second_generation, 1);
 }

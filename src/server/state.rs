@@ -16,6 +16,16 @@ pub(crate) struct AppState {
     remote_attempt_admission: Arc<RemoteAttemptAdmissionController>,
 }
 
+type DashboardRollupIntegritySignature = (
+    String,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    Option<String>,
+    Option<i64>,
+    i64,
+);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DashboardOverviewFreshness {
     summary: [i64; 10],
@@ -23,7 +33,7 @@ struct DashboardOverviewFreshness {
     summary_window_starts: [i64; 3],
     dashboard_rollup_signature: [i64; 19],
     pending_dashboard_rollup_signature: [i64; 10],
-    rollup_integrity: (String, Option<i64>, Option<i64>, i64),
+    rollup_integrity: DashboardRollupIntegritySignature,
     dashboard_api_key_lifecycle_signature: [i64; 3],
     dashboard_quarantine_lifecycle_signature: [i64; 3],
     dashboard_exhausted_lifecycle_signature: [i64; 3],

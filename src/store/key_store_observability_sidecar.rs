@@ -747,6 +747,26 @@ impl KeyStore {
             .execute(pool)
             .await?;
         }
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_integrity_blocked_ranges (
+                day_start INTEGER PRIMARY KEY,
+                day_end INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                next_probe_at INTEGER NOT NULL,
+                source_fence INTEGER,
+                source_revision INTEGER,
+                probe_generation INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_dashboard_rollup_integrity_blocked_probe
+               ON dashboard_rollup_integrity_blocked_ranges(next_probe_at ASC, day_start ASC)"#,
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

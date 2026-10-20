@@ -1520,6 +1520,9 @@ pub struct DashboardRollupIntegrityStatus {
     pub last_verified_at: Option<i64>,
     pub next_attempt_at: Option<i64>,
     pub unverified_bucket_count: i64,
+    pub blocked_reason: Option<String>,
+    pub next_probe_at: Option<i64>,
+    pub blocked_range_count: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
