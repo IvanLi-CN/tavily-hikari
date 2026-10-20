@@ -1840,6 +1840,12 @@ async fn request_log_gc_preserves_deleted_source_contribution_after_a_late_updat
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("create proxy");
+    // Keep this seal regression focused on integrity progress rather than the
+    // first lazy maintenance-pool admission under hosted-runner load.
+    proxy
+        .prewarm_admin_alerts_cache_capacity()
+        .await
+        .expect("prewarm dashboard integrity capacity");
     let now = proxy.backend_time().now_ts();
     let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
     let threshold = day + 2 * SECS_PER_DAY;
