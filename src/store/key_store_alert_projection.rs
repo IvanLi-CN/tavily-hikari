@@ -1276,23 +1276,37 @@ impl KeyStore {
             .begin_read_snapshot(SqliteOperation::AlertProjection)
             .await?;
         let result = async {
-            let source_generation = sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(SUM(generation), 0) FROM observability.dashboard_alert_projection_state",
-            )
-            .fetch_one(&mut *snapshot)
-            .await?;
-            let payload = sqlx::query_as::<_, (i64, String)>(
-                r#"SELECT source_generation, summary_json
-                     FROM observability.dashboard_alert_projection_recent_summaries
-                    WHERE window_hours = ?"#,
-            )
-            .bind(window_hours)
-            .fetch_optional(&mut *snapshot)
-            .await?;
-            Ok::<_, sqlx::Error>((source_generation, payload))
+            let (source_generation, payload_generation, payload_json) =
+                sqlx::query_as::<_, (i64, Option<i64>, Option<String>)>(
+                    r#"SELECT state.source_generation,
+                              summary.source_generation,
+                              summary.summary_json
+                         FROM (
+                             SELECT COALESCE(SUM(generation), 0) AS source_generation
+                               FROM observability.dashboard_alert_projection_state
+                         ) AS state
+                         LEFT JOIN observability.dashboard_alert_projection_recent_summaries AS summary
+                           ON summary.window_hours = ?"#,
+                )
+                .bind(window_hours)
+                .fetch_one(&mut *snapshot)
+                .await?;
+            Ok::<_, sqlx::Error>((
+                source_generation,
+                payload_generation.zip(payload_json),
+            ))
         }
         .await;
-        let (source_generation, payload) = snapshot.complete_query(result).await?;
+        let outcome = snapshot.complete_native_read(result).await?;
+        let (source_generation, payload) = match outcome {
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(value) => value,
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                return Err(ProxyError::Deferred {
+                    operation: "alert_projection",
+                    reason: "read_budget".to_string(),
+                });
+            }
+        };
         let summary = payload
             .map(|(source_generation, payload)| {
                 serde_json::from_str(&payload).map_err(|err| {

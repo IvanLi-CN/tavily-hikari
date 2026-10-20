@@ -2045,20 +2045,19 @@ impl SqliteRuntime {
                     return Err(err);
                 }
             };
-        let cooperative_run_deadline = if matches!(
-            operation,
+        let cooperative_run_deadline = match operation {
             SqliteOperation::AdminAlertsRead
-                | SqliteOperation::AdminAlertsCacheWarm
-                | SqliteOperation::DashboardQuotaRead
-        ) {
-            let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
-            let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
-            handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
-                Instant::now() < deadline
-            });
-            Some(deadline)
-        } else {
-            None
+            | SqliteOperation::AdminAlertsCacheWarm
+            | SqliteOperation::DashboardQuotaRead
+            | SqliteOperation::AlertProjection => {
+                let deadline = Instant::now() + ADMIN_ALERTS_READ_RUN_BUDGET;
+                let mut handle = conn.lock_handle().await.map_err(ProxyError::Database)?;
+                handle.set_progress_handler(ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS, move || {
+                    Instant::now() < deadline
+                });
+                Some(deadline)
+            }
+            _ => None,
         };
         let cache_write_pages_start = connection_cache_write_pages(&mut conn).await;
         Ok(SqliteOperationConnection {
@@ -2109,8 +2108,9 @@ impl SqliteRuntime {
                 | SqliteOperation::AdminAlertsRead
                 | SqliteOperation::AdminAlertsCacheWarm
                 | SqliteOperation::DashboardQuotaRead
+                | SqliteOperation::AlertProjection
         ) {
-            // Admin privacy refreshes are detached from the HTTP budget. Its
+            // These reads are detached from the caller's future budget. Their
             // connection-local busy timeout is the bounded defer mechanism;
             // cancelling this future would leave a physical connection in an
             // unknown transaction state and turn discard into normal flow.
@@ -2168,6 +2168,10 @@ impl SqliteRuntime {
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
             SqliteOperation::DashboardQuotaRead => Some((
+                ADMIN_ALERTS_READ_RUN_BUDGET,
+                ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
+            )),
+            SqliteOperation::AlertProjection => Some((
                 ADMIN_ALERTS_READ_RUN_BUDGET,
                 ADMIN_ALERTS_READ_PROGRESS_HANDLER_OPS,
             )),
@@ -3085,6 +3089,11 @@ pub(crate) struct SqliteOperationConnection {
 }
 
 impl SqliteOperationConnection {
+    #[cfg(test)]
+    pub(crate) fn expire_cooperative_run_deadline_for_test(&mut self) {
+        self.cooperative_run_deadline = Some(Instant::now());
+    }
+
     pub(crate) async fn complete_query<T>(
         mut self,
         query_result: Result<T, sqlx::Error>,
@@ -3462,6 +3471,7 @@ impl SqliteReadSnapshot {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn complete_query<T>(
         mut self,
         query_result: Result<T, sqlx::Error>,
