@@ -235,6 +235,15 @@ impl KeyStore {
         &self,
         day_start: i64,
     ) -> Result<(), ProxyError> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?)",
+        )
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        if exists == 0 {
+            return Ok(());
+        }
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
         let result = sqlx::query(
             "DELETE FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
