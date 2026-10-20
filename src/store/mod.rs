@@ -841,6 +841,21 @@ pub(crate) async fn open_sqlite_pool_with_observability(
     create_if_missing: bool,
     read_only: bool,
 ) -> Result<SqlitePool, ProxyError> {
+    open_sqlite_pool_with_observability_configured(
+        database_path,
+        observability_database_path,
+        create_if_missing,
+        read_only,
+    )
+    .await
+}
+
+async fn open_sqlite_pool_with_observability_configured(
+    database_path: &str,
+    observability_database_path: Option<&str>,
+    create_if_missing: bool,
+    read_only: bool,
+) -> Result<SqlitePool, ProxyError> {
     let options = sqlite_connect_options(
         database_path,
         create_if_missing,
@@ -869,19 +884,10 @@ pub(crate) async fn open_sqlite_pool_with_observability(
         .min_connections(1)
         .max_connections(attach_plan.max_connections);
     if let Some(observability_database_path) = attach_plan.target_path {
-        let core_database_path = database_path.to_string();
         pool_options = pool_options.after_connect(move |conn, _meta| {
-            let core_database_path = core_database_path.clone();
             let observability_database_path = observability_database_path.clone();
             Box::pin(async move {
                 attach_observability_database(conn, &observability_database_path).await?;
-                configure_observability_journal_mode(
-                    conn,
-                    &core_database_path,
-                    &observability_database_path,
-                    read_only,
-                )
-                .await?;
                 Ok(())
             })
         });
@@ -968,6 +974,16 @@ async fn resolve_observability_attach_plan(
         },
     )
     .await?;
+    if let Some(target_path) = target_path.as_deref() {
+        configure_observability_journal_mode(
+            target_path,
+            core_database_path,
+            read_only,
+            SQLITE_BUSY_TIMEOUT_DEFAULT,
+        )
+        .await
+        .map_err(ProxyError::Database)?;
+    }
     Ok(ObservabilityAttachPlan {
         target_path,
         max_connections: default_max_connections,
@@ -1011,23 +1027,25 @@ pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
         .min_connections(1)
         .max_connections(max_connections);
     if let Some(observability_database_path) = observability_database_path {
-        let core_database_path = core_database_path.to_string();
         let observability_database_path = observability_database_path.to_string();
         pool_options = pool_options.after_connect(move |conn, _meta| {
-            let core_database_path = core_database_path.clone();
             let observability_database_path = observability_database_path.clone();
             Box::pin(async move {
                 attach_observability_database(conn, &observability_database_path).await?;
-                configure_observability_journal_mode(
-                    conn,
-                    &core_database_path,
-                    &observability_database_path,
-                    read_only,
-                )
-                .await?;
                 Ok(())
             })
         });
+    }
+
+    if let Some(observability_database_path) = observability_database_path {
+        configure_observability_journal_mode(
+            observability_database_path,
+            core_database_path,
+            read_only,
+            busy_timeout,
+        )
+        .await
+        .map_err(ProxyError::Database)?;
     }
 
     let forced_context = sqlite_runtime_log_context(
@@ -1205,24 +1223,41 @@ async fn attach_observability_database(
     Ok(())
 }
 
-async fn configure_observability_journal_mode(
-    conn: &mut sqlx::SqliteConnection,
-    core_database_path: &str,
+pub(crate) async fn configure_observability_journal_mode(
     observability_database_path: &str,
+    core_database_path: &str,
     read_only: bool,
+    busy_timeout: Duration,
 ) -> Result<(), sqlx::Error> {
     if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
         return Ok(());
     }
 
-    let journal_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode = WAL")
-        .fetch_one(&mut *conn)
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(observability_database_path)
+        .create_if_missing(!read_only)
+        .read_only(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(busy_timeout);
+    let mut sidecar = SqliteConnection::connect_with(&options).await?;
+    let current_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+        .fetch_one(&mut sidecar)
         .await?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
         return Err(sqlx::Error::Protocol(format!(
             "observability sidecar journal mode is {journal_mode:?}, expected WAL"
         )));
     }
+    sidecar.close().await?;
     Ok(())
 }
 

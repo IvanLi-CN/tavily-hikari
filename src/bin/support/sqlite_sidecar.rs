@@ -69,34 +69,35 @@ pub async fn connect_sqlite_pool(
         options = options.journal_mode(SqliteJournalMode::Wal);
     }
 
-    let core_database_path = layout.core_database_path.clone();
-    let observability_database_path = layout.observability_database_path.clone();
+    let mut setup_connection = SqliteConnection::connect_with(&options).await?;
+    let target_path =
+        if let Some(observability_database_path) = layout.observability_database_path.as_deref() {
+            select_observability_attach_path(
+                &mut setup_connection,
+                &layout.core_database_path,
+                observability_database_path,
+                create_if_missing,
+                read_only,
+            )
+            .await?
+        } else {
+            None
+        };
+    setup_connection.close().await?;
+    if let Some(target_path) = target_path.as_deref() {
+        configure_observability_journal_mode(target_path, &layout.core_database_path, read_only)
+            .await?;
+    }
+
+    let observability_database_path = target_path;
     let mut pool_options = SqlitePoolOptions::new()
         .min_connections(1)
         .max_connections(max_connections);
     if let Some(observability_database_path) = observability_database_path {
         pool_options = pool_options.after_connect(move |conn, _meta| {
-            let core_database_path = core_database_path.clone();
             let observability_database_path = observability_database_path.clone();
             Box::pin(async move {
-                if let Some(target_path) = select_observability_attach_path(
-                    conn,
-                    &core_database_path,
-                    &observability_database_path,
-                    create_if_missing,
-                    read_only,
-                )
-                .await?
-                {
-                    attach_observability(conn, &target_path).await?;
-                    configure_observability_journal_mode(
-                        conn,
-                        &core_database_path,
-                        &target_path,
-                        read_only,
-                    )
-                    .await?;
-                }
+                attach_observability(conn, &observability_database_path).await?;
                 Ok(())
             })
         });
@@ -126,14 +127,9 @@ pub async fn connect_immediate_sqlite_connection(
         )
         .await?
     {
+        configure_observability_journal_mode(&target_path, &layout.core_database_path, false)
+            .await?;
         attach_observability(&mut connection, &target_path).await?;
-        configure_observability_journal_mode(
-            &mut connection,
-            &layout.core_database_path,
-            &target_path,
-            false,
-        )
-        .await?;
     }
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut connection)
@@ -189,23 +185,39 @@ async fn attach_observability(
 }
 
 async fn configure_observability_journal_mode(
-    connection: &mut SqliteConnection,
-    core_database_path: &str,
     observability_database_path: &str,
+    core_database_path: &str,
     read_only: bool,
 ) -> Result<(), sqlx::Error> {
     if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
         return Ok(());
     }
 
-    let journal_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode = WAL")
-        .fetch_one(&mut *connection)
+    let options = SqliteConnectOptions::new()
+        .filename(observability_database_path)
+        .create_if_missing(!read_only)
+        .read_only(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let mut sidecar = SqliteConnection::connect_with(&options).await?;
+    let current_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+        .fetch_one(&mut sidecar)
         .await?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
         return Err(sqlx::Error::Protocol(format!(
             "observability sidecar journal mode is {journal_mode:?}, expected WAL"
         )));
     }
+    sidecar.close().await?;
     Ok(())
 }
 
