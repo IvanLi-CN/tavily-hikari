@@ -887,6 +887,11 @@ async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
     )
     .await;
     let pool = connect_sqlite_test_pool(&db_str).await;
+    state
+        .proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let queued = state
         .proxy
         .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)

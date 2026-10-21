@@ -156,44 +156,15 @@ fn upstream_reconciliation_does_not_wait_for_db_execution_gate() {
 
 fn spawn_upstream_reconciliation_startup_resume(state: Arc<AppState>) {
     tokio::spawn(async move {
-        match state
+        let generation = state
             .proxy
-            .ensure_upstream_reconciliation_representative_job()
-            .await
-        {
-            Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
-            Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => tracing::debug!(
-                component = "reconciliation",
-                event = "startup_resume_enqueue_deferred",
-                defer_reason = "sqlite_contention",
-                retry_via = "stale_reaper",
-                err = %err,
-            ),
-            Err(err) => tracing::error!(
-                component = "reconciliation",
-                event = "startup_resume_enqueue_failed",
-                err = %err,
-            ),
-        }
-        match state
-            .proxy
-            .ensure_upstream_reconciliation_research_drain_job()
-            .await
-        {
-            Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
-            Err(err) if tavily_hikari::is_transient_sqlite_write_error(&err) => tracing::debug!(
-                component = "reconciliation_research_drain",
-                event = "startup_resume_enqueue_deferred",
-                defer_reason = "sqlite_contention",
-                retry_via = "stale_reaper",
-                err = %err,
-            ),
-            Err(err) => tracing::error!(
-                component = "reconciliation_research_drain",
-                event = "startup_resume_enqueue_failed",
-                err = %err,
-            ),
-        }
+            .mark_upstream_reconciliation_maintenance_dirty();
+        tracing::debug!(
+            component = "reconciliation",
+            event = "startup_resume_hint_published",
+            generation,
+            "startup reconciliation resume handed to the shared maintenance runtime"
+        );
     });
 }
 

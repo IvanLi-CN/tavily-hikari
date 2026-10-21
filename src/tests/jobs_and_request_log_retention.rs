@@ -31,6 +31,7 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         request_log_diagnostic_handoff: Mutex::new(Default::default()),
         user_debug_info_shared_cache: RwLock::new(std::collections::HashMap::new()),
         request_stats_coalescer: RequestStatsCoalescer::default(),
+        reconciliation_maintenance_hint: Arc::new(UpstreamReconciliationMaintenanceHint::default()),
         admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
         #[cfg(test)]
         forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),
@@ -325,7 +326,6 @@ async fn auth_token_logs_gc_runs_passive_checkpoint_after_deletes() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
-
 #[tokio::test]
 async fn auth_token_logs_gc_keeps_exact_configured_local_day_count() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
