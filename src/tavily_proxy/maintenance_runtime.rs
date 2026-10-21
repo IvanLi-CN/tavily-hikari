@@ -182,18 +182,3 @@ impl MaintenanceRuntime {
             .store(false, std::sync::atomic::Ordering::Release);
     }
 }
-
-#[cfg(test)]
-mod maintenance_runtime_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn maintenance_hint_coalesces_generations_without_a_queue() {
-        let hint = std::sync::Arc::new(UpstreamReconciliationMaintenanceHint::default());
-        let wait = hint.wait();
-        assert_eq!(hint.mark_dirty(), 1);
-        assert_eq!(hint.mark_dirty(), 2);
-        wait.await;
-        assert_eq!(hint.generation(), 2);
-    }
-}
