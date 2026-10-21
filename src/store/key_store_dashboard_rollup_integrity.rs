@@ -1645,6 +1645,10 @@ impl KeyStore {
             .await
         {
             Ok(true) => {
+                self.sqlite_runtime.record_deferred(
+                    SqliteOperation::DashboardIntegrityWrite,
+                    SqliteAdmissionDeferReason::SourceBaseline,
+                );
                 return Ok(DashboardRollupIntegritySlice::Deferred {
                     next_delay_secs,
                     reason: "deleted_source_baseline_unavailable",

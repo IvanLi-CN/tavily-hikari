@@ -1448,6 +1448,32 @@ pub(super) async fn spawn_proxy_server_with_dev_and_ha(
     dev_open_admin: bool,
     ha: tavily_hikari::HaRuntime,
 ) -> SocketAddr {
+    spawn_proxy_server_with_dev_and_ha_and_metrics(proxy, usage_base, dev_open_admin, ha, None)
+        .await
+}
+
+pub(super) async fn spawn_proxy_server_with_metrics(
+    proxy: TavilyProxy,
+    usage_base: String,
+    metrics: Arc<tavily_hikari::observability::Metrics>,
+) -> SocketAddr {
+    spawn_proxy_server_with_dev_and_ha_and_metrics(
+        proxy,
+        usage_base,
+        false,
+        tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        Some(metrics),
+    )
+    .await
+}
+
+async fn spawn_proxy_server_with_dev_and_ha_and_metrics(
+    proxy: TavilyProxy,
+    usage_base: String,
+    dev_open_admin: bool,
+    ha: tavily_hikari::HaRuntime,
+    metrics: Option<Arc<tavily_hikari::observability::Metrics>>,
+) -> SocketAddr {
     let state = Arc::new(AppState {
         proxy,
         static_dir: None,
@@ -1480,6 +1506,14 @@ pub(super) async fn spawn_proxy_server_with_dev_and_ha(
         .route("/api/tavily/usage", get(tavily_http_usage))
         .route("/api/tokens", post(create_token))
         .with_state(state);
+    let app = if let Some(metrics) = metrics {
+        app.layer(axum::middleware::from_fn(
+            tavily_hikari::observability::http_metrics_middleware_with_metrics,
+        ))
+        .layer(axum::Extension(metrics))
+    } else {
+        app
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

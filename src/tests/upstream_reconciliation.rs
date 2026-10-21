@@ -2344,13 +2344,18 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
         )
         .await
         .expect("defer mixed-key candidate at cooling key");
-    assert!(matches!(
-        outcome,
-        ClaimedReconciliationRunOutcome::Deferred {
-            reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
-            retry_at,
-        } if retry_at == now + 300
-    ));
+    assert!(
+        matches!(
+            outcome,
+            ClaimedReconciliationRunOutcome::Deferred {
+                reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
+                retry_at,
+            } if retry_at == now + 300
+        ),
+        "unexpected mixed-key outcome: outcome={outcome:?} now={now} healthy_hits={} cooling_hits={}",
+        healthy_hits.load(Ordering::SeqCst),
+        cooling_hits.load(Ordering::SeqCst)
+    );
     assert_eq!(healthy_hits.load(Ordering::SeqCst), 1);
     assert_eq!(cooling_hits.load(Ordering::SeqCst), 1);
     let work: (i64, i64, String) = sqlx::query_as(

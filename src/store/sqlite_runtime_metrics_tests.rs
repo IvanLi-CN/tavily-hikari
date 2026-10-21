@@ -1,4 +1,178 @@
 use super::*;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::str::FromStr;
+use std::sync::atomic::Ordering;
+
+impl SqliteRuntime {
+    #[cfg(test)]
+    pub(crate) fn deferred_count_for_test(
+        &self,
+        operation: SqliteOperation,
+        reason: SqliteAdmissionDeferReason,
+    ) -> u64 {
+        self.inner
+            .workload
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .operations
+            .get(&operation)
+            .and_then(|metrics| metrics.deferred_by_reason.get(&reason))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+async fn file_runtime(max_connections: u32) -> (tempfile::TempDir, SqliteRuntime) {
+    let directory = tempfile::tempdir().expect("create SQLite lock fixture directory");
+    let database_path = directory.path().join("runtime-boundary.db");
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", database_path.display()))
+        .expect("SQLite options")
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(max_connections)
+        .connect_with(options)
+        .await
+        .expect("open SQLite runtime boundary pool");
+    sqlx::query("CREATE TABLE lock_probe (id INTEGER PRIMARY KEY, value INTEGER)")
+        .execute(&pool)
+        .await
+        .expect("create SQLite lock fixture");
+    sqlx::query("INSERT INTO lock_probe (id, value) VALUES (1, 1)")
+        .execute(&pool)
+        .await
+        .expect("seed SQLite lock fixture");
+    (
+        directory,
+        SqliteRuntime::with_max_connections(pool, max_connections),
+    )
+}
+
+fn assert_typed_defer(
+    runtime: &SqliteRuntime,
+    operation: SqliteOperation,
+    reason: SqliteAdmissionDeferReason,
+    label: &str,
+) {
+    let window = runtime.inner.workload.lock().unwrap();
+    let metrics = &window.operations[&operation];
+    assert_eq!(metrics.errors, 0, "{label} must remain a typed defer");
+    assert_eq!(metrics.deferred, 1, "{label} defer count");
+    assert_eq!(
+        metrics.deferred_by_reason.get(&reason),
+        Some(&1),
+        "{label} defer reason",
+    );
+    assert!(
+        runtime
+            .inner
+            .last_contention_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some(),
+        "{label} must preserve writer-contention state",
+    );
+    assert!(
+        runtime
+            .inner
+            .contention_warning_active
+            .load(Ordering::Acquire),
+        "{label} must preserve the contention warning state",
+    );
+}
+
+#[tokio::test]
+async fn sqlite_runtime_contention_classification_respects_acquire_boundary() {
+    {
+        let (_directory, runtime) = file_runtime(1).await;
+        let held = runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect("hold the only runtime pool connection");
+        let error = runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect_err("runtime acquire must time out on an exhausted pool");
+        assert!(
+            matches!(error, ProxyError::Database(sqlx::Error::PoolTimedOut)),
+            "pool exhaustion must remain a typed PoolTimedOut, got {error}"
+        );
+        assert_typed_defer(
+            &runtime,
+            SqliteOperation::ScheduledJobControl,
+            SqliteAdmissionDeferReason::PoolPressure,
+            "pool acquire timeout",
+        );
+        drop(held);
+    }
+
+    {
+        let (_directory, runtime) = file_runtime(2).await;
+        let mut holder = runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect("acquire the BEGIN timeout lock holder");
+        let holder_transaction = holder
+            .begin_immediate()
+            .await
+            .expect("hold a real BEGIN IMMEDIATE transaction");
+        let error = runtime
+            .begin_immediate(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect_err("runtime BEGIN must time out behind the held writer");
+        assert!(
+            matches!(error, ProxyError::Database(sqlx::Error::PoolTimedOut)),
+            "BEGIN timeout must remain a typed PoolTimedOut, got {error}"
+        );
+        assert_typed_defer(
+            &runtime,
+            SqliteOperation::ScheduledJobControl,
+            SqliteAdmissionDeferReason::RecentContention,
+            "BEGIN timeout",
+        );
+        holder_transaction
+            .rollback()
+            .await
+            .expect("release the BEGIN timeout lock holder");
+    }
+
+    {
+        let (_directory, runtime) = file_runtime(2).await;
+        let mut holder = runtime
+            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .await
+            .expect("acquire the busy-query lock holder");
+        let holder_transaction = holder
+            .begin_immediate()
+            .await
+            .expect("hold a real SQLite write lock");
+        let mut contender = runtime
+            .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
+            .await
+            .expect("acquire the runtime busy-query contender");
+        let query_result = sqlx::query("UPDATE lock_probe SET value = 2 WHERE id = 1")
+            .execute(&mut *contender)
+            .await;
+        let error = contender
+            .complete_query(query_result)
+            .await
+            .expect_err("runtime query must observe the held SQLite writer");
+        assert!(
+            is_transient_sqlite_write_error(&error),
+            "SQLite busy/locked must remain transient, got {error}"
+        );
+        assert_typed_defer(
+            &runtime,
+            SqliteOperation::DashboardIntegrityWrite,
+            SqliteAdmissionDeferReason::RecentContention,
+            "SQLite busy/locked",
+        );
+        holder_transaction
+            .rollback()
+            .await
+            .expect("release the busy-query lock holder");
+    }
+}
 
 #[tokio::test]
 async fn workload_window_records_typed_admission_defers_without_statement_text() {
@@ -87,6 +261,72 @@ async fn workload_window_keeps_dashboard_quota_read_defers_out_of_alerts_warm_me
             .contains_key(&SqliteOperation::AdminAlertsCacheWarm),
         "Dashboard quota timeouts must not be attributed to canonical Alerts warming"
     );
+}
+
+#[test]
+fn deferred_reason_observability_keeps_blocking_causes_distinct() {
+    assert_eq!(
+        SqliteAdmissionDeferReason::CoverageReadiness.observability_as_str(),
+        "coverage_readiness"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::SourceBaseline.observability_as_str(),
+        "source_baseline"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::QueryDeadline.observability_as_str(),
+        "native_query_deadline"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::PoolPressure.observability_as_str(),
+        "pool_pressure"
+    );
+    assert_eq!(
+        SqliteAdmissionDeferReason::RecentContention.observability_as_str(),
+        "writer_contention"
+    );
+}
+
+#[tokio::test]
+async fn deferred_error_reason_mapping_does_not_mask_readiness_or_source_baseline() {
+    for (reason, expected) in [
+        (
+            "groups_build_in_progress",
+            SqliteAdmissionDeferReason::CoverageReadiness,
+        ),
+        (
+            "deleted_source_baseline_unavailable",
+            SqliteAdmissionDeferReason::SourceBaseline,
+        ),
+        ("read_budget", SqliteAdmissionDeferReason::QueryDeadline),
+        (
+            "native_query_deadline",
+            SqliteAdmissionDeferReason::QueryDeadline,
+        ),
+        (
+            "sqlite_contention",
+            SqliteAdmissionDeferReason::RecentContention,
+        ),
+        (
+            "writer_contention",
+            SqliteAdmissionDeferReason::RecentContention,
+        ),
+    ] {
+        let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+        let error = ProxyError::Deferred {
+            operation: "test_operation",
+            reason: reason.to_owned(),
+        };
+        runtime.record_deferred_error(SqliteOperation::RequestStatsFlush, &error);
+        let window = runtime.inner.workload.lock().unwrap();
+        assert_eq!(
+            window.operations[&SqliteOperation::RequestStatsFlush]
+                .deferred_by_reason
+                .get(&expected),
+            Some(&1)
+        );
+        drop(window);
+    }
 }
 
 #[tokio::test]

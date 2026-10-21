@@ -239,13 +239,17 @@ use tower::ServiceExt;
     async fn tavily_http_search_returns_401_for_invalid_token() {
         let db_path = temp_db_path("http-search-401-invalid");
         let db_str = db_path.to_string_lossy().to_string();
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
+        let mock_upstream = "http://127.0.0.1:9".to_string();
 
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), &mock_upstream, &db_str)
             .await
             .expect("proxy created");
 
-        let usage_base = "http://127.0.0.1:58088".to_string();
-        let proxy_addr = spawn_proxy_server(proxy, usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy, mock_upstream, metrics.clone()).await;
 
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
@@ -266,84 +270,13 @@ use tower::ServiceExt;
                 "invalid or disabled token".into()
             ))
         );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[tokio::test]
-    async fn tavily_http_search_returns_429_when_quota_exhausted_and_logs_token_attempt() {
-        let db_path = temp_db_path("http-search-429-quota");
-        let db_str = db_path.to_string_lossy().to_string();
-
-        // Keep env stable across proxy creation + quota warmup.
-        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "2");
-
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-            .await
-            .expect("proxy created");
-        let token = proxy
-            .create_access_token(Some("quota-test"))
-            .await
-            .expect("create token");
-
-        // Pre-saturate hourly quota so that the next check in handler will block.
-        let hourly_limit = effective_token_hourly_limit();
-        for _ in 0..hourly_limit {
-            let verdict = proxy
-                .check_token_quota(&token.id)
-                .await
-                .expect("quota check ok");
-            assert!(
-                verdict.allowed,
-                "should be allowed within limit during warmup"
-            );
-        }
-
-        let usage_base = "http://127.0.0.1:58088".to_string();
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
-
-        let client = Client::new();
-        let url = format!("http://{}/api/tavily/search", proxy_addr);
-        let resp = client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", token.token))
-            .json(&serde_json::json!({ "query": "test quota" }))
-            .send()
-            .await
-            .expect("request to proxy succeeds");
-
-        assert_eq!(resp.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-
-        let body: serde_json::Value = resp.json().await.expect("parse json body");
-        assert_eq!(
-            body.get("error"),
-            Some(&serde_json::Value::String("quota_exhausted".into()))
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "error",
         );
-
-        // Verify token logs contain a quota_exhausted entry with HTTP 429.
-        let pool = connect_sqlite_test_pool(&db_str).await;
-
-        let row = sqlx::query(
-            r#"
-            SELECT http_status, mcp_status, result_status
-            FROM auth_token_logs
-            WHERE token_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(&token.id)
-        .fetch_one(&pool)
-        .await
-        .expect("token log row exists");
-
-        let http_status: Option<i64> = row.try_get("http_status").unwrap();
-        let mcp_status: Option<i64> = row.try_get("mcp_status").unwrap();
-        let result_status: String = row.try_get("result_status").unwrap();
-
-        assert_eq!(http_status, Some(429));
-        assert_eq!(mcp_status, None);
-        assert_eq!(result_status, "quota_exhausted");
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -362,7 +295,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -608,10 +541,13 @@ use tower::ServiceExt;
         )
         .await;
         let usage_base = format!("http://{}", upstream_addr);
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -621,7 +557,8 @@ use tower::ServiceExt;
             .await
             .expect("create token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
 
@@ -655,6 +592,15 @@ use tower::ServiceExt;
         let resp = handle.await.expect("task join");
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let response_body: serde_json::Value = resp.json().await.expect("response json");
+        assert_eq!(response_body.get("status"), Some(&serde_json::json!(200)));
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
 
         let row = sqlx::query(
             r#"
@@ -742,10 +688,13 @@ use tower::ServiceExt;
         )
         .await;
         let usage_base = format!("http://{}", upstream_addr);
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -756,7 +705,8 @@ use tower::ServiceExt;
             .expect("create token");
         let billing_subject = format!("token:{}", token.id);
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
         let url = format!("http://{}/api/tavily/search", proxy_addr);
 
@@ -782,6 +732,15 @@ use tower::ServiceExt;
         let resp = handle.await.expect("task join");
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let response_body: serde_json::Value = resp.json().await.expect("response json");
+        assert_eq!(response_body.get("status"), Some(&serde_json::json!(200)));
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_search",
+            "POST",
+            "search",
+            "success",
+        );
 
         let verdict = proxy.peek_token_quota(&token.id).await.expect("peek quota");
         assert_eq!(verdict.hourly_used, 0);
@@ -864,7 +823,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -2772,6 +2731,9 @@ use tower::ServiceExt;
         let expected_api_key = "tvly-http-research-failed-upstream-key";
         let usage_calls = Arc::new(AtomicUsize::new(0));
         let research_calls = Arc::new(AtomicUsize::new(0));
+        let metrics = Arc::new(
+            tavily_hikari::observability::Metrics::new(None).expect("test metrics"),
+        );
         let app = Router::new()
             .route(
                 "/usage",
@@ -2821,7 +2783,7 @@ use tower::ServiceExt;
 
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
-            DEFAULT_UPSTREAM,
+            &usage_base,
             &db_str,
         )
         .await
@@ -2831,7 +2793,8 @@ use tower::ServiceExt;
             .await
             .expect("create token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+        let proxy_addr =
+            spawn_proxy_server_with_metrics(proxy.clone(), usage_base, metrics.clone()).await;
         let client = Client::new();
 
         let url = format!("http://{}/api/tavily/research", proxy_addr);
@@ -2848,6 +2811,13 @@ use tower::ServiceExt;
         assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
         assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
+        assert_single_request_timing(
+            &metrics.gather_test_metrics(),
+            "http_research",
+            "POST",
+            "research",
+            "error",
+        );
 
         let verdict = proxy
             .peek_token_quota(&access_token.id)

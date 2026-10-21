@@ -154,20 +154,34 @@ async fn wait_for_owned_finish_pause_for_test() {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SqliteAdmissionDeferReason {
     BulkBusy,
+    CoverageReadiness,
     ForegroundPressure,
     PoolPressure,
     RecentContention,
     QueryDeadline,
+    SourceBaseline,
+    Other,
 }
 
 impl SqliteAdmissionDeferReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::BulkBusy => "bulk_busy",
+            Self::CoverageReadiness => "coverage_readiness",
             Self::ForegroundPressure => "foreground_pressure",
             Self::PoolPressure => "pool_pressure",
             Self::RecentContention => "recent_contention",
             Self::QueryDeadline => "query_deadline",
+            Self::SourceBaseline => "source_baseline",
+            Self::Other => "other",
+        }
+    }
+
+    fn observability_as_str(self) -> &'static str {
+        match self {
+            Self::RecentContention => "writer_contention",
+            Self::QueryDeadline => "native_query_deadline",
+            reason => reason.as_str(),
         }
     }
 }
@@ -2621,11 +2635,26 @@ impl SqliteRuntime {
         let reason = match reason.as_str() {
             "foreground_pressure" => SqliteAdmissionDeferReason::ForegroundPressure,
             "pool_pressure" => SqliteAdmissionDeferReason::PoolPressure,
-            "recent_contention" => SqliteAdmissionDeferReason::RecentContention,
-            "query_deadline" | "read_budget" => SqliteAdmissionDeferReason::QueryDeadline,
-            // Generation fencing is a normal retry boundary rather than a
-            // database failure; keep it in the typed deadline/defer bucket.
-            _ => SqliteAdmissionDeferReason::QueryDeadline,
+            "query_deadline" | "native_query_deadline" | "read_budget" => {
+                SqliteAdmissionDeferReason::QueryDeadline
+            }
+            "recent_contention" | "sqlite_contention" | "writer_contention" | "sqlite_busy" => {
+                SqliteAdmissionDeferReason::RecentContention
+            }
+            _ if reason.contains("baseline") || reason.contains("source_") => {
+                SqliteAdmissionDeferReason::SourceBaseline
+            }
+            _ if reason.contains("coverage")
+                || reason.contains("projection")
+                || reason.contains("catalog")
+                || reason.contains("groups_")
+                || reason.contains("readiness")
+                || reason.contains("generation")
+                || reason.contains("payload") =>
+            {
+                SqliteAdmissionDeferReason::CoverageReadiness
+            }
+            _ => SqliteAdmissionDeferReason::Other,
         };
         self.record_deferred(operation, reason);
     }
@@ -2639,6 +2668,7 @@ impl SqliteRuntime {
     ) {
         let transient = is_transient_sqlite_write_error(err);
         let pool_timeout = matches!(err, ProxyError::Database(sqlx::Error::PoolTimedOut));
+        let acquire_timeout = pool_timeout && begin_wait.is_zero();
         let contention_entered = if transient {
             *self
                 .inner
@@ -2705,7 +2735,7 @@ impl SqliteRuntime {
                     SqliteOperation::ScheduledJobControl | SqliteOperation::HaOutboxGcWatchdog
                 ));
         let maintenance_defer_reason = maintenance_transient_defer.then_some(
-            if matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
+            if acquire_timeout || matches!(operation, SqliteOperation::MaintenanceCapacityWarm) {
                 SqliteAdmissionDeferReason::PoolPressure
             } else {
                 SqliteAdmissionDeferReason::RecentContention
@@ -2765,7 +2795,7 @@ impl SqliteRuntime {
             "success"
         };
         let reason = deferred
-            .map(SqliteAdmissionDeferReason::as_str)
+            .map(SqliteAdmissionDeferReason::observability_as_str)
             .unwrap_or(if error { "database" } else { "none" });
         // Emit operational telemetry before taking the workload mutex. The recorder is
         // bounded and in-memory, but it must never extend the SQLite critical section.
