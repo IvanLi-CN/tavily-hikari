@@ -3244,6 +3244,7 @@ impl SqliteOperationConnection {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn close_and_discard(mut self) -> Result<(), ProxyError> {
         let Some(mut conn) = self.conn.take() else {
             return Ok(());
