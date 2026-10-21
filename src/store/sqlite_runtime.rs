@@ -2615,35 +2615,24 @@ impl SqliteRuntime {
         operation: SqliteOperation,
         reason: SqliteAdmissionDeferReason,
     ) {
-        self.record(
-            operation,
-            Duration::ZERO,
-            Duration::ZERO,
-            Duration::ZERO,
-            0,
-            false,
-            false,
-            Some(reason),
-        );
+        let zero = Duration::ZERO;
+        self.record(operation, zero, zero, zero, 0, false, false, Some(reason));
     }
 
     fn record_deferred_error(&self, operation: SqliteOperation, error: &ProxyError) {
+        use SqliteAdmissionDeferReason::*;
         let ProxyError::Deferred { reason, .. } = error else {
             self.record_error(operation, Duration::ZERO, Duration::ZERO, error);
             return;
         };
         let reason = match reason.as_str() {
-            "foreground_pressure" => SqliteAdmissionDeferReason::ForegroundPressure,
-            "pool_pressure" => SqliteAdmissionDeferReason::PoolPressure,
-            "query_deadline" | "native_query_deadline" | "read_budget" => {
-                SqliteAdmissionDeferReason::QueryDeadline
-            }
+            "foreground_pressure" => ForegroundPressure,
+            "pool_pressure" => PoolPressure,
+            "query_deadline" | "native_query_deadline" | "read_budget" => QueryDeadline,
             "recent_contention" | "sqlite_contention" | "writer_contention" | "sqlite_busy" => {
-                SqliteAdmissionDeferReason::RecentContention
+                RecentContention
             }
-            _ if reason.contains("baseline") || reason.contains("source_") => {
-                SqliteAdmissionDeferReason::SourceBaseline
-            }
+            _ if reason.contains("baseline") || reason.contains("source_") => SourceBaseline,
             _ if reason.contains("coverage")
                 || reason.contains("projection")
                 || reason.contains("catalog")
@@ -2652,9 +2641,9 @@ impl SqliteRuntime {
                 || reason.contains("generation")
                 || reason.contains("payload") =>
             {
-                SqliteAdmissionDeferReason::CoverageReadiness
+                CoverageReadiness
             }
-            _ => SqliteAdmissionDeferReason::Other,
+            _ => Other,
         };
         self.record_deferred(operation, reason);
     }
