@@ -959,6 +959,16 @@ async fn resolve_observability_attach_plan(
         },
     )
     .await?;
+    if let Some(target_path) = target_path.as_deref() {
+        configure_observability_journal_mode(
+            target_path,
+            core_database_path,
+            read_only,
+            SQLITE_BUSY_TIMEOUT_DEFAULT,
+        )
+        .await
+        .map_err(ProxyError::Database)?;
+    }
     Ok(ObservabilityAttachPlan {
         target_path,
         max_connections: default_max_connections,
@@ -1010,6 +1020,17 @@ pub(crate) async fn open_sqlite_pool_forced_observability_with_busy_timeout(
                 Ok(())
             })
         });
+    }
+
+    if let Some(observability_database_path) = observability_database_path {
+        configure_observability_journal_mode(
+            observability_database_path,
+            core_database_path,
+            read_only,
+            busy_timeout,
+        )
+        .await
+        .map_err(ProxyError::Database)?;
     }
 
     let forced_context = sqlite_runtime_log_context(

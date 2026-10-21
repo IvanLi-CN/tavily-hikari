@@ -271,6 +271,13 @@ impl KeyStore {
         format!("{}-wal", self.database_path)
     }
 
+    fn observability_wal_path(&self) -> Option<String> {
+        self.observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
+            .map(|path| format!("{path}-wal"))
+    }
+
     pub(crate) async fn sqlite_db_stats(&self) -> Result<SqliteDbStats, ProxyError> {
         let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
             .fetch_one(&self.pool)
@@ -287,11 +294,25 @@ impl KeyStore {
         let wal_bytes = std::fs::metadata(self.sqlite_wal_path())
             .map(|meta| meta.len())
             .unwrap_or(0);
+        let observability_database_bytes = self
+            .observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let observability_wal_bytes = self
+            .observability_wal_path()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
         let reclaimable_bytes = freelist_count.max(0) as u64 * page_size.max(0) as u64;
         let total_pages = page_count.max(1) as f64;
         Ok(SqliteDbStats {
             database_bytes,
             wal_bytes,
+            observability_database_bytes,
+            observability_wal_bytes,
             page_size,
             page_count,
             freelist_count,
@@ -301,21 +322,85 @@ impl KeyStore {
     }
 
     pub(crate) async fn compact_sqlite_database(&self) -> Result<SqliteDbStats, ProxyError> {
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        sqlx::query("PRAGMA main.wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
+        if self
+            .observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
+            .is_some()
+        {
+            sqlx::query("PRAGMA observability.wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+        }
         sqlx::query("VACUUM").execute(&self.pool).await?;
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        sqlx::query("PRAGMA main.wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
+        if self
+            .observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
+            .is_some()
+        {
+            sqlx::query("PRAGMA observability.wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+        }
         self.sqlite_db_stats().await
     }
 
     pub(crate) async fn checkpoint_sqlite_wal_passive(&self) -> Result<(i64, i64, i64), ProxyError> {
-        sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)")
+        let (main, _) = self.checkpoint_sqlite_wal_passive_detailed().await?;
+        Ok((
+            i64::from(main.busy),
+            main.log_frames,
+            main.checkpointed_frames,
+        ))
+    }
+
+    pub(crate) async fn checkpoint_sqlite_wal_passive_detailed(
+        &self,
+    ) -> Result<
+        (
+            SqliteWalCheckpointStats,
+            Option<SqliteWalCheckpointStats>,
+        ),
+        ProxyError,
+    > {
+        let main = sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA main.wal_checkpoint(PASSIVE)")
             .fetch_one(&self.pool)
             .await
-            .map_err(ProxyError::Database)
+            .map(|(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
+                busy: busy != 0,
+                log_frames,
+                checkpointed_frames,
+            })
+            .map_err(ProxyError::Database)?;
+        let observability = self
+            .observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
+            .map(|_| async {
+                sqlx::query_as::<_, (i64, i64, i64)>(
+                    "PRAGMA observability.wal_checkpoint(PASSIVE)",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .map(|(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
+                    busy: busy != 0,
+                    log_frames,
+                    checkpointed_frames,
+                })
+                .map_err(ProxyError::Database)
+            });
+        let observability = match observability {
+            Some(future) => Some(future.await?),
+            None => None,
+        };
+        Ok((main, observability))
     }
 
     pub(crate) async fn scheduled_job_start(

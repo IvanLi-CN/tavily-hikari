@@ -2009,6 +2009,13 @@ async fn sqlite_db_stats_reports_reclaimable_shape() {
     assert!(stats.page_size > 0);
     assert!(stats.page_count > 0);
     assert!(stats.database_bytes > 0);
+    assert!(stats.observability_database_bytes > 0);
+    let (_, observability_checkpoint) = proxy
+        .key_store
+        .checkpoint_sqlite_wal_passive_detailed()
+        .await
+        .expect("checkpoint core and observability WALs");
+    assert!(observability_checkpoint.is_some());
     assert!(stats.reclaimable_ratio >= 0.0);
 
     let _ = std::fs::remove_file(&db_path);

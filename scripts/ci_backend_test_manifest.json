@@ -317,6 +317,8 @@
         "tests::proxy_affinity_and_summary::proxy_",
         "tests::request_rollup::proxy_",
         "tests::observability_and_lifecycle::observability_",
+        "tests::observability_and_lifecycle::writable_distinct_observability_sidecar_uses_wal",
+        "tests::observability_and_lifecycle::read_only_observability_sidecar_preserves_existing_journal_mode",
         "tests::request_rollup::observability_",
         "tests::maintenance_and_mcp_affinity::mcp_",
         "tests::observability_and_lifecycle::large_",

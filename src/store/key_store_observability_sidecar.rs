@@ -1,3 +1,41 @@
+pub(crate) async fn configure_observability_journal_mode(
+    observability_database_path: &str,
+    core_database_path: &str,
+    read_only: bool,
+    busy_timeout: Duration,
+) -> Result<(), sqlx::Error> {
+    if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
+        return Ok(());
+    }
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(observability_database_path)
+        .create_if_missing(!read_only)
+        .read_only(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(busy_timeout);
+    let mut sidecar = SqliteConnection::connect_with(&options).await?;
+    let current_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Err(sqlx::Error::Protocol(format!(
+            "observability sidecar journal mode is {journal_mode:?}, expected WAL"
+        )));
+    }
+    sidecar.close().await?;
+    Ok(())
+}
+
 struct ObservabilitySidecarDerivedRebuildReport {
     dropped_main_request_logs: bool,
     dropped_legacy_api_key_usage_buckets: bool,

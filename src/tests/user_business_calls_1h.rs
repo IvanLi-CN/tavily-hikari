@@ -35,7 +35,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
     let request_kind = TokenRequestKind::new("api:search", "API | search", None);
     let now = manual_clock.now_ts();
 
-    let request_log_success: i64 = sqlx::query_scalar(
+    let request_log_success = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             api_key_id,
@@ -51,14 +51,14 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             upstream_operation,
             created_at
         ) VALUES ('key-live-success', 'POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 10 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert success request log");
+    let request_log_success = request_log_success.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(
@@ -84,7 +84,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
         .await
         .expect("record success attempt");
 
-    let request_log_failure: i64 = sqlx::query_scalar(
+    let request_log_failure = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             api_key_id,
@@ -100,14 +100,14 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             upstream_operation,
             created_at
         ) VALUES ('key-live-failure', 'POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 5 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert failure request log");
+    let request_log_failure = request_log_failure.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(
@@ -133,7 +133,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
         .await
         .expect("record failure attempt");
 
-    let request_log_quota_exhausted: i64 = sqlx::query_scalar(
+    let request_log_quota_exhausted = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             api_key_id,
@@ -149,14 +149,14 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             upstream_operation,
             created_at
         ) VALUES (NULL, 'POST', '/api/tavily/search', 429, 429, 'quota_exhausted', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 2 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert quota exhausted request log");
+    let request_log_quota_exhausted = request_log_quota_exhausted.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(
@@ -182,7 +182,7 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
         .await
         .expect("record quota exhausted attempt");
 
-    let request_log_pre_upstream: i64 = sqlx::query_scalar(
+    let request_log_pre_upstream = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             api_key_id,
@@ -198,14 +198,14 @@ async fn user_business_calls_1h_summary_and_series_track_real_upstream_requests_
             upstream_operation,
             created_at
         ) VALUES (NULL, 'POST', '/api/tavily/search', 429, 429, 'blocked', 'api:search', 'API | search', 1, ?, NULL, ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert pre-upstream request log");
+    let request_log_pre_upstream = request_log_pre_upstream.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(
@@ -653,7 +653,7 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
     let request_kind = TokenRequestKind::new("api:search", "API | search", None);
     let now = manual_clock.now_ts();
 
-    let historical_request_log_id: i64 = sqlx::query_scalar(
+    let historical_request_log_id = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method,
@@ -668,14 +668,14 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
             upstream_operation,
             created_at
         ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 20 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert historical request log");
+    let historical_request_log_id = historical_request_log_id.last_insert_rowid();
 
     let initial_summary = proxy
         .user_dashboard_summary(&user.user_id, None)
@@ -702,7 +702,7 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
     .await
     .expect("initial background backfill should complete in time");
 
-    let live_request_log_id: i64 = sqlx::query_scalar(
+    let live_request_log_id = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method,
@@ -717,14 +717,14 @@ async fn user_business_calls_1h_backfill_preserves_live_events_after_snapshot_up
             upstream_operation,
             created_at
         ) VALUES ('POST', '/api/tavily/search', 500, 500, 'error', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 5 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert live request log");
+    let live_request_log_id = live_request_log_id.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(
@@ -815,7 +815,7 @@ async fn user_business_calls_1h_backfill_dedupes_same_request_log_event() {
     let request_kind = TokenRequestKind::new("api:search", "API | search", None);
     let now = manual_clock.now_ts();
 
-    let request_log_id: i64 = sqlx::query_scalar(
+    let request_log_id = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method,
@@ -830,14 +830,14 @@ async fn user_business_calls_1h_backfill_dedupes_same_request_log_event() {
             upstream_operation,
             created_at
         ) VALUES ('POST', '/api/tavily/search', 200, 200, 'success', 'api:search', 'API | search', 1, ?, 'http_search', ?)
-        RETURNING id
         "#,
     )
     .bind(&user.user_id)
     .bind(now - 6 * 60)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert request log");
+    let request_log_id = request_log_id.last_insert_rowid();
     manual_clock.set_now_ts(now);
     proxy
         .record_token_attempt_with_kind_request_log_metadata(

@@ -350,7 +350,9 @@ impl KeyStore {
         let source_mutation = self
             .request_stats_coalescer
             .begin_dashboard_rollup_source_mutation(created_at);
-        let request_log_id: i64 = sqlx::query_scalar(
+        // Finalize the write before the pooled connection is reused; an
+        // INSERT ... RETURNING statement can retain a stale sidecar snapshot.
+        let insert = sqlx::query(
             r#"
             INSERT INTO observability.request_logs (
                 api_key_id,
@@ -400,7 +402,6 @@ impl KeyStore {
                 ip_headers,
                 created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
             "#,
         )
         .bind(entry.key_id)
@@ -449,8 +450,9 @@ impl KeyStore {
         .bind(client_ip_trusted)
         .bind(ip_headers_json)
         .bind(created_at)
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await?;
+        let request_log_id = insert.last_insert_rowid();
         if entry.auth_token_id.is_some() {
             self.request_log_diagnostic_handoff.lock().await.insert(
                 request_log_id,
@@ -576,7 +578,9 @@ impl KeyStore {
                         _,
                     ) in prepared_for_write
                     {
-                        let request_log_id: i64 = sqlx::query_scalar(
+                        // Finalize the write before the receipt is handed to the
+                        // coalescer so another pooled connection sees the row.
+                        let insert = sqlx::query(
                             r#"
                             INSERT INTO observability.request_logs (
                                 auth_token_id, request_user_id, method, path, status_code, tavily_status_code,
@@ -588,7 +592,6 @@ impl KeyStore {
                                 fallback_reason, request_body, response_body, request_body_bytes,
                                 response_body_bytes, forwarded_headers, dropped_headers, created_at
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
-                            RETURNING id
                             "#,
                         )
                         .bind(entry.auth_token_id.as_deref())
@@ -617,8 +620,9 @@ impl KeyStore {
                         .bind(entry.request_body.len() as i64)
                         .bind(entry.response_body.len() as i64)
                         .bind(created_at)
-                        .fetch_one(&mut **tx)
+                        .execute(&mut **tx)
                         .await?;
+                        let request_log_id = insert.last_insert_rowid();
                         receipts.push((request_log_id, created_at));
                     }
                     Ok(receipts)
