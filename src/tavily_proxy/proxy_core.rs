@@ -562,6 +562,11 @@ impl TavilyProxy {
         token_request_limit.set_request_limit(system_settings.request_rate_limit);
         let forward_proxy_clients = forward_proxy::ForwardProxyClientPool::new()?;
         let ha_state_coalescer = HaStateCoalescer::default();
+        let maintenance_runtime = MaintenanceRuntime::new(
+            Arc::downgrade(&key_store),
+            key_store.reconciliation_maintenance_hint(),
+            backend_time.clone(),
+        );
         let proxy = Self {
             client: forward_proxy_clients.direct_client(),
             forward_proxy_clients,
@@ -605,6 +610,7 @@ impl TavilyProxy {
             user_rankings_cache: Arc::new(Mutex::new(UserRankingsCacheState::default())),
             analysis_pressure_cache: Arc::new(Mutex::new(AnalysisPressureCacheState::default())),
             ha_state_coalescer,
+            maintenance_runtime,
             background_task_owner: Arc::new(()),
             token_billing_locks: shared_token_billing_locks(),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -1489,6 +1495,27 @@ impl TavilyProxy {
             .store(false, Ordering::SeqCst);
         self.post_ready_serving_tasks_suppressed_logged
             .store(false, Ordering::SeqCst);
+        self.maintenance_runtime.stop_for_writable_tenure();
+    }
+
+    pub fn start_maintenance_runtime_for_writable_tenure(
+        &self,
+        worker_wake: Arc<tokio::sync::Notify>,
+    ) {
+        self.maintenance_runtime
+            .start_for_writable_tenure(worker_wake);
+    }
+
+    pub fn stop_maintenance_runtime_for_writable_tenure(&self) {
+        self.maintenance_runtime.stop_for_writable_tenure();
+    }
+
+    pub fn shutdown_maintenance_runtime(&self) {
+        self.maintenance_runtime.shutdown();
+    }
+
+    pub fn mark_upstream_reconciliation_maintenance_dirty(&self) -> u64 {
+        self.maintenance_runtime.mark_dirty()
     }
 
     pub fn claim_post_ready_serving_tasks_for_writable_tenure(
@@ -1964,17 +1991,7 @@ impl TavilyProxy {
         settings: &SystemSettings,
     ) -> Result<SystemSettings, ProxyError> {
         let updated = self.key_store.set_system_settings(settings).await?;
-        if let Err(err) = self
-            .key_store
-            .ensure_upstream_reconciliation_representative_job()
-            .await
-        {
-            tracing::debug!(
-                component = "reconciliation",
-                event = "settings_resume_enqueue_failed",
-                err = %err,
-            );
-        }
+        self.mark_upstream_reconciliation_maintenance_dirty();
         self.token_request_limit
             .set_request_limit(updated.request_rate_limit);
         Ok(updated)

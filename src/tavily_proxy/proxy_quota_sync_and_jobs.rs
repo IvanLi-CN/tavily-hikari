@@ -144,23 +144,33 @@ impl TavilyProxy {
         billing_subject: &str,
         research_request_id: Option<&str>,
     ) -> Result<Option<BusinessPeriod>, ProxyError> {
-        self.key_store
+        let result = self
+            .key_store
             .record_upstream_reconciliation_usage(
                 token_id,
                 key_id,
                 billing_subject,
                 research_request_id,
             )
-            .await
+            .await?;
+        if result.is_some() {
+            self.mark_upstream_reconciliation_maintenance_dirty();
+        }
+        Ok(result)
     }
 
     pub async fn mark_upstream_reconciliation_research_terminal(
         &self,
         request_id: &str,
     ) -> Result<bool, ProxyError> {
-        self.key_store
+        let changed = self
+            .key_store
             .mark_upstream_reconciliation_research_terminal(request_id)
-            .await
+            .await?;
+        if changed {
+            self.mark_upstream_reconciliation_maintenance_dirty();
+        }
+        Ok(changed)
     }
 
     pub async fn shadow_daily_reconciled_usage_for_accounts(

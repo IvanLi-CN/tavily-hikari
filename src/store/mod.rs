@@ -2748,6 +2748,7 @@ pub(crate) struct KeyStore {
     pub(crate) request_log_diagnostic_handoff: Mutex<RequestLogDiagnosticHandoff>,
     pub(crate) user_debug_info_shared_cache: RwLock<HashMap<String, UserDebugInfoSharedCacheEntry>>,
     pub(crate) request_stats_coalescer: RequestStatsCoalescer,
+    pub(crate) reconciliation_maintenance_hint: Arc<UpstreamReconciliationMaintenanceHint>,
     pub(crate) admin_heavy_read_semaphore: Semaphore,
     #[cfg(test)]
     pub(crate) forced_pending_claim_miss_log_ids: Mutex<HashSet<i64>>,
@@ -2789,6 +2790,12 @@ async fn wait_for_request_stats_test_pause_if_installed(
 }
 
 impl KeyStore {
+    pub(crate) fn reconciliation_maintenance_hint(
+        &self,
+    ) -> Arc<UpstreamReconciliationMaintenanceHint> {
+        self.reconciliation_maintenance_hint.clone()
+    }
+
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
     pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPostFlushPause {

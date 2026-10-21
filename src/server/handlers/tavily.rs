@@ -150,8 +150,6 @@ async fn record_rebalance_period_usage(
         .await
     {
         eprintln!("record upstream reconciliation usage failed: {err}");
-    } else {
-        maintenance_worker_wake_for_state(state.as_ref()).notify_one();
     }
 }
 
