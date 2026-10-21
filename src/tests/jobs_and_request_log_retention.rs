@@ -326,7 +326,6 @@ async fn auth_token_logs_gc_runs_passive_checkpoint_after_deletes() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
-
 #[tokio::test]
 async fn auth_token_logs_gc_keeps_exact_configured_local_day_count() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);

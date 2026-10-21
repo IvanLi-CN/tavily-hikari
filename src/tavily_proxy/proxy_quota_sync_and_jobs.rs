@@ -195,7 +195,6 @@ impl TavilyProxy {
             .await
     }
 
-
     pub async fn mark_upstream_reconciliation_enqueue_error_at(
         &self,
         timestamp: i64,
