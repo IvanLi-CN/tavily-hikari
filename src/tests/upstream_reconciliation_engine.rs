@@ -1779,6 +1779,10 @@ async fn reconciliation_projection_deadline_stops_a_run_before_remote_attempts()
     // Candidate selection performs the recent and backlog source reads first; interrupt the
     // following historical projection read while an eligible candidate is already present.
     proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
+    proxy
         .key_store
         .sqlite_runtime
         .force_cooperative_query_deadline_after_reads_for_test(2);

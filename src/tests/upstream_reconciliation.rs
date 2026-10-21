@@ -2329,6 +2329,13 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
         .await
         .expect("claim mixed-key representative")
         .expect("mixed-key representative is claimable");
+    // Keep this regression focused on key-scoped cooldown handling. The lazy
+    // maintenance pool can otherwise defer the run before either key is tried
+    // when this test shares a busy CI lane.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let outcome = proxy
         .run_upstream_reconciliation_once_claimed_outcome(
             &format!("http://{addr}"),
