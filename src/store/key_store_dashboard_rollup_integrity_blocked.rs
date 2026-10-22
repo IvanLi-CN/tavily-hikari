@@ -5,7 +5,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         self.ensure_dashboard_rollup_integrity_state(now).await?;
         self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
-        if let Some((day_start, day_end, probe_generation)) =
+        let claimed_probe_day_start = if let Some((day_start, day_end, probe_generation)) =
             self.claim_dashboard_rollup_integrity_probe(now).await?
         {
             self.enqueue_dashboard_rollup_integrity_day_reaudit(day_start, now, true)
@@ -18,33 +18,60 @@ impl KeyStore {
                 probe_generation,
                 "claimed a due blocked range for a bounded source probe"
             );
-        }
+            Some(day_start)
+        } else {
+            None
+        };
         if self.dashboard_rollup_integrity_hot_work_due(now).await?
             || self.dashboard_rollup_integrity_gc_work_due().await?
         {
-            self.create_next_dashboard_rollup_integrity_work_item(now)
+            self.create_next_dashboard_rollup_integrity_work_item(now, claimed_probe_day_start)
                 .await?;
         }
-        if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
+        if let Some(item) = self
+            .load_dashboard_rollup_integrity_work_item(now, claimed_probe_day_start)
+            .await?
+        {
             return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .process_dashboard_rollup_integrity_work_item(
+                    item,
+                    now,
+                    None,
+                    false,
+                    claimed_probe_day_start,
+                )
                 .await;
         }
         if self.dashboard_rollup_integrity_seal_verification_due(now).await? {
             self.verify_next_dashboard_rollup_daily_seal(now).await?;
             self.mark_dashboard_rollup_integrity_seal_attempt(now).await?;
-            if let Some(item) = self.load_dashboard_rollup_integrity_work_item(now).await? {
+            if let Some(item) = self
+                .load_dashboard_rollup_integrity_work_item(now, claimed_probe_day_start)
+                .await?
+            {
                 return self
-                    .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                    .process_dashboard_rollup_integrity_work_item(
+                        item,
+                        now,
+                        None,
+                        false,
+                        claimed_probe_day_start,
+                    )
                     .await;
             }
         }
         if let Some(item) = self
-            .create_next_dashboard_rollup_integrity_work_item(now)
+            .create_next_dashboard_rollup_integrity_work_item(now, claimed_probe_day_start)
             .await?
         {
             return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .process_dashboard_rollup_integrity_work_item(
+                    item,
+                    now,
+                    None,
+                    false,
+                    claimed_probe_day_start,
+                )
                 .await;
         }
         if let Some(item) = self
@@ -52,7 +79,13 @@ impl KeyStore {
             .await?
         {
             return self
-                .process_dashboard_rollup_integrity_work_item(item, now, None, false)
+                .process_dashboard_rollup_integrity_work_item(
+                    item,
+                    now,
+                    None,
+                    false,
+                    claimed_probe_day_start,
+                )
                 .await;
         }
         self.complete_dashboard_rollup_rebalance_recovery_if_ready(now)
@@ -140,6 +173,26 @@ impl KeyStore {
         .bind(now)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    async fn dashboard_rollup_integrity_blocked_range_probe_delay(
+        &self,
+        day_start: i64,
+        now: i64,
+        claimed_probe_day_start: Option<i64>,
+    ) -> Result<Option<i64>, ProxyError> {
+        if claimed_probe_day_start == Some(day_start) {
+            return Ok(None);
+        }
+        let next_probe_at: Option<i64> = sqlx::query_scalar(
+            "SELECT next_probe_at FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+        )
+        .bind(day_start)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(next_probe_at
+            .filter(|next_probe_at| *next_probe_at > now)
+            .map(|next_probe_at| next_probe_at.saturating_sub(now).max(1)))
     }
 
     async fn block_request_log_gc_for_day(
