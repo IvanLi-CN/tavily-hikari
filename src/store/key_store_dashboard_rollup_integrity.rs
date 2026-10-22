@@ -352,6 +352,9 @@ impl KeyStore {
             .dashboard_rollup_integrity_blocked_range_probe_delay(day_start, now, None)
             .await?
             .is_some()
+            && !self
+                .promote_dashboard_rollup_integrity_probe_on_source_change(day_start, now)
+                .await?
         {
             return self
                 .request_statistics_recovery_source_fence(day_start, 0)
@@ -782,7 +785,9 @@ impl KeyStore {
               AND range_start >= ? AND range_end <= ?
               AND NOT EXISTS (
                   SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
-                  WHERE blocked.day_start = ? AND blocked.next_probe_at > ?
+                  WHERE blocked.day_start = ?
+                    AND blocked.reason IN ('source_baseline', 'deleted_source_baseline_unavailable')
+                    AND blocked.next_probe_at > ?
               )
             ORDER BY range_start ASC
             LIMIT 1
@@ -1239,6 +1244,7 @@ impl KeyStore {
               AND NOT EXISTS (
                   SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
                   WHERE blocked.day_start = dashboard_rollup_integrity_day_reaudits.bucket_start
+                    AND blocked.reason IN ('source_baseline', 'deleted_source_baseline_unavailable')
                     AND blocked.next_probe_at > ?
                     AND (? IS NULL OR blocked.day_start != ?)
               )
@@ -1622,6 +1628,12 @@ impl KeyStore {
             .await
         {
             Ok(true) => {
+                self.persist_dashboard_rollup_integrity_blocked_range(
+                    day_start,
+                    "deleted_source_baseline_unavailable",
+                    false,
+                )
+                .await?;
                 self.sqlite_runtime.record_deferred(
                     SqliteOperation::DashboardIntegrityWrite,
                     SqliteAdmissionDeferReason::SourceBaseline,
@@ -3225,15 +3237,20 @@ impl KeyStore {
             .bind(now)
             .fetch_optional(&mut *conn)
             .await?;
-            if let Some(reason) = blocked_reason.map(|blocked_reason| match blocked_reason.as_str() {
-                "reaudit_pending" => "reaudit_pending",
-                "missing_seal" => "missing_seal",
-                "rollup_mismatch" => "rollup_mismatch",
-                "source_changed" => "source_changed",
-                "deleted_source_baseline_unavailable" => "deleted_source_baseline_unavailable",
-                _ => "blocked_range",
+            if let Some(reason) = blocked_reason.filter(|reason| {
+                matches!(
+                    reason.as_str(),
+                    "source_baseline" | "deleted_source_baseline_unavailable"
+                )
             }) {
-                return Ok(DashboardRollupRequestLogGcDecision::Blocked { day_start, reason });
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: if reason == "source_baseline" {
+                        "source_baseline"
+                    } else {
+                        "deleted_source_baseline_unavailable"
+                    },
+                });
             }
             let reaudit_pending: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending')",

@@ -175,6 +175,7 @@ impl KeyStore {
                   SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
                   WHERE blocked.day_start <= range_start
                     AND blocked.day_end > range_start
+                    AND blocked.reason IN ('source_baseline', 'deleted_source_baseline_unavailable')
                     AND blocked.next_probe_at > ?
                     AND (? IS NULL OR blocked.day_start != ?)
               )
@@ -287,7 +288,7 @@ impl KeyStore {
         now: i64,
     ) -> Result<Option<i64>, ProxyError> {
         Ok(sqlx::query_scalar(
-            "SELECT MIN(next_probe_at) FROM dashboard_rollup_integrity_blocked_ranges WHERE next_probe_at > ?",
+            "SELECT MIN(next_probe_at) FROM dashboard_rollup_integrity_blocked_ranges WHERE reason IN ('source_baseline', 'deleted_source_baseline_unavailable') AND next_probe_at > ?",
         )
         .bind(now)
         .fetch_one(&self.pool)
@@ -303,22 +304,97 @@ impl KeyStore {
         if claimed_probe_day_start == Some(day_start) {
             return Ok(None);
         }
-        let next_probe_at: Option<i64> = sqlx::query_scalar(
-            "SELECT next_probe_at FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+        let blocked: Option<(String, i64)> = sqlx::query_as(
+            "SELECT reason, next_probe_at FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
         )
         .bind(day_start)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(next_probe_at
-            .filter(|next_probe_at| *next_probe_at > now)
-            .map(|next_probe_at| next_probe_at.saturating_sub(now).max(1)))
+        let Some((reason, next_probe_at)) = blocked else {
+            return Ok(None);
+        };
+        if !matches!(
+            reason.as_str(),
+            "source_baseline" | "deleted_source_baseline_unavailable"
+        ) {
+            return Ok(None);
+        }
+        Ok((next_probe_at > now).then(|| next_probe_at.saturating_sub(now).max(1)))
     }
 
-    async fn block_request_log_gc_for_day(
+    async fn promote_dashboard_rollup_integrity_probe_on_source_change(
+        &self,
+        day_start: i64,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        let Some((reason, next_probe_at, stored_source_fence, stored_source_revision)) =
+            sqlx::query_as::<_, (String, i64, Option<i64>, i64)>(
+                "SELECT reason, next_probe_at, source_fence, source_revision FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+            )
+            .bind(day_start)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if next_probe_at <= now
+            || !matches!(
+                reason.as_str(),
+                "source_baseline" | "deleted_source_baseline_unavailable"
+            )
+        {
+            return Ok(false);
+        }
+        let day_end = next_local_day_start_utc_ts(day_start);
+        let current_source_fence: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(id) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        let current_source_revision: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(revision), 0) FROM dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .fetch_one(&self.pool)
+        .await?;
+        if current_source_fence == stored_source_fence
+            && current_source_revision == stored_source_revision
+        {
+            return Ok(false);
+        }
+        let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
+        let (write_result, promoted) = match sqlx::query(
+            r#"UPDATE dashboard_rollup_integrity_blocked_ranges
+               SET next_probe_at = ?, source_fence = ?, source_revision = ?, updated_at = ?
+               WHERE day_start = ? AND next_probe_at > ?"#,
+        )
+        .bind(now)
+        .bind(current_source_fence)
+        .bind(current_source_revision)
+        .bind(now)
+        .bind(day_start)
+        .bind(now)
+        .execute(&mut *conn)
+        .await
+        {
+            Ok(result) => (Ok(()), result.rows_affected() == 1),
+            Err(error) => (Err(error.into()), false),
+        };
+        self.finish_dashboard_rollup_integrity_short_write(&mut conn, write_result)
+            .await?;
+        Ok(promoted)
+    }
+
+    async fn persist_dashboard_rollup_integrity_blocked_range(
         &self,
         day_start: i64,
         reason: &'static str,
-    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        queue_probe: bool,
+    ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         let day_end = next_local_day_start_utc_ts(day_start);
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
@@ -330,7 +406,8 @@ impl KeyStore {
             .bind(day_start)
             .fetch_optional(&mut *conn)
             .await?;
-            enqueue_probe = current.map(|next_probe_at| next_probe_at <= now).unwrap_or(true);
+            let probe_due = current.map(|next_probe_at| next_probe_at <= now).unwrap_or(true);
+            enqueue_probe = queue_probe && probe_due;
             let source_fence: Option<i64> = sqlx::query_scalar(
                 "SELECT MAX(id) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
             )
@@ -346,9 +423,11 @@ impl KeyStore {
             .bind(day_end)
             .fetch_one(&mut *conn)
             .await?;
-            let next_probe_at = current
-                .filter(|_| !enqueue_probe)
-                .unwrap_or_else(|| now.saturating_add(DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_PROBE_SECS));
+            let next_probe_at = if probe_due {
+                now.saturating_add(DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_PROBE_SECS)
+            } else {
+                current.expect("a non-due blocked range has a next probe")
+            };
             sqlx::query(
                 r#"INSERT INTO dashboard_rollup_integrity_blocked_ranges (
                        day_start, day_end, reason, next_probe_at, source_fence,
@@ -400,6 +479,16 @@ impl KeyStore {
                 "retained the blocked range until its next probe time"
             );
         }
+        Ok(())
+    }
+
+    async fn block_request_log_gc_for_day(
+        &self,
+        day_start: i64,
+        reason: &'static str,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.persist_dashboard_rollup_integrity_blocked_range(day_start, reason, true)
+            .await?;
         Ok(DashboardRollupRequestLogGcDecision::Blocked { day_start, reason })
     }
 

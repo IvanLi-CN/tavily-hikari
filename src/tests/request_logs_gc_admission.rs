@@ -327,6 +327,66 @@ async fn blocked_integrity_range_does_not_advance_pending_work_before_probe() {
 }
 
 #[tokio::test]
+async fn recovery_baseline_deficit_registers_blocked_range() {
+    let db_path = temp_db_path("integrity-baseline-deficit-eligibility");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_123);
+    let store = crate::store::KeyStore::new_with_time(&db_str, backend_time.clone())
+        .await
+        .expect("create baseline deficit fixture");
+    let now = backend_time.now_ts();
+    let day_start = local_day_bucket_start_utc_ts(now - 3 * SECS_PER_DAY);
+    let counts = DashboardRequestRollupCounts {
+        total_requests: 1,
+        ..Default::default()
+    };
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_daily_seals (bucket_start, counts_json, verified_at, source_fence, source_version, durable_source_version) VALUES (?, ?, ?, 0, 0, 0)",
+    )
+    .bind(day_start)
+    .bind(serde_json::to_string(&counts).expect("serialize baseline deficit seal"))
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("seed incomplete source baseline");
+
+    let source_fence = store
+        .prepare_request_statistics_recovery_target(day_start)
+        .await
+        .expect("prepare baseline deficit target");
+    let result = store
+        .run_request_statistics_recovery_integrity_slice(
+            day_start,
+            source_fence,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .expect("defer incomplete source baseline");
+    assert!(matches!(
+        result,
+        crate::store::DashboardRollupIntegritySlice::Deferred {
+            reason: "deleted_source_baseline_unavailable",
+            ..
+        }
+    ));
+    let blocked: (String, i64, Option<i64>, i64) = sqlx::query_as(
+        "SELECT reason, next_probe_at, source_fence, source_revision FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&store.pool)
+    .await
+    .expect("read persisted baseline eligibility");
+    assert_eq!(blocked.0, "deleted_source_baseline_unavailable");
+    assert!(blocked.1 >= now + SECS_PER_FIVE_MINUTES);
+    assert_eq!(blocked.2, None);
+    assert_eq!(blocked.3, 0);
+    drop(store);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn integrity_selects_recovery_work_inside_a_closed_fence() {
     let db_path = temp_db_path("integrity-recovery-non_boundary-fence");
     let db_str = db_path.to_string_lossy().to_string();
