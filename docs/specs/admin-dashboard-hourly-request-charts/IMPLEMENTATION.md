@@ -24,8 +24,9 @@
   热段在分页边界优先，GC 阻塞日其次；其有进展时一秒续跑，普通历史/滚动重审保持原节奏和慢写退避。
 - GC 阻塞日的有进展续跑会在释放 SQLite bulk permit 前登记下一轮 fair ticket，避免后续滚动维护持续越过
   清理续跑，同时保留既有前台、连接池和 contention admission 保护。
-- 前台压力、连接池压力和近期 SQLite contention 让完整性任务退避五分钟；独占 bulk admission 被占用时每五秒
-  重查，避免慢写或竞争下反复争用 SQLite。
+- 前台压力、连接池压力和近期 SQLite contention 下的 transient admission defer 按 aged-turn 的五秒节奏
+  重探测；独占 bulk admission 被占用时同样每五秒重查。真实资源压力、单 bulk permit、读取与短事务预算、
+  source fence 和删除前 seal 校验仍在每次尝试中生效。
 - GC 阻塞日幂等标记 `gc_blocking`，升级旧库默认置零，重复登记保留分页游标。全日已读完但收尾未完成
   的任务可在重启后完成日汇总、封存与队列收口，收口前不放行原始日志删除。
 - 硬重启会丢弃未完成工作项的聚合 checkpoint，并用 durable source revision 重新判断分页是否需要重做；GC
