@@ -349,6 +349,16 @@ async fn recovery_baseline_deficit_registers_blocked_range() {
     .execute(&store.pool)
     .await
     .expect("seed incomplete source baseline");
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_integrity_blocked_ranges (day_start, day_end, reason, next_probe_at, source_fence, source_revision, probe_generation, updated_at) VALUES (?, ?, 'reaudit_pending', ?, NULL, 0, 0, ?)",
+    )
+    .bind(day_start)
+    .bind(next_local_day_start_utc_ts(day_start))
+    .bind(now + 60)
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("seed prior nonbaseline block");
 
     let source_fence = store
         .prepare_request_statistics_recovery_target(day_start)

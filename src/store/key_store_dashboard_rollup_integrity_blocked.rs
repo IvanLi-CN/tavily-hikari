@@ -370,14 +370,19 @@ impl KeyStore {
         let (write_result, promoted) = match sqlx::query(
             r#"UPDATE dashboard_rollup_integrity_blocked_ranges
                SET next_probe_at = ?, source_fence = ?, source_revision = ?, updated_at = ?
-               WHERE day_start = ? AND next_probe_at > ?"#,
+               WHERE day_start = ?
+                 AND next_probe_at = ?
+                 AND source_fence IS ?
+                 AND source_revision = ?"#,
         )
         .bind(now)
         .bind(current_source_fence)
         .bind(current_source_revision)
         .bind(now)
         .bind(day_start)
-        .bind(now)
+        .bind(next_probe_at)
+        .bind(stored_source_fence)
+        .bind(stored_source_revision)
         .execute(&mut *conn)
         .await
         {
@@ -400,14 +405,32 @@ impl KeyStore {
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
         let mut enqueue_probe = false;
         let result = async {
-            let current: Option<i64> = sqlx::query_scalar(
-                "SELECT next_probe_at FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+            let current: Option<(String, i64)> = sqlx::query_as(
+                "SELECT reason, next_probe_at FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
             )
             .bind(day_start)
             .fetch_optional(&mut *conn)
             .await?;
-            let probe_due = current.map(|next_probe_at| next_probe_at <= now).unwrap_or(true);
-            enqueue_probe = queue_probe && probe_due;
+            let probe_due = current
+                .as_ref()
+                .map(|(_, next_probe_at)| *next_probe_at <= now)
+                .unwrap_or(true);
+            let current_is_baseline = current.as_ref().is_some_and(|(current_reason, _)| {
+                matches!(
+                    current_reason.as_str(),
+                    "source_baseline" | "deleted_source_baseline_unavailable"
+                )
+            });
+            let reason_is_baseline = matches!(
+                reason,
+                "source_baseline" | "deleted_source_baseline_unavailable"
+            );
+            let reset_probe = if reason_is_baseline {
+                !current_is_baseline || probe_due
+            } else {
+                probe_due
+            };
+            enqueue_probe = queue_probe && reset_probe;
             let source_fence: Option<i64> = sqlx::query_scalar(
                 "SELECT MAX(id) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
             )
@@ -423,10 +446,13 @@ impl KeyStore {
             .bind(day_end)
             .fetch_one(&mut *conn)
             .await?;
-            let next_probe_at = if probe_due {
+            let next_probe_at = if reset_probe {
                 now.saturating_add(DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_PROBE_SECS)
             } else {
-                current.expect("a non-due blocked range has a next probe")
+                current
+                    .as_ref()
+                    .map(|(_, next_probe_at)| *next_probe_at)
+                    .expect("a non-due blocked range has a next probe")
             };
             sqlx::query(
                 r#"INSERT INTO dashboard_rollup_integrity_blocked_ranges (
@@ -438,6 +464,9 @@ impl KeyStore {
                        reason = excluded.reason,
                        next_probe_at = CASE
                            WHEN dashboard_rollup_integrity_blocked_ranges.next_probe_at <= ?
+                                OR dashboard_rollup_integrity_blocked_ranges.reason NOT IN (
+                                    'source_baseline', 'deleted_source_baseline_unavailable'
+                                )
                            THEN excluded.next_probe_at
                            ELSE dashboard_rollup_integrity_blocked_ranges.next_probe_at
                        END,
