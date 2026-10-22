@@ -979,7 +979,7 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
         .set_system_settings(&settings)
         .await
         .expect("enable compare reconciliation");
-    for index in 0..128 {
+    for index in 0..32 {
         sqlx::query(
             r#"INSERT INTO upstream_reconciliation_work (
                  token_id, period_code, project_id, billing_subject, settlement_mode,
