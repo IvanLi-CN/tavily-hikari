@@ -1210,123 +1210,6 @@ impl KeyStore {
         Ok(Some(item))
     }
 
-    async fn complete_dashboard_rollup_rebalance_recovery_if_ready(
-        &self,
-        now: i64,
-    ) -> Result<(), ProxyError> {
-        let Some(row) = sqlx::query(
-            "SELECT status, range_start, range_end, cursor FROM dashboard_rollup_rebalance_recovery WHERE id = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        else {
-            return Ok(());
-        };
-        let status: String = row.try_get("status")?;
-        let Some(range_start): Option<i64> = row.try_get("range_start")? else {
-            return Ok(());
-        };
-        let range_end: i64 = row.try_get("range_end")?;
-        let cursor: i64 = row.try_get("cursor")?;
-        if status == "complete" || cursor < range_end {
-            return Ok(());
-        }
-        let pending_work: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM dashboard_rollup_integrity_work_items WHERE status = 'pending' AND range_start >= ? AND range_start < ?",
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_one(&self.pool)
-        .await?;
-        let pending_days: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending' AND bucket_end > ? AND bucket_start < ?",
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_one(&self.pool)
-        .await?;
-        if pending_work > 0 || pending_days > 0 {
-            return Ok(());
-        }
-        sqlx::query(
-            "UPDATE dashboard_rollup_rebalance_recovery SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE id = 1",
-        )
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        tracing::info!(
-            component = "dashboard_rollup_integrity",
-            event = "rebalance_rollup_recovery_completed",
-            range_start,
-            range_end,
-        );
-        Ok(())
-    }
-
-    async fn load_dashboard_rollup_integrity_work_item(
-        &self,
-        now: i64,
-        claimed_probe_day_start: Option<i64>,
-    ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, counts_json
-            FROM dashboard_rollup_integrity_work_items
-            WHERE status = 'pending'
-              AND (
-                  recovery = 0 OR NOT EXISTS (
-                      SELECT 1 FROM dashboard_rollup_integrity_state
-                      WHERE id = 1
-                        AND (hot_cursor < hot_fence OR hot_fence < ?)
-                  )
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
-                  WHERE blocked.day_start <= range_start
-                    AND blocked.day_end > range_start
-                    AND blocked.next_probe_at > ?
-                    AND (? IS NULL OR blocked.day_start != ?)
-              )
-            ORDER BY CASE
-                WHEN range_start >= ? AND recovery = 0 AND priority IN (0, 3, 4) THEN 4
-                WHEN EXISTS (SELECT 1 FROM dashboard_rollup_integrity_day_reaudits d
-                    WHERE d.gc_blocking = 1 AND d.status = 'pending'
-                      AND range_start >= d.bucket_start AND range_end <= d.bucket_end) THEN 3
-                WHEN recovery = 0 AND priority = ? THEN 2
-                ELSE priority END DESC, updated_at ASC, range_start ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(now)
-        .bind(now)
-        .bind(claimed_probe_day_start)
-        .bind(claimed_probe_day_start)
-        .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS))
-        .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS) - DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS)
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(|row| {
-            let counts_json: String = row.try_get("counts_json")?;
-            let counts = serde_json::from_str(&counts_json).map_err(|err| {
-                sqlx::Error::Protocol(format!("invalid dashboard integrity work item: {err}"))
-            })?;
-            Ok::<DashboardRollupIntegrityWorkItem, sqlx::Error>(DashboardRollupIntegrityWorkItem {
-                range_start: row.try_get("range_start")?,
-                range_end: row.try_get("range_end")?,
-                source_fence_id: row.try_get("source_fence")?,
-                source_version: row.try_get("source_version")?,
-                durable_source_version: row.try_get("durable_source_version")?,
-                cursor_created_at: row.try_get("cursor_created_at")?,
-                cursor_id: row.try_get("cursor_id")?,
-                counts,
-            })
-        })
-        .transpose()
-        .map_err(Into::into)
-    }
-
     async fn create_next_dashboard_rollup_integrity_work_item(
         &self,
         now: i64,
@@ -1353,10 +1236,19 @@ impl KeyStore {
             SELECT bucket_start, bucket_end, cursor, gc_blocking
             FROM dashboard_rollup_integrity_day_reaudits
             WHERE status = 'pending'
+              AND NOT EXISTS (
+                  SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
+                  WHERE blocked.day_start = dashboard_rollup_integrity_day_reaudits.bucket_start
+                    AND blocked.next_probe_at > ?
+                    AND (? IS NULL OR blocked.day_start != ?)
+              )
             ORDER BY gc_blocking DESC, updated_at ASC, bucket_start ASC
             LIMIT 1
             "#,
         )
+        .bind(now)
+        .bind(claimed_probe_day_start)
+        .bind(claimed_probe_day_start)
         .fetch_optional(&self.pool)
         .await?;
         let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);

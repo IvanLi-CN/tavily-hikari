@@ -325,3 +325,120 @@ async fn blocked_integrity_range_does_not_advance_pending_work_before_probe() {
         .bind(day_start).fetch_one(&proxy.key_store.pool).await.expect("read unchanged blocked range");
     assert_eq!(blocked, (next_probe_at, 0));
 }
+
+#[tokio::test]
+async fn integrity_selects_recovery_work_inside_a_closed_fence() {
+    let db_path = temp_db_path("integrity-recovery-non_boundary-fence");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_123);
+    let store = crate::store::KeyStore::new_with_time(&db_str, backend_time.clone())
+        .await
+        .expect("create non-boundary recovery fixture");
+    let now = backend_time.now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let range_start = local_day_bucket_start_utc_ts(now - 3 * SECS_PER_DAY);
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_integrity_state (id, hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor, updated_at) VALUES (1, ?, ?, ?, ?, ?)",
+    )
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("pin caught-up integrity state");
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_integrity_work_items (range_start, range_end, source_fence, source_version, counts_json, status, priority, recovery, updated_at) VALUES (?, ?, 0, 0, '{}', 'pending', 3, 1, ?)",
+    )
+    .bind(range_start)
+    .bind(range_start + SECS_PER_FIVE_MINUTES)
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("seed recovery work");
+
+    store
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("process recovery work after a non-boundary now");
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
+    )
+    .bind(range_start)
+    .fetch_one(&store.pool)
+    .await
+    .expect("read recovery work status");
+    assert_eq!(status, "done");
+    drop(store);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn integrity_skips_blocked_reaudit_and_advances_the_next_eligible_day() {
+    let db_path = temp_db_path("integrity-blocked-reaudit-selection");
+    let db_str = db_path.to_string_lossy().to_string();
+    let (backend_time, _) = BackendTime::manual_from_ts(1_700_000_123);
+    let store = crate::store::KeyStore::new_with_time(&db_str, backend_time.clone())
+        .await
+        .expect("create blocked reaudit fixture");
+    let now = backend_time.now_ts();
+    let closed = now - now.rem_euclid(SECS_PER_FIVE_MINUTES);
+    let blocked_day = local_day_bucket_start_utc_ts(now - 4 * SECS_PER_DAY);
+    let eligible_day = blocked_day + SECS_PER_DAY;
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_integrity_state (id, hot_cursor, hot_fence, hot_reaudit_cursor, history_cursor, last_day_reaudit_attempt_at, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(closed)
+    .bind(now - 60)
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("pin caught-up state for reaudit selection");
+    sqlx::query(
+        "INSERT INTO dashboard_rollup_integrity_blocked_ranges (day_start, day_end, reason, next_probe_at, source_fence, source_revision, probe_generation, updated_at) VALUES (?, ?, 'source_baseline', ?, NULL, 0, 0, ?)",
+    )
+    .bind(blocked_day)
+    .bind(next_local_day_start_utc_ts(blocked_day))
+    .bind(now + SECS_PER_FIVE_MINUTES)
+    .bind(now)
+    .execute(&store.pool)
+    .await
+    .expect("seed not-yet-due blocked day");
+    for (day, updated_at) in [(blocked_day, now - 2), (eligible_day, now - 1)] {
+        sqlx::query(
+            "INSERT INTO dashboard_rollup_integrity_day_reaudits (bucket_start, bucket_end, cursor, status, updated_at, gc_blocking) VALUES (?, ?, ?, 'pending', ?, 1)",
+        )
+        .bind(day)
+        .bind(next_local_day_start_utc_ts(day))
+        .bind(day)
+        .bind(updated_at)
+        .execute(&store.pool)
+        .await
+        .expect("seed pending day reaudit");
+    }
+
+    store
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("advance eligible reaudit after blocked day");
+    let cursors: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?), (SELECT cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?)",
+    )
+    .bind(blocked_day)
+    .bind(eligible_day)
+    .fetch_one(&store.pool)
+    .await
+    .expect("read blocked and eligible cursors");
+    assert_eq!(cursors.0, blocked_day);
+    assert!(cursors.1 > eligible_day);
+    drop(store);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
