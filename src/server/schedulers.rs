@@ -87,11 +87,11 @@ fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
 
 fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
     match reason {
-        // Aged recovery can bypass only foreground-rate pressure; retain the
-        // longer retry for local capacity and contention protection.
-        "foreground_pressure" => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
-        "pool_pressure" | "recent_contention" => {
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        // Keep the real pool and contention gates intact, but probe again on
+        // the aged-turn cadence instead of parking the durable recovery job
+        // for five minutes after a transient defer.
+        "foreground_pressure" | "pool_pressure" | "recent_contention" => {
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         }
         _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
     }
@@ -102,18 +102,18 @@ mod dashboard_integrity_admission_tests {
     use super::*;
 
     #[test]
-    fn dashboard_integrity_foreground_pressure_uses_aged_turn_retry() {
+    fn dashboard_integrity_admission_pressure_uses_aged_turn_retry() {
         assert_eq!(
             dashboard_integrity_admission_retry_delay("foreground_pressure"),
             SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("pool_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("recent_contention"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("bulk_busy"),
