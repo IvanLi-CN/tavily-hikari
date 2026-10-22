@@ -1892,6 +1892,12 @@ impl TavilyProxy {
         true
     }
 
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn backfill_user_business_calls_1h_for_test(&self) -> Result<(), ProxyError> {
+        self.user_business_calls_1h_window.backfill_recent().await
+    }
+
     async fn invalidate_analysis_pressure_cache(&self) {
         let mut cache = self.analysis_pressure_cache.lock().await;
         cache.cached = None;
