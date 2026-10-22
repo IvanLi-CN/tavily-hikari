@@ -213,6 +213,8 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "tests::upstream_reconciliation_projection::",
                 "tests::upstream_reconciliation_source_identity::",
                 "tests::upstream_reconciliation::reconciliation_controlled_retry_advances_the_claim_attempt_before_success",
+                "tavily_proxy::maintenance_runtime_tests::enqueue_failure_remains_pending_without_a_new_generation",
+                "tavily_proxy::maintenance_runtime_tests::enqueue_success_preserves_generation_published_during_await",
                 "tavily_proxy::reconciliation_engine_tests::",
                 "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
                 "upstream_privacy::tests::",

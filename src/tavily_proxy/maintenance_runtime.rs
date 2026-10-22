@@ -97,6 +97,7 @@ impl MaintenanceRuntime {
     async fn run(self) {
         let mut seen_generation = self.hint.generation();
         let mut force_rebuild = true;
+        let mut retry_pending = false;
         loop {
             if self
                 .state
@@ -117,8 +118,8 @@ impl MaintenanceRuntime {
                 continue;
             }
 
-            let generation = self.hint.generation();
-            if force_rebuild || generation != seen_generation {
+            let observed_generation = self.hint.generation();
+            if force_rebuild || retry_pending || observed_generation != seen_generation {
                 if !force_rebuild {
                     self
                         .backend_time
@@ -146,7 +147,12 @@ impl MaintenanceRuntime {
                         err = %err,
                     );
                 }
-                seen_generation = self.hint.generation();
+                apply_enqueue_result(
+                    &mut seen_generation,
+                    &mut retry_pending,
+                    observed_generation,
+                    enqueue_ok,
+                );
                 force_rebuild = false;
                 if enqueue_ok
                     && self
@@ -180,5 +186,65 @@ impl MaintenanceRuntime {
         self.state
             .worker_started
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn apply_enqueue_result(
+    seen_generation: &mut u64,
+    retry_pending: &mut bool,
+    observed_generation: u64,
+    enqueue_ok: bool,
+) {
+    if enqueue_ok {
+        // A generation published while the enqueue was in flight must remain dirty for
+        // the next coalesced pass. Only acknowledge the generation captured before await.
+        *seen_generation = observed_generation;
+        *retry_pending = false;
+    } else {
+        // Keep the owner eligible for a bounded retry even when no newer hint arrives.
+        *retry_pending = true;
+    }
+}
+
+#[cfg(test)]
+mod maintenance_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_success_preserves_generation_published_during_await() {
+        let hint = std::sync::Arc::new(UpstreamReconciliationMaintenanceHint::default());
+        let mut seen_generation = hint.mark_dirty();
+        let observed_generation = seen_generation;
+        assert_eq!(hint.mark_dirty(), observed_generation + 1);
+        let mut retry_pending = false;
+
+        apply_enqueue_result(
+            &mut seen_generation,
+            &mut retry_pending,
+            observed_generation,
+            true,
+        );
+
+        assert_eq!(seen_generation, observed_generation);
+        assert!(hint.generation() > seen_generation);
+        assert!(!retry_pending);
+    }
+
+    #[test]
+    fn enqueue_failure_remains_pending_without_a_new_generation() {
+        let hint = std::sync::Arc::new(UpstreamReconciliationMaintenanceHint::default());
+        let mut seen_generation = hint.mark_dirty();
+        let observed_generation = seen_generation;
+        let mut retry_pending = false;
+
+        apply_enqueue_result(
+            &mut seen_generation,
+            &mut retry_pending,
+            observed_generation,
+            false,
+        );
+
+        assert_eq!(seen_generation, observed_generation);
+        assert!(retry_pending);
     }
 }
