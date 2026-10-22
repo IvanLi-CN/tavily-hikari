@@ -627,6 +627,10 @@ use super::upstream_support_and_manual_jobs::*;
             )
             .await
             .expect("record alice request failure");
+        proxy
+            .backfill_user_business_calls_1h_for_test()
+            .await
+            .expect("backfill user business calls before admin list");
 
         for (client_ip, created_at, visibility) in [
             ("203.0.113.7", now - 300, "visible"),
