@@ -276,3 +276,52 @@ async fn request_logs_gc_remains_queued_after_process_restart() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn blocked_integrity_range_does_not_advance_pending_work_before_probe() {
+    let db_path = temp_db_path("integrity-blocked-range-eligibility");
+    let proxy = TavilyProxy::with_endpoint(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_path.to_string_lossy(),
+    )
+    .await
+    .expect("create blocked-range eligibility fixture");
+    let now = proxy.backend_time().now_ts();
+    let day_start = local_day_bucket_start_utc_ts(now - 3 * SECS_PER_DAY);
+    let day_end = next_local_day_start_utc_ts(day_start);
+    let next_probe_at = now + SECS_PER_FIVE_MINUTES;
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_blocked_ranges (day_start, day_end, reason, next_probe_at, source_fence, source_revision, probe_generation, updated_at) VALUES (?, ?, 'source_baseline', ?, NULL, 0, 0, ?)")
+        .bind(day_start).bind(day_end).bind(next_probe_at).bind(now).execute(&proxy.key_store.pool).await
+        .expect("seed not-yet-due blocked range");
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_day_reaudits (bucket_start, bucket_end, cursor, status, updated_at, gc_blocking) VALUES (?, ?, ?, 'pending', ?, 1)")
+        .bind(day_start).bind(day_end).bind(day_start).bind(now).execute(&proxy.key_store.pool).await
+        .expect("seed blocked day reaudit");
+    sqlx::query("INSERT INTO dashboard_rollup_integrity_work_items (range_start, range_end, source_fence, source_version, counts_json, status, priority, updated_at) VALUES (?, ?, 1, 0, '{}', 'pending', 3, ?)")
+        .bind(day_start).bind(day_start + SECS_PER_FIVE_MINUTES).bind(now).execute(&proxy.key_store.pool).await
+        .expect("seed blocked pending work");
+
+    proxy
+        .run_dashboard_rollup_integrity_slice()
+        .await
+        .expect("skip blocked range before its probe is due");
+    let work_status: String = sqlx::query_scalar(
+        "SELECT status FROM dashboard_rollup_integrity_work_items WHERE range_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read blocked pending work");
+    assert_eq!(work_status, "pending");
+    let reaudit: (i64, String) = sqlx::query_as(
+        "SELECT cursor, status FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ?",
+    )
+    .bind(day_start)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read blocked day reaudit");
+    assert_eq!(reaudit, (day_start, "pending".to_string()));
+    let blocked: (i64, i64) = sqlx::query_as("SELECT next_probe_at, probe_generation FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?")
+        .bind(day_start).fetch_one(&proxy.key_store.pool).await.expect("read unchanged blocked range");
+    assert_eq!(blocked, (next_probe_at, 0));
+}
