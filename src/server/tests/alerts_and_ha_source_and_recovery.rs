@@ -2242,10 +2242,10 @@ fn request_logs_gc_continuation_tracks_durable_progress() {
 }
 
 #[test]
-fn dashboard_integrity_admission_pressure_uses_five_minute_backoff() {
+fn dashboard_integrity_admission_pressure_preserves_aged_foreground_turn() {
     assert_eq!(
         dashboard_integrity_admission_retry_delay("foreground_pressure"),
-        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
     );
     assert_eq!(
         dashboard_integrity_admission_retry_delay("pool_pressure"),

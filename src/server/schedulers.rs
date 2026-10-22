@@ -87,7 +87,10 @@ fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
 
 fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
     match reason {
-        "foreground_pressure" | "pool_pressure" | "recent_contention" => {
+        // Aged recovery can bypass only foreground-rate pressure; retain the
+        // longer retry for local capacity and contention protection.
+        "foreground_pressure" => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+        "pool_pressure" | "recent_contention" => {
             REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
         }
         _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
@@ -99,10 +102,10 @@ mod dashboard_integrity_admission_tests {
     use super::*;
 
     #[test]
-    fn dashboard_integrity_admission_pressure_uses_full_backoff() {
+    fn dashboard_integrity_foreground_pressure_uses_aged_turn_retry() {
         assert_eq!(
             dashboard_integrity_admission_retry_delay("foreground_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("pool_pressure"),
