@@ -348,6 +348,18 @@ impl KeyStore {
                 "request statistics recovery target day is not closed".to_string(),
             ));
         }
+        if self
+            .dashboard_rollup_integrity_blocked_range_probe_delay(day_start, now, None)
+            .await?
+            .is_some()
+            && !self
+                .promote_dashboard_rollup_integrity_probe_on_source_change(day_start, now)
+                .await?
+        {
+            return self
+                .request_statistics_recovery_source_fence(day_start, 0)
+                .await;
+        }
         let mut fixed_source_fence = 0_i64;
         let mut conn = self.begin_dashboard_rollup_integrity_short_write().await?;
         let write_result = async {
@@ -503,11 +515,17 @@ impl KeyStore {
             let now = self.backend_time.now_ts();
             self.ensure_dashboard_rollup_integrity_state(now).await?;
             self.ensure_dashboard_rollup_rebalance_recovery(now).await?;
+            if let Some(next_delay_secs) = self
+                .dashboard_rollup_integrity_blocked_range_probe_delay(day_start, now, None)
+                .await?
+            {
+                return Ok::<_, ProxyError>((now, None, Some(next_delay_secs)));
+            }
             let source_fence_id = self
                 .request_statistics_recovery_source_fence(day_start, source_fence_id)
                 .await?;
             let mut item = if let Some(item) = self
-                .load_request_statistics_recovery_work_item(day_start)
+                .load_request_statistics_recovery_work_item(day_start, now)
                 .await?
             {
                 Some(item)
@@ -535,10 +553,10 @@ impl KeyStore {
                     )
                     .await?;
             }
-            Ok::<_, ProxyError>((now, item))
+            Ok::<_, ProxyError>((now, item, None))
         })
         .await;
-        let (now, item) = match setup {
+        let (now, item, blocked_probe_delay) = match setup {
             Ok(result) => result?,
             Err(_) => {
                 crate::store::wait_for_owned_finishes(&[
@@ -551,6 +569,12 @@ impl KeyStore {
                 });
             }
         };
+        if let Some(next_delay_secs) = blocked_probe_delay {
+            return Ok(DashboardRollupIntegritySlice::Deferred {
+                next_delay_secs,
+                reason: "source_baseline_probe_not_due",
+            });
+        }
         if let Some(item) = item {
             return self
                 .process_dashboard_rollup_integrity_work_item(
@@ -558,6 +582,7 @@ impl KeyStore {
                     now,
                     Some(deadline),
                     true,
+                    None,
                 )
                 .await;
         }
@@ -642,6 +667,14 @@ impl KeyStore {
         day_start: i64,
     ) -> Result<bool, ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
+        let now = self.backend_time.now_ts();
+        if self
+            .dashboard_rollup_integrity_blocked_range_probe_delay(day_start, now, None)
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
         let sealed: Option<(Option<i64>, i64, i64)> = sqlx::query_as(
             "SELECT source_fence, source_version, durable_source_version FROM dashboard_rollup_daily_seals WHERE bucket_start = ?",
         )
@@ -740,6 +773,7 @@ impl KeyStore {
     async fn load_request_statistics_recovery_work_item(
         &self,
         day_start: i64,
+        now: i64,
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
         let day_end = next_local_day_start_utc_ts(day_start);
         let row = sqlx::query(
@@ -749,12 +783,20 @@ impl KeyStore {
             FROM dashboard_rollup_integrity_work_items
             WHERE status = 'pending' AND recovery = 1
               AND range_start >= ? AND range_end <= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
+                  WHERE blocked.day_start = ?
+                    AND blocked.reason IN ('source_baseline', 'deleted_source_baseline_unavailable')
+                    AND blocked.next_probe_at > ?
+              )
             ORDER BY range_start ASC
             LIMIT 1
             "#,
         )
         .bind(day_start)
         .bind(day_end)
+        .bind(day_start)
+        .bind(now)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
@@ -785,6 +827,13 @@ impl KeyStore {
         source_fence_id: i64,
         now: i64,
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
+        if self
+            .dashboard_rollup_integrity_blocked_range_probe_delay(day_start, now, None)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
         let Some(row) = sqlx::query(
             "SELECT bucket_end, cursor FROM dashboard_rollup_integrity_day_reaudits WHERE bucket_start = ? AND status = 'pending'",
         )
@@ -1166,114 +1215,10 @@ impl KeyStore {
         Ok(Some(item))
     }
 
-    async fn complete_dashboard_rollup_rebalance_recovery_if_ready(
-        &self,
-        now: i64,
-    ) -> Result<(), ProxyError> {
-        let Some(row) = sqlx::query(
-            "SELECT status, range_start, range_end, cursor FROM dashboard_rollup_rebalance_recovery WHERE id = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        else {
-            return Ok(());
-        };
-        let status: String = row.try_get("status")?;
-        let Some(range_start): Option<i64> = row.try_get("range_start")? else {
-            return Ok(());
-        };
-        let range_end: i64 = row.try_get("range_end")?;
-        let cursor: i64 = row.try_get("cursor")?;
-        if status == "complete" || cursor < range_end {
-            return Ok(());
-        }
-        let pending_work: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM dashboard_rollup_integrity_work_items WHERE status = 'pending' AND range_start >= ? AND range_start < ?",
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_one(&self.pool)
-        .await?;
-        let pending_days: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM dashboard_rollup_integrity_day_reaudits WHERE status = 'pending' AND bucket_end > ? AND bucket_start < ?",
-        )
-        .bind(range_start)
-        .bind(range_end)
-        .fetch_one(&self.pool)
-        .await?;
-        if pending_work > 0 || pending_days > 0 {
-            return Ok(());
-        }
-        sqlx::query(
-            "UPDATE dashboard_rollup_rebalance_recovery SET status = 'complete', completed_at = ?, updated_at = ?, last_error = NULL WHERE id = 1",
-        )
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        tracing::info!(
-            component = "dashboard_rollup_integrity",
-            event = "rebalance_rollup_recovery_completed",
-            range_start,
-            range_end,
-        );
-        Ok(())
-    }
-
-    async fn load_dashboard_rollup_integrity_work_item(
-        &self,
-        now: i64,
-    ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
-        let row = sqlx::query(
-            r#"
-            SELECT range_start, range_end, source_fence, source_version, durable_source_version, cursor_created_at, cursor_id, counts_json
-            FROM dashboard_rollup_integrity_work_items
-            WHERE status = 'pending'
-              AND (
-                  recovery = 0 OR NOT EXISTS (
-                      SELECT 1 FROM dashboard_rollup_integrity_state
-                      WHERE id = 1
-                        AND (hot_cursor < hot_fence OR hot_fence < ?)
-                  )
-              )
-            ORDER BY CASE
-                WHEN range_start >= ? AND recovery = 0 AND priority IN (0, 3, 4) THEN 4
-                WHEN EXISTS (SELECT 1 FROM dashboard_rollup_integrity_day_reaudits d
-                    WHERE d.gc_blocking = 1 AND d.status = 'pending'
-                      AND range_start >= d.bucket_start AND range_end <= d.bucket_end) THEN 3
-                WHEN recovery = 0 AND priority = ? THEN 2
-                ELSE priority END DESC, updated_at ASC, range_start ASC
-            LIMIT 1
-            "#,
-        )
-        .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS))
-        .bind(now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS) - DASHBOARD_ROLLUP_INTEGRITY_HOT_WINDOW_SECS)
-        .bind(DASHBOARD_ROLLUP_INTEGRITY_CONTINUED_HOT_PRIORITY)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(|row| {
-            let counts_json: String = row.try_get("counts_json")?;
-            let counts = serde_json::from_str(&counts_json).map_err(|err| {
-                sqlx::Error::Protocol(format!("invalid dashboard integrity work item: {err}"))
-            })?;
-            Ok::<DashboardRollupIntegrityWorkItem, sqlx::Error>(DashboardRollupIntegrityWorkItem {
-                range_start: row.try_get("range_start")?,
-                range_end: row.try_get("range_end")?,
-                source_fence_id: row.try_get("source_fence")?,
-                source_version: row.try_get("source_version")?,
-                durable_source_version: row.try_get("durable_source_version")?,
-                cursor_created_at: row.try_get("cursor_created_at")?,
-                cursor_id: row.try_get("cursor_id")?,
-                counts,
-            })
-        })
-        .transpose()
-        .map_err(Into::into)
-    }
-
     async fn create_next_dashboard_rollup_integrity_work_item(
         &self,
         now: i64,
+        claimed_probe_day_start: Option<i64>,
     ) -> Result<Option<DashboardRollupIntegrityWorkItem>, ProxyError> {
         let row = sqlx::query(
             r#"
@@ -1296,10 +1241,20 @@ impl KeyStore {
             SELECT bucket_start, bucket_end, cursor, gc_blocking
             FROM dashboard_rollup_integrity_day_reaudits
             WHERE status = 'pending'
+              AND NOT EXISTS (
+                  SELECT 1 FROM dashboard_rollup_integrity_blocked_ranges blocked
+                  WHERE blocked.day_start = dashboard_rollup_integrity_day_reaudits.bucket_start
+                    AND blocked.reason IN ('source_baseline', 'deleted_source_baseline_unavailable')
+                    AND blocked.next_probe_at > ?
+                    AND (? IS NULL OR blocked.day_start != ?)
+              )
             ORDER BY gc_blocking DESC, updated_at ASC, bucket_start ASC
             LIMIT 1
             "#,
         )
+        .bind(now)
+        .bind(claimed_probe_day_start)
+        .bind(claimed_probe_day_start)
         .fetch_optional(&self.pool)
         .await?;
         let latest_closed = now - now.rem_euclid(DASHBOARD_ROLLUP_INTEGRITY_WORK_SECS);
@@ -1360,6 +1315,17 @@ impl KeyStore {
             let day_start: i64 = day_reaudit.try_get("bucket_start")?;
             let day_end: i64 = day_reaudit.try_get("bucket_end")?;
             let cursor: i64 = day_reaudit.try_get("cursor")?;
+            if self
+                .dashboard_rollup_integrity_blocked_range_probe_delay(
+                    day_start,
+                    now,
+                    claimed_probe_day_start,
+                )
+                .await?
+                .is_some()
+            {
+                return Ok(None);
+            }
             if cursor >= day_end {
                 self.complete_dashboard_rollup_integrity_day_reaudit_if_ready(day_start, now)
                     .await?;
@@ -1523,6 +1489,7 @@ impl KeyStore {
         now: i64,
         deadline: Option<tokio::time::Instant>,
         recovery_target: bool,
+        claimed_probe_day_start: Option<i64>,
     ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
         let Some(deadline) = deadline else {
             return self
@@ -1531,6 +1498,7 @@ impl KeyStore {
                     now,
                     None,
                     recovery_target,
+                    claimed_probe_day_start,
                 )
                 .await;
         };
@@ -1549,6 +1517,7 @@ impl KeyStore {
                 now,
                 Some(deadline),
                 recovery_target,
+                claimed_probe_day_start,
             ),
         )
         .await
@@ -1605,12 +1574,27 @@ impl KeyStore {
         now: i64,
         deadline: Option<tokio::time::Instant>,
         recovery_target: bool,
+        claimed_probe_day_start: Option<i64>,
     ) -> Result<DashboardRollupIntegritySlice, ProxyError> {
         if deadline
             .map(|deadline| tokio::time::Instant::now() >= deadline)
             .unwrap_or(false)
         {
             return Ok(dashboard_integrity_deferred(1, "recovery_budget"));
+        }
+        let day_start = local_day_bucket_start_utc_ts(item.range_start);
+        if let Some(next_delay_secs) = self
+            .dashboard_rollup_integrity_blocked_range_probe_delay(
+                day_start,
+                now,
+                claimed_probe_day_start,
+            )
+            .await?
+        {
+            return Ok(dashboard_integrity_deferred(
+                next_delay_secs,
+                "source_baseline_probe_not_due",
+            ));
         }
         let work_delay_budget = dashboard_integrity_read_budget(deadline);
         if work_delay_budget.is_zero() {
@@ -1630,7 +1614,6 @@ impl KeyStore {
                 ));
             }
         };
-        let day_start = local_day_bucket_start_utc_ts(item.range_start);
         let day_end = next_local_day_start_utc_ts(day_start);
         let baseline_read_budget = dashboard_integrity_read_budget(deadline);
         if baseline_read_budget.is_zero() {
@@ -1645,6 +1628,12 @@ impl KeyStore {
             .await
         {
             Ok(true) => {
+                self.persist_dashboard_rollup_integrity_blocked_range(
+                    day_start,
+                    "deleted_source_baseline_unavailable",
+                    false,
+                )
+                .await?;
                 self.sqlite_runtime.record_deferred(
                     SqliteOperation::DashboardIntegrityWrite,
                     SqliteAdmissionDeferReason::SourceBaseline,
@@ -3208,6 +3197,7 @@ impl KeyStore {
         threshold: i64,
         target_day: Option<(i64, i64)>,
     ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::DashboardIntegrityWrite)
@@ -3238,6 +3228,28 @@ impl KeyStore {
                 return Ok(DashboardRollupRequestLogGcDecision::Blocked {
                     day_start,
                     reason: "retention_boundary",
+                });
+            }
+            let blocked_reason: Option<String> = sqlx::query_scalar(
+                "SELECT reason FROM dashboard_rollup_integrity_blocked_ranges WHERE day_start = ? AND next_probe_at > ?",
+            )
+            .bind(day_start)
+            .bind(now)
+            .fetch_optional(&mut *conn)
+            .await?;
+            if let Some(reason) = blocked_reason.filter(|reason| {
+                matches!(
+                    reason.as_str(),
+                    "source_baseline" | "deleted_source_baseline_unavailable"
+                )
+            }) {
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: if reason == "source_baseline" {
+                        "source_baseline"
+                    } else {
+                        "deleted_source_baseline_unavailable"
+                    },
                 });
             }
             let reaudit_pending: bool = sqlx::query_scalar(
