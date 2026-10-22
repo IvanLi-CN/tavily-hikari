@@ -2246,6 +2246,10 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
     )
     .await
     .expect("create proxy");
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop unrelated request-stats worker");
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
     settings.api_rebalance_enabled = true;
