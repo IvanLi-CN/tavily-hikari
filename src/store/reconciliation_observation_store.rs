@@ -64,6 +64,7 @@ const PROJECTION_NO_PROGRESS_DEFER_REASONS: &[&str] = &[
     "recent_contention",
     "query_deadline",
     "projection_read_budget",
+    "cursor_conflict",
     "sqlite_pressure",
     "local_pressure",
 ];
@@ -312,12 +313,13 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn finalize_deferred_upstream_reconciliation_claim(
+    pub(crate) async fn finalize_deferred_upstream_reconciliation_claim_with_progress(
         &self,
         job_id: i64,
         claim_generation: i64,
         reason: &'static str,
         retry_at: i64,
+        projection_accepted_progress: bool,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut tx = self
@@ -360,7 +362,9 @@ impl KeyStore {
                 .await?;
                 (streak, until)
             };
-            let projection_next_retry_at =
+            let projection_next_retry_at = if projection_accepted_progress {
+                0
+            } else {
                 Self::update_upstream_reconciliation_projection_defer_locked(
                     &mut tx,
                     reason,
@@ -368,8 +372,10 @@ impl KeyStore {
                     pressure_streak,
                     Some((job_id, claim_generation)),
                 )
-                .await?;
-            let projection_gate = is_projection_no_progress_defer_reason(reason);
+                .await?
+            };
+            let projection_gate = !projection_accepted_progress
+                && is_projection_no_progress_defer_reason(reason);
             let available_at = retry_at
                 .max(local_backoff_until)
                 .max(projection_next_retry_at)

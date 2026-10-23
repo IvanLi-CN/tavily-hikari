@@ -1027,6 +1027,7 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
         ClaimedReconciliationRunOutcome::Deferred {
             reason: "projection_read_budget",
             retry_at,
+            ..
         } if retry_at == now + 30
     ));
     let generations: (i64, i64) = sqlx::query_as(
@@ -1799,6 +1800,7 @@ async fn reconciliation_projection_deadline_stops_a_run_before_remote_attempts()
         ClaimedReconciliationRunOutcome::Deferred {
             reason: "projection_read_budget",
             retry_at,
+            ..
         } if retry_at == now + 30
     ));
     let work: (i64, i64) = sqlx::query_as(
@@ -2350,6 +2352,7 @@ async fn settlement_sqlite_pressure_returns_a_typed_defer_without_completing_wor
             ClaimedReconciliationRunOutcome::Deferred {
                 reason: "local_pressure",
                 retry_at,
+                ..
             } if retry_at >= proxy.backend_time().now_ts().saturating_add(5)
         ),
         "settlement pressure must return a local-pressure defer, got {outcome:?}"

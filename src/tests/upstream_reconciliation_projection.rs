@@ -1295,6 +1295,111 @@ async fn projection_no_progress_gate_uses_durable_ladder_and_maximum() {
 }
 
 #[tokio::test]
+async fn projection_progress_does_not_reapply_defer_gate() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 1, 45);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-progress-reset"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = 0, last_defer_reason = NULL WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset projection gate");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim_with_progress(
+            claim.id,
+            claim.claim_generation,
+            "local_pressure",
+            now + 5,
+            true,
+        )
+        .await
+        .expect("finalize after accepted projection progress");
+    let state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read projection state");
+    assert_eq!(state, (0, None));
+    assert_eq!(continuation.status, "queued");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn projection_cursor_conflict_uses_durable_gate_reason() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 2, 15);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-cursor-conflict"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = 0, last_defer_reason = NULL WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset projection gate");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "cursor_conflict",
+            now + 5,
+        )
+        .await
+        .expect("persist cursor-conflict defer");
+    let state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read cursor-conflict state");
+    assert_eq!(state, (now + 30, Some("cursor_conflict".to_string())));
+    assert_eq!(continuation.status, "queued");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn projection_defer_skips_research_candidates_in_the_same_turn() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
