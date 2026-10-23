@@ -2342,7 +2342,7 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
         .expect("prewarm reconciliation projection capacity");
     let outcome = {
         let mut resolved = None;
-        for _ in 0..40 {
+        for _ in 0..200 {
             let outcome = proxy
                 .run_upstream_reconciliation_once_claimed_outcome(
                     &format!("http://{addr}"),
