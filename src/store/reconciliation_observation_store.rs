@@ -58,6 +58,7 @@ pub(crate) struct ReconciliationRunObservationWrite {
 }
 
 const PROJECTION_NO_PROGRESS_DEFER_REASONS: &[&str] = &[
+    "projection_backoff",
     "bulk_busy",
     "pool_pressure",
     "foreground_pressure",
@@ -329,7 +330,8 @@ impl KeyStore {
         let result = async {
             let preserve_retry_state = matches!(
                 reason,
-                "research_read_budget"
+                "projection_backoff"
+                    | "research_read_budget"
                     | RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET
                     | RECONCILIATION_RETRY_REASON_KEY_COOLDOWN
                     | RECONCILIATION_RETRY_REASON_GENERATION_CHANGED
