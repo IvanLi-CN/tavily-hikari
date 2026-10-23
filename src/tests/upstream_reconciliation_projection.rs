@@ -1116,7 +1116,7 @@ async fn projection_no_progress_gate_uses_durable_ladder_and_maximum() {
     let (backend_time, clock) = BackendTime::manual_from_ts(now);
     let proxy = TavilyProxy::with_options_and_time(
         vec!["tvly-reconciliation-projection-gate"],
-        DEFAULT_UPSTREAM,
+        "http://127.0.0.1:9",
         &db_string,
         TavilyProxyOptions::from_database_path(&db_string),
         backend_time,
@@ -1302,7 +1302,7 @@ async fn projection_defer_skips_research_candidates_in_the_same_turn() {
     let (backend_time, _) = BackendTime::manual_from_ts(now);
     let proxy = TavilyProxy::with_options_and_time(
         vec!["tvly-reconciliation-projection-research-isolation"],
-        DEFAULT_UPSTREAM,
+        "http://127.0.0.1:9",
         &db_string,
         TavilyProxyOptions::from_database_path(&db_string),
         backend_time,
