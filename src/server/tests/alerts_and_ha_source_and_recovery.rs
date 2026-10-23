@@ -973,6 +973,7 @@ async fn reconciliation_scheduler_persists_typed_defer_without_a_terminal_error(
         Ok(ClaimedReconciliationRunOutcome::Deferred {
             reason: "local_pressure",
             retry_at,
+            projection_accepted_progress: false,
         }),
     )
     .await;

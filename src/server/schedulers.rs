@@ -2605,6 +2605,7 @@ async fn run_manual_claimed_job(
                         .backend_time()
                         .now_ts()
                         .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
+                    false,
                 )
                 .await;
             }
@@ -2634,6 +2635,7 @@ async fn run_manual_claimed_job(
                             .backend_time()
                             .now_ts()
                             .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
+                        false,
                     )
                     .await;
                     return deferred;
@@ -2801,19 +2803,25 @@ async fn persist_claimed_reconciliation_run(
                             .backend_time()
                             .now_ts()
                             .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
+                        false,
                     )
                     .await
                 }
                 Err(err) => finish(state, "error", err.to_string()).await,
             }
         }
-        Ok(ClaimedReconciliationRunOutcome::Deferred { reason, retry_at }) => {
+        Ok(ClaimedReconciliationRunOutcome::Deferred {
+            reason,
+            retry_at,
+            projection_accepted_progress,
+        }) => {
             defer_reconciliation_for_sqlite_admission(
                 &state,
                 job_id,
                 claim_generation,
                 reason,
                 retry_at,
+                projection_accepted_progress,
             )
             .await
         }
@@ -2838,6 +2846,7 @@ async fn persist_claimed_reconciliation_run(
                     .backend_time()
                     .now_ts()
                     .saturating_add(RECONCILIATION_SQLITE_ADMISSION_RETRY_DELAY_SECS),
+                false,
             )
             .await
         }
@@ -2853,6 +2862,7 @@ async fn defer_reconciliation_for_sqlite_admission(
     claim_generation: i64,
     defer_reason: &'static str,
     retry_at: i64,
+    projection_accepted_progress: bool,
 ) -> bool {
     let available_at = retry_at.max(state.proxy.backend_time().now_ts());
     tracing::debug!(
@@ -2866,11 +2876,12 @@ async fn defer_reconciliation_for_sqlite_admission(
     );
     state
         .proxy
-        .finalize_deferred_upstream_reconciliation_claim(
+        .finalize_deferred_upstream_reconciliation_claim_with_progress(
             job_id,
             claim_generation,
             defer_reason,
             available_at,
+            projection_accepted_progress,
         )
         .await
         .is_ok()

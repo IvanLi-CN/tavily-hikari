@@ -277,6 +277,7 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
         crate::tavily_proxy::ClaimedReconciliationRunOutcome::Deferred {
             reason: "pool_pressure",
             retry_at,
+            ..
         } => retry_at,
         other => panic!("expected a pool-pressure deferred outcome, got {other:?}"),
     };

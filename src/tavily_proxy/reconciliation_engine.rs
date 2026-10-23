@@ -64,7 +64,11 @@ pub enum ClaimedReconciliationRunOutcome {
         no_adjustment: i64,
         observed: i64,
     },
-    Deferred { reason: &'static str, retry_at: i64 },
+    Deferred {
+        reason: &'static str,
+        retry_at: i64,
+        projection_accepted_progress: bool,
+    },
     StaleClaim,
 }
 
@@ -405,10 +409,36 @@ impl ReconciliationEngine {
         reason: &'static str,
         retry_at: i64,
     ) -> ClaimedReconciliationRunOutcome {
+        Self::deferred_at_with_projection_progress(_proxy, reason, retry_at, false)
+    }
+
+    fn deferred_at_with_projection_progress(
+        _proxy: &TavilyProxy,
+        reason: &'static str,
+        retry_at: i64,
+        projection_accepted_progress: bool,
+    ) -> ClaimedReconciliationRunOutcome {
         ClaimedReconciliationRunOutcome::Deferred {
             reason,
             retry_at,
+            projection_accepted_progress,
         }
+    }
+
+    fn deferred_with_projection_progress(
+        proxy: &TavilyProxy,
+        reason: &'static str,
+        projection_accepted_progress: bool,
+    ) -> ClaimedReconciliationRunOutcome {
+        Self::deferred_at_with_projection_progress(
+            proxy,
+            reason,
+            proxy
+                .backend_time()
+                .now_ts()
+                .saturating_add(Self::defer_retry_delay_secs(reason)),
+            projection_accepted_progress,
+        )
     }
 
     fn projection_read_budget_is_deferred(error: &ProxyError) -> bool {

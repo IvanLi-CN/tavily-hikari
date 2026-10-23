@@ -50,6 +50,8 @@ struct ReconciliationProjectionStateRow {
     tx_hold_le_100: i64,
     tx_hold_le_250: i64,
     tx_hold_over_250: i64,
+    next_retry_at: i64,
+    last_defer_reason: Option<String>,
     identity_repair_generation: i64,
 }
 
@@ -173,6 +175,7 @@ impl<'a> ReconciliationProjectionController<'a> {
                   batch_size, fast_slice_streak, completed,
                   tx_hold_le_10, tx_hold_le_25, tx_hold_le_50,
                   tx_hold_le_100, tx_hold_le_250, tx_hold_over_250,
+                  next_retry_at, last_defer_reason,
                   identity_repair_generation
            FROM upstream_reconciliation_projection_state WHERE id = 'local'"#,
         )
@@ -183,6 +186,13 @@ impl<'a> ReconciliationProjectionController<'a> {
             return Ok(ReconciliationProjectionSliceOutcome::Advanced {
                 scanned_rows: 0,
                 completed: true,
+            });
+        }
+        if state.last_defer_reason.is_some()
+            && state.next_retry_at > self.store.backend_time.now_ts()
+        {
+            return Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                reason: "projection_backoff",
             });
         }
         let batch_size = state
@@ -294,9 +304,7 @@ impl<'a> ReconciliationProjectionController<'a> {
                 }
                 Ok(ReconciliationProjectionWriteStatus::CursorConflict) => {
                     tx.rollback().await?;
-                    Ok(ReconciliationProjectionSliceOutcome::Deferred {
-                        reason: "cursor_conflict",
-                    })
+                    self.defer_cursor_conflict(claimed_job).await
                 }
                 Err(err) => {
                     tx.finish(Err(err)).await?;
@@ -534,9 +542,7 @@ impl<'a> ReconciliationProjectionController<'a> {
             }
             Ok(ReconciliationProjectionWriteStatus::CursorConflict) => {
                 tx.rollback().await?;
-                Ok(ReconciliationProjectionSliceOutcome::Deferred {
-                    reason: "cursor_conflict",
-                })
+                self.defer_cursor_conflict(claimed_job).await
             }
             Err(err) => {
                 tx.finish(Err(err)).await?;
@@ -637,6 +643,33 @@ impl<'a> ReconciliationProjectionController<'a> {
                 })
             }
             Err(ProxyError::StaleClaim { .. }) => Ok(ReconciliationProjectionSliceOutcome::StaleClaim),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn defer_cursor_conflict(
+        &self,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<ReconciliationProjectionSliceOutcome, ProxyError> {
+        match self
+            .record_deferred_slice(claimed_job, "cursor_conflict")
+            .await
+        {
+            Ok(true) => Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                reason: "cursor_conflict",
+            }),
+            Ok(false) => Ok(ReconciliationProjectionSliceOutcome::Advanced {
+                scanned_rows: 0,
+                completed: true,
+            }),
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                Ok(ReconciliationProjectionSliceOutcome::Deferred {
+                    reason: "cursor_conflict",
+                })
+            }
+            Err(ProxyError::StaleClaim { .. }) => {
+                Ok(ReconciliationProjectionSliceOutcome::StaleClaim)
+            }
             Err(err) => Err(err),
         }
     }

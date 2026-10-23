@@ -1107,3 +1107,431 @@ async fn reconciliation_projection_continues_after_a_settled_backfill_page() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[tokio::test]
+async fn projection_no_progress_gate_uses_durable_ladder_and_maximum() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 1, 30);
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-gate"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let existing_gate = now + 90;
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = ?, last_defer_reason = NULL WHERE id = 'local'",
+    )
+    .bind(existing_gate)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed incomplete projection gate");
+
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let first = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "bulk_busy",
+            now + 5,
+        )
+        .await
+        .expect("persist first projection defer");
+    let first_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(first.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read first continuation");
+    assert_eq!(first_available_at, existing_gate);
+    assert!(
+        proxy
+            .scheduled_job_mark_running(first.job_id)
+            .await
+            .expect("check early continuation")
+            .is_none()
+    );
+    let first_state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read first projection gate");
+    assert_eq!(first_state, (existing_gate, Some("bulk_busy".to_string())));
+
+    clock.set_now_ts(existing_gate);
+    let second_claim = proxy
+        .scheduled_job_mark_running(first.job_id)
+        .await
+        .expect("claim first continuation")
+        .expect("continuation is due");
+    let second = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            second_claim.id,
+            second_claim.claim_generation,
+            "pool_pressure",
+            existing_gate + 5,
+        )
+        .await
+        .expect("persist second projection defer");
+    let second_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(second.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read second continuation");
+    assert_eq!(second_available_at, existing_gate + 60);
+    let second_state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read second projection gate");
+    assert_eq!(
+        second_state,
+        (existing_gate + 60, Some("pool_pressure".to_string()))
+    );
+
+    clock.set_now_ts(existing_gate + 60);
+    let third_claim = proxy
+        .scheduled_job_mark_running(second.job_id)
+        .await
+        .expect("claim second continuation")
+        .expect("second continuation is due");
+    let third = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            third_claim.id,
+            third_claim.claim_generation,
+            "foreground_pressure",
+            existing_gate + 65,
+        )
+        .await
+        .expect("persist third projection defer");
+    let third_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(third.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read third continuation");
+    assert_eq!(third_available_at, existing_gate + 180);
+    let third_state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read third projection gate");
+    assert_eq!(
+        third_state,
+        (existing_gate + 180, Some("foreground_pressure".to_string()))
+    );
+
+    clock.set_now_ts(existing_gate + 180);
+    let fourth_claim = proxy
+        .scheduled_job_mark_running(third.job_id)
+        .await
+        .expect("claim third continuation")
+        .expect("third continuation is due");
+    let fourth = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            fourth_claim.id,
+            fourth_claim.claim_generation,
+            "recent_contention",
+            existing_gate + 125,
+        )
+        .await
+        .expect("persist fourth projection defer");
+    let fourth_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(fourth.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read fourth continuation");
+    assert_eq!(fourth_available_at, existing_gate + 480);
+    let fourth_state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read fourth projection gate");
+    assert_eq!(
+        fourth_state,
+        (existing_gate + 480, Some("recent_contention".to_string()))
+    );
+
+    assert!(matches!(
+        proxy
+            .finalize_deferred_upstream_reconciliation_claim(
+                claim.id,
+                claim.claim_generation,
+                "local_pressure",
+                existing_gate + 60,
+            )
+            .await,
+        Err(ProxyError::StaleClaim { .. })
+    ));
+    let stale_state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read stale projection gate");
+    assert_eq!(stale_state, fourth_state);
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn projection_progress_does_not_reapply_defer_gate() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 1, 45);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-progress-reset"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = 0, last_defer_reason = NULL WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset projection gate");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim_with_progress(
+            claim.id,
+            claim.claim_generation,
+            "local_pressure",
+            now + 5,
+            true,
+        )
+        .await
+        .expect("finalize after accepted projection progress");
+    let state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read projection state");
+    assert_eq!(state, (0, None));
+    assert_eq!(continuation.status, "queued");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn projection_cursor_conflict_uses_durable_gate_reason() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 2, 15);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-cursor-conflict"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = 0, last_defer_reason = NULL WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset projection gate");
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "cursor_conflict",
+            now + 5,
+        )
+        .await
+        .expect("persist cursor-conflict defer");
+    let state: (i64, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, last_defer_reason FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read cursor-conflict state");
+    assert_eq!(state, (now + 30, Some("cursor_conflict".to_string())));
+    assert_eq!(continuation.status, "queued");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn projection_defer_skips_research_candidates_in_the_same_turn() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 2, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-research-isolation"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.rebalance_mcp_enabled = true;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable compare reconciliation");
+    sqlx::query("DROP TRIGGER trg_upstream_reconciliation_usage_work_insert")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("disable live projection trigger");
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0 WHERE id = 'local'",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("mark projection incomplete");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES ('projection-isolation-source', 'projection-isolation-key', '2026-08-21/S0',
+                     'projection-isolation-project', 'token:projection-isolation-source', ?, ?,
+                     1, ?, ?, ?, 'shadow')"#,
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed historical projection source");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_work (
+             token_id, period_code, project_id, billing_subject, settlement_mode,
+             period_start, period_end, scheduling_key_id, updated_at
+           ) VALUES ('projection-isolation-main', '2026-08-21/S1', 'main-project',
+                     'token:projection-isolation-main', 'shadow', ?, ?,
+                     'missing-key', ?)"#,
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed existing main candidate");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_usage (
+             token_id, key_id, period_code, project_id, billing_subject,
+             period_start, period_end, request_count, first_used_at,
+             last_used_at, updated_at, settlement_mode
+           ) VALUES ('projection-isolation-research', 'research-key', '2026-08-21/R0',
+                     'research-project', 'token:projection-isolation-research', ?, ?,
+                     1, ?, ?, ?, 'shadow')"#,
+    )
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 4_000)
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed research source");
+    sqlx::query(
+        r#"INSERT INTO upstream_reconciliation_research (
+             request_id, token_id, key_id, period_code, created_at, terminal_at, updated_at
+           ) VALUES ('projection-isolation-request', 'projection-isolation-research',
+                     'research-key', '2026-08-21/R0', ?, NULL, ?)"#,
+    )
+    .bind(now - 900)
+    .bind(now - 900)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed due research candidate");
+    sqlx::query(
+        r#"CREATE TRIGGER fail_projection_isolation_work_insert
+           BEFORE INSERT ON upstream_reconciliation_work
+           BEGIN
+             SELECT RAISE(ABORT, 'database is locked');
+           END"#,
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("inject projection defer");
+    proxy.fail_next_reconciliation_research_read_for_test();
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let outcome = proxy
+        .run_upstream_reconciliation_once_claimed_outcome(
+            "http://127.0.0.1:9",
+            claim.id,
+            claim.claim_generation,
+        )
+        .await
+        .expect("projection defer does not fail the main turn");
+    assert!(
+        matches!(outcome, ClaimedReconciliationRunOutcome::Completed { .. }),
+        "projection no-progress must skip the same-turn Research sweep: {outcome:?}"
+    );
+    assert!(
+        proxy
+            .key_store
+            .next_upstream_reconciliation_research_candidates(80)
+            .await
+            .is_err(),
+        "the injected Research read must remain unused when projection makes no progress"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}

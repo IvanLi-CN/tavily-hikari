@@ -62,6 +62,7 @@ async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_succe
         ClaimedReconciliationRunOutcome::Deferred {
             reason: "controlled_retry",
             retry_at,
+            ..
         } if retry_at == now + 30
     ));
     let continuation = proxy
@@ -2178,6 +2179,7 @@ async fn reconciliation_all_key_cooldowns_defer_to_earliest_retry() {
             ClaimedReconciliationRunOutcome::Deferred {
                 reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
                 retry_at,
+                ..
             } if retry_at == now + 300
         ),
         "all-key cooldown must retain its earliest wake: {outcome:?}"
@@ -2372,6 +2374,7 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
             ClaimedReconciliationRunOutcome::Deferred {
                 reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
                 retry_at,
+                ..
             } if retry_at == now + 300
         ),
         "unexpected mixed-key outcome: outcome={outcome:?} now={now} healthy_hits={} cooling_hits={}",
