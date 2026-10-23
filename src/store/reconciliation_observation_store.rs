@@ -57,6 +57,30 @@ pub(crate) struct ReconciliationRunObservationWrite {
     pub(crate) next_retry_at: Option<i64>,
 }
 
+const PROJECTION_NO_PROGRESS_DEFER_REASONS: &[&str] = &[
+    "bulk_busy",
+    "pool_pressure",
+    "foreground_pressure",
+    "recent_contention",
+    "query_deadline",
+    "projection_read_budget",
+    "sqlite_pressure",
+    "local_pressure",
+];
+
+fn is_projection_no_progress_defer_reason(reason: &str) -> bool {
+    PROJECTION_NO_PROGRESS_DEFER_REASONS.contains(&reason)
+}
+
+fn projection_no_progress_retry_delay_secs(pressure_streak: i64) -> i64 {
+    match pressure_streak {
+        0 | 1 => 30,
+        2 => 60,
+        3 => 120,
+        _ => 300,
+    }
+}
+
 impl KeyStore {
     async fn apply_upstream_reconciliation_local_backoff_locked<T>(
         transaction: &mut T,
@@ -119,6 +143,63 @@ impl KeyStore {
                 .await?;
         }
         Ok((streak, level, until))
+    }
+
+    async fn update_upstream_reconciliation_projection_defer_locked<T>(
+        transaction: &mut T,
+        reason: &'static str,
+        now: i64,
+        pressure_streak: i64,
+        claimed_job: Option<(i64, i64)>,
+    ) -> Result<i64, ProxyError>
+    where
+        T: std::ops::DerefMut<Target = sqlx::SqliteConnection>,
+    {
+        if !is_projection_no_progress_defer_reason(reason) {
+            return Ok(0);
+        }
+        if !Self::reconciliation_claim_is_current_locked(transaction, claimed_job).await? {
+            let (job_id, claim_generation) = claimed_job.expect("claimed job was checked");
+            return Err(ProxyError::StaleClaim {
+                job_id,
+                claim_generation,
+            });
+        }
+        let Some((completed, previous_retry_at)) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT completed, next_retry_at FROM upstream_reconciliation_projection_state WHERE id = 'local'",
+        )
+        .fetch_optional(&mut **transaction)
+        .await?
+        else {
+            return Ok(0);
+        };
+        if completed != 0 {
+            return Ok(0);
+        }
+        let requested_retry_at = now.saturating_add(
+            projection_no_progress_retry_delay_secs(pressure_streak),
+        );
+        let next_retry_at = previous_retry_at.max(requested_retry_at);
+        let updated = sqlx::query(
+            r#"UPDATE upstream_reconciliation_projection_state
+               SET next_retry_at = ?, last_defer_reason = ?, updated_at = ?
+               WHERE id = 'local' AND completed = 0"#,
+        )
+        .bind(next_retry_at)
+        .bind(reason)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Ok(0);
+        }
+        sqlx::query(
+            "UPDATE upstream_reconciliation_run_observation SET projection_state = 'deferred', cursor_advanced = 0, observed_at = ? WHERE id = 'local'",
+        )
+        .bind(now)
+        .execute(&mut **transaction)
+        .await?;
+        Ok(next_retry_at)
     }
 
     pub(crate) async fn record_reconciliation_research_progress_window_locked<T>(
@@ -252,26 +333,47 @@ impl KeyStore {
                     | RECONCILIATION_RETRY_REASON_GENERATION_CHANGED
                     | RECONCILIATION_RETRY_REASON_CONTROLLED_RETRY
             );
-            let local_backoff_until = if preserve_retry_state {
-                sqlx::query_scalar::<_, String>(
-                    "SELECT value FROM meta WHERE key = ? LIMIT 1",
+            let (pressure_streak, local_backoff_until) = if preserve_retry_state {
+                let rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT key, value FROM meta WHERE key IN (?, ?)",
                 )
+                .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1)
                 .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
-                .fetch_optional(&mut *tx)
-                .await?
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(0)
+                .fetch_all(&mut *tx)
+                .await?;
+                let value = |key: &str| {
+                    rows.iter()
+                        .find(|(stored_key, _)| stored_key == key)
+                        .and_then(|(_, stored_value)| stored_value.parse::<i64>().ok())
+                        .unwrap_or(0)
+                };
+                (value(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1), value(
+                    META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+                ))
             } else {
-                let (_, _, until) = Self::apply_upstream_reconciliation_local_backoff_locked(
+                let (streak, _, until) = Self::apply_upstream_reconciliation_local_backoff_locked(
                     &mut tx,
                     true,
                     now,
                     Some((job_id, claim_generation)),
                 )
                 .await?;
-                until
+                (streak, until)
             };
-            let available_at = retry_at.max(local_backoff_until).max(now);
+            let projection_next_retry_at =
+                Self::update_upstream_reconciliation_projection_defer_locked(
+                    &mut tx,
+                    reason,
+                    now,
+                    pressure_streak,
+                    Some((job_id, claim_generation)),
+                )
+                .await?;
+            let projection_gate = is_projection_no_progress_defer_reason(reason);
+            let available_at = retry_at
+                .max(local_backoff_until)
+                .max(projection_next_retry_at)
+                .max(now);
             let attempt: i64 = sqlx::query_scalar(
                 r#"
                 SELECT attempt
@@ -353,9 +455,12 @@ impl KeyStore {
                     .await?
             {
                 if status == "queued" {
-                    sqlx::query(
-                        "UPDATE scheduled_jobs SET available_at = MIN(available_at, ?) WHERE id = ?",
-                    )
+                    let query = if projection_gate {
+                        "UPDATE scheduled_jobs SET available_at = MAX(available_at, ?) WHERE id = ?"
+                    } else {
+                        "UPDATE scheduled_jobs SET available_at = MIN(available_at, ?) WHERE id = ?"
+                    };
+                    sqlx::query(query)
                     .bind(available_at)
                     .bind(continuation_id)
                     .execute(&mut *tx)

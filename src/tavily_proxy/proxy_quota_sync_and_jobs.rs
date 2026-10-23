@@ -887,6 +887,7 @@ impl TavilyProxy {
                     .saturating_sub(Self::RECONCILIATION_OUTER_TIMEOUT_MARGIN_SECS),
             );
         let mut preparation_budget_exhausted = false;
+        let mut projection_accepted_progress = false;
         let mut candidate_batch;
         if preparation_deadline <= std::time::Instant::now() {
             return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
@@ -939,7 +940,11 @@ impl TavilyProxy {
                     }
                 };
                 match projection {
-                    Ok(ReconciliationProjectionSliceOutcome::Advanced { scanned_rows, .. }) => {
+                    Ok(ReconciliationProjectionSliceOutcome::Advanced {
+                        scanned_rows,
+                        completed,
+                    }) => {
+                        projection_accepted_progress |= completed || scanned_rows > 0;
                         if candidate_batch.candidates.is_empty()
                             && scanned_rows > 0
                             && std::time::Instant::now() < preparation_deadline
@@ -1828,6 +1833,7 @@ impl TavilyProxy {
         let research_page = if result.is_ok()
             && !remote_attempt_budget_deferred
             && !main_remote_budget_deferred
+            && projection_accepted_progress
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
         {
@@ -2178,8 +2184,10 @@ impl TavilyProxy {
                                 .await?
                             }
                         }
-                    } else if reconciliation_outcome
-                        .is_some_and(ReconciliationEngine::clears_local_pressure)
+                    } else if !local_pressure
+                        && (projection_accepted_progress
+                            || reconciliation_outcome
+                                .is_some_and(ReconciliationEngine::clears_local_pressure))
                     {
                         let now = self.backend_time.now_ts();
                         match claimed_job {
