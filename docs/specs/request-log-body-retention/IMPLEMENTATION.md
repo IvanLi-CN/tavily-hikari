@@ -8,8 +8,10 @@
   retain the five-minute defer. Scan-only progress counts only after its cursor is persisted.
 - SQLite maintenance keeps a deferred admission ticket through the five-minute scheduler backoff,
   so unrelated coordinator activity cannot erase the aged turn before a pressure retry.
-- Dashboard integrity admission keeps its five-minute backoff under foreground pressure, pool pressure,
-  and recent SQLite contention; an occupied exclusive bulk-admission slot is rechecked after five seconds.
+- Dashboard integrity admission re-probes transient foreground-pressure, pool-pressure, and recent-contention
+  defers on the aged-turn five-second cadence; an occupied exclusive bulk-admission slot is rechecked after five
+  seconds. The retry cadence does not bypass the existing resource, permit, read-budget, transaction-budget, or
+  source-fence gates.
 - Request-log GC keeps the five-minute defer for admission pressure, contention, no progress, and errors
   so cleanup resumes without repeatedly competing with foreground capacity.
 - A productive request-log GC slice registers its next maintenance turn before releasing the current

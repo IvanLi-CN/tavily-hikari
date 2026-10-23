@@ -7,6 +7,14 @@ pub(crate) enum SqliteCooperativeQueryOutcome<T> {
 }
 
 impl SqliteReadSnapshot {
+    pub(crate) async fn complete_native_read<T>(
+        self,
+        query_result: Result<T, sqlx::Error>,
+    ) -> Result<SqliteCooperativeQueryOutcome<T>, ProxyError> {
+        self.complete_cooperative_query_inner(None, query_result)
+            .await
+    }
+
     pub(crate) async fn complete_reconciliation_read<T>(
         self,
         kind: ReconciliationReadKind,
@@ -238,5 +246,124 @@ impl SqliteReadSnapshot {
                 Err(err)
             }
         }
+    }
+}
+
+impl SqliteRuntime {
+    pub(crate) async fn begin_read_snapshot_before_deadline(
+        &self,
+        operation: SqliteOperation,
+        deadline: Instant,
+        max_run_budget: Duration,
+    ) -> Result<SqliteReadSnapshot, ProxyError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let error = ProxyError::Deferred {
+                operation: operation.as_str(),
+                reason: "recovery_budget".to_string(),
+            };
+            self.record_deferred_error(operation, &error);
+            return Err(error);
+        }
+        let (conn, pool_wait) = self
+            .acquire_pool_connection_with_budget(
+                operation,
+                operation.acquire_budget().min(remaining),
+            )
+            .await?;
+        let (conn, restore_busy_timeout) =
+            match configure_operation_connection(conn, operation).await {
+                Ok(configured) => configured,
+                Err(err) => {
+                    let error = ProxyError::Database(err);
+                    self.record_error(operation, pool_wait, Duration::ZERO, &error);
+                    return Err(error);
+                }
+            };
+        let begin_started = Instant::now();
+        let mut snapshot = SqliteReadSnapshot {
+            conn: Some(conn),
+            runtime: self.clone(),
+            operation,
+            pool_wait,
+            begin_wait: Duration::ZERO,
+            started_at: Instant::now(),
+            restore_busy_timeout,
+            cache_write_pages_start: None,
+            cooperative_run_deadline: None,
+            #[cfg(any(test, debug_assertions))]
+            cooperative_run_budget_for_test: None,
+            #[cfg(test)]
+            cooperative_run_budget_checks_remaining_for_test: None,
+        };
+        let begin_budget = operation
+            .begin_budget()
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if begin_budget.is_zero() {
+            let error = ProxyError::Deferred {
+                operation: operation.as_str(),
+                reason: "recovery_budget".to_string(),
+            };
+            return match snapshot.close_after_query(Some(&error)).await {
+                Ok(()) => Err(error),
+                Err(close_error) => Err(close_error),
+            };
+        }
+        let begin_result =
+            tokio::time::timeout(begin_budget, sqlx::query("BEGIN").execute(&mut *snapshot)).await;
+        match begin_result {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                let conn = snapshot
+                    .conn
+                    .take()
+                    .expect("SQLite read snapshot connection");
+                if let Err(restore_err) =
+                    restore_operation_connection(conn, restore_busy_timeout).await
+                {
+                    let error = ProxyError::Database(restore_err);
+                    self.record_error(operation, pool_wait, begin_started.elapsed(), &error);
+                    return Err(error);
+                }
+                let error = ProxyError::Database(err);
+                self.record_error(operation, pool_wait, begin_started.elapsed(), &error);
+                return Err(error);
+            }
+            Err(_) => {
+                let conn = snapshot
+                    .conn
+                    .take()
+                    .expect("SQLite read snapshot connection");
+                conn.detach().close().await.ok();
+                let error = ProxyError::Database(sqlx::Error::PoolTimedOut);
+                self.record_error(operation, pool_wait, begin_started.elapsed(), &error);
+                return Err(error);
+            }
+        }
+        snapshot.begin_wait = begin_started.elapsed();
+        snapshot.started_at = Instant::now();
+        snapshot.cache_write_pages_start = connection_cache_write_pages(&mut snapshot).await;
+        let read_budget = max_run_budget.min(deadline.saturating_duration_since(Instant::now()));
+        if read_budget.is_zero() {
+            let error = ProxyError::Deferred {
+                operation: operation.as_str(),
+                reason: "recovery_budget".to_string(),
+            };
+            return match snapshot.close_after_query(Some(&error)).await {
+                Ok(()) => Err(error),
+                Err(close_error) => Err(close_error),
+            };
+        }
+        if let Err(error) = snapshot
+            .arm_cooperative_run_budget_with_cadence(read_budget, 1_000)
+            .await
+        {
+            let close = snapshot.close_after_query(Some(&error)).await;
+            return match close {
+                Ok(()) => Err(error),
+                Err(close_error) => Err(close_error),
+            };
+        }
+        Ok(snapshot)
     }
 }

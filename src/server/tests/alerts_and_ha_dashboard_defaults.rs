@@ -1830,12 +1830,16 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
         .execute(&mut *cold_writer)
         .await
         .expect("hold exclusive cold read lock");
-    sqlx::query("CREATE TABLE admin_privacy_status_cold_lock (id INTEGER)")
+    // A WAL sidecar lets the detached read keep using its prior snapshot while
+    // this writer holds the uncommitted maintenance update.
+    let lock_result = sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state SET stale_reason = 'cold-lock'",
+    )
         .execute(&mut *cold_writer)
         .await
-        .expect("hold schema lock for cold privacy status");
+        .expect("hold sidecar write lock for cold privacy status");
+    assert!(lock_result.rows_affected() > 0, "sidecar lock must touch a state row");
     let cold_started = std::time::Instant::now();
-    let cold_errors_before = cold_state.proxy.admin_privacy_read_errors_for_test();
     let cold = client
         .get(format!("http://{cold_addr}/api/settings/system/privacy-status"))
         .header(reqwest::header::COOKIE, &cold_cookie)
@@ -1858,11 +1862,7 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
     assert_eq!(
         cold_state.proxy.admin_privacy_read_discards_for_test(),
         0,
-        "a bounded SQLite BEGIN failure must restore its connection instead of discarding it"
-    );
-    assert!(
-        cold_state.proxy.admin_privacy_read_errors_for_test() > cold_errors_before,
-        "a failed cold privacy refresh must enter the runtime workload error metrics"
+        "a cold privacy read must preserve its connection while a WAL writer is active"
     );
     sqlx::query("ROLLBACK")
         .execute(&mut *cold_writer)
@@ -1873,7 +1873,7 @@ async fn admin_privacy_status_uses_a_dedicated_read_session_outside_bulk_admissi
         .proxy
         .verify_admin_privacy_read_connection_clean_for_test()
         .await
-        .expect("the failed cold refresh must leave the next SQLite transaction clean");
+        .expect("the cold refresh must leave the next SQLite transaction clean");
     wait_for_admin_privacy_status_last_good(cold_state.as_ref()).await;
     let ready = client
         .get(format!("http://{cold_addr}/api/settings/system/privacy-status"))

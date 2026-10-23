@@ -1344,6 +1344,9 @@ pub struct HaOutboxGcReport {
     pub wal_checkpoint_busy: bool,
     pub wal_checkpoint_log_frames: i64,
     pub wal_checkpoint_checkpointed_frames: i64,
+    pub wal_checkpoint_observability_busy: bool,
+    pub wal_checkpoint_observability_log_frames: i64,
+    pub wal_checkpoint_observability_checkpointed_frames: i64,
     pub active_elapsed_ms: u128,
     pub max_batch_elapsed_ms: u128,
     pub elapsed_ms: u128,
@@ -1352,7 +1355,7 @@ pub struct HaOutboxGcReport {
 
 pub fn format_ha_outbox_gc_report_message(report: &HaOutboxGcReport, passes: usize) -> String {
     format!(
-        "deleted_rows={} completed={} has_more={} channels={} batches={} passes={} wal_busy={} wal_log_frames={} wal_checkpointed_frames={} active_elapsed_ms={} max_batch_elapsed_ms={} elapsed_ms={} continuation_delay_secs={:?}",
+        "deleted_rows={} completed={} has_more={} channels={} batches={} passes={} wal_busy={} wal_log_frames={} wal_checkpointed_frames={} observability_wal_busy={} observability_wal_log_frames={} observability_wal_checkpointed_frames={} active_elapsed_ms={} max_batch_elapsed_ms={} elapsed_ms={} continuation_delay_secs={:?}",
         report.deleted_rows,
         report.completed,
         report.has_more,
@@ -1376,6 +1379,9 @@ pub fn format_ha_outbox_gc_report_message(report: &HaOutboxGcReport, passes: usi
         report.wal_checkpoint_busy,
         report.wal_checkpoint_log_frames,
         report.wal_checkpoint_checkpointed_frames,
+        report.wal_checkpoint_observability_busy,
+        report.wal_checkpoint_observability_log_frames,
+        report.wal_checkpoint_observability_checkpointed_frames,
         report.active_elapsed_ms,
         report.max_batch_elapsed_ms,
         report.elapsed_ms,

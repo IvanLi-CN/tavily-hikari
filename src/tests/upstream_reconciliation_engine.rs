@@ -979,7 +979,7 @@ async fn reconciliation_candidate_read_deadline_defers_without_remote_or_billing
         .set_system_settings(&settings)
         .await
         .expect("enable compare reconciliation");
-    for index in 0..128 {
+    for index in 0..32 {
         sqlx::query(
             r#"INSERT INTO upstream_reconciliation_work (
                  token_id, period_code, project_id, billing_subject, settlement_mode,
@@ -1778,6 +1778,10 @@ async fn reconciliation_projection_deadline_stops_a_run_before_remote_attempts()
 
     // Candidate selection performs the recent and backlog source reads first; interrupt the
     // following historical projection read while an eligible candidate is already present.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     proxy
         .key_store
         .sqlite_runtime

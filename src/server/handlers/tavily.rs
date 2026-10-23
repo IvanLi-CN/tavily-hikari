@@ -151,6 +151,7 @@ async fn record_rebalance_period_usage(
     {
         eprintln!("record upstream reconciliation usage failed: {err}");
     } else {
+        let _phase = tavily_hikari::observability::begin_request_phase("reconciliation_schedule");
         maintenance_worker_wake_for_state(state.as_ref()).notify_one();
     }
 }
@@ -580,14 +581,17 @@ async fn tavily_http_research_result(
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
     headers.remove(HIKARI_ROUTING_KEY_HEADER);
-    let system_settings = state
-        .proxy
-        .get_system_settings()
-        .await
-        .map_err(|err| {
-            eprintln!("get system settings failed for {path}: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let system_settings = {
+        let _phase = tavily_hikari::observability::begin_request_phase("configuration");
+        state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|err| {
+                eprintln!("get system settings failed for {path}: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     let client_ip = resolve_client_ip_info(
         remote_addr,
         &parts.headers,
@@ -616,6 +620,8 @@ async fn tavily_http_research_result(
 
     match result {
         Ok((resp, analysis)) => {
+            let _persistence_phase =
+                tavily_hikari::observability::begin_request_phase("persistence");
             if research_response_is_terminal(&resp.body) {
                 let _ = state
                     .proxy
@@ -716,6 +722,7 @@ async fn proxy_tavily_http_endpoint(
             .map(|connect_info| connect_info.0)
     });
 
+    let preflight_phase = tavily_hikari::observability::begin_request_phase("preflight");
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -796,6 +803,7 @@ async fn proxy_tavily_http_endpoint(
     {
         return invalid_tavily_http_request_response(message);
     }
+    drop(preflight_phase);
 
     let token_id_for_logs = auth_token_id.clone();
     let hikari_routing_key = if using_dev_open_admin_fallback {
@@ -811,14 +819,17 @@ async fn proxy_tavily_http_endpoint(
     let api_routing_key = hikari_routing_key
         .clone()
         .or_else(|| http_project_id.clone());
-    let system_settings = state
-        .proxy
-        .get_system_settings()
-        .await
-        .map_err(|err| {
-            eprintln!("get system settings failed for {path}: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let system_settings = {
+        let _phase = tavily_hikari::observability::begin_request_phase("configuration");
+        state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|err| {
+                eprintln!("get system settings failed for {path}: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     let use_api_rebalance = should_use_api_rebalance(&system_settings);
     let client_ip = resolve_client_ip_info(
         remote_addr,
@@ -838,16 +849,14 @@ async fn proxy_tavily_http_endpoint(
     // consistent across local concurrency and other instances sharing the same SQLite database.
     let token_billing_guard = if !using_dev_open_admin_fallback {
         if let Some(tid) = auth_token_id.as_deref() {
-            Some(
-                state
-                    .proxy
-                    .lock_token_billing(tid)
-                    .await
-                    .map_err(|err| {
-                        eprintln!("token billing lock failed for {path}: {err}");
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?,
-            )
+            let result = {
+                let _phase = tavily_hikari::observability::begin_request_phase("preflight");
+                state.proxy.lock_token_billing(tid).await
+            };
+            Some(result.map_err(|err| {
+                eprintln!("token billing lock failed for {path}: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?)
         } else {
             None
         }
@@ -1080,6 +1089,8 @@ async fn proxy_tavily_http_endpoint(
 
         match result {
             Ok((resp, analysis, usage_delta)) => {
+                let _persistence_phase =
+                    tavily_hikari::observability::begin_request_phase("persistence");
                 let mut billing_error: Option<String> = None;
                 let mut attempt_logged = false;
 
@@ -1166,7 +1177,13 @@ async fn proxy_tavily_http_endpoint(
                                         .await;
                                     billing_error = Some(msg);
                                 } else {
-                                    match state.proxy.settle_pending_billing_attempt(log_id).await {
+                                    let settlement = {
+                                        let _phase = tavily_hikari::observability::begin_request_phase(
+                                            "settlement",
+                                        );
+                                        state.proxy.settle_pending_billing_attempt(log_id).await
+                                    };
+                                    match settlement {
                                     Ok(PendingBillingSettleOutcome::Charged)
                                     | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
                                     Ok(PendingBillingSettleOutcome::RetryLater) => {
@@ -1239,16 +1256,20 @@ async fn proxy_tavily_http_endpoint(
                     )
                     .await;
                 // Return the upstream response once billing either succeeded or we captured a local audit error.
-                record_rebalance_period_usage(
-                    &state,
-                    use_api_rebalance,
-                    token_id_for_logs.as_deref(),
-                    analysis.api_key_id.as_deref(),
-                    billing_subject.as_deref(),
-                    &resp.body,
-                    None,
-                )
-                .await;
+                {
+                    let _phase =
+                        tavily_hikari::observability::begin_request_phase("reconciliation_usage");
+                    record_rebalance_period_usage(
+                        &state,
+                        use_api_rebalance,
+                        token_id_for_logs.as_deref(),
+                        analysis.api_key_id.as_deref(),
+                        billing_subject.as_deref(),
+                        &resp.body,
+                        None,
+                    )
+                    .await;
+                }
                 return Ok(build_response(resp));
             }
             Err(err) => {
@@ -1344,6 +1365,8 @@ async fn proxy_tavily_http_endpoint(
 
     match result {
         Ok((resp, analysis)) => {
+            let _persistence_phase =
+                tavily_hikari::observability::begin_request_phase("persistence");
             let mut billing_error: Option<String> = None;
             let mut attempt_logged = false;
             if resp.status.is_success()
@@ -1437,7 +1460,12 @@ async fn proxy_tavily_http_endpoint(
                                     .await;
                                 billing_error = Some(msg);
                             } else {
-                                match state.proxy.settle_pending_billing_attempt(log_id).await {
+                                let settlement = {
+                                    let _phase =
+                                        tavily_hikari::observability::begin_request_phase("settlement");
+                                    state.proxy.settle_pending_billing_attempt(log_id).await
+                                };
+                                match settlement {
                                     Ok(PendingBillingSettleOutcome::Charged)
                                     | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
                                     Ok(PendingBillingSettleOutcome::RetryLater) => {
@@ -1511,16 +1539,20 @@ async fn proxy_tavily_http_endpoint(
                 .await;
             // Always return the upstream response, even if local billing persistence fails.
             // Returning a 5xx here can trigger client retries and cause duplicate upstream charges.
-            record_rebalance_period_usage(
-                &state,
-                use_api_rebalance,
-                token_id_for_logs.as_deref(),
-                analysis.api_key_id.as_deref(),
-                billing_subject.as_deref(),
-                &resp.body,
-                None,
-            )
-            .await;
+            {
+                let _phase =
+                    tavily_hikari::observability::begin_request_phase("reconciliation_usage");
+                record_rebalance_period_usage(
+                    &state,
+                    use_api_rebalance,
+                    token_id_for_logs.as_deref(),
+                    analysis.api_key_id.as_deref(),
+                    billing_subject.as_deref(),
+                    &resp.body,
+                    None,
+                )
+                .await;
+            }
             Ok(build_response(resp))
         }
         Err(err) => {

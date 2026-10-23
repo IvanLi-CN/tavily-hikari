@@ -287,6 +287,10 @@ A recovery baseline for one server-local day whose minute and daily request summ
 An accepted advance in a source-scan checkpoint, verified range, local-day seal, or expired-row cleanup. Executing or successfully deferring a job is not recovery progress.
 _Avoid_: successful job, latest job timestamp
 
+**Source-baseline-blocked work**:
+Retained recovery work whose available source evidence is insufficient for safe verification or deletion. A probe or retry does not become recovery progress until the source-backed result is accepted.
+_Avoid_: query timeout, recovered history
+
 **Bounded recovery turn**:
 A limited opportunity for aged dashboard-integrity or request-log-GC debt to advance during live traffic. It relaxes the ordinary rate heuristic while retaining actual capacity, contention, and foreground-correctness protections.
 _Avoid_: unrestricted maintenance, writer bypass

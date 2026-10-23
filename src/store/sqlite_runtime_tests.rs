@@ -419,6 +419,10 @@ async fn alert_projection_read_snapshot_uses_and_restores_short_busy_timeout() {
         .begin_read_snapshot(SqliteOperation::AlertProjection)
         .await
         .expect("alert projection read snapshot");
+    assert_eq!(
+        snapshot.cooperative_run_budget_for_test(),
+        Some(Duration::from_millis(250))
+    );
     let busy_timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
         .fetch_one(&mut *snapshot)
         .await
@@ -437,6 +441,84 @@ async fn alert_projection_read_snapshot_uses_and_restores_short_busy_timeout() {
         .await
         .expect("read restored busy timeout");
     assert_eq!(busy_timeout_ms, DEFAULT_BUSY_TIMEOUT_MS);
+}
+
+#[tokio::test]
+async fn alert_projection_operation_connection_enforces_native_deadline() {
+    let runtime = single_connection_runtime().await;
+    let mut connection = runtime
+        .acquire_operation_connection(SqliteOperation::AlertProjection)
+        .await
+        .expect("alert projection operation connection");
+    connection.expire_cooperative_run_deadline_for_test();
+    let query_result = sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE counter(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000) SELECT SUM(value) FROM counter",
+    )
+    .fetch_one(&mut *connection)
+    .await;
+    assert!(matches!(
+        connection.complete_query(query_result).await,
+        Err(ProxyError::Deferred { reason, .. }) if reason == "read_budget"
+    ));
+    assert_eq!(
+        runtime.discarded_connections_for_test(SqliteOperation::AlertProjection),
+        0,
+        "a native deadline must restore the projection connection"
+    );
+    runtime
+        .begin_read_snapshot(SqliteOperation::AlertProjection)
+        .await
+        .expect("next alert projection read is reusable")
+        .close()
+        .await
+        .expect("close next alert projection read");
+}
+
+#[tokio::test]
+async fn dashboard_integrity_native_read_deadline_does_not_commit_progress() {
+    let runtime = single_connection_runtime().await;
+    let mut snapshot = runtime
+        .begin_read_snapshot(SqliteOperation::DashboardIntegrityWrite)
+        .await
+        .expect("dashboard integrity read snapshot");
+    snapshot
+        .arm_cooperative_run_budget(Duration::ZERO)
+        .await
+        .expect("install an immediate dashboard read deadline");
+    let query_result = sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE counter(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM counter WHERE value < 1000000) SELECT SUM(value) FROM counter",
+    )
+    .fetch_one(&mut *snapshot)
+    .await;
+    assert!(matches!(
+        snapshot.complete_native_read(query_result).await,
+        Ok(SqliteCooperativeQueryOutcome::DeadlineExceeded)
+    ));
+    assert_eq!(
+        runtime.discarded_connections_for_test(SqliteOperation::DashboardIntegrityWrite),
+        0,
+        "an interrupted integrity page must return a clean connection"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_integrity_read_caps_long_turn_to_native_budget() {
+    let runtime = single_connection_runtime().await;
+    let snapshot = runtime
+        .begin_read_snapshot_before_deadline(
+            SqliteOperation::DashboardIntegrityWrite,
+            Instant::now() + Duration::from_secs(20),
+            Duration::from_millis(150),
+        )
+        .await
+        .expect("dashboard integrity read snapshot");
+    assert!(
+        snapshot
+            .cooperative_run_budget_for_test()
+            .expect("native read budget")
+            <= Duration::from_millis(150)
+    );
+    snapshot.close().await.expect("close read snapshot");
 }
 
 #[tokio::test]
@@ -2091,7 +2173,7 @@ async fn maintenance_control_pool_timeout_is_a_typed_defer() {
     assert_eq!(
         metrics
             .deferred_by_reason
-            .get(&SqliteAdmissionDeferReason::RecentContention),
+            .get(&SqliteAdmissionDeferReason::PoolPressure),
         Some(&1)
     );
     drop(held);

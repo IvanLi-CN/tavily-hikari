@@ -54,10 +54,11 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 
 Ordinary admission-defer continuations and the coordinator's aged-class-order turn use a
 five-second cadence. Request-log GC uses a five-minute retry after any admission defer, while
-Dashboard integrity uses five minutes for foreground, pool, or recent-contention pressure and
-five seconds when another bulk class owns the permit. A normally completed request-log GC
-continuation keeps its five-minute cadence, and HA GC's post-admission channel continuation keeps
-its separate durable contention delay.
+Dashboard integrity re-probes transient admission defers on the aged-turn five-second cadence.
+This changes only retry timing: foreground-rate, pool-capacity, recent-contention, single-permit,
+and coordinator-fairness checks remain enforced on every attempt. A normally completed
+request-log GC continuation keeps its five-minute cadence, and HA GC's post-admission channel
+continuation keeps its separate durable contention delay.
 
 ## Alternatives Rejected
 

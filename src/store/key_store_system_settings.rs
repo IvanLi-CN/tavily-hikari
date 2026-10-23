@@ -1,9 +1,43 @@
 const fn normalized_mcp_rebalance_percent(enabled: bool) -> i64 {
     if enabled { 100 } else { 0 }
 }
-
 const fn normalized_api_rebalance_percent(enabled: bool) -> i64 {
     if enabled { 100 } else { 0 }
+}
+const SYSTEM_SETTINGS_META_KEYS: &[&str] = &[
+    META_KEY_REQUEST_RATE_LIMIT_V1,
+    META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1,
+    META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1,
+    META_KEY_REBALANCE_MCP_ENABLED_V1,
+    META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
+    META_KEY_API_REBALANCE_ENABLED_V1,
+    META_KEY_API_REBALANCE_PERCENT_V1,
+    META_KEY_UPSTREAM_PROJECT_ID_MODE_V1,
+    META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1,
+    META_KEY_UPSTREAM_MCP_USER_AGENT_V1,
+    META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1,
+    META_KEY_RECHARGE_FEATURE_ENABLED_V1,
+    META_KEY_RECHARGE_USER_ENABLED_V1,
+    META_KEY_ADMIN_DEFAULT_ACTIVE_USERS_ONLY_V1,
+    META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1,
+    META_KEY_GLOBAL_IP_LIMIT_V1,
+    META_KEY_TRUSTED_PROXY_CIDRS_V1,
+    META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1,
+    META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1,
+    META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1,
+];
+
+fn system_settings_meta_i64(meta: &StdHashMap<String, String>, key: &str) -> Option<i64> {
+    meta.get(key).and_then(|value| value.parse::<i64>().ok())
 }
 
 impl KeyStore {
@@ -33,28 +67,31 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
-        let request_rate_limit = self
-            .get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1)
-            .await?
+        let _configuration_load = crate::observability::begin_request_phase("configuration");
+        let meta = self.get_meta_values(SYSTEM_SETTINGS_META_KEYS).await?;
+        let request_rate_limit = system_settings_meta_i64(&meta, META_KEY_REQUEST_RATE_LIMIT_V1)
             .unwrap_or(REQUEST_RATE_LIMIT)
             .max(REQUEST_RATE_LIMIT_MIN);
-        let auth_token_log_retention_days = self.effective_auth_token_log_retention_days().await?;
-        let count = self
-            .get_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
-            .await?
+        let auth_token_log_retention_days = system_settings_meta_i64(
+            &meta,
+            META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1,
+        )
+        .and_then(normalize_auth_token_log_retention_days)
+        .map(Ok)
+        .unwrap_or_else(effective_auth_token_log_retention_days)?;
+        let count = system_settings_meta_i64(&meta, META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
             .unwrap_or(MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT)
             .clamp(
                 MCP_SESSION_AFFINITY_KEY_COUNT_MIN,
                 MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
             );
-        let rebalance_mcp_enabled = self
-            .get_meta_i64(META_KEY_REBALANCE_MCP_ENABLED_V1)
-            .await?
+        let rebalance_mcp_enabled = system_settings_meta_i64(&meta, META_KEY_REBALANCE_MCP_ENABLED_V1)
             .unwrap_or(i64::from(REBALANCE_MCP_ENABLED_DEFAULT))
             != 0;
-        let _stored_rebalance_mcp_session_percent = self
-            .get_meta_i64(META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1)
-            .await?
+        let _stored_rebalance_mcp_session_percent = system_settings_meta_i64(
+            &meta,
+            META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
+        )
             .unwrap_or(REBALANCE_MCP_SESSION_PERCENT_DEFAULT)
             .clamp(
                 REBALANCE_MCP_SESSION_PERCENT_MIN,
@@ -62,68 +99,65 @@ impl KeyStore {
             );
         let rebalance_mcp_session_percent =
             normalized_mcp_rebalance_percent(rebalance_mcp_enabled);
-        let api_rebalance_enabled = self
-            .get_meta_i64(META_KEY_API_REBALANCE_ENABLED_V1)
-            .await?
+        let api_rebalance_enabled = system_settings_meta_i64(&meta, META_KEY_API_REBALANCE_ENABLED_V1)
             .unwrap_or(i64::from(API_REBALANCE_ENABLED_DEFAULT))
             != 0;
-        let _stored_api_rebalance_percent = self
-            .get_meta_i64(META_KEY_API_REBALANCE_PERCENT_V1)
-            .await?
+        let _stored_api_rebalance_percent = system_settings_meta_i64(
+            &meta,
+            META_KEY_API_REBALANCE_PERCENT_V1,
+        )
             .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
             .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
         let api_rebalance_percent = normalized_api_rebalance_percent(api_rebalance_enabled);
-        let upstream_project_id_mode = self
-            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
-            .await?
-            .as_deref()
+        let upstream_project_id_mode = meta
+            .get(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .map(String::as_str)
             .and_then(UpstreamProjectIdMode::from_meta_value)
             .unwrap_or_default();
-        let upstream_project_id_fixed_value = self
-            .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1)
-            .await?
+        let upstream_project_id_fixed_value = meta
+            .get(META_KEY_UPSTREAM_PROJECT_ID_FIXED_VALUE_V1)
+            .cloned()
             .unwrap_or_default();
-        let upstream_mcp_user_agent = self
-            .get_meta_string(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
-            .await?
+        let upstream_mcp_user_agent = meta
+            .get(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
+            .cloned()
             .unwrap_or_default();
-        let upstream_precise_reconciliation_enabled = self
-            .get_meta_i64(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
-            .await?
+        let upstream_precise_reconciliation_enabled = system_settings_meta_i64(
+            &meta,
+            META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1,
+        )
             .unwrap_or(0)
             != 0;
-        let recharge_feature_enabled = self
-            .get_meta_i64(META_KEY_RECHARGE_FEATURE_ENABLED_V1)
-            .await?
+        let recharge_feature_enabled = system_settings_meta_i64(&meta, META_KEY_RECHARGE_FEATURE_ENABLED_V1)
             .unwrap_or(0)
             != 0;
-        let recharge_user_enabled = self
-            .get_meta_i64(META_KEY_RECHARGE_USER_ENABLED_V1)
-            .await?
+        let recharge_user_enabled = system_settings_meta_i64(&meta, META_KEY_RECHARGE_USER_ENABLED_V1)
             .unwrap_or(0)
             != 0;
-        let admin_default_active_users_only = self
-            .get_meta_i64(META_KEY_ADMIN_DEFAULT_ACTIVE_USERS_ONLY_V1)
-            .await?
+        let admin_default_active_users_only = system_settings_meta_i64(
+            &meta,
+            META_KEY_ADMIN_DEFAULT_ACTIVE_USERS_ONLY_V1,
+        )
             .unwrap_or(0)
             != 0;
-        let user_blocked_key_base_limit = self.fetch_user_blocked_key_base_limit().await?;
-        let global_ip_limit = self
-            .get_meta_i64(META_KEY_GLOBAL_IP_LIMIT_V1)
-            .await?
+        let user_blocked_key_base_limit = system_settings_meta_i64(
+            &meta,
+            META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1,
+        )
+        .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+        .max(0);
+        let global_ip_limit = system_settings_meta_i64(&meta, META_KEY_GLOBAL_IP_LIMIT_V1)
             .unwrap_or(GLOBAL_IP_LIMIT_DEFAULT)
             .max(0);
         let defaults = TrustedClientIpSettings::default();
-        let trusted_proxy_cidrs = self
-            .get_meta_string(META_KEY_TRUSTED_PROXY_CIDRS_V1)
-            .await?
-            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        let trusted_proxy_cidrs = meta
+            .get(META_KEY_TRUSTED_PROXY_CIDRS_V1)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
             .map(|values| normalize_trusted_proxy_cidrs(&values))
             .unwrap_or(defaults.trusted_proxy_cidrs);
-        let trusted_client_ip_headers = self
-            .get_meta_string(META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1)
-            .await?
-            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        let trusted_client_ip_headers = meta
+            .get(META_KEY_TRUSTED_CLIENT_IP_HEADERS_V1)
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
             .map(|values| normalize_trusted_client_ip_headers(&values))
             .unwrap_or(defaults.trusted_client_ip_headers);
         let mut retention_defaults = default_request_log_retention_settings();
@@ -131,54 +165,65 @@ impl KeyStore {
             effective_request_logs_retention_days().min(REQUEST_LOG_RETENTION_DAYS_MAX);
         let request_log_retention = normalize_request_log_retention_settings(
             &RequestLogRetentionSettings {
-                max_log_retention_days: self
-                    .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1)
-                    .await?
+                max_log_retention_days: system_settings_meta_i64(
+                    &meta,
+                    META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1,
+                )
                     .unwrap_or(retention_defaults.max_log_retention_days),
-                heavy_usage_threshold_percent: self
-                    .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1)
-                    .await?
+                heavy_usage_threshold_percent: system_settings_meta_i64(
+                    &meta,
+                    META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1,
+                )
                     .unwrap_or(retention_defaults.heavy_usage_threshold_percent),
                 global: RequestLogRetentionProfile {
-                    business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.global.business_body_days),
-                    non_business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    non_business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.global.non_business_body_days),
-                    non_success_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1)
-                        .await?
+                    non_success_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.global.non_success_body_days),
                 },
                 heavy_usage: RequestLogRetentionProfile {
-                    business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.heavy_usage.business_body_days),
-                    non_business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    non_business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.heavy_usage.non_business_body_days),
-                    non_success_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1)
-                        .await?
+                    non_success_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.heavy_usage.non_success_body_days),
                 },
                 debug_shared: RequestLogRetentionProfile {
-                    business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.debug_shared.business_body_days),
-                    non_business_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1)
-                        .await?
+                    non_business_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.debug_shared.non_business_body_days),
-                    non_success_body_days: self
-                        .get_meta_i64(META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1)
-                        .await?
+                    non_success_body_days: system_settings_meta_i64(
+                        &meta,
+                        META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1,
+                    )
                         .unwrap_or(retention_defaults.debug_shared.non_success_body_days),
                 },
             },
@@ -640,5 +685,23 @@ impl KeyStore {
 
     pub(crate) async fn clear_admin_totp_failures(&self) -> Result<(), ProxyError> {
         self.set_admin_totp_failure_state(0, 0).await
+    }
+}
+
+#[cfg(debug_assertions)]
+impl crate::TavilyProxy {
+    pub async fn get_system_settings_with_meta_select_count_for_test(
+        &self,
+    ) -> Result<(SystemSettings, usize), ProxyError> {
+        let select_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let settings = crate::store::with_meta_select_count(
+            select_count.clone(),
+            self.key_store.get_system_settings(),
+        )
+        .await?;
+        Ok((
+            settings,
+            select_count.load(std::sync::atomic::Ordering::Relaxed),
+        ))
     }
 }

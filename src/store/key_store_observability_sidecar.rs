@@ -1,3 +1,41 @@
+pub(crate) async fn configure_observability_journal_mode(
+    observability_database_path: &str,
+    core_database_path: &str,
+    read_only: bool,
+    busy_timeout: Duration,
+) -> Result<(), sqlx::Error> {
+    if read_only || sqlite_paths_match(core_database_path, observability_database_path) {
+        return Ok(());
+    }
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(observability_database_path)
+        .create_if_missing(!read_only)
+        .read_only(false)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(busy_timeout);
+    let mut sidecar = SqliteConnection::connect_with(&options).await?;
+    let current_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Ok(());
+    }
+
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+        .fetch_one(&mut sidecar)
+        .await?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        sidecar.close().await?;
+        return Err(sqlx::Error::Protocol(format!(
+            "observability sidecar journal mode is {journal_mode:?}, expected WAL"
+        )));
+    }
+    sidecar.close().await?;
+    Ok(())
+}
+
 struct ObservabilitySidecarDerivedRebuildReport {
     dropped_main_request_logs: bool,
     dropped_legacy_api_key_usage_buckets: bool,
@@ -748,6 +786,68 @@ impl KeyStore {
             .await?;
         }
         Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_integrity_blocked_ranges_schema_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_integrity_blocked_ranges (
+                day_start INTEGER PRIMARY KEY,
+                day_end INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                next_probe_at INTEGER NOT NULL,
+                source_fence INTEGER,
+                source_revision INTEGER,
+                probe_generation INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_dashboard_rollup_integrity_blocked_probe
+               ON dashboard_rollup_integrity_blocked_ranges(next_probe_at ASC, day_start ASC)"#,
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_integrity_blocked_ranges_for_gc_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
+        let ledger_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        )
+        .fetch_one(pool)
+        .await?;
+        let migration_applied = ledger_exists != 0
+            && sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM main.schema_migrations WHERE version = 46)",
+            )
+            .fetch_one(pool)
+            .await?
+                != 0;
+        if migration_applied {
+            let table_exists: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'dashboard_rollup_integrity_blocked_ranges')",
+            )
+            .fetch_one(pool)
+            .await?;
+            let index_exists: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'index' AND name = 'idx_dashboard_rollup_integrity_blocked_probe')",
+            )
+            .fetch_one(pool)
+            .await?;
+            if table_exists == 0 || index_exists == 0 {
+                return Err(ProxyError::Other(
+                    "schema migration object validation failed at version 46".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        Self::ensure_dashboard_rollup_integrity_blocked_ranges_schema_in_pool(pool).await
     }
 
     async fn ensure_dashboard_rollup_source_revision_schema_in_pool(
@@ -1659,6 +1759,9 @@ impl KeyStore {
             request_log_diagnostic_handoff: Mutex::new(RequestLogDiagnosticHandoff::default()),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             request_stats_coalescer: RequestStatsCoalescer::default(),
+            reconciliation_maintenance_hint: Arc::new(
+                UpstreamReconciliationMaintenanceHint::default(),
+            ),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),

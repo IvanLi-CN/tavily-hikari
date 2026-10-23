@@ -675,6 +675,9 @@ impl KeyStore {
             request_log_diagnostic_handoff: Mutex::new(RequestLogDiagnosticHandoff::default()),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             request_stats_coalescer: RequestStatsCoalescer::default(),
+            reconciliation_maintenance_hint: Arc::new(
+                UpstreamReconciliationMaintenanceHint::default(),
+            ),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
@@ -810,6 +813,9 @@ impl KeyStore {
             request_log_diagnostic_handoff: Mutex::new(RequestLogDiagnosticHandoff::default()),
             user_debug_info_shared_cache: RwLock::new(HashMap::new()),
             request_stats_coalescer: RequestStatsCoalescer::default(),
+            reconciliation_maintenance_hint: Arc::new(
+                UpstreamReconciliationMaintenanceHint::default(),
+            ),
             admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: Mutex::new(HashSet::new()),
@@ -909,6 +915,8 @@ impl KeyStore {
                 .execute(&store.pool)
                 .await?;
                 Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
+                Self::ensure_dashboard_rollup_integrity_blocked_ranges_for_gc_in_pool(&store.pool)
+                    .await?;
                 Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&store.pool).await?;
                 Ok(())
             },

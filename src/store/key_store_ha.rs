@@ -3176,12 +3176,10 @@ impl KeyStore {
             });
         }
 
-        let (busy, log_frames, checkpointed_frames) = if deleted_rows > 0 {
-            let (busy, log_frames, checkpointed_frames) =
-                self.checkpoint_sqlite_wal_passive().await?;
-            (busy != 0, log_frames, checkpointed_frames)
+        let (main_checkpoint, observability_checkpoint) = if deleted_rows > 0 {
+            self.checkpoint_sqlite_wal_passive_detailed().await?
         } else {
-            (false, 0, 0)
+            (SqliteWalCheckpointStats::default(), None)
         };
 
         let completed = !channels.iter().any(|channel| channel.has_more);
@@ -3194,9 +3192,18 @@ impl KeyStore {
             completed,
             has_more: channels.iter().any(|channel| channel.has_more),
             channels,
-            wal_checkpoint_busy: busy,
-            wal_checkpoint_log_frames: log_frames,
-            wal_checkpoint_checkpointed_frames: checkpointed_frames,
+            wal_checkpoint_busy: main_checkpoint.busy,
+            wal_checkpoint_log_frames: main_checkpoint.log_frames,
+            wal_checkpoint_checkpointed_frames: main_checkpoint.checkpointed_frames,
+            wal_checkpoint_observability_busy: observability_checkpoint
+                .map(|checkpoint| checkpoint.busy)
+                .unwrap_or(false),
+            wal_checkpoint_observability_log_frames: observability_checkpoint
+                .map(|checkpoint| checkpoint.log_frames)
+                .unwrap_or(0),
+            wal_checkpoint_observability_checkpointed_frames: observability_checkpoint
+                .map(|checkpoint| checkpoint.checkpointed_frames)
+                .unwrap_or(0),
             active_elapsed_ms,
             max_batch_elapsed_ms,
             elapsed_ms,

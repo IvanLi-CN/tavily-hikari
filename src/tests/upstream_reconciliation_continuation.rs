@@ -149,6 +149,89 @@ async fn reconciliation_continuation_waits_for_pending_research_poll() {
 }
 
 #[tokio::test]
+async fn reconciliation_usage_publishes_hint_before_owner_enqueues_representative() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 7, 15, 12, 0);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-maintenance-hint"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let mut settings = proxy.get_system_settings().await.expect("load settings");
+    settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
+    settings.api_rebalance_enabled = true;
+    settings.api_rebalance_percent = 100;
+    settings.rebalance_mcp_enabled = true;
+    settings.rebalance_mcp_session_percent = 100;
+    proxy
+        .set_system_settings(&settings)
+        .await
+        .expect("enable reconciliation shadow gate");
+    let before_usage_generation = proxy
+        .key_store
+        .reconciliation_maintenance_hint()
+        .generation();
+    let queued_before_owner: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count representatives before owner");
+    assert_eq!(queued_before_owner, 0);
+
+    let period = proxy
+        .record_upstream_reconciliation_usage(
+            "maintenance-hint-token",
+            "maintenance-hint-key",
+            "token:maintenance-hint-token",
+            None,
+        )
+        .await
+        .expect("record usage")
+        .expect("usage should be shadow eligible");
+    assert!(period.starts_at <= now && now < period.ends_at);
+    assert!(
+        proxy
+            .key_store
+            .reconciliation_maintenance_hint()
+            .generation()
+            > before_usage_generation,
+        "the committed usage should publish a generation hint"
+    );
+    let queued_after_request: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status IN ('queued', 'running')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count representatives after request");
+    assert_eq!(
+        queued_after_request, 0,
+        "request usage must not enqueue a global continuation"
+    );
+
+    proxy
+        .key_store
+        .ensure_upstream_reconciliation_maintenance_jobs()
+        .await
+        .expect("maintenance owner enqueue");
+    let queued_by_owner: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count owner representative");
+    assert_eq!(queued_by_owner, 1);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn reconciliation_disabled_gate_preserves_work_without_representative_churn() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();

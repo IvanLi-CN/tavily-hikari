@@ -1933,39 +1933,8 @@ async fn alert_projection_recent_summary_does_not_silently_truncate_events() {
     .expect("create proxy");
 
     let payload = serde_json::json!({
-        "source_kind": ALERT_SOURCE_AUTH_TOKEN_LOG,
-        "source_id": "placeholder",
-        "row_sort_id": "placeholder",
         "alert_type": ALERT_TYPE_UPSTREAM_RATE_LIMITED_429,
-        "occurred_at": now,
         "token_id": "projection-summary-token",
-        "key_id": null,
-        "request_log_id": null,
-        "method": null,
-        "path": null,
-        "query": null,
-        "request_kind_key": null,
-        "request_kind_label": null,
-        "request_kind_detail": null,
-        "result_status": null,
-        "failure_kind": null,
-        "error_message": null,
-        "counts_business_quota": null,
-        "user_id": null,
-        "user_display_name": null,
-        "user_username": null,
-        "reason_code": null,
-        "reason_summary": null,
-        "reason_detail": null,
-        "job_id": null,
-        "job_type": null,
-        "job_trigger_source": null,
-        "job_status": null,
-        "job_attempt": null,
-        "job_message": null,
-        "job_queued_at": null,
-        "job_started_at": null,
-        "job_finished_at": null,
     });
     let mut tx = proxy
         .key_store
@@ -2373,6 +2342,103 @@ async fn alert_projection_preempts_backlog_for_a_new_idle_source() {
         auth_phase, "catching_up",
         "the original backlog remains resumable"
     );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn alert_projection_pages_same_second_scheduled_jobs_with_bounded_cursor_seek() {
+    let db_path = temp_db_path("alert-projection-scheduled-same-second-page");
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = 1_752_575_075;
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-alert-projection-scheduled-same-second-page".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET phase = 'idle', generation = 100, fence_occurred_at = NULL, fence_row_sort_id = NULL",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("reset non-scheduled source lanes");
+    sqlx::query(
+        "UPDATE observability.dashboard_alert_projection_state \
+            SET cursor_occurred_at = ?, cursor_row_sort_id = 'job:00000000000000000000', \
+                fence_occurred_at = NULL, fence_row_sort_id = NULL, phase = 'catching_up', generation = 0 \
+          WHERE source_kind = 'scheduled_job'",
+    )
+    .bind(now - 2)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed the scheduled-job cursor before its fence");
+
+    for (index, occurred_at) in std::iter::once(now - 1)
+        .chain(std::iter::repeat_n(now, 30))
+        .enumerate()
+    {
+        sqlx::query(
+            r#"INSERT INTO scheduled_jobs
+                (job_type, trigger_source, status, attempt, message, queued_at, started_at, finished_at)
+           VALUES (?, 'scheduler', 'failed', 1, 'same-second projection failure', ?, ?, ?)"#,
+        )
+        .bind(format!("projection_same_second_{index}"))
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert scheduled-job projection source row");
+    }
+
+    let first = advance_alert_projection_slice_until_admitted(&proxy).await;
+    assert!(matches!(
+        first,
+        AlertProjectionSliceOutcome::Advanced {
+            rows: 25,
+            complete: false,
+            ..
+        }
+    ));
+    let second = advance_alert_projection_slice_until_admitted(&proxy).await;
+    assert!(matches!(
+        second,
+        AlertProjectionSliceOutcome::Advanced {
+            rows: 6,
+            complete: true,
+            ..
+        }
+    ));
+
+    let projected_rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT occurred_at, row_sort_id \
+           FROM observability.dashboard_alert_projection_events \
+          WHERE source_kind = 'scheduled_job' \
+          ORDER BY occurred_at ASC, row_sort_id ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("read scheduled-job projection rows");
+    assert_eq!(projected_rows.len(), 31);
+    assert_eq!(projected_rows[0].0, now - 1);
+    assert_eq!(
+        projected_rows
+            .iter()
+            .filter(|(occurred_at, _)| *occurred_at == now)
+            .count(),
+        30
+    );
+    assert!(projected_rows.windows(2).all(|rows| rows[0] < rows[1]));
 
     drop(proxy);
     let _ = std::fs::remove_file(&db_path);

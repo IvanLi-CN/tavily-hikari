@@ -243,6 +243,7 @@ if docker inspect "$container_name" >/dev/null 2>&1; then
     core_live_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '$effective_core_live'")"
     core_live_wal_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '${effective_core_live}-wal' 2>/dev/null || echo 0")"
     sidecar_live_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '$effective_sidecar_live'")"
+    sidecar_live_wal_bytes="$(docker run --rm --volumes-from "$container_name":ro "$helper_image" sh -lc "stat -c %s '${effective_sidecar_live}-wal' 2>/dev/null || echo 0")"
   fi
 fi
 
@@ -252,11 +253,12 @@ if [[ "$snapshot_source_kind" == "host-path" ]]; then
   core_live_bytes="$(stat -c %s "$effective_core_live")"
   core_live_wal_bytes="$(stat -c %s "${effective_core_live}-wal" 2>/dev/null || echo 0)"
   sidecar_live_bytes="$(stat -c %s "$effective_sidecar_live")"
+  sidecar_live_wal_bytes="$(stat -c %s "${effective_sidecar_live}-wal" 2>/dev/null || echo 0)"
 fi
 
 # The source staging area holds the raw SQLite backups plus their compressed transport
 # representation. Reserve for the incompressible worst case before starting any backup.
-required_tmp_bytes="$(((core_live_bytes + core_live_wal_bytes + sidecar_live_bytes) * 2 + 1073741824))"
+required_tmp_bytes="$(((core_live_bytes + core_live_wal_bytes + sidecar_live_bytes + sidecar_live_wal_bytes) * 2 + 1073741824))"
 
 if (( available_tmp_bytes < required_tmp_bytes )); then
   echo "insufficient temporary free space for snapshot: available=${available_tmp_bytes} required=${required_tmp_bytes}" >&2
@@ -408,6 +410,7 @@ printf 'sidecar_live_path=%s\n' "$effective_sidecar_live"
 printf 'core_live_bytes=%s\n' "$core_live_bytes"
 printf 'core_live_wal_bytes=%s\n' "$core_live_wal_bytes"
 printf 'sidecar_live_bytes=%s\n' "$sidecar_live_bytes"
+printf 'sidecar_live_wal_bytes=%s\n' "$sidecar_live_wal_bytes"
 printf 'available_tmp_bytes=%s\n' "$available_tmp_bytes"
 printf 'required_tmp_bytes=%s\n' "$required_tmp_bytes"
 printf 'core_snapshot_path=%s\n' "$core_snapshot"
@@ -437,6 +440,7 @@ SIDECAR_LIVE_PATH_REMOTE="$(manifest_get sidecar_live_path)"
 CORE_LIVE_BYTES="$(manifest_get core_live_bytes)"
 CORE_LIVE_WAL_BYTES="$(manifest_get core_live_wal_bytes)"
 SIDECAR_LIVE_BYTES="$(manifest_get sidecar_live_bytes)"
+SIDECAR_LIVE_WAL_BYTES="$(manifest_get sidecar_live_wal_bytes)"
 AVAILABLE_TMP_BYTES="$(manifest_get available_tmp_bytes)"
 REQUIRED_TMP_BYTES="$(manifest_get required_tmp_bytes)"
 CORE_SNAPSHOT_PATH_REMOTE="$(manifest_get core_snapshot_path)"
@@ -519,6 +523,7 @@ sidecar_live_path=$SIDECAR_LIVE_PATH_REMOTE
 core_live_bytes=$CORE_LIVE_BYTES
 core_live_wal_bytes=$CORE_LIVE_WAL_BYTES
 sidecar_live_bytes=$SIDECAR_LIVE_BYTES
+sidecar_live_wal_bytes=$SIDECAR_LIVE_WAL_BYTES
 remote_available_bytes=$REMOTE_AVAILABLE_BYTES
 remote_required_bytes=$REMOTE_REQUIRED_BYTES
 available_tmp_bytes=$AVAILABLE_TMP_BYTES

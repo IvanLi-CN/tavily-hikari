@@ -1,3 +1,34 @@
+/// A bounded, mergeable wake signal for reconciliation maintenance.
+///
+/// Request paths only advance this generation after their durable write has
+/// committed. The maintenance owner observes the generation and performs the
+/// control-table enqueue outside the request tail.
+#[derive(Debug, Default)]
+pub(crate) struct UpstreamReconciliationMaintenanceHint {
+    generation: std::sync::atomic::AtomicU64,
+    notify: tokio::sync::Notify,
+}
+
+impl UpstreamReconciliationMaintenanceHint {
+    pub(crate) fn mark_dirty(&self) -> u64 {
+        let generation = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        self.notify.notify_one();
+        generation
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait(&self) {
+        self.notify.notified().await;
+    }
+}
+
 const RECONCILIATION_SETTLEMENT_MODE_ACTUAL: &str = "actual";
 const RECONCILIATION_SETTLEMENT_MODE_SHADOW: &str = "shadow";
 const RECONCILIATION_STATUS_SETTLED: &str = "settled";
@@ -641,12 +672,11 @@ impl KeyStore {
         &self,
     ) -> Result<Option<i64>, ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut conn = self
+        let mut session = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .begin_reconciliation_read(ReconciliationReadKind::HistoricalProjection)
             .await?;
-        let result = async {
-        let work_at: Option<i64> = sqlx::query_scalar(
+        let work_result = sqlx::query_scalar(
             r#"
             SELECT MIN(MAX(
                 w.next_attempt_at,
@@ -685,16 +715,18 @@ impl KeyStore {
         )
         .bind(now)
         .bind(now)
-        .fetch_one(&mut *conn)
-        .await?;
+        .fetch_one(&mut *session)
+        .await;
+        let work_at: Option<i64> = session.query(work_result).await?;
         // A one-time versioned lifecycle flag keeps historical source projection off the hot
         // continuation read path. New usage is maintained by triggers and therefore never
         // reopens a completed period merely because the legacy cursor is absent.
-        let projection_state: Option<(i64, i64)> = sqlx::query_as(
+        let projection_result = sqlx::query_as(
             "SELECT completed, next_retry_at FROM upstream_reconciliation_projection_state WHERE id = 'local'",
         )
-        .fetch_optional(&mut *conn)
-        .await?;
+        .fetch_optional(&mut *session)
+        .await;
+        let projection_state: Option<(i64, i64)> = session.query(projection_result).await?;
         // Historical projection is local maintenance, not a main-settlement retry. Keep the
         // representative delayed while no durable candidate exists so a disabled or not-yet
         // ready reconciliation configuration cannot spin an immediate worker loop.
@@ -707,23 +739,32 @@ impl KeyStore {
             (None, Some(projection_at)) => Some(projection_at),
             (None, None) => None,
         }) else {
+            session
+                .complete_query_or_defer(Ok::<_, sqlx::Error>(()))
+                .await?;
             return Ok(None);
         };
-        let (_, _, local_until) = Self::reconciliation_backoff_state_locked(
-            &mut conn,
-            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1,
-            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
-            META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+        let backoff_result = sqlx::query_as(
+            "SELECT key, value FROM meta WHERE key IN (?, ?, ?)",
         )
-        .await?;
-        Ok(Some(pending_at.max(local_until).max(now)))
-        }
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_PRESSURE_STREAK_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1)
+        .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+        .fetch_all(&mut *session)
         .await;
-        let close = conn.close().await;
-        match (result, close) {
-            (Ok(continuation_at), Ok(())) => Ok(continuation_at),
-            (Err(err), _) | (_, Err(err)) => Err(err),
-        }
+        let backoff_rows: Vec<(String, String)> = session.query(backoff_result).await?;
+        let backoff_values = backoff_rows
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let local_until = backoff_values
+            .get(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let continuation_at = Some(pending_at.max(local_until).max(now));
+        session
+            .complete_query_or_defer(Ok::<_, sqlx::Error>(()))
+            .await?;
+        Ok(continuation_at)
     }
 
     /// Returns a runnable representative wake. Durable reconciliation state remains intact while
@@ -768,11 +809,11 @@ impl KeyStore {
             return Ok(None);
         }
         let now = self.backend_time.now_ts();
-        let mut conn = self
+        let mut session = self
             .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
+            .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
             .await?;
-        let available_at = sqlx::query_scalar::<_, Option<i64>>(
+        let available_result = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT MIN(MAX(CASE WHEN r.next_poll_at > 0 THEN r.next_poll_at ELSE ? END, \
              COALESCE((SELECT MAX(b.cooldown_until) FROM api_key_transient_backoffs b \
              WHERE b.key_id = r.key_id \
@@ -787,9 +828,9 @@ impl KeyStore {
         .bind(now)
         .bind(now)
         .bind(now)
-        .fetch_one(&mut *conn)
-        .await?;
-        conn.close().await?;
+        .fetch_one(&mut *session)
+        .await;
+        let available_at = session.complete_query_or_defer(available_result).await?;
         Ok(available_at.map(|value| value.max(now)))
     }
 
@@ -810,6 +851,32 @@ impl KeyStore {
             available_at,
         )
         .await?;
+        Ok(())
+    }
+
+    /// Rebuild both durable representatives after a committed request-side hint.
+    ///
+    /// The source eligibility reads share the bounded reconciliation read budget and the
+    /// coordinator's bulk admission. Durable enqueue remains separate so the worker is only
+    /// notified after both control writes have completed.
+    pub(crate) async fn ensure_upstream_reconciliation_maintenance_jobs(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let _run_lease = self
+            .sqlite_runtime
+            .try_start_maintenance_run()
+            .ok_or_else(|| ProxyError::Deferred {
+                operation: "reconciliation_projection",
+                reason: "maintenance_run_busy".to_string(),
+            })?;
+        let _bulk_permit = self
+            .try_admit_upstream_reconciliation_projection()
+            .map_err(|reason| ProxyError::Deferred {
+                operation: "reconciliation_projection",
+                reason: reason.as_str().to_string(),
+            })?;
+        self.ensure_upstream_reconciliation_representative_job().await?;
+        self.ensure_upstream_reconciliation_research_drain_job().await?;
         Ok(())
     }
 
@@ -1223,7 +1290,6 @@ impl KeyStore {
             .await?;
         }
         tx.commit().await?;
-        self.ensure_upstream_reconciliation_representative_job().await?;
         Ok(Some(period))
     }
 

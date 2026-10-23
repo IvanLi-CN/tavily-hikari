@@ -2,7 +2,7 @@ name: PR Label Gate
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "prd/**"]
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
 concurrency:

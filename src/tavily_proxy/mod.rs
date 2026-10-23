@@ -1,6 +1,7 @@
 use crate::analysis::*;
 
 mod user_business_calls_memory;
+include!("maintenance_runtime.rs");
 use crate::backend_time::BackendTime;
 use crate::models::*;
 use crate::store::*;
@@ -897,6 +898,7 @@ pub struct TavilyProxy {
     user_rankings_cache: Arc<Mutex<UserRankingsCacheState>>,
     analysis_pressure_cache: Arc<Mutex<AnalysisPressureCacheState>>,
     pub(crate) ha_state_coalescer: HaStateCoalescer,
+    maintenance_runtime: MaintenanceRuntime,
     // External `TavilyProxy` clones own this token. Background loops only
     // retain a weak reference so they cannot keep a discarded runtime alive.
     background_task_owner: Arc<()>,

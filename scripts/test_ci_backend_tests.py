@@ -213,6 +213,8 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                 "tests::upstream_reconciliation_projection::",
                 "tests::upstream_reconciliation_source_identity::",
                 "tests::upstream_reconciliation::reconciliation_controlled_retry_advances_the_claim_attempt_before_success",
+                "tavily_proxy::maintenance_runtime_tests::enqueue_failure_remains_pending_without_a_new_generation",
+                "tavily_proxy::maintenance_runtime_tests::enqueue_success_preserves_generation_published_during_await",
                 "tavily_proxy::reconciliation_engine_tests::",
                 "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
                 "upstream_privacy::tests::",
@@ -479,10 +481,12 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         _targets, shards = RUNNER.load_manifest()
         tavily_http = next(shard for shard in shards if shard["id"] == "bin-tavily-http")
         search_prefix = "server::tests::tavily_http_search::tavily_"
+        timing_prefix = "server::tests::tavily_http_search_timing::tavily_"
 
         self.assertEqual(tavily_http["estimated_seconds"], 68)
         self.assertIn(search_prefix, tavily_http["include_prefixes"])
-        self.assertEqual(tavily_http["isolated_prefixes"], [search_prefix])
+        self.assertIn(timing_prefix, tavily_http["include_prefixes"])
+        self.assertEqual(tavily_http["isolated_prefixes"], [search_prefix, timing_prefix])
         self.assertEqual(tavily_http["isolated_process_workers"], 4)
         self.assertEqual(RUNNER.shard_resource_limits(tavily_http, 4, 2), (4, 1))
         self.assertEqual(RUNNER.isolated_process_worker_limit(tavily_http, 4), 4)

@@ -6,6 +6,9 @@ show_help() {
   cat <<'EOF'
 Usage: scripts/run-performance-recovery-github-hosted.sh
 
+Local boundary adapter:
+  scripts/run-performance-recovery-github-hosted.sh --local-boundaries [options]
+
 Run the manual performance recovery comparison entirely on a GitHub-hosted runner. The script
 generates disposable SQLite/core-sidecar fixtures from the candidate build, stages both source
 revisions locally, and delegates the isolated Docker comparison to run_snapshot_comparison.sh.
@@ -17,6 +20,14 @@ Optional environment:
   RUN_ID          Safe identifier for the temporary local run
 EOF
 }
+
+if [[ "${1:-}" == "--local-boundaries" ]]; then
+  shift
+  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  exec python3 "$ROOT_DIR/scripts/perf-local-boundaries.py" \
+    --comparison-entry "$ROOT_DIR/tests/performance_recovery/run_snapshot_comparison.sh" \
+    "$@"
+fi
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help

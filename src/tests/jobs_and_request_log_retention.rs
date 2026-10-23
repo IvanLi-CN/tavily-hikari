@@ -31,6 +31,7 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         request_log_diagnostic_handoff: Mutex::new(Default::default()),
         user_debug_info_shared_cache: RwLock::new(std::collections::HashMap::new()),
         request_stats_coalescer: RequestStatsCoalescer::default(),
+        reconciliation_maintenance_hint: Arc::new(UpstreamReconciliationMaintenanceHint::default()),
         admin_heavy_read_semaphore: Semaphore::new(ADMIN_HEAVY_READ_CONCURRENCY),
         #[cfg(test)]
         forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),
@@ -325,7 +326,6 @@ async fn auth_token_logs_gc_runs_passive_checkpoint_after_deletes() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
-
 #[tokio::test]
 async fn auth_token_logs_gc_keeps_exact_configured_local_day_count() {
     let (backend_time, manual_clock) = crate::BackendTime::manual_from_ts(1_700_000_000);
@@ -1086,7 +1086,7 @@ async fn linuxdo_tag_binding_refresh_rewrites_correct_binding_periodically() {
 }
 
 pub(super) async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, path: &str) -> i64 {
-    sqlx::query_scalar(
+    let insert = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             api_key_id,
@@ -1098,15 +1098,15 @@ pub(super) async fn seed_request_log_for_gc(pool: &SqlitePool, created_at: i64, 
             created_at
         )
         VALUES (NULL, NULL, 'POST', ?, 'success', ?, ?)
-        RETURNING id
         "#,
     )
     .bind(path)
     .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
     .bind(created_at)
-    .fetch_one(pool)
+    .execute(pool)
     .await
-    .expect("seed request log")
+    .expect("seed request log");
+    insert.last_insert_rowid()
 }
 
 async fn prepare_request_log_body_gc(_proxy: &TavilyProxy) {
@@ -1712,22 +1712,22 @@ async fn request_logs_gc_clears_expired_body_without_deleting_visible_row() {
 
     manual_clock.set_now_ts(1_700_000_000);
     let old_ts = manual_clock.now_ts() - 2 * SECS_PER_DAY;
-    let log_id: i64 = sqlx::query_scalar(
+    let insert = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_body, response_body,
             visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, ?, ?, ?)
-        RETURNING id
         "#,
     )
     .bind(br#"{"query":"old"}"#.as_slice())
     .bind(br#"{"ok":true}"#.as_slice())
     .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
     .bind(old_ts)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("seed old request log body");
+    let log_id = insert.last_insert_rowid();
 
     let report = proxy
         .gc_request_logs_with_options(RequestLogsGcOptions {
@@ -1774,21 +1774,21 @@ async fn request_logs_gc_skips_body_cleanup_for_rows_past_row_retention() {
         .expect("save retention settings");
 
     let old_ts = Utc::now().timestamp() - 40 * SECS_PER_DAY;
-    let log_id: i64 = sqlx::query_scalar(
+    let insert = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method, path, result_status, request_kind_key, request_body, response_body,
             visibility, created_at
         ) VALUES ('POST', '/api/tavily/search', 'success', 'api:search', ?, NULL, ?, ?)
-        RETURNING id
         "#,
     )
     .bind(br#"{"query":"row retention wins"}"#.as_slice())
     .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
     .bind(old_ts)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("seed request log beyond row retention");
+    let log_id = insert.last_insert_rowid();
     seal_request_log_day_for_gc(&proxy.key_store.pool, old_ts).await;
 
     let report = proxy

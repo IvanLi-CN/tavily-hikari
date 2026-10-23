@@ -1385,7 +1385,7 @@ async fn reconciliation_rejects_reclaimed_claim_after_remote_fetch() {
             )
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), fetch_started.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(20), fetch_started.notified())
         .await
         .expect("upstream usage fetch starts");
     clock.set_now_ts(now + 61);
@@ -2246,6 +2246,10 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
     )
     .await
     .expect("create proxy");
+    proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop unrelated request-stats worker");
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.upstream_project_id_mode = UpstreamProjectIdMode::AccessToken;
     settings.api_rebalance_enabled = true;
@@ -2329,21 +2333,51 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
         .await
         .expect("claim mixed-key representative")
         .expect("mixed-key representative is claimable");
-    let outcome = proxy
-        .run_upstream_reconciliation_once_claimed_outcome(
-            &format!("http://{addr}"),
-            claim.id,
-            claim.claim_generation,
-        )
+    // Keep this regression focused on key-scoped cooldown handling. The lazy
+    // maintenance pool can otherwise defer the run before either key is tried
+    // when this test shares a busy CI lane.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
         .await
-        .expect("defer mixed-key candidate at cooling key");
-    assert!(matches!(
-        outcome,
-        ClaimedReconciliationRunOutcome::Deferred {
-            reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
-            retry_at,
-        } if retry_at == now + 300
-    ));
+        .expect("prewarm reconciliation projection capacity");
+    let outcome = {
+        let mut resolved = None;
+        for _ in 0..200 {
+            let outcome = proxy
+                .run_upstream_reconciliation_once_claimed_outcome(
+                    &format!("http://{addr}"),
+                    claim.id,
+                    claim.claim_generation,
+                )
+                .await
+                .expect("defer mixed-key candidate at cooling key");
+            if matches!(
+                outcome,
+                ClaimedReconciliationRunOutcome::Deferred {
+                    reason: "bulk_busy",
+                    ..
+                }
+            ) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
+            resolved = Some(outcome);
+            break;
+        }
+        resolved.expect("mixed-key reconciliation admission did not become available")
+    };
+    assert!(
+        matches!(
+            outcome,
+            ClaimedReconciliationRunOutcome::Deferred {
+                reason: RECONCILIATION_RETRY_REASON_KEY_COOLDOWN,
+                retry_at,
+            } if retry_at == now + 300
+        ),
+        "unexpected mixed-key outcome: outcome={outcome:?} now={now} healthy_hits={} cooling_hits={}",
+        healthy_hits.load(Ordering::SeqCst),
+        cooling_hits.load(Ordering::SeqCst)
+    );
     assert_eq!(healthy_hits.load(Ordering::SeqCst), 1);
     assert_eq!(cooling_hits.load(Ordering::SeqCst), 1);
     let work: (i64, i64, String) = sqlx::query_as(

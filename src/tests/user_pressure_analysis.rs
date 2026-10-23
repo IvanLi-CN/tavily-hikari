@@ -51,7 +51,7 @@ async fn seed_pressure_attempt(
     upstream_operation: Option<&str>,
     request_kind: &TokenRequestKind,
 ) {
-    let request_log_id: i64 = sqlx::query_scalar(
+    let insert = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method,
@@ -66,16 +66,16 @@ async fn seed_pressure_attempt(
             upstream_operation,
             created_at
         ) VALUES ('POST', '/api/tavily/search', 200, 200, ?, 'api:search', 'API | search', 1, ?, ?, ?)
-        RETURNING id
         "#,
     )
     .bind(result_status)
     .bind(user_id)
     .bind(upstream_operation)
     .bind(created_at)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("insert pressure request log");
+    let request_log_id = insert.last_insert_rowid();
 
     manual_clock.set_now_ts(now);
     proxy
@@ -1153,21 +1153,21 @@ async fn observability_deferred_writer_source_fence_does_not_double_count_rebuil
     .await
     .expect("create proxy");
     let now = manual_clock.now_ts();
-    let request_log_id: i64 = sqlx::query_scalar(
+    let insert = sqlx::query(
         r#"
         INSERT INTO observability.request_logs (
             method, path, status_code, tavily_status_code, result_status,
             request_kind_key, request_kind_label, counts_business_quota,
             request_user_id, upstream_operation, created_at
         ) VALUES ('POST', '/mcp', 200, 200, ?, 'mcp:tool', 'MCP | tool', 1, 'source-fence-user', 'mcp', ?)
-        RETURNING id
         "#,
     )
     .bind(OUTCOME_SUCCESS)
     .bind(now)
-    .fetch_one(&proxy.key_store.pool)
+    .execute(&proxy.key_store.pool)
     .await
     .expect("seed rebuild source row");
+    let request_log_id = insert.last_insert_rowid();
 
     let held = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -1297,23 +1297,29 @@ async fn rebalance_audit_writer_is_best_effort_and_payload_bounded() {
         "deferred audits retain request classification"
     );
     assert_eq!(counts_business_quota, Some(1));
-    // The audit writer has already handed this delta to the coalescer once the
-    // request log is visible. Flush through the deterministic test boundary
-    // rather than require a strict background cadence on a busy CI worker.
-    proxy
-        .flush_request_stats_writes_for_test()
-        .await
-        .expect("flush deferred audit dashboard rollup");
-    let total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = 60",
-    )
-    .fetch_one(&proxy.key_store.pool)
+    // The request log can become visible before the deferred writer hands its
+    // delta to the coalescer. Give that handoff a bounded test-only wait on a
+    // busy CI worker, then flush through the deterministic test boundary.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            proxy
+                .flush_request_stats_writes_for_test()
+                .await
+                .expect("flush deferred audit dashboard rollup");
+            let total: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(total_requests), 0) FROM dashboard_request_rollup_buckets WHERE bucket_secs = 60",
+            )
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read rebalance dashboard rollup");
+            if total == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("read rebalance dashboard rollup");
-    assert_eq!(
-        total, 1,
-        "deferred audit enqueues one dashboard rollup delta"
-    );
+    .expect("deferred audit enqueues one dashboard rollup delta");
 
     let oversized = RebalanceAuditEntry {
         auth_token_id: None,

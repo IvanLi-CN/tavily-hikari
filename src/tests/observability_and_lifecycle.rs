@@ -42,6 +42,78 @@ fn resolve_test_binary(file_name: &str) -> std::path::PathBuf {
 }
 
 #[tokio::test]
+async fn writable_distinct_observability_sidecar_uses_wal() {
+    let db_path = temp_db_path("observability-sidecar-wal");
+    let db_str = db_path.to_string_lossy().to_string();
+    let pool = connect_sqlite_test_pool(&db_str).await;
+
+    let main_mode: String = sqlx::query_scalar("PRAGMA main.journal_mode")
+        .fetch_one(&pool)
+        .await
+        .expect("read main journal mode");
+    let observability_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode")
+        .fetch_one(&pool)
+        .await
+        .expect("read observability journal mode");
+    assert_eq!(main_mode.to_ascii_lowercase(), "wal");
+    assert_eq!(observability_mode.to_ascii_lowercase(), "wal");
+
+    pool.close().await;
+    let _ = std::fs::remove_dir_all(db_path.parent().expect("test database directory"));
+}
+
+#[tokio::test]
+async fn read_only_observability_sidecar_preserves_existing_journal_mode() {
+    let db_path = temp_db_path("observability-sidecar-read-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let layout = sqlite_test_layout(&db_str);
+    let sidecar_path = layout
+        .observability_database_path
+        .as_deref()
+        .expect("sidecar path");
+
+    let core_options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&layout.core_database_path)
+        .create_if_missing(true);
+    let core = sqlx::SqliteConnection::connect_with(&core_options)
+        .await
+        .expect("create core database");
+    core.close().await.expect("close core database");
+
+    let sidecar_options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(sidecar_path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete);
+    let mut sidecar = sqlx::SqliteConnection::connect_with(&sidecar_options)
+        .await
+        .expect("create delete-mode sidecar");
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut sidecar)
+        .await
+        .expect("read delete-mode sidecar");
+    assert_eq!(mode.to_ascii_lowercase(), "delete");
+    sidecar.close().await.expect("close sidecar database");
+
+    let pool = open_sqlite_pool_with_observability(
+        &layout.core_database_path,
+        Some(sidecar_path),
+        false,
+        true,
+    )
+    .await
+    .expect("open read-only sidecar pool");
+    let attached_mode: String = sqlx::query_scalar("PRAGMA observability.journal_mode")
+        .fetch_one(&pool)
+        .await
+        .expect("read attached sidecar mode");
+    assert_eq!(attached_mode.to_ascii_lowercase(), "delete");
+    pool.close().await;
+    assert!(!std::path::Path::new(&format!("{sidecar_path}-wal")).exists());
+
+    let _ = std::fs::remove_dir_all(db_path.parent().expect("test database directory"));
+}
+
+#[tokio::test]
 async fn large_legacy_single_db_request_logs_stay_in_core_database_for_startup() {
     let db_path = temp_db_path("observability-sidecar-large-legacy-compat");
     let db_str = db_path.to_string_lossy().to_string();

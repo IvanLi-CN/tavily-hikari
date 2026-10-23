@@ -887,6 +887,11 @@ async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
     )
     .await;
     let pool = connect_sqlite_test_pool(&db_str).await;
+    state
+        .proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let queued = state
         .proxy
         .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
@@ -2237,14 +2242,14 @@ fn request_logs_gc_continuation_tracks_durable_progress() {
 }
 
 #[test]
-fn dashboard_integrity_admission_pressure_uses_five_minute_backoff() {
+fn dashboard_integrity_admission_pressure_uses_short_probe_for_all_pressure() {
     assert_eq!(
         dashboard_integrity_admission_retry_delay("foreground_pressure"),
-        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
     );
     assert_eq!(
         dashboard_integrity_admission_retry_delay("pool_pressure"),
-        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+        SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
     );
     assert_eq!(
         dashboard_integrity_admission_retry_delay("bulk_busy"),

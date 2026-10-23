@@ -275,6 +275,12 @@ async fn reconciliation_research_sweep_stays_bounded_without_main_work() {
         .await
         .expect("claim research representative")
         .expect("research representative is claimed");
+    // Keep this bounded-sweep regression focused on the remote timeout rather
+    // than the first lazy maintenance-pool admission under hosted-runner load.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
         proxy.run_upstream_reconciliation_research_drain_claimed(

@@ -87,8 +87,11 @@ fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
 
 fn dashboard_integrity_admission_retry_delay(reason: &str) -> i64 {
     match reason {
+        // Keep the real pool and contention gates intact, but probe again on
+        // the aged-turn cadence instead of parking the durable recovery job
+        // for five minutes after a transient defer.
         "foreground_pressure" | "pool_pressure" | "recent_contention" => {
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         }
         _ => SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
     }
@@ -99,18 +102,18 @@ mod dashboard_integrity_admission_tests {
     use super::*;
 
     #[test]
-    fn dashboard_integrity_admission_pressure_uses_full_backoff() {
+    fn dashboard_integrity_admission_pressure_uses_aged_turn_retry() {
         assert_eq!(
             dashboard_integrity_admission_retry_delay("foreground_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("pool_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("recent_contention"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
         );
         assert_eq!(
             dashboard_integrity_admission_retry_delay("bulk_busy"),
@@ -745,30 +748,6 @@ fn spawn_scheduled_job_stale_reaper(state: Arc<AppState>) {
                 Err(err) => tracing::error!(
                     component = "scheduler",
                     event = "stale_job_reaper_failed",
-                    err = %err,
-                ),
-            }
-            match state
-                .proxy
-                .ensure_upstream_reconciliation_representative_job()
-                .await
-            {
-                Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
-                Err(err) => tracing::debug!(
-                    component = "reconciliation",
-                    event = "resume_watcher_enqueue_failed",
-                    err = %err,
-                ),
-            }
-            match state
-                .proxy
-                .ensure_upstream_reconciliation_research_drain_job()
-                .await
-            {
-                Ok(()) => maintenance_worker_wake_for_state(state.as_ref()).notify_one(),
-                Err(err) => tracing::debug!(
-                    component = "reconciliation_research_drain",
-                    event = "resume_watcher_enqueue_failed",
                     err = %err,
                 ),
             }

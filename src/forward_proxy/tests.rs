@@ -195,6 +195,9 @@ rule-providers:
                 std::collections::HashMap::new(),
             ),
             request_stats_coalescer: crate::store::RequestStatsCoalescer::default(),
+            reconciliation_maintenance_hint: std::sync::Arc::new(
+                crate::store::UpstreamReconciliationMaintenanceHint::default(),
+            ),
             admin_heavy_read_semaphore: tokio::sync::Semaphore::new(1),
             #[cfg(test)]
             forced_pending_claim_miss_log_ids: tokio::sync::Mutex::new(std::collections::HashSet::new()),

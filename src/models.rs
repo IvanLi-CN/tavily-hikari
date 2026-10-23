@@ -1520,6 +1520,9 @@ pub struct DashboardRollupIntegrityStatus {
     pub last_verified_at: Option<i64>,
     pub next_attempt_at: Option<i64>,
     pub unverified_bucket_count: i64,
+    pub blocked_reason: Option<String>,
+    pub next_probe_at: Option<i64>,
+    pub blocked_range_count: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1595,11 +1598,20 @@ pub struct JobGroupCounts {
 pub struct SqliteDbStats {
     pub database_bytes: u64,
     pub wal_bytes: u64,
+    pub observability_database_bytes: u64,
+    pub observability_wal_bytes: u64,
     pub page_size: i64,
     pub page_count: i64,
     pub freelist_count: i64,
     pub reclaimable_bytes: u64,
     pub reclaimable_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SqliteWalCheckpointStats {
+    pub busy: bool,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
 }
 
 pub(crate) fn random_string(alphabet: &[u8], len: usize) -> String {

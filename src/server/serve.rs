@@ -673,6 +673,7 @@ async fn serve_with_shutdown(
         shutdown.await;
         fence_admin_privacy_status_refresh(shutdown_state.as_ref()).await;
         fence_admin_alerts_workers(shutdown_state.as_ref()).await;
+        shutdown_proxy.shutdown_maintenance_runtime();
         shutdown_proxy.begin_sqlite_maintenance_run_shutdown();
         shutdown_proxy.nudge_request_stats_flush().await;
     })
@@ -1692,6 +1693,9 @@ async fn spawn_background_tasks_for_current_role(state: Arc<AppState>) -> bool {
         return false;
     }
     if background_tasks_disabled_via_env() {
+        state
+            .proxy
+            .stop_maintenance_runtime_for_writable_tenure();
         tracing::info!(
             component = "startup",
             event = "background_tasks_disabled_via_env",
@@ -1714,6 +1718,9 @@ fn spawn_post_ready_serving_tasks_for_status(
         return false;
     }
     if background_tasks_disabled_via_env() {
+        state
+            .proxy
+            .stop_maintenance_runtime_for_writable_tenure();
         tracing::info!(
             component = "startup",
             event = "post_ready_tasks_disabled_via_env",
@@ -1742,6 +1749,9 @@ fn spawn_post_ready_serving_tasks_for_status(
             return false;
         }
     }
+    state.proxy.start_maintenance_runtime_for_writable_tenure(
+        maintenance_worker_wake_for_state(state.as_ref()),
+    );
     let pressure = state.proxy.spawn_server_pressure_buckets_rebuild_once();
     let business_calls = state.proxy.spawn_user_business_calls_1h_backfill_once();
     tracing::info!(
