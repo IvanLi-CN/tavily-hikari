@@ -1295,6 +1295,73 @@ async fn projection_no_progress_gate_uses_durable_ladder_and_maximum() {
 }
 
 #[tokio::test]
+async fn projection_backoff_preserves_existing_durable_gate() {
+    let db_path = reconciliation_test_db_path();
+    let db_string = db_path.to_string_lossy().to_string();
+    let now = local_ts(2026, 8, 21, 2, 30);
+    let (backend_time, _) = BackendTime::manual_from_ts(now);
+    let proxy = TavilyProxy::with_options_and_time(
+        vec!["tvly-reconciliation-projection-backoff-gate"],
+        "http://127.0.0.1:9",
+        &db_string,
+        TavilyProxyOptions::from_database_path(&db_string),
+        backend_time,
+    )
+    .await
+    .expect("create proxy");
+    let existing_gate = now + 300;
+    sqlx::query(
+        "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = ?, last_defer_reason = 'bulk_busy' WHERE id = 'local'",
+    )
+    .bind(existing_gate)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed projection backoff");
+
+    let queued = proxy
+        .scheduled_job_enqueue("upstream_reconciliation", "auto", None, 1)
+        .await
+        .expect("enqueue representative");
+    let claim = proxy
+        .scheduled_job_mark_running(queued.job_id)
+        .await
+        .expect("claim representative")
+        .expect("representative is claimed");
+    let continuation = proxy
+        .finalize_deferred_upstream_reconciliation_claim(
+            claim.id,
+            claim.claim_generation,
+            "projection_backoff",
+            now + 5,
+        )
+        .await
+        .expect("persist projection backoff");
+    let continuation_available_at: i64 =
+        sqlx::query_scalar("SELECT available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(continuation.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read continuation schedule");
+    assert_eq!(
+        continuation_available_at, existing_gate,
+        "projection short-circuit must not override its durable retry gate"
+    );
+    let local_pressure_streak: String = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT value FROM meta WHERE key = 'upstream_reconciliation_local_pressure_streak_v1'), '0')",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("read local pressure streak");
+    assert_eq!(
+        local_pressure_streak, "0",
+        "projection short-circuit must not create a new local pressure streak"
+    );
+
+    drop(proxy);
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn projection_progress_does_not_reapply_defer_gate() {
     let db_path = reconciliation_test_db_path();
     let db_string = db_path.to_string_lossy().to_string();
