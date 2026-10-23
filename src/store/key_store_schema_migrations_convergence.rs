@@ -312,6 +312,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&self.pool)
             .await?;
+        Self::ensure_dashboard_rollup_integrity_blocked_ranges_schema_in_pool(&self.pool).await?;
         self.record_schema_migration(
             DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_RANGES_VERSION,
             DASHBOARD_ROLLUP_INTEGRITY_BLOCKED_RANGES_NAME,

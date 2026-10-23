@@ -915,6 +915,8 @@ impl KeyStore {
                 .execute(&store.pool)
                 .await?;
                 Self::ensure_observability_sidecar_derived_schema_in_pool(&store.pool).await?;
+                Self::ensure_dashboard_rollup_integrity_blocked_ranges_for_gc_in_pool(&store.pool)
+                    .await?;
                 Self::ensure_dashboard_rollup_gc_reaudit_schema_in_pool(&store.pool).await?;
                 Ok(())
             },

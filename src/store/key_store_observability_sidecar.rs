@@ -785,6 +785,12 @@ impl KeyStore {
             .execute(pool)
             .await?;
         }
+        Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_integrity_blocked_ranges_schema_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS observability.dashboard_rollup_integrity_blocked_ranges (
                 day_start INTEGER PRIMARY KEY,
@@ -806,6 +812,42 @@ impl KeyStore {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    async fn ensure_dashboard_rollup_integrity_blocked_ranges_for_gc_in_pool(
+        pool: &SqlitePool,
+    ) -> Result<(), ProxyError> {
+        let ledger_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+        )
+        .fetch_one(pool)
+        .await?;
+        let migration_applied = ledger_exists != 0
+            && sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM main.schema_migrations WHERE version = 46)",
+            )
+            .fetch_one(pool)
+            .await?
+                != 0;
+        if migration_applied {
+            let table_exists: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'dashboard_rollup_integrity_blocked_ranges')",
+            )
+            .fetch_one(pool)
+            .await?;
+            let index_exists: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'index' AND name = 'idx_dashboard_rollup_integrity_blocked_probe')",
+            )
+            .fetch_one(pool)
+            .await?;
+            if table_exists == 0 || index_exists == 0 {
+                return Err(ProxyError::Other(
+                    "schema migration object validation failed at version 46".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        Self::ensure_dashboard_rollup_integrity_blocked_ranges_schema_in_pool(pool).await
     }
 
     async fn ensure_dashboard_rollup_source_revision_schema_in_pool(
