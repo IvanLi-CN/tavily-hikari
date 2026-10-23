@@ -2340,14 +2340,32 @@ async fn reconciliation_fresh_429_mixed_key_allows_healthy_sibling() {
         .prewarm_upstream_reconciliation_projection_capacity()
         .await
         .expect("prewarm reconciliation projection capacity");
-    let outcome = proxy
-        .run_upstream_reconciliation_once_claimed_outcome(
-            &format!("http://{addr}"),
-            claim.id,
-            claim.claim_generation,
-        )
-        .await
-        .expect("defer mixed-key candidate at cooling key");
+    let outcome = {
+        let mut resolved = None;
+        for _ in 0..40 {
+            let outcome = proxy
+                .run_upstream_reconciliation_once_claimed_outcome(
+                    &format!("http://{addr}"),
+                    claim.id,
+                    claim.claim_generation,
+                )
+                .await
+                .expect("defer mixed-key candidate at cooling key");
+            if matches!(
+                outcome,
+                ClaimedReconciliationRunOutcome::Deferred {
+                    reason: "bulk_busy",
+                    ..
+                }
+            ) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
+            resolved = Some(outcome);
+            break;
+        }
+        resolved.expect("mixed-key reconciliation admission did not become available")
+    };
     assert!(
         matches!(
             outcome,
