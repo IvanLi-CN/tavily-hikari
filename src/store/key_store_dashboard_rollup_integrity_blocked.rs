@@ -546,4 +546,115 @@ impl KeyStore {
         self.finish_dashboard_rollup_integrity_short_write(&mut conn, result)
             .await
     }
+
+    #[cfg(test)]
+    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_cutoff(
+        &self,
+        threshold: i64,
+    ) -> Result<Option<i64>, ProxyError> {
+        Ok(
+            match self
+                .dashboard_rollup_integrity_request_log_gc_decision(threshold)
+                .await?
+            {
+                DashboardRollupRequestLogGcDecision::Allowed { cutoff, .. } => Some(cutoff),
+                DashboardRollupRequestLogGcDecision::Blocked { .. } => None,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision(
+        &self,
+        threshold: i64,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
+            threshold, None, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision_before_deadline(
+        &self,
+        threshold: i64,
+        deadline: tokio::time::Instant,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
+            threshold,
+            None,
+            Some(deadline),
+        )
+        .await
+    }
+
+    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision_for_day_before_deadline(
+        &self,
+        threshold: i64,
+        day_start: i64,
+        day_end: i64,
+        deadline: tokio::time::Instant,
+    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
+        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
+            threshold,
+            Some((day_start, day_end)),
+            Some(deadline),
+        )
+        .await
+    }
+
+    async fn begin_dashboard_integrity_read_before_deadline(
+        &self,
+        deadline: tokio::time::Instant,
+        read_budget: Duration,
+    ) -> Result<SqliteReadSnapshot, ProxyError> {
+        self.sqlite_runtime
+            .begin_read_snapshot_before_deadline(
+                SqliteOperation::DashboardIntegrityWrite,
+                deadline.into_std(),
+                read_budget,
+            )
+            .await
+    }
+
+    async fn dashboard_rollup_gc_deleted_source_row_counts(
+        &self,
+        day_start: i64,
+        day_end: i64,
+        read_budget: Duration,
+        outer_deadline: Option<tokio::time::Instant>,
+    ) -> Result<(i64, i64), ProxyError> {
+        let mut snapshot = match outer_deadline {
+            Some(deadline) => self
+                .begin_dashboard_integrity_read_before_deadline(deadline, read_budget)
+                .await?,
+            None => self.begin_dashboard_integrity_read(read_budget).await?,
+        };
+        let result: Result<(i64, i64), sqlx::Error> = async {
+            let retained_source_rows = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *snapshot)
+            .await?;
+            let deleted_source_rows = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
+            )
+            .bind(day_start)
+            .bind(day_end)
+            .fetch_one(&mut *snapshot)
+            .await?;
+            Ok((retained_source_rows, deleted_source_rows))
+        }
+        .await;
+        match snapshot.complete_native_read(result).await? {
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::Completed(counts) => {
+                Ok(counts)
+            }
+            crate::store::sqlite_runtime::SqliteCooperativeQueryOutcome::DeadlineExceeded => {
+                Err(Self::dashboard_integrity_read_deferred())
+            }
+        }
+    }
 }

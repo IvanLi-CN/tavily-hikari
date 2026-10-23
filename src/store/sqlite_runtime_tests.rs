@@ -502,6 +502,26 @@ async fn dashboard_integrity_native_read_deadline_does_not_commit_progress() {
 }
 
 #[tokio::test]
+async fn dashboard_integrity_read_caps_long_turn_to_native_budget() {
+    let runtime = single_connection_runtime().await;
+    let snapshot = runtime
+        .begin_read_snapshot_before_deadline(
+            SqliteOperation::DashboardIntegrityWrite,
+            Instant::now() + Duration::from_secs(20),
+            Duration::from_millis(150),
+        )
+        .await
+        .expect("dashboard integrity read snapshot");
+    assert!(
+        snapshot
+            .cooperative_run_budget_for_test()
+            .expect("native read budget")
+            <= Duration::from_millis(150)
+    );
+    snapshot.close().await.expect("close read snapshot");
+}
+
+#[tokio::test]
 async fn admitted_maintenance_work_keeps_the_configured_busy_timeout() {
     let runtime = single_connection_runtime().await;
     for operation in [

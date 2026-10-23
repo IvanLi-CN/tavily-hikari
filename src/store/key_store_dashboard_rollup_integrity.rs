@@ -3155,47 +3155,11 @@ impl KeyStore {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_cutoff(
-        &self,
-        threshold: i64,
-    ) -> Result<Option<i64>, ProxyError> {
-        Ok(
-            match self
-                .dashboard_rollup_integrity_request_log_gc_decision(threshold)
-                .await?
-            {
-                DashboardRollupRequestLogGcDecision::Allowed { cutoff, .. } => Some(cutoff),
-                DashboardRollupRequestLogGcDecision::Blocked { .. } => None,
-            },
-        )
-    }
-
-    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision(
-        &self,
-        threshold: i64,
-    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
-        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(threshold, None)
-            .await
-    }
-
-    pub(crate) async fn dashboard_rollup_integrity_request_log_gc_decision_for_day(
-        &self,
-        threshold: i64,
-        day_start: i64,
-        day_end: i64,
-    ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
-        self.dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
-            threshold,
-            Some((day_start, day_end)),
-        )
-        .await
-    }
-
     async fn dashboard_rollup_integrity_request_log_gc_decision_for_day_inner(
         &self,
         threshold: i64,
         target_day: Option<(i64, i64)>,
+        outer_deadline: Option<tokio::time::Instant>,
     ) -> Result<DashboardRollupRequestLogGcDecision, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut conn = self
@@ -3324,21 +3288,45 @@ impl KeyStore {
             }
             let expected: DashboardRequestRollupCounts = serde_json::from_str(&counts_json)
                 .map_err(|err| ProxyError::Other(format!("invalid dashboard day seal: {err}")))?;
-            let retained_source_rows: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(day_start)
-            .bind(day_end)
-            .fetch_one(&mut *conn)
-            .await?;
-            let deleted_source_rows: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(CAST(json_extract(counts_json, '$.total_requests') AS INTEGER)), 0) FROM dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start >= ? AND bucket_start < ?",
-            )
-            .bind(day_start)
-            .bind(day_end)
-            .fetch_one(&mut *conn)
-            .await?;
+            let baseline_read_budget = dashboard_integrity_read_budget(outer_deadline);
+            if baseline_read_budget.is_zero() {
+                return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                    day_start,
+                    reason: "recovery_budget",
+                });
+            }
+            let (retained_source_rows, deleted_source_rows) = match self
+                .dashboard_rollup_gc_deleted_source_row_counts(
+                    day_start,
+                    day_end,
+                    baseline_read_budget,
+                    outer_deadline,
+                )
+                .await
+            {
+                Ok(counts) => counts,
+                Err(error) if error.is_deferred() => {
+                    let reason = match &error {
+                        ProxyError::Deferred { reason, .. } if reason == "recovery_budget" => {
+                            "recovery_budget"
+                        }
+                        _ => "read_budget",
+                    };
+                    return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                        day_start,
+                        reason,
+                    });
+                }
+                Err(error)
+                    if matches!(&error, ProxyError::Database(sqlx::Error::PoolTimedOut)) =>
+                {
+                    return Ok(DashboardRollupRequestLogGcDecision::Blocked {
+                        day_start,
+                        reason: "read_budget",
+                    });
+                }
+                Err(error) => return Err(error),
+            };
             if retained_source_rows.saturating_add(deleted_source_rows)
                 < expected.total_requests
             {

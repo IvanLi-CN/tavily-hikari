@@ -1213,28 +1213,26 @@ impl KeyStore {
                 deadline_exhausted = true;
                 break;
             }
-            let Some(raw_delete_cutoff) = request_logs_gc_before_deadline(
-                deadline,
-                async {
-                    match target_day {
-                        Some((target_day_start, target_day_end)) => self
-                            .dashboard_rollup_integrity_request_log_gc_decision_for_day(
-                                threshold,
-                                target_day_start,
-                                target_day_end,
-                            )
-                            .await,
-                        None => self
-                            .dashboard_rollup_integrity_request_log_gc_decision(threshold)
-                            .await,
-                    }
-                },
-            )
-            .await?
-            else {
+            let raw_delete_cutoff = match target_day {
+                Some((target_day_start, target_day_end)) => self
+                    .dashboard_rollup_integrity_request_log_gc_decision_for_day_before_deadline(
+                        threshold,
+                        target_day_start,
+                        target_day_end,
+                        deadline,
+                    )
+                    .await?,
+                None => self
+                    .dashboard_rollup_integrity_request_log_gc_decision_before_deadline(
+                        threshold,
+                        deadline,
+                    )
+                    .await?,
+            };
+            if self.backend_time.instant_now() >= deadline {
                 deadline_exhausted = true;
                 break;
-            };
+            }
             let request_deleted = match raw_delete_cutoff {
                 DashboardRollupRequestLogGcDecision::Allowed {
                     cutoff,

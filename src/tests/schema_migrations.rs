@@ -2392,6 +2392,133 @@ async fn alert_projection_source_indexes_upgrade_and_validate_existing_database(
 }
 
 #[tokio::test]
+async fn blocked_range_table_missing_on_warm_reopen_fails_closed_without_recreation() {
+    let db_path = temp_db_path("schema-migration-blocked-range-table-missing");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-blocked-range-table-missing".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DROP TABLE observability.dashboard_rollup_integrity_blocked_ranges")
+        .execute(&pool)
+        .await
+        .expect("remove recorded v46 table");
+    pool.close().await;
+
+    let error = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-blocked-range-table-missing".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect_err("missing v46 table must reject warm startup");
+    assert!(
+        error
+            .to_string()
+            .contains("schema migration object validation failed at version 46")
+    );
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let table_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = 'dashboard_rollup_integrity_blocked_ranges')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v46 table after failed startup");
+    assert_eq!(
+        table_exists, 0,
+        "failed validation must not recreate v46 table"
+    );
+    pool.close().await;
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn blocked_range_index_missing_on_warm_reopen_fails_closed_and_preserves_state() {
+    let db_path = temp_db_path("schema-migration-blocked-range-index-missing");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-blocked-range-index-missing".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("create migrated database");
+    sqlx::query(
+        "INSERT INTO observability.dashboard_rollup_integrity_blocked_ranges \
+         (day_start, day_end, reason, next_probe_at, source_fence, source_revision, probe_generation, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(1_750_000_000_i64)
+    .bind(1_750_086_400_i64)
+    .bind("source_baseline")
+    .bind(1_750_000_300_i64)
+    .bind(42_i64)
+    .bind(7_i64)
+    .bind(3_i64)
+    .bind(1_750_000_000_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed blocked range state");
+    drop(proxy);
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    sqlx::query("DROP INDEX observability.idx_dashboard_rollup_integrity_blocked_probe")
+        .execute(&pool)
+        .await
+        .expect("remove recorded v46 index");
+    pool.close().await;
+
+    let error = TavilyProxy::with_endpoint(
+        vec!["tvly-schema-migration-blocked-range-index-missing".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect_err("missing v46 index must reject warm startup");
+    assert!(
+        error
+            .to_string()
+            .contains("schema migration object validation failed at version 46")
+    );
+
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let state: (String, i64, i64, i64) = sqlx::query_as(
+        "SELECT reason, next_probe_at, source_revision, probe_generation \
+         FROM observability.dashboard_rollup_integrity_blocked_ranges WHERE day_start = ?",
+    )
+    .bind(1_750_000_000_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("read blocked range after failed startup");
+    assert_eq!(state, ("source_baseline".to_string(), 1_750_000_300, 7, 3));
+    let index_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'index' AND name = 'idx_dashboard_rollup_integrity_blocked_probe')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read v46 index after failed startup");
+    assert_eq!(
+        index_exists, 0,
+        "failed validation must not recreate v46 index"
+    );
+    pool.close().await;
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn baseline_adoption_rejects_runtime_schema_drift() {
     let db_path = temp_db_path("schema-migration-incomplete-baseline");
     let db_str = db_path.to_string_lossy().to_string();
