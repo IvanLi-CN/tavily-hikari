@@ -886,8 +886,7 @@ impl TavilyProxy {
                 Self::RECONCILIATION_TOTAL_BUDGET_SECS
                     .saturating_sub(Self::RECONCILIATION_OUTER_TIMEOUT_MARGIN_SECS),
             );
-        let mut preparation_budget_exhausted = false;
-        let mut projection_accepted_progress = false;
+        let (mut preparation_budget_exhausted, mut projection_accepted_progress) = (false, false);
         let mut candidate_batch;
         if preparation_deadline <= std::time::Instant::now() {
             return Ok(ReconciliationEngine::deferred(self, "local_pressure"));
@@ -940,10 +939,7 @@ impl TavilyProxy {
                     }
                 };
                 match projection {
-                    Ok(ReconciliationProjectionSliceOutcome::Advanced {
-                        scanned_rows,
-                        completed,
-                    }) => {
+                    Ok(ReconciliationProjectionSliceOutcome::Advanced { scanned_rows, completed }) => {
                         projection_accepted_progress |= completed || scanned_rows > 0;
                         if candidate_batch.candidates.is_empty()
                             && scanned_rows > 0
@@ -1715,7 +1711,6 @@ impl TavilyProxy {
                 }
                 observed_candidates.push((candidate, upstream_usage, in_recent_lane, work_generation));
             }
-
             // Billing can become charged while the remote request is in flight. The
             // source-phase batch above proves that BillingHydrate fits its native
             // deadline before any HTTP starts. Re-read each observed candidate here
@@ -1831,11 +1826,10 @@ impl TavilyProxy {
             research_defer_reason = Some(RECONCILIATION_RETRY_REASON_REMOTE_ATTEMPT_BUDGET);
         }
         let research_page = if result.is_ok()
-            && !remote_attempt_budget_deferred
-            && !main_remote_budget_deferred
             && projection_accepted_progress
             && research_reservation_required
             && !self.sqlite_maintenance_runs_shutting_down()
+            && !(remote_attempt_budget_deferred || main_remote_budget_deferred)
         {
             match self
                 .key_store
@@ -2184,10 +2178,8 @@ impl TavilyProxy {
                                 .await?
                             }
                         }
-                    } else if !local_pressure
-                        && (projection_accepted_progress
-                            || reconciliation_outcome
-                                .is_some_and(ReconciliationEngine::clears_local_pressure))
+                    } else if projection_accepted_progress
+                        || reconciliation_outcome.is_some_and(ReconciliationEngine::clears_local_pressure)
                     {
                         let now = self.backend_time.now_ts();
                         match claimed_job {
