@@ -1169,22 +1169,15 @@ impl SqliteRuntime {
             arrived: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
         };
-        *self
-            .inner
-            .owned_finish_pause
-            .lock()
-            .expect("owned finish pause mutex") = Some(pause.clone());
+        let pause_slot = &self.inner.owned_finish_pause;
+        *pause_slot.lock().expect("owned finish pause mutex") = Some(pause.clone());
         pause
     }
 
     #[cfg(test)]
     async fn wait_for_owned_finish_pause_for_test(&self) {
-        let pause = self
-            .inner
-            .owned_finish_pause
-            .lock()
-            .expect("owned finish pause mutex")
-            .take();
+        let pause_slot = &self.inner.owned_finish_pause;
+        let pause = pause_slot.lock().expect("owned finish pause mutex").take();
         if let Some(pause) = pause {
             pause.arrived.notify_one();
             pause.release.notified().await;
