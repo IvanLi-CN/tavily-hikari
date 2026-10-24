@@ -293,6 +293,9 @@ impl<'a> ReconciliationProjectionController<'a> {
             return match write_result {
                 Ok(ReconciliationProjectionWriteStatus::Advanced) => {
                     tx.finish(Ok(())).await?;
+                    self.store
+                        .sqlite_runtime
+                        .record_committed_maintenance_progress(false, 0, true);
                     Ok(ReconciliationProjectionSliceOutcome::Advanced {
                         scanned_rows: 0,
                         completed: true,
@@ -531,6 +534,9 @@ impl<'a> ReconciliationProjectionController<'a> {
         match write_result {
             Ok(ReconciliationProjectionWriteStatus::Advanced) => {
                 tx.finish(Ok(())).await?;
+                self.store
+                    .sqlite_runtime
+                    .record_committed_maintenance_progress(true, rows.len() as u64, false);
                 Ok(ReconciliationProjectionSliceOutcome::Advanced {
                     scanned_rows: rows.len() as i64,
                     completed: false,

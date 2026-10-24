@@ -78,6 +78,62 @@ async fn workload_window_emits_once_then_starts_a_new_bounded_window() {
     assert_eq!(transaction_hold_p95_ms(&metrics.hold_histogram), 10);
 }
 
+#[tokio::test]
+async fn disabled_maintenance_evidence_does_not_change_admission_or_foreground_writes() {
+    let enabled_runtime = three_connection_runtime().await;
+    let disabled_runtime = three_connection_runtime().await;
+    disabled_runtime.set_maintenance_metrics_recording_enabled_for_test(false);
+
+    let enabled_holder = enabled_runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("enabled runtime bulk admission");
+    let disabled_holder = disabled_runtime
+        .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
+        .expect("disabled runtime bulk admission");
+
+    let enabled_defer = enabled_runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+        .expect_err("enabled runtime must defer the second bulk slice");
+    let disabled_defer = disabled_runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+        .expect_err("disabled runtime must defer the second bulk slice");
+    assert_eq!(enabled_defer, disabled_defer);
+
+    for (runtime, table) in [
+        (&enabled_runtime, "enabled_foreground_write"),
+        (&disabled_runtime, "disabled_foreground_write"),
+    ] {
+        let mut connection = runtime
+            .acquire_operation_connection(SqliteOperation::AdminMutation)
+            .await
+            .expect("foreground operation connection");
+        sqlx::query(&format!("CREATE TABLE {table} (id INTEGER)"))
+            .execute(&mut *connection)
+            .await
+            .expect("foreground write");
+        connection
+            .close()
+            .await
+            .expect("close foreground connection");
+    }
+
+    let disabled_snapshot = disabled_runtime.maintenance_metrics_snapshot_for_test();
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        assert_eq!(disabled_snapshot.internal(metric).count, 0);
+    }
+    assert_eq!(
+        disabled_snapshot
+            .permit(SqliteMaintenanceClass::HaOutboxGc)
+            .count,
+        0
+    );
+    assert_eq!(disabled_snapshot.cursor_progress, 0);
+    assert_eq!(disabled_snapshot.range_progress, 0);
+    assert_eq!(disabled_snapshot.completed, 0);
+
+    drop((enabled_holder, disabled_holder));
+}
+
 #[test]
 fn transaction_hold_histogram_reports_the_fixed_p95_bucket() {
     let mut histogram = [0; TRANSACTION_HOLD_BUCKET_UPPER_MS.len()];
