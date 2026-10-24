@@ -53,8 +53,11 @@ contention policy. Add one instance-local coordinator in front of that semaphore
   each admitted slice logs its class and wait age.
 
 Ordinary admission-defer continuations and the coordinator's aged-class-order turn use a
-five-second cadence. Request-log GC uses a five-minute retry after any admission defer, while
-Dashboard integrity re-probes transient admission defers on the aged-turn five-second cadence.
+five-second cadence. Request-log GC retries admission-only `bulk_busy`, `pool_pressure`,
+`foreground_pressure`, and `recent_contention` defers on that same five-second cadence; unknown
+admission reasons retain the conservative five-minute retry. Source or archival blocking and an
+actually executed zero-progress pass retain their existing five-minute protection. Dashboard
+integrity continues to re-probe transient admission defers on the aged-turn five-second cadence.
 This changes only retry timing: foreground-rate, pool-capacity, recent-contention, single-permit,
 and coordinator-fairness checks remain enforced on every attempt. A normally completed
 request-log GC continuation keeps its five-minute cadence, and HA GC's post-admission channel

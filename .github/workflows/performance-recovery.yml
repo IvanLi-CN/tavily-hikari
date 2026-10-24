@@ -231,10 +231,10 @@ jobs:
         run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_remains_queued_after_process_restart
 
       - name: Test dashboard integrity admission retry policy
-        run: cargo test --locked --all-features --profile ci-test --lib dashboard_integrity_admission_pressure_uses_full_backoff
+        run: cargo test --locked --all-features --profile ci-test --bin tavily-hikari server::dashboard_integrity_admission_tests::dashboard_integrity_admission_pressure_uses_aged_turn_retry -- --exact --nocapture
 
       - name: Test GC admission pressure retry policy
-        run: cargo test --locked --all-features --profile ci-test --lib request_logs_gc_admission_pressure_uses_full_backoff
+        run: cargo test --locked --all-features --profile ci-test --bin tavily-hikari server::dashboard_integrity_admission_tests::request_logs_gc_admission_pressure_uses_short_retry -- --exact --nocapture
 
       - name: Test aged recovery admission stays scoped to two lanes
         run: cargo test --locked --all-features --profile ci-test --lib bounded_recovery_bulk

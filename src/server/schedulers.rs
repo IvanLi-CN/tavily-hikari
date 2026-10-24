@@ -76,8 +76,13 @@ fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
     }
 }
 
-fn request_logs_gc_admission_retry_delay(_reason: &str) -> i64 {
-    REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+fn request_logs_gc_admission_retry_delay(reason: &str) -> i64 {
+    match reason {
+        "bulk_busy" | "pool_pressure" | "foreground_pressure" | "recent_contention" => {
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+        }
+        _ => REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+    }
 }
 
 fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
@@ -122,21 +127,21 @@ mod dashboard_integrity_admission_tests {
     }
 
     #[test]
-    fn request_logs_gc_admission_pressure_uses_full_backoff() {
+    fn request_logs_gc_admission_pressure_uses_short_retry() {
+        for reason in [
+            "bulk_busy",
+            "pool_pressure",
+            "foreground_pressure",
+            "recent_contention",
+        ] {
+            assert_eq!(
+                request_logs_gc_admission_retry_delay(reason),
+                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                "admission-only reason {reason} should retry on the short cadence"
+            );
+        }
         assert_eq!(
-            request_logs_gc_admission_retry_delay("pool_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("foreground_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("recent_contention"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("bulk_busy"),
+            request_logs_gc_admission_retry_delay("source_baseline"),
             REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
         );
     }
@@ -1252,36 +1257,45 @@ async fn run_ha_outbox_gc_claimed_job(
     drop(_job_execution_gate);
 
     let foreground_rps = state.proxy.foreground_activity_rps();
-    let _bulk_admission = match state.proxy.admit_ha_outbox_gc() {
-        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
-        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
-            tracing::debug!(
-                component = "ha_outbox_gc",
-                event = "deferred",
-                job_id,
-                claim_generation,
-                defer_reason = reason,
-                continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
-            );
-            return finish_ha_gc_with_continuation(
-                &state,
-                job_id,
-                claim_generation,
-                format!("deferred={reason}"),
-                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+    let result = {
+        let _bulk_admission = match state.proxy.admit_ha_outbox_gc() {
+            tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+            tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+                tracing::debug!(
+                    component = "ha_outbox_gc",
+                    event = "deferred",
+                    job_id,
+                    claim_generation,
+                    defer_reason = reason,
+                    continuation_delay_secs = SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                );
+                return finish_ha_gc_with_continuation(
+                    &state,
+                    job_id,
+                    claim_generation,
+                    format!("deferred={reason}"),
+                    SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                )
+                .await;
+            }
+        };
+        let proxy = state.proxy.clone();
+        state
+            .proxy
+            .gc_ha_outbox_online_with_foreground_activity(
+                foreground_rps,
+                state.proxy.foreground_activity_low_pressure_since_floor(),
+                move || proxy.foreground_activity_rps(),
             )
-            .await;
-        }
+            .await
     };
-    let proxy = state.proxy.clone();
-    let result = state
-        .proxy
-        .gc_ha_outbox_online_with_foreground_activity(
-            foreground_rps,
-            state.proxy.foreground_activity_low_pressure_since_floor(),
-            move || proxy.foreground_activity_rps(),
-        )
-        .await;
+    tracing::debug!(
+        component = "ha_outbox_gc",
+        event = "data_slice_released",
+        job_id,
+        claim_generation,
+        "HA outbox GC data slice and native cleanup completed before report finalization"
+    );
 
     match result {
         Ok(report) => {

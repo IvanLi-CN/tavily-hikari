@@ -196,9 +196,17 @@ class GithubPerformanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn("Test request-log GC survives process restart", gc_job)
         self.assertIn("request_logs_gc_remains_queued_after_process_restart", gc_job)
         self.assertIn("Test dashboard integrity admission retry policy", gc_job)
-        self.assertIn("dashboard_integrity_admission_pressure_uses_full_backoff", gc_job)
+        self.assertIn(
+            "server::dashboard_integrity_admission_tests::dashboard_integrity_admission_pressure_uses_aged_turn_retry",
+            gc_job,
+        )
         self.assertIn("Test GC admission pressure retry policy", gc_job)
-        self.assertIn("request_logs_gc_admission_pressure_uses_full_backoff", gc_job)
+        self.assertIn(
+            "server::dashboard_integrity_admission_tests::request_logs_gc_admission_pressure_uses_short_retry",
+            gc_job,
+        )
+        self.assertNotIn("dashboard_integrity_admission_pressure_uses_full_backoff", gc_job)
+        self.assertNotIn("request_logs_gc_admission_pressure_uses_full_backoff", gc_job)
         self.assertIn("Test pending hot cursor page before GC-blocking re-audit", gc_job)
         self.assertIn("integrity_new_hot_work_preempts_a_pending_gc_reaudit_page", gc_job)
         self.assertIn("scripts/gc_recovery_load.py", gc_job)

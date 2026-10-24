@@ -1433,6 +1433,155 @@ async fn ha_gc_productive_continuation_retries_a_short_writer_conflict() {
 }
 
 #[tokio::test]
+async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
+    let db_path = temp_db_path("ha-gc-permit-release-before-continuation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("create proxy");
+    let pool = connect_sqlite_test_pool(&db_str).await;
+    let expired_created_at = Utc::now().timestamp() - 15 * 24 * 60 * 60;
+    for index in 0..1_250 {
+        sqlx::query(
+            r#"
+            INSERT INTO ha_outbox
+                (kind, resource, resource_id, op, payload_json, created_at, checksum)
+            VALUES ('state', 'users', ?, 'upsert', '{}', ?, NULL)
+            "#,
+        )
+        .bind(format!("permit-release-{index}"))
+        .bind(expired_created_at)
+        .execute(&pool)
+        .await
+        .expect("seed expired HA GC debt");
+    }
+
+    let state = Arc::new(AppState {
+        proxy,
+        static_dir: None,
+        forward_auth: ForwardAuthConfig::new(None, None, None, None),
+        forward_auth_enabled: false,
+        builtin_admin: BuiltinAdminAuth::new(false, None, None),
+        admin_passkey: AdminPasskeyOptions::disabled(),
+        linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+        linuxdo_credit: LinuxDoCreditOptions::disabled(),
+        ha: tavily_hikari::HaRuntime::new(tavily_hikari::HaConfig::default()),
+        dev_open_admin: false,
+        usage_base: "http://127.0.0.1:58088".to_string(),
+        api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        dashboard_overview_cache: new_dashboard_overview_cache(),
+        remote_attempt_admission: new_remote_attempt_admission(),
+    });
+    state
+        .proxy
+        .shutdown_request_stats_coalescer(Duration::from_secs(2))
+        .await
+        .expect("stop unrelated request-stats worker");
+
+    // A native slice keeps the bulk permit occupied. Another maintenance class
+    // must remain blocked until the native slice and its permit leave.
+    let native_permit = match state.proxy.admit_ha_outbox_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            panic!("admit the native HA GC slice: {reason}")
+        }
+    };
+    assert!(
+        matches!(
+            state.proxy.admit_request_logs_gc(),
+            tavily_hikari::SqliteAdmissionOutcome::Deferred {
+                reason: "bulk_busy"
+            }
+        ),
+        "another maintenance class cannot enter during native work"
+    );
+    drop(native_permit);
+    let pending_request_logs_permit = match state.proxy.admit_request_logs_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            panic!("clear the blocked request-log ticket after native cleanup: {reason}")
+        }
+    };
+    drop(pending_request_logs_permit);
+
+    let initial = state
+        .proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "test", None, 1)
+        .await
+        .expect("enqueue HA GC job");
+    let initial_claim = state
+        .proxy
+        .scheduled_job_mark_running(initial.job_id)
+        .await
+        .expect("claim HA GC job")
+        .expect("HA GC job is due");
+    let pause = install_ha_gc_continuation_pause_for_test(&state, initial.job_id);
+    let state_for_worker = state.clone();
+    let worker = tokio::spawn(async move {
+        run_ha_outbox_gc_claimed_job(
+            state_for_worker,
+            ClaimedScheduledJob {
+                job_id: initial_claim.id,
+                claim_generation: initial_claim.claim_generation,
+                _job_execution_gate: None,
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
+        .await
+        .expect("HA GC must reach continuation persistence after its data slice");
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT status FROM scheduled_jobs WHERE id = ?",
+        )
+        .bind(initial.job_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read the paused claim status"),
+        "running",
+        "continuation persistence must still be paused at the test boundary"
+    );
+
+    let continuation_permit = match state.proxy.admit_request_logs_gc() {
+        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+            panic!("another maintenance class can enter after native cleanup: {reason}")
+        }
+    };
+    drop(continuation_permit);
+
+    pause.release();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("HA GC worker returns after continuation persistence is released")
+            .expect("HA GC worker task completes")
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM scheduled_jobs WHERE job_type = 'ha_outbox_gc' AND status = 'queued')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read the persisted HA GC continuation")
+    );
+    assert!(
+        state
+            .proxy
+            .shutdown_sqlite_maintenance_bulk(Duration::from_secs(1))
+            .await,
+        "maintenance shutdown must observe no leaked bulk permit"
+    );
+
+    drop(state);
+    pool.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn request_logs_gc_handoff_preserves_error_and_defers_to_stale_reaper() {
     let db_path = temp_db_path("request-logs-gc-continuation-lock");
     let db_str = db_path.to_string_lossy().to_string();
@@ -2255,5 +2404,25 @@ fn dashboard_integrity_admission_pressure_uses_short_probe_for_all_pressure() {
     assert_eq!(
         dashboard_integrity_admission_retry_delay("bulk_busy"),
         SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+    );
+}
+
+#[test]
+fn request_logs_gc_admission_pressure_uses_short_probe() {
+    for reason in [
+        "bulk_busy",
+        "pool_pressure",
+        "foreground_pressure",
+        "recent_contention",
+    ] {
+        assert_eq!(
+            request_logs_gc_admission_retry_delay(reason),
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+            "admission-only reason {reason} should retry on the short cadence"
+        );
+    }
+    assert_eq!(
+        request_logs_gc_admission_retry_delay("source_baseline"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
     );
 }
