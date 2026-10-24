@@ -10,6 +10,8 @@ async fn finish_ha_gc_with_continuation(
         .backend_time()
         .now_ts()
         .saturating_add(continuation_delay_secs);
+    #[cfg(test)]
+    wait_for_ha_gc_continuation_pause_for_test(state, job_id).await;
     let result = state
         .proxy
         .scheduled_job_finish_and_enqueue_auto_at(
@@ -91,6 +93,68 @@ async fn finish_ha_gc_with_continuation(
         }
     }
     true
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct HaGcContinuationPause {
+    arrived: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl HaGcContinuationPause {
+    pub(crate) async fn wait_until_arrived(&self) {
+        self.arrived.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+static HA_GC_CONTINUATION_PAUSE: OnceLock<
+    StdMutex<Option<(usize, i64, HaGcContinuationPause)>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn install_ha_gc_continuation_pause_for_test(
+    state: &Arc<AppState>,
+    job_id: i64,
+) -> HaGcContinuationPause {
+    let pause = HaGcContinuationPause {
+        arrived: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    *HA_GC_CONTINUATION_PAUSE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .expect("HA GC continuation pause mutex") =
+        Some((Arc::as_ptr(state) as usize, job_id, pause.clone()));
+    pause
+}
+
+#[cfg(test)]
+async fn wait_for_ha_gc_continuation_pause_for_test(state: &Arc<AppState>, job_id: i64) {
+    let state_key = Arc::as_ptr(state) as usize;
+    let pause = HA_GC_CONTINUATION_PAUSE.get().and_then(|slot| {
+        let mut slot = slot.lock().expect("HA GC continuation pause mutex");
+        if slot
+            .as_ref()
+            .is_some_and(|(pause_state_key, pause_job_id, _)| {
+                *pause_state_key == state_key && *pause_job_id == job_id
+            })
+        {
+            slot.take().map(|(_, _, pause)| pause)
+        } else {
+            None
+        }
+    });
+    if let Some(pause) = pause {
+        pause.arrived.notify_one();
+        pause.release.notified().await;
+    }
 }
 
 fn spawn_ha_gc_continuation_persistence_retries(
