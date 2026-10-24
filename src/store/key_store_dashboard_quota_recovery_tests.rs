@@ -4,10 +4,16 @@ const DASHBOARD_QUOTA_RECOVERY_TEST_KEY_ID: &str = "dashboard-quota-recovery-key
 
 async fn dashboard_quota_recovery_store() -> (TempDir, std::sync::Arc<KeyStore>, SummaryWindowBounds)
 {
+    dashboard_quota_recovery_store_with_time(BackendTime::system()).await
+}
+
+async fn dashboard_quota_recovery_store_with_time(
+    backend_time: BackendTime,
+) -> (TempDir, std::sync::Arc<KeyStore>, SummaryWindowBounds) {
     let temp_dir = tempdir().expect("create temp directory");
     let db_path = temp_dir.path().join("dashboard-quota-recovery.db");
     let store = std::sync::Arc::new(
-        KeyStore::new_with_time(&db_path.to_string_lossy(), BackendTime::system())
+        KeyStore::new_with_time(&db_path.to_string_lossy(), backend_time)
             .await
             .expect("create key store"),
     );
@@ -95,32 +101,92 @@ async fn seed_dashboard_quota_recovery_samples(store: &KeyStore, sample_count: i
 }
 
 #[tokio::test]
-async fn dashboard_quota_recovery_discards_a_multi_page_draft_on_native_deadline() {
+async fn dashboard_quota_recovery_resumes_a_private_draft_after_native_deadline() {
     let (_temp_dir, store, bounds) = dashboard_quota_recovery_store().await;
     seed_dashboard_quota_recovery_samples(&store, 65).await;
     store
         .sqlite_runtime
         .force_cooperative_query_deadline_after_reads_for_test(2);
 
-    let result = store
-        .fetch_dashboard_quota_charge_read_model(bounds, 0)
-        .await;
-
-    assert!(
-        matches!(
-            result,
-            Err(ProxyError::Deferred { operation, ref reason })
-                if operation == "dashboard_quota_read" && reason == "read_budget"
-        ),
-        "recovery must discard its draft when a bounded source page reaches the native deadline: {result:?}"
+    let select_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recovered = with_dashboard_quota_recovery_select_trace(
+        std::sync::Arc::clone(&select_trace),
+        store.fetch_dashboard_quota_charge_read_model(bounds, 0),
+    )
+    .await;
+    let recovered = recovered.expect("the same builder resumes after a native deadline");
+    assert_eq!(recovered.watermark.source_id, 66);
+    assert_eq!(
+        recovered.snapshot.month.upstream_actual_credits,
+        65,
+        "recovered quota snapshot: {:?}",
+        recovered.snapshot,
     );
+    let select_trace = select_trace.lock().expect("quota recovery select trace");
+    assert!(!select_trace.is_empty(), "recovery must execute at least one round");
+    assert!(
+        select_trace.iter().all(|count| *count <= 8),
+        "every recovery round must start at most eight SELECTs: {select_trace:?}",
+    );
+}
 
-    let restarted = store
-        .fetch_dashboard_quota_charge_read_model(bounds, 0)
+#[tokio::test]
+async fn dashboard_quota_recovery_resumes_after_one_backend_second() {
+    let (backend_time, _manual_time) = BackendTime::manual_from_ts(1_700_000_000);
+    let (_temp_dir, store, bounds) = dashboard_quota_recovery_store_with_time(backend_time).await;
+    seed_dashboard_quota_recovery_samples(&store, 31).await;
+    let select_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recovery_store = std::sync::Arc::clone(&store);
+    let recovery_trace = std::sync::Arc::clone(&select_trace);
+    let started_at = tokio::time::Instant::now();
+    let recovery = tokio::spawn(async move {
+        with_dashboard_quota_recovery_select_trace(
+            recovery_trace,
+            recovery_store.fetch_dashboard_quota_charge_read_model(bounds, 0),
+        )
         .await
-        .expect("a later recovery starts from a clean bounded stage");
-    assert_eq!(restarted.watermark.source_id, 66);
-    assert_eq!(restarted.snapshot.month.upstream_actual_credits, 65);
+    });
+
+    let recovered = tokio::time::timeout(Duration::from_secs(5), recovery)
+        .await
+        .expect("the same builder resumes after one backend second")
+        .expect("join quota recovery")
+        .expect("recover quota model after one backend second");
+    assert!(
+        started_at.elapsed() >= Duration::from_millis(900),
+        "recovery must yield for the one-second resume delay",
+    );
+    assert_eq!(recovered.snapshot.month.upstream_actual_credits, 31);
+    let select_trace = select_trace.lock().expect("quota recovery select trace");
+    assert!(select_trace.len() >= 2, "recovery must use more than one round");
+    assert!(select_trace.iter().all(|count| *count <= 8));
+}
+
+#[tokio::test]
+async fn dashboard_quota_recovery_window_guard_uses_backend_clock() {
+    let (backend_time, manual_time) = BackendTime::manual_from_ts(1_700_000_000);
+    let (_temp_dir, store, _bounds) = dashboard_quota_recovery_store_with_time(backend_time).await;
+    let now = store.backend_time.local_now();
+    let today_start = start_of_local_day_utc_ts(now);
+    let today_end = now.timestamp().saturating_add(1);
+    let yesterday_start = previous_local_day_start_utc_ts(now);
+    let month_start = start_of_local_month_utc_ts(now);
+    let bounds = SummaryWindowBounds {
+        today_start,
+        today_end,
+        today_period_end: next_local_day_start_utc_ts(today_start),
+        yesterday_start,
+        yesterday_end: yesterday_start.saturating_add(today_end.saturating_sub(today_start)),
+        month_start,
+        month_quota_charge_start: month_start,
+        month_period_end: shift_local_month_start_utc_ts(month_start, 1),
+        previous_month_start: previous_local_month_start_utc_ts(now),
+        previous_month_end: month_start,
+    };
+
+    assert!(store.dashboard_quota_recovery_bounds_are_current(bounds));
+    manual_time.set_now_ts(today_start.saturating_add(86_400).saturating_add(1));
+    assert!(!store.dashboard_quota_recovery_bounds_are_current(bounds));
 }
 
 #[tokio::test]
@@ -204,6 +270,32 @@ async fn dashboard_quota_recovery_uses_history_only_for_missing_pre_window_basel
         "Key B must include its historical predecessor while Key C remains empty",
     );
     assert_eq!(model.snapshot.month.sampled_key_count, 3);
+}
+
+#[tokio::test]
+async fn dashboard_quota_recovery_resumes_a_multi_page_baseline_position() {
+    let (_temp_dir, store, bounds) = dashboard_quota_recovery_store().await;
+    for offset in 0..40_i64 {
+        insert_dashboard_quota_recovery_sample(
+            &store,
+            -100,
+            2_000 - offset,
+        )
+        .await;
+    }
+    insert_dashboard_quota_recovery_sample(&store, 500, 1_000).await;
+
+    let select_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = with_dashboard_quota_recovery_select_trace(
+        std::sync::Arc::clone(&select_trace),
+        store.fetch_dashboard_quota_charge_read_model(bounds, 0),
+    )
+    .await
+    .expect("recover a baseline page across bounded rounds");
+
+    assert_eq!(model.snapshot.month.upstream_actual_credits, 961);
+    let select_trace = select_trace.lock().expect("quota recovery select trace");
+    assert!(select_trace.iter().all(|count| *count <= 8));
 }
 
 #[tokio::test]

@@ -52,6 +52,12 @@ contention policy. Add one instance-local coordinator in front of that semaphore
 - Runtime workload-window logs expose pending age and per-class admission/completion statistics;
   each admitted slice logs its class and wait age.
 
+Maintenance evidence must distinguish physical bulk-permit ownership from coordinator fairness,
+pool acquisition, BEGIN, and native-read deadline. These are bounded internal classifications;
+they do not change admission, SQL, or foreground write behavior. Only a committed cursor or range
+advance is business progress. Lease release, rollback, stale-claim rejection, and observation-row
+updates remain operational events and must not be counted as progress.
+
 Ordinary admission-defer continuations and the coordinator's aged-class-order turn use a
 five-second cadence. Request-log GC retries admission-only `bulk_busy`, `pool_pressure`,
 `foreground_pressure`, and `recent_contention` defers on that same five-second cadence; unknown

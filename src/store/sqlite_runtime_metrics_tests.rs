@@ -475,3 +475,133 @@ fn sqlite_file_state_sampling_reads_only_configured_database_paths() {
     assert!(formatted.contains("observability_db_bytes=7"));
     assert!(formatted.contains("observability_wal_bytes=unknown"));
 }
+
+#[test]
+fn maintenance_metrics_keep_fixed_classes_and_reset_only_their_window() {
+    let metrics = Arc::new(SqliteMaintenanceMetrics::default());
+
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        metrics.record(metric, Duration::from_millis(3));
+    }
+
+    let permit = metrics.start_permit(SqliteMaintenanceClass::RequestLogsGc);
+    metrics.record_committed_progress(true, 4, true);
+    drop(permit);
+
+    let snapshot = metrics.snapshot();
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        assert_eq!(snapshot.internal(metric).count, 1);
+        assert_eq!(snapshot.internal(metric).elapsed_ms, 3);
+    }
+    assert_eq!(
+        snapshot.permit(SqliteMaintenanceClass::RequestLogsGc).count,
+        1
+    );
+    assert_eq!(snapshot.cursor_progress, 1);
+    assert_eq!(snapshot.range_progress, 4);
+    assert_eq!(snapshot.completed, 1);
+
+    let formatted = metrics.format();
+    assert!(formatted.contains("physical_bulk_busy"));
+    assert!(formatted.contains("coordinator_wait"));
+    assert!(formatted.contains("request_logs_gc"));
+    assert!(formatted.contains("committed_cursor=1"));
+    assert!(formatted.contains("committed_range=4"));
+    assert!(formatted.contains("completed=1"));
+
+    metrics.rotate();
+
+    let rotated = metrics.snapshot();
+    assert_eq!(rotated.cursor_progress, 0);
+    assert_eq!(rotated.range_progress, 0);
+    assert_eq!(rotated.completed, 0);
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        assert_eq!(rotated.internal(metric).count, 0);
+    }
+    assert_eq!(
+        rotated.permit(SqliteMaintenanceClass::RequestLogsGc).count,
+        0
+    );
+}
+
+#[test]
+fn disabled_maintenance_metrics_do_not_record_lifecycle_events() {
+    let metrics = Arc::new(SqliteMaintenanceMetrics::default());
+    metrics.set_recording_enabled_for_test(false);
+
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        metrics.record(metric, Duration::from_millis(3));
+    }
+    let permit = metrics.start_permit(SqliteMaintenanceClass::RequestLogsGc);
+    metrics.record_committed_progress(true, 4, true);
+    drop(permit);
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.cursor_progress, 0);
+    assert_eq!(snapshot.range_progress, 0);
+    assert_eq!(snapshot.completed, 0);
+    for metric in SqliteMaintenanceInternalMetric::ALL {
+        let stats = snapshot.internal(metric);
+        assert_eq!(stats.count, 0);
+        assert_eq!(stats.elapsed_ms, 0);
+    }
+    let permit = snapshot.permit(SqliteMaintenanceClass::RequestLogsGc);
+    assert_eq!(permit.count, 0);
+    assert_eq!(permit.hold_ms, 0);
+}
+
+#[tokio::test]
+async fn maintenance_metrics_rotate_with_the_workload_window() {
+    let runtime = SqliteRuntime::new(SqlitePool::connect_lazy("sqlite::memory:").unwrap());
+    let permit = runtime
+        .try_admit_maintenance_bulk(SqliteOperation::RequestLogsGc)
+        .expect("maintenance admission");
+    drop(permit);
+    runtime.record_committed_maintenance_progress(true, 4, true);
+    {
+        let mut window = runtime.inner.workload.lock().unwrap();
+        window.started_at = Instant::now() - SQLITE_WORKLOAD_LOG_INTERVAL;
+    }
+
+    runtime.record_success(
+        SqliteOperation::RequestLogsGc,
+        Duration::ZERO,
+        Duration::ZERO,
+        Duration::ZERO,
+        0,
+    );
+
+    let snapshot = runtime.maintenance_metrics_snapshot_for_test();
+    assert_eq!(snapshot.cursor_progress, 0);
+    assert_eq!(snapshot.range_progress, 0);
+    assert_eq!(snapshot.completed, 0);
+    assert_eq!(
+        snapshot.permit(SqliteMaintenanceClass::RequestLogsGc).count,
+        0
+    );
+}
+
+#[test]
+fn maintenance_progress_counts_only_explicit_committed_results() {
+    let metrics = Arc::new(SqliteMaintenanceMetrics::default());
+
+    let canceled = metrics.start_permit(SqliteMaintenanceClass::ReconciliationProjection);
+    drop(canceled);
+    let rolled_back = metrics.start_permit(SqliteMaintenanceClass::ReconciliationProjection);
+    drop(rolled_back);
+    let stale_claim = metrics.start_permit(SqliteMaintenanceClass::ReconciliationProjection);
+    drop(stale_claim);
+
+    let before_commit = metrics.snapshot();
+    assert_eq!(before_commit.cursor_progress, 0);
+    assert_eq!(before_commit.range_progress, 0);
+    assert_eq!(before_commit.completed, 0);
+
+    metrics.record_committed_progress(true, 3, false);
+    metrics.record_committed_progress(false, 0, true);
+
+    let after_commit = metrics.snapshot();
+    assert_eq!(after_commit.cursor_progress, 1);
+    assert_eq!(after_commit.range_progress, 3);
+    assert_eq!(after_commit.completed, 1);
+}
