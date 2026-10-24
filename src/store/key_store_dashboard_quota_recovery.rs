@@ -167,12 +167,16 @@ impl KeyStore {
             .await
     }
 
-    pub(crate) async fn fetch_dashboard_quota_charge_read_model_for_current_window(
+    pub(crate) async fn fetch_dashboard_quota_charge_read_model_for_bounds(
         &self,
         bounds: SummaryWindowBounds,
         stale_key_count: i64,
     ) -> Result<DashboardQuotaChargeReadModel, ProxyError> {
-        self.fetch_dashboard_quota_charge_read_model_internal(bounds, stale_key_count, true)
+        self.fetch_dashboard_quota_charge_read_model_internal(
+            bounds,
+            stale_key_count,
+            self.dashboard_quota_recovery_bounds_are_current(bounds),
+        )
             .await
     }
 

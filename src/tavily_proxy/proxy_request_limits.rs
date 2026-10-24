@@ -40,13 +40,24 @@ impl TavilyProxy {
         bounds: SummaryWindowBounds,
         stale_key_count: i64,
     ) -> Result<(DashboardQuotaChargeSnapshot, [i64; 5]), ProxyError> {
-        let token = self
+        let token = match self
             .dashboard_quota_charge_token(
                 stale_key_count,
                 bounds.month_quota_charge_start,
                 bounds.today_end,
             )
-            .await?;
+            .await
+        {
+            Ok(token) => token,
+            Err(error) if error.is_deferred() => {
+                let cached = self.dashboard_quota_charge_cache.lock().await.cached.clone();
+                if let Some(cached) = cached.filter(|cached| cached.model.has_same_windows(bounds)) {
+                    return Ok((cached.model.snapshot, cached.token));
+                }
+                [0, 0, 0, stale_key_count, bounds.month_quota_charge_start]
+            }
+            Err(error) => return Err(error),
+        };
 
         self.dashboard_quota_charge_snapshot_for_token(bounds, token).await
     }
@@ -106,7 +117,7 @@ impl TavilyProxy {
                     } else {
                         recovery = true;
                         self.key_store
-                            .fetch_dashboard_quota_charge_read_model_for_current_window(
+                            .fetch_dashboard_quota_charge_read_model_for_bounds(
                                 bounds,
                                 stale_key_count,
                             )
@@ -116,7 +127,7 @@ impl TavilyProxy {
                 Some(_) => {
                     recovery = true;
                     self.key_store
-                        .fetch_dashboard_quota_charge_read_model_for_current_window(
+                        .fetch_dashboard_quota_charge_read_model_for_bounds(
                             bounds,
                             stale_key_count,
                         )
@@ -124,7 +135,7 @@ impl TavilyProxy {
                 }
                 None => {
                     self.key_store
-                        .fetch_dashboard_quota_charge_read_model_for_current_window(
+                        .fetch_dashboard_quota_charge_read_model_for_bounds(
                             bounds,
                             stale_key_count,
                         )
