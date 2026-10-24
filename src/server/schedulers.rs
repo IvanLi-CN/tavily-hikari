@@ -76,8 +76,13 @@ fn request_logs_gc_continuation_delay(report: &RequestLogsGcReport) -> i64 {
     }
 }
 
-fn request_logs_gc_admission_retry_delay(_reason: &str) -> i64 {
-    REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+fn request_logs_gc_admission_retry_delay(reason: &str) -> i64 {
+    match reason {
+        "bulk_busy" | "pool_pressure" | "foreground_pressure" | "recent_contention" => {
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
+        }
+        _ => REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS,
+    }
 }
 
 fn request_logs_gc_made_progress(report: &RequestLogsGcReport) -> bool {
@@ -122,21 +127,21 @@ mod dashboard_integrity_admission_tests {
     }
 
     #[test]
-    fn request_logs_gc_admission_pressure_uses_full_backoff() {
+    fn request_logs_gc_admission_pressure_uses_short_retry() {
+        for reason in [
+            "bulk_busy",
+            "pool_pressure",
+            "foreground_pressure",
+            "recent_contention",
+        ] {
+            assert_eq!(
+                request_logs_gc_admission_retry_delay(reason),
+                SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+                "admission-only reason {reason} should retry on the short cadence"
+            );
+        }
         assert_eq!(
-            request_logs_gc_admission_retry_delay("pool_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("foreground_pressure"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("recent_contention"),
-            REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
-        );
-        assert_eq!(
-            request_logs_gc_admission_retry_delay("bulk_busy"),
+            request_logs_gc_admission_retry_delay("source_baseline"),
             REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
         );
     }

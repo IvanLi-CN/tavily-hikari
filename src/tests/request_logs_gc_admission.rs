@@ -278,6 +278,77 @@ async fn request_logs_gc_remains_queued_after_process_restart() {
 }
 
 #[tokio::test]
+async fn request_logs_gc_admission_retry_uses_controlled_backend_clock() {
+    let now = 1_700_010_123_i64;
+    let (backend_time, clock) = BackendTime::manual_from_ts(now);
+    let db_path = temp_db_path("request-logs-gc-admission-controlled-clock");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_options_and_time(
+        Vec::<String>::new(),
+        DEFAULT_UPSTREAM,
+        &db_str,
+        TavilyProxyOptions::from_database_path(&db_str),
+        backend_time,
+    )
+    .await
+    .expect("create controlled-clock request-log GC proxy");
+
+    let initial = proxy
+        .scheduled_job_enqueue("request_logs_gc", "auto", None, 1)
+        .await
+        .expect("enqueue request-log GC");
+    let claim = proxy
+        .scheduled_job_mark_running(initial.job_id)
+        .await
+        .expect("claim request-log GC")
+        .expect("request-log GC is due");
+    let continuation = proxy
+        .scheduled_job_finish_and_enqueue_auto_at(
+            claim.id,
+            claim.claim_generation,
+            "request_logs_gc",
+            None,
+            1,
+            Some("deferred=pool_pressure next_retry_secs=5"),
+            now + 5,
+        )
+        .await
+        .expect("queue the short admission retry");
+    let queued: (i64, i64) =
+        sqlx::query_as("SELECT queued_at, available_at FROM scheduled_jobs WHERE id = ?")
+            .bind(continuation.job_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("read controlled-clock continuation");
+    assert_eq!(queued, (now, now + 5));
+
+    clock.set_now_ts(now + 4);
+    assert!(
+        proxy
+            .scheduled_job_mark_running(continuation.job_id)
+            .await
+            .expect("check early admission retry")
+            .is_none(),
+        "the five-second admission retry must not run early"
+    );
+    clock.set_now_ts(now + 5);
+    let retry = proxy
+        .scheduled_job_mark_running(continuation.job_id)
+        .await
+        .expect("claim due admission retry")
+        .expect("five-second admission retry is due at the controlled boundary");
+    proxy
+        .scheduled_job_finish_claimed(retry.id, retry.claim_generation, "success", None)
+        .await
+        .expect("finish controlled-clock retry");
+
+    drop(proxy);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
 async fn blocked_integrity_range_does_not_advance_pending_work_before_probe() {
     let db_path = temp_db_path("integrity-blocked-range-eligibility");
     let proxy = TavilyProxy::with_endpoint(
