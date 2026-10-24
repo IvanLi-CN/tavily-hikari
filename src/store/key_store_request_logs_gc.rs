@@ -1385,6 +1385,15 @@ impl KeyStore {
         } else {
             "incomplete_zero_progress"
         };
+        let committed_range_rows = cleaned_request_log_bodies
+            .saturating_add(deleted_request_logs)
+            .saturating_add(deleted_rollups)
+            .max(0) as u64;
+        self.sqlite_runtime.record_committed_maintenance_progress(
+            body_scan_cursor_advanced,
+            committed_range_rows,
+            !has_more,
+        );
         tracing::debug!(
             component = "request_logs_gc",
             event = "bounded_pass_completed",
