@@ -47,7 +47,7 @@ const FOREGROUND_ACTIVITY_BUCKET_MS: u64 = 100;
 const TRANSACTION_HOLD_BUCKET_UPPER_MS: [u64; 6] = [10, 25, 50, 100, 250, 251];
 
 #[cfg(test)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct OwnedFinishPause {
     arrived: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
@@ -63,9 +63,6 @@ impl OwnedFinishPause {
         self.release.notify_one();
     }
 }
-
-#[cfg(test)]
-static OWNED_FINISH_PAUSE: OnceLock<Mutex<Option<OwnedFinishPause>>> = OnceLock::new();
 
 static OWNED_FINISHES: OnceLock<(Mutex<BTreeMap<SqliteOperation, usize>>, Notify)> =
     OnceLock::new();
@@ -124,30 +121,6 @@ struct OwnedFinishCompletion {
 impl Drop for OwnedFinishCompletion {
     fn drop(&mut self) {
         complete_owned_finish(self.operation);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn install_owned_finish_pause_for_test() -> OwnedFinishPause {
-    let pause = OwnedFinishPause {
-        arrived: Arc::new(tokio::sync::Notify::new()),
-        release: Arc::new(tokio::sync::Notify::new()),
-    };
-    *OWNED_FINISH_PAUSE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("owned finish pause mutex") = Some(pause.clone());
-    pause
-}
-
-#[cfg(test)]
-async fn wait_for_owned_finish_pause_for_test() {
-    let pause = OWNED_FINISH_PAUSE
-        .get()
-        .and_then(|slot| slot.lock().expect("owned finish pause mutex").take());
-    if let Some(pause) = pause {
-        pause.arrived.notify_one();
-        pause.release.notified().await;
     }
 }
 
@@ -1002,6 +975,8 @@ struct SqliteRuntimeInner {
     fail_next_reconciliation_research_read: AtomicBool,
     #[cfg(test)]
     fail_next_owned_finish_restore: AtomicBool,
+    #[cfg(test)]
+    owned_finish_pause: Mutex<Option<OwnedFinishPause>>,
     #[cfg(any(test, debug_assertions))]
     force_next_cooperative_query_deadline: AtomicBool,
     #[cfg(any(test, debug_assertions))]
@@ -1171,6 +1146,8 @@ impl SqliteRuntime {
                 fail_next_reconciliation_research_read: AtomicBool::new(false),
                 #[cfg(test)]
                 fail_next_owned_finish_restore: AtomicBool::new(false),
+                #[cfg(test)]
+                owned_finish_pause: Mutex::new(None),
                 #[cfg(any(test, debug_assertions))]
                 force_next_cooperative_query_deadline: AtomicBool::new(false),
                 #[cfg(any(test, debug_assertions))]
@@ -1184,6 +1161,27 @@ impl SqliteRuntime {
         self.inner
             .fail_next_reconciliation_research_read
             .store(true, AtomicOrdering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_owned_finish_pause_for_test(&self) -> OwnedFinishPause {
+        let pause = OwnedFinishPause {
+            arrived: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        };
+        let pause_slot = &self.inner.owned_finish_pause;
+        *pause_slot.lock().expect("owned finish pause mutex") = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    async fn wait_for_owned_finish_pause_for_test(&self) {
+        let pause_slot = &self.inner.owned_finish_pause;
+        let pause = pause_slot.lock().expect("owned finish pause mutex").take();
+        if let Some(pause) = pause {
+            pause.arrived.notify_one();
+            pause.release.notified().await;
+        }
     }
 
     #[cfg(test)]
@@ -4199,7 +4197,7 @@ async fn complete_immediate_transaction_commit(
     rows_affected: u64,
 ) -> Result<(), ProxyError> {
     #[cfg(test)]
-    wait_for_owned_finish_pause_for_test().await;
+    runtime.wait_for_owned_finish_pause_for_test().await;
     let mut conn = match transaction.commit_connection().await {
         Ok(conn) => conn,
         Err(error) => {

@@ -216,7 +216,7 @@ async fn cancelled_immediate_transaction_rolls_back_without_discarding_connectio
 #[tokio::test]
 async fn cancelled_finish_keeps_the_owned_commit_boundary_alive() {
     let runtime = single_connection_runtime().await;
-    let pause = install_owned_finish_pause_for_test();
+    let pause = runtime.install_owned_finish_pause_for_test();
     let task_runtime = runtime.clone();
     let task = tokio::spawn(async move {
         let mut transaction = task_runtime
@@ -246,6 +246,45 @@ async fn cancelled_finish_keeps_the_owned_commit_boundary_alive() {
         runtime.discarded_connections_for_test(SqliteOperation::DashboardIntegrityWrite),
         0,
         "caller cancellation during commit must not detach the connection"
+    );
+}
+
+#[tokio::test]
+async fn owned_finish_pause_is_scoped_to_its_runtime() {
+    let paused_runtime = single_connection_runtime().await;
+    let other_runtime = single_connection_runtime().await;
+    let pause = paused_runtime.install_owned_finish_pause_for_test();
+    let task_runtime = other_runtime.clone();
+    let mut task = tokio::spawn(async move {
+        let mut transaction = task_runtime
+            .begin_immediate(SqliteOperation::DashboardIntegrityWrite)
+            .await
+            .expect("immediate transaction");
+        sqlx::query("CREATE TABLE runtime_scoped_pause_probe (id INTEGER PRIMARY KEY)")
+            .execute(&mut *transaction)
+            .await
+            .expect("write inside transaction");
+        transaction.finish(Ok(())).await
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(1), &mut task).await;
+    if result.is_err() {
+        pause.release();
+        let _ = task.await;
+    }
+    assert!(
+        result.is_ok(),
+        "an unrelated runtime must not consume the installed finish pause"
+    );
+    result
+        .expect("unrelated runtime finish should complete")
+        .expect("unrelated runtime task should join")
+        .expect("unrelated runtime transaction should finish");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), pause.wait_until_arrived())
+            .await
+            .is_err(),
+        "the pause must remain available to its owning runtime"
     );
 }
 
