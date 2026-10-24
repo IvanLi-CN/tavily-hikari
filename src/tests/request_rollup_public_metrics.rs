@@ -1049,7 +1049,10 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
         )
         .await;
 
-    let pause = crate::store::install_owned_finish_pause_for_test();
+    let pause = proxy
+        .key_store
+        .sqlite_runtime
+        .install_owned_finish_pause_for_test();
     let store = proxy.key_store.clone();
     let flush = tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
 
