@@ -2406,3 +2406,23 @@ fn dashboard_integrity_admission_pressure_uses_short_probe_for_all_pressure() {
         SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS
     );
 }
+
+#[test]
+fn request_logs_gc_admission_pressure_uses_short_probe() {
+    for reason in [
+        "bulk_busy",
+        "pool_pressure",
+        "foreground_pressure",
+        "recent_contention",
+    ] {
+        assert_eq!(
+            request_logs_gc_admission_retry_delay(reason),
+            SQLITE_MAINTENANCE_ADMISSION_RETRY_DELAY_SECS,
+            "admission-only reason {reason} should retry on the short cadence"
+        );
+    }
+    assert_eq!(
+        request_logs_gc_admission_retry_delay("source_baseline"),
+        REQUEST_LOGS_GC_CONTINUATION_DELAY_SECS
+    );
+}
