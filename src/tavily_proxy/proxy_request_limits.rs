@@ -106,19 +106,28 @@ impl TavilyProxy {
                     } else {
                         recovery = true;
                         self.key_store
-                            .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                            .fetch_dashboard_quota_charge_read_model_for_current_window(
+                                bounds,
+                                stale_key_count,
+                            )
                             .await
                     }
                 }
                 Some(_) => {
                     recovery = true;
                     self.key_store
-                        .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                        .fetch_dashboard_quota_charge_read_model_for_current_window(
+                            bounds,
+                            stale_key_count,
+                        )
                         .await
                 }
                 None => {
                     self.key_store
-                        .fetch_dashboard_quota_charge_read_model(bounds, stale_key_count)
+                        .fetch_dashboard_quota_charge_read_model_for_current_window(
+                            bounds,
+                            stale_key_count,
+                        )
                         .await
                 }
             };
