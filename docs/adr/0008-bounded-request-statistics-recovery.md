@@ -14,6 +14,15 @@ Aged dashboard-integrity and request-log-GC work may receive a bounded online re
 
 This is a scoped amendment to [ADR 0005](./0005-fair-sqlite-maintenance-admission.md): its ordinary rate gate and fairness rules continue to apply outside these recovery turns. Other maintenance classes receive no new rate exception. Eligibility, cadence and slice sizing must be bounded and validated against both effective recovery progress and foreground performance.
 
+Recovery is resumable and publication is atomic. A builder may retain one private draft containing
+the target watermark, source-page cursor, and baseline position, but it may publish only a complete
+generation. Each recovery turn starts at most eight bounded SELECT statements, including the
+watermark, source page, and baseline reads; a source or baseline page contributes at most 32 rows.
+An incomplete turn releases its connection and resumes after the existing one-second delay. Window
+changes, cancellation, or invalidation discard the draft without changing the last-good snapshot.
+Normal appends after the target watermark do not invalidate the fixed historical prefix; they are
+handled after the target generation is published.
+
 ## Considered Options
 
 - Waiting exclusively for traffic to fall below the ordinary threshold protects foreground work

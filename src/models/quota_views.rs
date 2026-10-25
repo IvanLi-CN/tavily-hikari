@@ -19,6 +19,14 @@ pub(crate) struct DashboardQuotaSample {
     pub previous_quota_remaining: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardQuotaRecoveryRoundStatus {
+    Complete,
+    Continue,
+    Deferred,
+    Invalidated,
+}
+
 #[derive(Debug, Clone)]
 struct DashboardQuotaRecoveryWindowGroup {
     key_id: String,
