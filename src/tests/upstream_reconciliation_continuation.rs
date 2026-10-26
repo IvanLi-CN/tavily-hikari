@@ -215,6 +215,13 @@ async fn reconciliation_usage_publishes_hint_before_owner_enqueues_representativ
         "request usage must not enqueue a global continuation"
     );
 
+    // Keep this regression focused on request-side hint publication and owner enqueueing.
+    // Prewarm the lazy maintenance pool so parallel CI load cannot turn the first admission
+    // sample into an unrelated pool-pressure defer.
+    proxy
+        .prewarm_upstream_reconciliation_projection_capacity()
+        .await
+        .expect("prewarm reconciliation projection capacity");
     proxy
         .key_store
         .ensure_upstream_reconciliation_maintenance_jobs()
