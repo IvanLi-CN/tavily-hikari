@@ -22,3 +22,5 @@
   unqueued initial hot page before a GC-blocking day.
 - 2026-10-26: Increase the scheduled request-log GC slice from five to ten 100-row batches while
   retaining the 20-second runtime bound and existing admission and continuation contracts.
+- 2026-10-26: Prewarm the reconciliation maintenance test fixture so parallel validation observes
+  the intended admission contract instead of an unrelated lazy-pool pressure defer.
