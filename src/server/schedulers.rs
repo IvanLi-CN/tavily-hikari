@@ -49,7 +49,7 @@ fn linuxdo_credit_recharge_lifecycle_recheck_secs() -> i64 {
 fn scheduled_request_logs_gc_options() -> RequestLogsGcOptions {
     RequestLogsGcOptions {
         batch_size: 100,
-        max_batches: 5,
+        max_batches: 10,
         max_runtime_secs: 20,
         inter_batch_sleep_ms: 0,
     }
@@ -3092,4 +3092,19 @@ fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
             state.proxy.backend_time().sleep(Duration::from_secs(30)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::scheduled_request_logs_gc_options;
+
+    #[test]
+    fn scheduled_request_logs_gc_options_stays_bounded() {
+        let options = scheduled_request_logs_gc_options();
+
+        assert_eq!(options.batch_size, 100);
+        assert_eq!(options.max_batches, 10);
+        assert_eq!(options.max_runtime_secs, 20);
+        assert_eq!(options.inter_batch_sleep_ms, 0);
+    }
 }
