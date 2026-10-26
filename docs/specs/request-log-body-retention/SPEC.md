@@ -80,7 +80,7 @@
 
 ## Automatic Catch-up
 
-- Scheduled GC keeps its bounded 100-row batches, at most five batches and 20 seconds per pass.
+- Scheduled GC keeps its bounded 100-row batches, at most ten batches and 20 seconds per pass.
 - Productive passes, including durable body-scan cursor advancement, continue after one second.
   For ordinary admission, zero progress, an integrity block without other progress, foreground
   pressure, recent SQLite contention, or an error retries after 300 seconds. A transient pool-capacity defer retries after

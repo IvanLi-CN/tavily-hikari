@@ -20,3 +20,5 @@
   while preserving global cooldown and fallback behavior during GC catch-up.
 - 2026-10-05: Align admission-pressure retries with the five-minute recovery backoff and queue an
   unqueued initial hot page before a GC-blocking day.
+- 2026-10-26: Increase the scheduled request-log GC slice from five to ten 100-row batches while
+  retaining the 20-second runtime bound and existing admission and continuation contracts.
