@@ -50,7 +50,7 @@ RUN test ! -e /context/.env \
     done)"
 
 ########## Stage 2: import the official Xray runtime ##########
-FROM ghcr.io/xtls/xray-core:26.2.6@sha256:c6daec5244a2110490ec2049d4c6588cbef544a8bcb4b32c5e4da16e15b7f98e AS xray-downloader
+FROM ghcr.io/xtls/xray-core:26.10.21@sha256:d5c3729dfeed7c412af17a63b941c48c76ba68afee5b6184fe4078f8fa8bedcc AS xray-downloader
 
 ########## Stage 3: normalize every copied payload before final image COPY ##########
 FROM builder AS payload-normalizer
