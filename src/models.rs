@@ -1605,6 +1605,13 @@ pub struct SqliteDbStats {
     pub freelist_count: i64,
     pub reclaimable_bytes: u64,
     pub reclaimable_ratio: f64,
+    pub observability_page_size: i64,
+    pub observability_page_count: i64,
+    pub observability_freelist_count: i64,
+    pub observability_reclaimable_bytes: u64,
+    pub observability_reclaimable_ratio: f64,
+    pub total_reclaimable_bytes: u64,
+    pub total_reclaimable_ratio: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
