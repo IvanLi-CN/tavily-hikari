@@ -2010,6 +2010,13 @@ async fn sqlite_db_stats_reports_reclaimable_shape() {
     assert!(stats.page_count > 0);
     assert!(stats.database_bytes > 0);
     assert!(stats.observability_database_bytes > 0);
+    assert!(stats.observability_page_size > 0);
+    assert!(stats.observability_page_count > 0);
+    assert!(stats.observability_reclaimable_ratio >= 0.0);
+    assert_eq!(
+        stats.total_reclaimable_bytes,
+        stats.reclaimable_bytes + stats.observability_reclaimable_bytes
+    );
     let (_, observability_checkpoint) = proxy
         .key_store
         .checkpoint_sqlite_wal_passive_detailed()
@@ -2021,6 +2028,111 @@ async fn sqlite_db_stats_reports_reclaimable_shape() {
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[test]
+fn db_compaction_threshold_uses_aggregate_reclaimable_space() {
+    let mut stats = SqliteDbStats {
+        database_bytes: 0,
+        wal_bytes: 0,
+        observability_database_bytes: 0,
+        observability_wal_bytes: 0,
+        page_size: 4096,
+        page_count: 1,
+        freelist_count: 0,
+        reclaimable_bytes: 0,
+        reclaimable_ratio: 0.0,
+        observability_page_size: 4096,
+        observability_page_count: 1,
+        observability_freelist_count: 0,
+        observability_reclaimable_bytes: 0,
+        observability_reclaimable_ratio: 0.0,
+        total_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES - 1,
+        total_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
+    };
+    assert!(!db_compaction_threshold_met(&stats));
+
+    stats.total_reclaimable_bytes = DB_COMPACTION_MIN_RECLAIMABLE_BYTES;
+    assert!(db_compaction_threshold_met(&stats));
+
+    stats.total_reclaimable_ratio = DB_COMPACTION_MIN_RECLAIMABLE_RATIO - f64::EPSILON;
+    assert!(!db_compaction_threshold_met(&stats));
+}
+
+#[tokio::test]
+async fn db_compaction_once_force_compacts_attached_observability() {
+    let db_path = temp_db_path("db-compaction-once-force-attached-observability");
+    let db_str = db_path.to_string_lossy().to_string();
+    let layout = sqlite_test_layout(&db_str);
+    let observability_path = layout
+        .observability_database_path
+        .clone()
+        .expect("observability sidecar path");
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let payload = vec![b'x'; 16 * 1024];
+
+    for row in 0..256_i64 {
+        sqlx::query(
+            "INSERT INTO observability.request_logs (method, path, result_status, visibility, created_at, response_body) VALUES ('POST', ?, 'success', 'visible', ?, ?)",
+        )
+        .bind("/compaction-sidecar")
+        .bind(row)
+        .bind(payload.as_slice())
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed sidecar request log");
+    }
+    sqlx::query(
+        "INSERT INTO observability.request_logs (method, path, result_status, visibility, created_at) VALUES ('POST', '/compaction-marker', 'success', 'visible', 999999)",
+    )
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed marker request log");
+    sqlx::query("DELETE FROM observability.request_logs WHERE path = '/compaction-sidecar'")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("delete reclaimable request logs");
+    proxy
+        .key_store
+        .checkpoint_sqlite_wal_passive_detailed()
+        .await
+        .expect("checkpoint sidecar before compaction");
+    let before = proxy
+        .sqlite_db_stats()
+        .await
+        .expect("stats before compaction");
+    assert!(before.observability_reclaimable_bytes > 0);
+    drop(proxy);
+
+    let report = run_db_compaction_once(&db_str, true)
+        .await
+        .expect("forced sidecar compaction");
+    assert!(!report.skipped);
+    assert!(report.forced);
+    assert!(report.after.observability_reclaimable_bytes < before.observability_reclaimable_bytes);
+    assert!(report.after.observability_database_bytes < before.observability_database_bytes);
+    assert_eq!(report.after.observability_wal_bytes, 0);
+
+    let verify = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("reopen compacted proxy");
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observability.request_logs WHERE path = '/compaction-marker'",
+    )
+    .fetch_one(&verify.key_store.pool)
+    .await
+    .expect("count preserved marker request log");
+    assert_eq!(marker_count, 1);
+    drop(verify);
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(&observability_path);
+    let _ = std::fs::remove_file(format!("{observability_path}-shm"));
+    let _ = std::fs::remove_file(format!("{observability_path}-wal"));
 }
 
 #[tokio::test]

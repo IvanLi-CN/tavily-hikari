@@ -57,7 +57,6 @@ use tavily_hikari::{
     AdminUserSortedPageRequest, AdminUserUsageSeriesKind, AlertCatalog, AnalysisPressureSnapshot,
     ApiKeyMetrics, ApiKeyStickyNode, ApiKeyStickyUser, ApiKeyUserUsageBucket, AuthToken,
     BusinessCalls1hLimitVerdict, ClientIpInfo, DB_COMPACTION_COOLDOWN_SECS,
-    DB_COMPACTION_MIN_RECLAIMABLE_BYTES, DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
     ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
     ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption, OAuthAccountProfile,
     PaginatedAlertEvents, PaginatedAlertGroups, PendingBillingSettleOutcome, ProxyError,

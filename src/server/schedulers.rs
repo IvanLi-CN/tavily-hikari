@@ -7,6 +7,7 @@ use tavily_hikari::{
     LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR,
     LinuxDoCreditRefundExternalSuccessMarker as SharedLinuxDoCreditRefundExternalSuccessMarker,
     decode_linuxdo_credit_refund_external_success_marker,
+    db_compaction_threshold_met,
     format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
     HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
     HA_OUTBOX_GC_IDLE_DISCOVERY_SECS,
@@ -2919,30 +2920,66 @@ async fn finish_db_compaction_claimed_job(
         Ok(report) => {
             let message = if report.skipped {
                 format!(
-                    "skipped=true forced={} reason={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
+                    "skipped=true forced={} reason={} database_bytes_before={} database_bytes_after={} observability_database_bytes_before={} observability_database_bytes_after={} total_database_bytes_before={} total_database_bytes_after={} wal_bytes_before={} wal_bytes_after={} observability_wal_bytes_before={} observability_wal_bytes_after={} total_reclaimable_bytes_before={} total_reclaimable_bytes_after={} total_reclaimable_ratio_before={:.6} total_reclaimable_ratio_after={:.6} reclaimable_bytes_before={} reclaimable_bytes_after={} reclaimable_ratio_before={:.6} reclaimable_ratio_after={:.6} observability_reclaimable_bytes_before={} observability_reclaimable_bytes_after={} observability_reclaimable_ratio_before={:.6} observability_reclaimable_ratio_after={:.6} freelist_before={} freelist_after={} observability_freelist_before={} observability_freelist_after={}",
                     report.forced,
                     report.reason.unwrap_or_else(|| "unknown".to_string()),
                     report.before.database_bytes,
                     report.after.database_bytes,
+                    report.before.observability_database_bytes,
+                    report.after.observability_database_bytes,
+                    report.before.database_bytes + report.before.observability_database_bytes,
+                    report.after.database_bytes + report.after.observability_database_bytes,
                     report.before.wal_bytes,
                     report.after.wal_bytes,
+                    report.before.observability_wal_bytes,
+                    report.after.observability_wal_bytes,
+                    report.before.total_reclaimable_bytes,
+                    report.after.total_reclaimable_bytes,
+                    report.before.total_reclaimable_ratio,
+                    report.after.total_reclaimable_ratio,
                     report.before.reclaimable_bytes,
                     report.after.reclaimable_bytes,
+                    report.before.reclaimable_ratio,
+                    report.after.reclaimable_ratio,
+                    report.before.observability_reclaimable_bytes,
+                    report.after.observability_reclaimable_bytes,
+                    report.before.observability_reclaimable_ratio,
+                    report.after.observability_reclaimable_ratio,
                     report.before.freelist_count,
-                    report.after.freelist_count
+                    report.after.freelist_count,
+                    report.before.observability_freelist_count,
+                    report.after.observability_freelist_count
                 )
             } else {
                 format!(
-                    "skipped=false forced={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
+                    "skipped=false forced={} database_bytes_before={} database_bytes_after={} observability_database_bytes_before={} observability_database_bytes_after={} total_database_bytes_before={} total_database_bytes_after={} wal_bytes_before={} wal_bytes_after={} observability_wal_bytes_before={} observability_wal_bytes_after={} total_reclaimable_bytes_before={} total_reclaimable_bytes_after={} total_reclaimable_ratio_before={:.6} total_reclaimable_ratio_after={:.6} reclaimable_bytes_before={} reclaimable_bytes_after={} reclaimable_ratio_before={:.6} reclaimable_ratio_after={:.6} observability_reclaimable_bytes_before={} observability_reclaimable_bytes_after={} observability_reclaimable_ratio_before={:.6} observability_reclaimable_ratio_after={:.6} freelist_before={} freelist_after={} observability_freelist_before={} observability_freelist_after={}",
                     report.forced,
                     report.before.database_bytes,
                     report.after.database_bytes,
+                    report.before.observability_database_bytes,
+                    report.after.observability_database_bytes,
+                    report.before.database_bytes + report.before.observability_database_bytes,
+                    report.after.database_bytes + report.after.observability_database_bytes,
                     report.before.wal_bytes,
                     report.after.wal_bytes,
+                    report.before.observability_wal_bytes,
+                    report.after.observability_wal_bytes,
+                    report.before.total_reclaimable_bytes,
+                    report.after.total_reclaimable_bytes,
+                    report.before.total_reclaimable_ratio,
+                    report.after.total_reclaimable_ratio,
                     report.before.reclaimable_bytes,
                     report.after.reclaimable_bytes,
+                    report.before.reclaimable_ratio,
+                    report.after.reclaimable_ratio,
+                    report.before.observability_reclaimable_bytes,
+                    report.after.observability_reclaimable_bytes,
+                    report.before.observability_reclaimable_ratio,
+                    report.after.observability_reclaimable_ratio,
                     report.before.freelist_count,
-                    report.after.freelist_count
+                    report.after.freelist_count,
+                    report.before.observability_freelist_count,
+                    report.after.observability_freelist_count
                 )
             };
             finish(state, "success", message).await
@@ -2981,9 +3018,7 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
                     continue;
                 }
             };
-            if stats.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
-                || stats.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO
-            {
+            if !db_compaction_threshold_met(&stats) {
                 continue;
             }
             if let Err(err) = enqueue_scheduled_job(

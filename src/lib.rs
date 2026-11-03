@@ -1167,6 +1167,11 @@ pub const HA_OUTBOX_GC_DEFAULT_BATCH_SIZE: i64 = 20_000;
 pub const HA_OUTBOX_GC_DEFAULT_MAX_BATCHES: i64 = 8;
 pub const HA_OUTBOX_GC_DEFAULT_MAX_RUNTIME_SECS: u64 = 20;
 
+pub fn db_compaction_threshold_met(stats: &SqliteDbStats) -> bool {
+    stats.total_reclaimable_bytes >= DB_COMPACTION_MIN_RECLAIMABLE_BYTES
+        && stats.total_reclaimable_ratio >= DB_COMPACTION_MIN_RECLAIMABLE_RATIO
+}
+
 pub async fn run_db_compaction_once(
     database_path: &str,
     force: bool,
@@ -1175,16 +1180,13 @@ pub async fn run_db_compaction_once(
     let started = Instant::now();
     let before = key_store.sqlite_db_stats().await?;
 
-    if !force
-        && (before.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
-            || before.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO)
-    {
+    if !force && !db_compaction_threshold_met(&before) {
         return Ok(DbCompactionReport {
             skipped: true,
             forced: false,
             reason: Some(format!(
-                "reclaimable space below threshold (bytes={} ratio={:.6})",
-                before.reclaimable_bytes, before.reclaimable_ratio
+                "reclaimable space below threshold (total_bytes={} total_ratio={:.6})",
+                before.total_reclaimable_bytes, before.total_reclaimable_ratio
             )),
             min_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES,
             min_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,

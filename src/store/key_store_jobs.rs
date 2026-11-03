@@ -1,3 +1,10 @@
+fn sqlite_page_bytes(page_count: i64, page_size: i64) -> u64 {
+    page_count
+        .max(0)
+        .unsigned_abs()
+        .saturating_mul(page_size.max(0).unsigned_abs())
+}
+
 impl KeyStore {
     const SCHEDULED_JOB_PRIORITY_AGING_SECS: i64 = 5 * 60;
     const SCHEDULED_JOB_PRIORITY_AGING_FLOOR: i64 = 2;
@@ -306,8 +313,31 @@ impl KeyStore {
             .and_then(|path| std::fs::metadata(path).ok())
             .map(|meta| meta.len())
             .unwrap_or(0);
-        let reclaimable_bytes = freelist_count.max(0) as u64 * page_size.max(0) as u64;
+        let (observability_page_size, observability_page_count, observability_freelist_count) =
+            if self.observability_database_path().is_some() {
+                (
+                    sqlx::query_scalar("PRAGMA observability.page_size")
+                        .fetch_one(&self.pool)
+                        .await?,
+                    sqlx::query_scalar("PRAGMA observability.page_count")
+                        .fetch_one(&self.pool)
+                        .await?,
+                    sqlx::query_scalar("PRAGMA observability.freelist_count")
+                        .fetch_one(&self.pool)
+                        .await?,
+                )
+            } else {
+                (0, 0, 0)
+            };
+        let reclaimable_bytes = sqlite_page_bytes(freelist_count, page_size);
+        let observability_reclaimable_bytes =
+            sqlite_page_bytes(observability_freelist_count, observability_page_size);
         let total_pages = page_count.max(1) as f64;
+        let observability_total_pages = observability_page_count.max(1) as f64;
+        let total_allocated_bytes = sqlite_page_bytes(page_count, page_size)
+            .saturating_add(sqlite_page_bytes(observability_page_count, observability_page_size));
+        let total_reclaimable_bytes =
+            reclaimable_bytes.saturating_add(observability_reclaimable_bytes);
         Ok(SqliteDbStats {
             database_bytes,
             wal_bytes,
@@ -318,33 +348,47 @@ impl KeyStore {
             freelist_count,
             reclaimable_bytes,
             reclaimable_ratio: freelist_count.max(0) as f64 / total_pages,
+            observability_page_size,
+            observability_page_count,
+            observability_freelist_count,
+            observability_reclaimable_bytes,
+            observability_reclaimable_ratio: if observability_page_count > 0 {
+                observability_freelist_count.max(0) as f64 / observability_total_pages
+            } else {
+                0.0
+            },
+            total_reclaimable_bytes,
+            total_reclaimable_ratio: if total_allocated_bytes > 0 {
+                total_reclaimable_bytes as f64 / total_allocated_bytes as f64
+            } else {
+                0.0
+            },
         })
+    }
+
+    fn observability_database_path(&self) -> Option<&str> {
+        self.observability_database_path
+            .as_deref()
+            .filter(|path| !sqlite_paths_match(&self.database_path, path))
     }
 
     pub(crate) async fn compact_sqlite_database(&self) -> Result<SqliteDbStats, ProxyError> {
         sqlx::query("PRAGMA main.wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
-        if self
-            .observability_database_path
-            .as_deref()
-            .filter(|path| !sqlite_paths_match(&self.database_path, path))
-            .is_some()
-        {
+        if self.observability_database_path().is_some() {
             sqlx::query("PRAGMA observability.wal_checkpoint(TRUNCATE)")
                 .execute(&self.pool)
                 .await?;
         }
         sqlx::query("VACUUM").execute(&self.pool).await?;
+        if self.observability_database_path().is_some() {
+            sqlx::query("VACUUM observability").execute(&self.pool).await?;
+        }
         sqlx::query("PRAGMA main.wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
-        if self
-            .observability_database_path
-            .as_deref()
-            .filter(|path| !sqlite_paths_match(&self.database_path, path))
-            .is_some()
-        {
+        if self.observability_database_path().is_some() {
             sqlx::query("PRAGMA observability.wal_checkpoint(TRUNCATE)")
                 .execute(&self.pool)
                 .await?;
