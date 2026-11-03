@@ -2001,6 +2001,9 @@ async fn standalone_ha_outbox_gc_deletes_invalid_legacy_rows_before_retention_ro
 async fn sqlite_db_stats_reports_reclaimable_shape() {
     let db_path = temp_db_path("sqlite-db-stats-shape");
     let db_str = db_path.to_string_lossy().to_string();
+    let observability_path = sqlite_test_layout(&db_str)
+        .observability_database_path
+        .expect("observability sidecar path");
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
@@ -2025,9 +2028,28 @@ async fn sqlite_db_stats_reports_reclaimable_shape() {
     assert!(observability_checkpoint.is_some());
     assert!(stats.reclaimable_ratio >= 0.0);
 
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    drop(proxy);
+    cleanup_compaction_test_database(&db_path, Some(&observability_path));
+}
+
+fn cleanup_compaction_test_database(db_path: &std::path::Path, observability_path: Option<&str>) {
+    let mut paths = vec![
+        db_path.to_path_buf(),
+        db_path.with_extension("db-shm"),
+        db_path.with_extension("db-wal"),
+    ];
+    if let Some(observability_path) = observability_path {
+        paths.push(std::path::PathBuf::from(observability_path));
+        paths.push(std::path::PathBuf::from(format!(
+            "{observability_path}-shm"
+        )));
+        paths.push(std::path::PathBuf::from(format!(
+            "{observability_path}-wal"
+        )));
+    }
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]
@@ -2139,7 +2161,10 @@ async fn db_compaction_once_force_compacts_attached_observability() {
 async fn db_compaction_once_skips_when_reclaimable_space_is_below_threshold() {
     let db_path = temp_db_path("db-compaction-once-skips-below-threshold");
     let db_str = db_path.to_string_lossy().to_string();
-    let _proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+    let observability_path = sqlite_test_layout(&db_str)
+        .observability_database_path
+        .expect("observability sidecar path");
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
 
@@ -2151,16 +2176,18 @@ async fn db_compaction_once_skips_when_reclaimable_space_is_below_threshold() {
     assert!(report.reason.is_some());
     assert_eq!(report.before.database_bytes, report.after.database_bytes);
 
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    drop(proxy);
+    cleanup_compaction_test_database(&db_path, Some(&observability_path));
 }
 
 #[tokio::test]
 async fn db_compaction_once_force_runs_even_below_threshold() {
     let db_path = temp_db_path("db-compaction-once-force");
     let db_str = db_path.to_string_lossy().to_string();
-    let _proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+    let observability_path = sqlite_test_layout(&db_str)
+        .observability_database_path
+        .expect("observability sidecar path");
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
 
@@ -2172,7 +2199,30 @@ async fn db_compaction_once_force_runs_even_below_threshold() {
     assert!(report.reason.is_none());
     assert!(report.after.database_bytes > 0);
 
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    drop(proxy);
+    cleanup_compaction_test_database(&db_path, Some(&observability_path));
+}
+
+#[tokio::test]
+async fn db_compaction_main_only_skips_same_path_observability() {
+    let db_path = temp_db_path("db-compaction-main-only");
+    let db_str = db_path.to_string_lossy().to_string();
+    let observability_path = sqlite_test_layout(&db_str)
+        .observability_database_path
+        .expect("observability sidecar path");
+    let mut store = KeyStore::open_for_request_logs_gc(&db_str)
+        .await
+        .expect("key store created");
+    store.observability_database_path = Some(db_str.clone());
+
+    let stats = store
+        .compact_sqlite_database()
+        .await
+        .expect("main-only compaction");
+    assert!(stats.database_bytes > 0);
+    assert_eq!(stats.observability_page_count, 0);
+    assert_eq!(stats.observability_reclaimable_bytes, 0);
+
+    drop(store);
+    cleanup_compaction_test_database(&db_path, Some(&observability_path));
 }
