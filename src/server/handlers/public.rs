@@ -555,9 +555,37 @@ struct TavilyUsageQuery {
     today_end: Option<String>,
 }
 
+// Compatibility values describe the downstream quota subject, never an upstream account.
+#[derive(Debug, Serialize)]
+struct TavilyUsageKeyView {
+    usage: i64,
+    limit: i64,
+    search_usage: i64,
+    extract_usage: i64,
+    crawl_usage: i64,
+    map_usage: i64,
+    research_usage: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TavilyUsageAccountView {
+    current_plan: &'static str,
+    plan_usage: i64,
+    plan_limit: i64,
+    paygo_usage: i64,
+    paygo_limit: i64,
+    search_usage: i64,
+    extract_usage: i64,
+    crawl_usage: i64,
+    map_usage: i64,
+    research_usage: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TavilyUsageView {
+    key: TavilyUsageKeyView,
+    account: TavilyUsageAccountView,
     token_id: String,
     daily_success: i64,
     daily_error: i64,
@@ -669,7 +697,35 @@ async fn tavily_http_usage(
             )
         })?;
 
+    let quota = state
+        .proxy
+        .token_quota_snapshot(&token_id)
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to load token quota".to_string()))?
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "failed to load token quota".to_string()))?;
+
     Ok(Json(TavilyUsageView {
+        key: TavilyUsageKeyView {
+            usage: quota.monthly_used,
+            limit: quota.monthly_limit,
+            search_usage: 0,
+            extract_usage: 0,
+            crawl_usage: 0,
+            map_usage: 0,
+            research_usage: 0,
+        },
+        account: TavilyUsageAccountView {
+            current_plan: "Hikari",
+            plan_usage: quota.monthly_used,
+            plan_limit: quota.monthly_limit,
+            paygo_usage: 0,
+            paygo_limit: 0,
+            search_usage: 0,
+            extract_usage: 0,
+            crawl_usage: 0,
+            map_usage: 0,
+            research_usage: 0,
+        },
         token_id,
         daily_success,
         daily_error: daily_failure,

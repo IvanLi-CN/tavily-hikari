@@ -1478,14 +1478,54 @@ async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
         .await
         .expect("stop unrelated request-stats worker");
 
+    let initial = state
+        .proxy
+        .scheduled_job_enqueue("ha_outbox_gc", "test", None, 1)
+        .await
+        .expect("enqueue HA GC job");
+    let initial_claim = state
+        .proxy
+        .scheduled_job_mark_running(initial.job_id)
+        .await
+        .expect("claim HA GC job")
+        .expect("HA GC job is due");
+    // Reproduce a transient admission defer before the native slice. SQLx returns
+    // control connections asynchronously, so CI may otherwise reach this state
+    // after enqueue/claim even though the earlier admission probe succeeded.
+    let (pool_ready_tx, pool_ready_rx) = tokio::sync::oneshot::channel();
+    let pool_release = Arc::new(Notify::new());
+    let pool_proxy = state.proxy.clone();
+    let pool_release_worker = pool_release.clone();
+    let pool_holder = tokio::spawn(async move {
+        pool_proxy
+            .hold_sqlite_pool_until_for_test(pool_ready_tx, pool_release_worker)
+            .await
+    });
+    pool_ready_rx.await.expect("pool held");
+    assert!(matches!(
+        state.proxy.admit_ha_outbox_gc(),
+        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason: "pool_pressure" }
+    ));
+    pool_release.notify_one();
+    pool_holder.await.expect("pool task").expect("release pool");
+
     // A native slice keeps the bulk permit occupied. Another maintenance class
     // must remain blocked until the native slice and its permit leave.
-    let native_permit = match state.proxy.admit_ha_outbox_gc() {
-        tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => permit,
-        tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
-            panic!("admit the native HA GC slice: {reason}")
+    let native_permit = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match state.proxy.admit_ha_outbox_gc() {
+                tavily_hikari::SqliteAdmissionOutcome::Admitted(permit) => break permit,
+                tavily_hikari::SqliteAdmissionOutcome::Deferred { reason: "pool_pressure" } => {
+                    tokio::task::yield_now().await;
+                }
+                tavily_hikari::SqliteAdmissionOutcome::Deferred { reason } => {
+                    panic!("admit the native HA GC slice: {reason}")
+                }
+            }
         }
-    };
+    })
+    .await
+    .expect("returned control connections must allow native HA GC admission");
     assert!(
         matches!(
             state.proxy.admit_request_logs_gc(),
@@ -1504,17 +1544,6 @@ async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
     };
     drop(pending_request_logs_permit);
 
-    let initial = state
-        .proxy
-        .scheduled_job_enqueue("ha_outbox_gc", "test", None, 1)
-        .await
-        .expect("enqueue HA GC job");
-    let initial_claim = state
-        .proxy
-        .scheduled_job_mark_running(initial.job_id)
-        .await
-        .expect("claim HA GC job")
-        .expect("HA GC job is due");
     let pause = install_ha_gc_continuation_pause_for_test(&state, initial.job_id);
     let state_for_worker = state.clone();
     let worker = tokio::spawn(async move {
@@ -1531,6 +1560,13 @@ async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
     tokio::time::timeout(Duration::from_secs(2), pause.wait_until_arrived())
         .await
         .expect("HA GC must reach continuation persistence after its data slice");
+    assert!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ha_outbox")
+            .fetch_one(&pool)
+            .await
+            .expect("read HA GC debt after the native slice") < 1_250,
+        "the pause must follow real native cleanup, not an admission-only defer"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             "SELECT status FROM scheduled_jobs WHERE id = ?",

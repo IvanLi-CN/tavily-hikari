@@ -1,3 +1,7 @@
 [run]
 # Force frontend package scripts and local CLIs to execute under Bun.
 bun = true
+
+[test]
+# Initialize DOM before UI imports cache browser capability checks.
+preload = ["./test/happydom.ts"]

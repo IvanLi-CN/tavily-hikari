@@ -1835,6 +1835,79 @@ use tower::ServiceExt;
         let _ = std::fs::remove_file(db_path);
     }
 
+    fn assert_usage_compatibility(body: &serde_json::Value, used: i64, limit: i64) {
+        let key = body["key"].as_object().expect("key object");
+        let account = body["account"].as_object().expect("account object");
+        assert_eq!(key.len(), 7);
+        assert_eq!(account.len(), 10);
+        assert_eq!(key["usage"].as_i64(), Some(used));
+        assert_eq!(key["limit"].as_i64(), Some(limit));
+        assert_eq!(account["plan_usage"], key["usage"]);
+        assert_eq!(account["plan_limit"], key["limit"]);
+        assert_eq!(account["current_plan"], "Hikari");
+        for field in ["paygo_usage", "paygo_limit"] {
+            assert_eq!(account[field].as_i64(), Some(0));
+        }
+        for field in ["search_usage", "extract_usage", "crawl_usage", "map_usage", "research_usage"] {
+            assert_eq!(key[field].as_i64(), Some(0));
+            assert_eq!(account[field].as_i64(), Some(0));
+        }
+        // MagPie selects key usage/limit when the key has a non-null limit.
+        let parsed_used = key.get("usage").and_then(serde_json::Value::as_i64).unwrap();
+        let parsed_limit = key.get("limit").and_then(serde_json::Value::as_i64).unwrap();
+        let used_up = parsed_used >= parsed_limit;
+        assert_eq!(used_up, used >= limit);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_usage_projects_shared_account_quota_and_preserves_auth() {
+        let db_path = temp_db_path("usage-shared-account");
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_path.to_string_lossy())
+            .await.unwrap();
+        let user = proxy.upsert_oauth_account(&OAuthAccountProfile {
+            provider: "github".to_string(), provider_user_id: "usage-account".to_string(),
+            username: Some("usage-account".to_string()), name: None, avatar_template: None,
+            active: true, trust_level: None, raw_payload_json: None,
+        }).await.unwrap();
+        let first = proxy.create_user_bound_access_token(&user.user_id, None).await.unwrap();
+        let second = proxy.create_user_bound_access_token(&user.user_id, None).await.unwrap();
+        proxy.update_account_business_quota_limits(&user.user_id, 100, 1000, 500).await.unwrap();
+        proxy.charge_token_quota(&first.id, 123).await.unwrap();
+        proxy.record_token_attempt(&first.id, &Method::POST, "/api/tavily/search", None,
+            Some(200), None, true, "success", None).await.unwrap();
+        proxy.rollup_token_usage_stats().await.unwrap();
+        let upstream = spawn_http_search_mock_asserting_api_key("unused".to_string()).await;
+        let addr = spawn_proxy_server(proxy.clone(), format!("http://{upstream}")).await;
+        let client = Client::new();
+        let url = format!("http://{addr}/api/tavily/usage");
+        for token in [&first, &second] {
+            let response = client.get(&url).bearer_auth(&token.token).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_usage_compatibility(&body, 123, 500);
+            assert_eq!(body["tokenId"], token.id);
+            assert_eq!(body["monthlySuccess"], if token.id == first.id { 1 } else { 0 });
+        }
+        assert_eq!(proxy.token_quota_snapshot(&first.id).await.unwrap().unwrap().monthly_used, 123);
+        for limit in [123, 0] {
+            proxy.update_account_business_quota_limits(&user.user_id, 100, 1000, limit).await.unwrap();
+            let body: serde_json::Value = client.get(&url).bearer_auth(&first.token).send().await.unwrap().json().await.unwrap();
+            assert_usage_compatibility(&body, 123.min(limit), limit);
+        }
+        assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(client.get(&url).bearer_auth("th-invalid-secret").send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(client.get(format!("{url}?token_id={}", second.id)).bearer_auth(&first.token).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        // Break only the isolated fixture's quota source: usage must fail closed.
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db_path.display())).await.unwrap();
+        sqlx::query("ALTER TABLE account_monthly_quota RENAME TO unavailable_account_monthly_quota")
+            .execute(&pool).await.unwrap();
+        let response = client.get(&url).bearer_auth(&first.token).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.text().await.unwrap(), "failed to load token quota");
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
+    }
+
     #[tokio::test]
     async fn tavily_http_usage_returns_daily_and_monthly_counts() {
         let db_path = temp_db_path("http-usage-view");
@@ -1915,19 +1988,9 @@ use tower::ServiceExt;
         );
         let body: serde_json::Value =
             serde_json::from_str(&text).expect("parse json body from /api/tavily/usage");
-        for upstream_only_field in [
-            "key", "account", "plan_limit", "paygo_limit", "current_plan", "planLimit",
-            "paygoLimit", "currentPlan",
-        ] {
-            assert!(
-                body.get(upstream_only_field).is_none(),
-                "/api/tavily/usage must not expose upstream Tavily account field {upstream_only_field}"
-            );
-            assert!(
-                !text.contains(upstream_only_field),
-                "/api/tavily/usage response must not contain upstream Tavily field {upstream_only_field}"
-            );
-        }
+        assert_usage_compatibility(&body, 1, effective_token_monthly_limit());
+        assert!(!text.contains(expected_api_key));
+        assert!(!text.contains(&access_token.token));
 
         assert_eq!(
             body.get("tokenId").and_then(|v| v.as_str()),
