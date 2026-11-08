@@ -35,19 +35,17 @@
 
 统一前缀：`/api/tavily/*`
 
-| Method | Path                               | 对应 Tavily 端点             | 说明                        |
-| ------ | ---------------------------------- | ---------------------------- | --------------------------- |
-| POST   | `/api/tavily/search`               | `POST /search`               | 搜索                        |
-| POST   | `/api/tavily/extract`              | `POST /extract`              | 内容提取                    |
-| POST   | `/api/tavily/crawl`                | `POST /crawl`                | 深度爬取                    |
-| POST   | `/api/tavily/map`                  | `POST /map`                  | 站点结构映射                |
-| POST   | `/api/tavily/research`             | `POST /research`             | Research 请求               |
-| GET    | `/api/tavily/research/:request_id` | `GET /research/{request_id}` | Research 结果查询           |
-| GET    | `/api/tavily/usage`                | （自定义）                   | 按 **token** 聚合的用量视图 |
+| Method | Path                               | 对应 Tavily 端点             | 说明                             |
+| ------ | ---------------------------------- | ---------------------------- | -------------------------------- |
+| POST   | `/api/tavily/search`               | `POST /search`               | 搜索                             |
+| POST   | `/api/tavily/extract`              | `POST /extract`              | 内容提取                         |
+| POST   | `/api/tavily/crawl`                | `POST /crawl`                | 深度爬取                         |
+| POST   | `/api/tavily/map`                  | `POST /map`                  | 站点结构映射                     |
+| POST   | `/api/tavily/research`             | `POST /research`             | Research 请求                    |
+| GET    | `/api/tavily/research/:request_id` | `GET /research/{request_id}` | Research 结果查询                |
+| GET    | `/api/tavily/usage`                | （自定义）                   | token 统计及下游账号额度兼容视图 |
 
-`/api/tavily/usage` 是 Hikari 自定义下游用量端点，不是 Tavily 原生 `GET /usage`
-的透明代理。它只返回 Hikari 访问令牌维度的本地统计，不返回上游 Tavily key、账号套餐、
-`plan_limit`、`paygo_limit`、`current_plan` 等上游账号信息。
+`/api/tavily/usage` 是本地下游用量端点，不透明代理官方 `GET /usage`。原有 token 请求统计字段保留；新增 `key/account` 对象以兼容 MagPie 等客户端，表达 Hikari 下游用户额度，不返回上游 Tavily key、账户套餐或成本。
 
 Hikari 不提供 `/api/tavily/org-usage`。官方 `POST /org-usage` 属于 Tavily Enterprise 组织用量能力，
 不属于免费上游账号兼容范围，也不应暴露给下游用户。
@@ -264,23 +262,50 @@ Hikari 的下游合同只覆盖上游免费账号可用、且当前代理可正�
 
 ### 5.4 `/api/tavily/usage`（Hikari 自定义）
 
-- 目标：给调用方提供按 **访问令牌** 维度的用量统计，而不是暴露底层 Tavily key 的 `/usage`。
-- 数据源：
-  - `token_usage_stats` 与 `request_logs` / `token_logs` 的聚合结果；
-  - 可以从现有用于用户总览页的查询复用逻辑。
-- 响应不得包含官方 Tavily `/usage` 中的上游账号字段，例如 `key`、`account`、
-  `plan_limit`、`paygo_limit`、`current_plan`、上游 key limit 或 PAYG 成本。
-- 响应示例：
+原有 `tokenId`、`dailySuccess`、`dailyError`、`monthlySuccess`、`monthlyQuotaExhausted` 继续表示当前 token 的请求统计，取值和 today 窗口参数语义不变。
 
-  ```json
-  {
-    "tokenId": "abc123",
-    "dailySuccess": 120,
-    "dailyError": 3,
-    "monthlySuccess": 840,
-    "monthlyQuotaExhausted": 2
+新增官方形状的 `key/account` 兼容对象，两者使用同一份本地下游月额度快照。绑定用户的 token 展示所属账号的共享用量及最终生效额度；未绑定 token 展示自身额度。同账号不同 token 的兼容字段相同，旧请求统计仍按 token 独立返回。
+
+| 字段                                                                                   | 本地取值                                             |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `key.usage` / `account.plan_usage`                                                     | 月 credits 已用快照，接受现有截断及近似口径          |
+| `key.limit` / `account.plan_limit`                                                     | 最终生效月 credits 上限，`0` 表示无额度              |
+| `account.current_plan`                                                                 | 固定为 `Hikari`                                      |
+| `account.paygo_usage` / `account.paygo_limit`                                          | 固定整数 `0`，未引入 PAYGO                           |
+| 两对象的 `search_usage`、`extract_usage`、`crawl_usage`、`map_usage`、`research_usage` | 全部为整数 `0`，仅作兼容占位，分类之和无需等于总用量 |
+
+日额度和小时限制继续独立执行，不折算为月额度。查询不扣费、不查询官方上游；读取额度失败返回 `500`，不伪造余额。嵌套兼容字段使用 snake_case，原顶层字段仍使用 camelCase；`X-Project-ID` 不引入项目级统计语义。
+
+```json
+{
+  "tokenId": "abc123",
+  "dailySuccess": 120,
+  "dailyError": 3,
+  "monthlySuccess": 840,
+  "monthlyQuotaExhausted": 2,
+  "key": {
+    "usage": 800,
+    "limit": 10000,
+    "search_usage": 0,
+    "extract_usage": 0,
+    "crawl_usage": 0,
+    "map_usage": 0,
+    "research_usage": 0
+  },
+  "account": {
+    "current_plan": "Hikari",
+    "plan_usage": 800,
+    "plan_limit": 10000,
+    "paygo_usage": 0,
+    "paygo_limit": 0,
+    "search_usage": 0,
+    "extract_usage": 0,
+    "crawl_usage": 0,
+    "map_usage": 0,
+    "research_usage": 0
   }
-  ```
+}
+```
 
 ---
 
