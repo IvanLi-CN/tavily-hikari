@@ -7,6 +7,7 @@ use tavily_hikari::{
     LINUXDO_CREDIT_RECHARGE_SYSTEM_REFUND_ACTOR,
     LinuxDoCreditRefundExternalSuccessMarker as SharedLinuxDoCreditRefundExternalSuccessMarker,
     decode_linuxdo_credit_refund_external_success_marker,
+    db_compaction_threshold_met,
     format_ha_outbox_gc_report_message, format_linuxdo_credit_money,
     HA_OUTBOX_GC_DEFERRED_CONTINUATION_DELAY_SECS,
     HA_OUTBOX_GC_IDLE_DISCOVERY_SECS,
@@ -2917,34 +2918,7 @@ async fn finish_db_compaction_claimed_job(
 
     match run_db_compaction_once(state.proxy.sqlite_database_path(), false).await {
         Ok(report) => {
-            let message = if report.skipped {
-                format!(
-                    "skipped=true forced={} reason={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
-                    report.forced,
-                    report.reason.unwrap_or_else(|| "unknown".to_string()),
-                    report.before.database_bytes,
-                    report.after.database_bytes,
-                    report.before.wal_bytes,
-                    report.after.wal_bytes,
-                    report.before.reclaimable_bytes,
-                    report.after.reclaimable_bytes,
-                    report.before.freelist_count,
-                    report.after.freelist_count
-                )
-            } else {
-                format!(
-                    "skipped=false forced={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
-                    report.forced,
-                    report.before.database_bytes,
-                    report.after.database_bytes,
-                    report.before.wal_bytes,
-                    report.after.wal_bytes,
-                    report.before.reclaimable_bytes,
-                    report.after.reclaimable_bytes,
-                    report.before.freelist_count,
-                    report.after.freelist_count
-                )
-            };
+            let message = format_db_compaction_report_message(&report);
             finish(state, "success", message).await
         }
         Err(err) => finish(state, "error", err.to_string()).await,
@@ -2981,9 +2955,7 @@ fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
                     continue;
                 }
             };
-            if stats.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
-                || stats.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO
-            {
+            if !db_compaction_threshold_met(&stats) {
                 continue;
             }
             if let Err(err) = enqueue_scheduled_job(
