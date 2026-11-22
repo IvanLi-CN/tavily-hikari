@@ -45,3 +45,25 @@ _Avoid_: 手工 UI 配置、一次性导入
 **Scrape credential**:
 Prometheus 读取 exporter 时使用的只读认证材料，与应用侧或 tracing 凭据分离。
 _Avoid_: public API token、Grafana 登录凭据
+
+## Storage
+
+**Core database**:
+承载业务真值的存储，包括键、令牌、配额、账本、会话与任务。
+_Avoid_: 主库、业务库、primary database
+
+**Observability database**:
+承载派生观测数据的存储，包括请求日志、统计桶、完整性台账与告警投影。
+_Avoid_: 日志库、sidecar、observability SQLite sidecar
+
+**Cutover window**:
+从停止旧服务到新服务通过健康检查的时间段。
+_Avoid_: 迁移期、停机窗口之外的过渡期
+
+**Migration snapshot**:
+从旧存储导出的一致性副本，包含尚未 checkpoint 的已提交数据。
+_Avoid_: 备份、dump
+
+**Verification report**:
+迁移工具输出的机器可读一致性证据，覆盖行数、主键集合与列聚合三类比对。
+_Avoid_: 校验日志、diff 报告
