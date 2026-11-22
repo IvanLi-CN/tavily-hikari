@@ -21,31 +21,31 @@ impl KeyStore {
     }
 
     fn push_admin_user_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         tag_id: Option<&'a str>,
         search: Option<&'a str>,
         active_since: Option<i64>,
     ) {
         builder.push("(");
         builder.push_bind(tag_id);
-        builder.push(" IS NULL OR EXISTS (SELECT 1 FROM core.user_tag_bindings utb_filter WHERE utb_filter.user_id = u.id AND utb_filter.tag_id = ");
+        builder.push(" IS NULL OR EXISTS (SELECT 1 FROM user_tag_bindings utb_filter WHERE utb_filter.user_id = u.id AND utb_filter.tag_id = ");
         builder.push_bind(tag_id);
         builder.push(")) AND (");
         builder.push_bind(search);
-        builder.push(" IS NULL OR u.id ILIKE ");
+        builder.push(" IS NULL OR u.id LIKE ");
         builder.push_bind(search);
-        builder.push(" OR COALESCE(u.display_name, '') ILIKE ");
+        builder.push(" OR COALESCE(u.display_name, '') LIKE ");
         builder.push_bind(search);
-        builder.push(" OR COALESCE(u.username, '') ILIKE ");
+        builder.push(" OR COALESCE(u.username, '') LIKE ");
         builder.push_bind(search);
-        builder.push(" OR EXISTS (SELECT 1 FROM core.user_tag_bindings utb_search JOIN core.user_tags ut_search ON ut_search.id = utb_search.tag_id WHERE utb_search.user_id = u.id AND (ut_search.name ILIKE ");
+        builder.push(" OR EXISTS (SELECT 1 FROM user_tag_bindings utb_search JOIN user_tags ut_search ON ut_search.id = utb_search.tag_id WHERE utb_search.user_id = u.id AND (ut_search.name LIKE ");
         builder.push_bind(search);
-        builder.push(" OR COALESCE(ut_search.display_name, '') ILIKE ");
+        builder.push(" OR COALESCE(ut_search.display_name, '') LIKE ");
         builder.push_bind(search);
         builder.push("))) AND (");
         builder.push_bind(active_since);
         builder.push(
-            " IS NULL OR EXISTS (SELECT 1 FROM core.account_usage_rollup_buckets aur WHERE aur.user_id = u.id AND aur.metric_kind = ",
+            " IS NULL OR EXISTS (SELECT 1 FROM account_usage_rollup_buckets aur WHERE aur.user_id = u.id AND aur.metric_kind = ",
         );
         builder.push_bind(AccountUsageRollupMetricKind::RequestCount.as_str());
         builder.push(" AND aur.bucket_kind = ");
@@ -56,7 +56,7 @@ impl KeyStore {
         builder.push("))");
     }
 
-    fn push_admin_user_listing_select(builder: &mut QueryBuilder<'_, sqlx::Postgres>) {
+    fn push_admin_user_listing_select(builder: &mut QueryBuilder<'_, Sqlite>) {
         builder.push(
             r#"SELECT
                  u.id,
@@ -65,13 +65,13 @@ impl KeyStore {
                  u.active,
                  u.last_login_at,
                  COALESCE(COUNT(b.token_id), 0) AS token_count
-               FROM core.users u
-               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
+               FROM users u
+               LEFT JOIN user_token_bindings b ON b.user_id = u.id
                WHERE "#,
         );
     }
 
-    fn push_admin_user_listing_group_order(builder: &mut QueryBuilder<'_, sqlx::Postgres>) {
+    fn push_admin_user_listing_group_order(builder: &mut QueryBuilder<'_, Sqlite>) {
         builder.push(
             r#" GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
                 ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
@@ -99,8 +99,8 @@ impl KeyStore {
     }
 
     pub(crate) async fn count_total_users(&self) -> Result<i64, ProxyError> {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core.users")
-            .fetch_one(self.pg()?)
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
             .await
             .map_err(ProxyError::Database)
     }
@@ -111,16 +111,16 @@ impl KeyStore {
     ) -> Result<i64, ProxyError> {
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(DISTINCT user_id)
-               FROM core.account_usage_rollup_buckets
-               WHERE metric_kind = $1
-                 AND bucket_kind = $2
-                 AND bucket_start >= $3
+               FROM account_usage_rollup_buckets
+               WHERE metric_kind = ?
+                 AND bucket_kind = ?
+                 AND bucket_start >= ?
                  AND value > 0"#,
         )
         .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
         .bind(AccountUsageRollupBucketKind::Day.as_str())
         .bind(since_bucket_start)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
     }
@@ -164,31 +164,31 @@ impl KeyStore {
         let totals_row = sqlx::query(
             r#"
             SELECT
-              COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
-              COALESCE(SUM(success_count), 0)::bigint AS success_count,
-              COALESCE(SUM(error_count), 0)::bigint AS error_count,
-              COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count
-            FROM observability.api_key_usage_buckets
-            WHERE api_key_id = $1 AND bucket_secs = 86400 AND bucket_start >= $2
+              COALESCE(SUM(total_requests), 0) AS total_requests,
+              COALESCE(SUM(success_count), 0) AS success_count,
+              COALESCE(SUM(error_count), 0) AS error_count,
+              COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+            FROM api_key_usage_buckets
+            WHERE api_key_id = ? AND bucket_secs = 86400 AND bucket_start >= ?
             "#,
         )
         .bind(key_id)
         .bind(since_bucket_start)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
 
         // Active/exhausted counts in this scope are not meaningful per single key; expose 1/0 for convenience
         // We will compute based on current key status
         let status: Option<String> =
-            sqlx::query_scalar("SELECT status FROM core.api_keys WHERE id = $1 LIMIT 1")
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE id = ? LIMIT 1")
                 .bind(key_id)
-                .fetch_optional(self.pg()?)
+                .fetch_optional(&self.pool)
                 .await?;
 
         let key_last_used_at: Option<i64> =
-            sqlx::query_scalar("SELECT last_used_at FROM core.api_keys WHERE id = $1 LIMIT 1")
+            sqlx::query_scalar("SELECT last_used_at FROM api_keys WHERE id = ? LIMIT 1")
                 .bind(key_id)
-                .fetch_optional(self.pg()?)
+                .fetch_optional(&self.pool)
                 .await?;
         let last_activity = key_last_used_at
             .and_then(normalize_timestamp)
@@ -197,13 +197,13 @@ impl KeyStore {
         let quarantined = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT 1
-            FROM core.api_key_quarantines
-            WHERE key_id = $1 AND cleared_at IS NULL
+            FROM api_key_quarantines
+            WHERE key_id = ? AND cleared_at IS NULL
             LIMIT 1
             "#,
         )
         .bind(key_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .is_some();
 
@@ -255,17 +255,17 @@ impl KeyStore {
                        body_cleaned_reason, body_cleaned_at,
                        created_at, forwarded_headers, dropped_headers,
                        remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
-                FROM observability.request_logs
-                WHERE api_key_id = $1 AND visibility = $2 AND created_at >= $3
+                FROM request_logs
+                WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
                 ORDER BY created_at DESC
-                LIMIT $4
+                LIMIT ?
                 "#,
             )
             .bind(key_id)
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(since_ts)
             .bind(limit)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
@@ -284,16 +284,16 @@ impl KeyStore {
                        body_cleaned_reason, body_cleaned_at,
                        created_at, forwarded_headers, dropped_headers,
                        remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
-                FROM observability.request_logs
-                WHERE api_key_id = $1 AND visibility = $2
+                FROM request_logs
+                WHERE api_key_id = ? AND visibility = ?
                 ORDER BY created_at DESC
-                LIMIT $3
+                LIMIT ?
                 "#,
             )
             .bind(key_id)
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(limit)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
         };
 
@@ -304,26 +304,26 @@ impl KeyStore {
     }
 
     pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
 
         let now = self.backend_time.now_ts();
 
         for key in keys {
             // If key exists, undelete by clearing deleted_at
             if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
-                "SELECT id, deleted_at FROM core.api_keys WHERE api_key = $1 LIMIT 1",
+                "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
             )
             .bind(key)
             .fetch_optional(&mut *tx)
             .await?
             {
                 if deleted_at.is_some() {
-                    sqlx::query("UPDATE core.api_keys SET deleted_at = NULL WHERE id = $1")
+                    sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
                         .bind(&id)
                         .execute(&mut *tx)
                         .await?;
                     sqlx::query(
-                        "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+                        "INSERT INTO api_key_membership_intervals (key_id, active_from) VALUES (?, ?)",
                     )
                     .bind(&id)
                     .bind(now)
@@ -333,24 +333,11 @@ impl KeyStore {
                 continue;
             }
 
-            // PostgreSQL branch: the SQLite `generate_unique_key_id` helper takes a SQLite
-            // connection, so the candidate probe runs against the PostgreSQL pool directly.
-            let id = loop {
-                let candidate = nanoid!(4);
-                let exists = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT id FROM core.api_keys WHERE id = $1 LIMIT 1",
-                )
-                .bind(&candidate)
-                .fetch_optional(&mut *tx)
-                .await?;
-                if exists.is_none() {
-                    break candidate;
-                }
-            };
+            let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO core.api_keys (id, api_key, status, created_at, status_changed_at)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO api_keys (id, api_key, status, created_at, status_changed_at)
+                VALUES (?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
@@ -361,7 +348,7 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
             sqlx::query(
-                "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+                "INSERT INTO api_key_membership_intervals (key_id, active_from) VALUES (?, ?)",
             )
             .bind(&id)
             .bind(now)
@@ -373,25 +360,26 @@ impl KeyStore {
         if keys.is_empty() {
             sqlx::query(
                 r#"
-                UPDATE core.api_key_membership_intervals
-                SET active_until = $1
+                UPDATE api_key_membership_intervals
+                SET active_until = ?
                 WHERE active_until IS NULL
-                  AND key_id IN (SELECT id FROM core.api_keys WHERE deleted_at IS NULL)
+                  AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL)
                 "#,
             )
             .bind(now)
             .execute(&mut *tx)
             .await?;
-            sqlx::query("UPDATE core.api_keys SET deleted_at = $1 WHERE deleted_at IS NULL")
+            sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE deleted_at IS NULL")
                 .bind(now)
                 .execute(&mut *tx)
                 .await?;
         } else {
-            let mut interval_builder =
-                QueryBuilder::new("UPDATE core.api_key_membership_intervals SET active_until = ");
+            let mut interval_builder = QueryBuilder::new(
+                "UPDATE api_key_membership_intervals SET active_until = ",
+            );
             interval_builder.push_bind(now);
             interval_builder.push(
-                " WHERE active_until IS NULL AND key_id IN (SELECT id FROM core.api_keys WHERE deleted_at IS NULL AND api_key NOT IN (",
+                " WHERE active_until IS NULL AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL AND api_key NOT IN (",
             );
             {
                 let mut separated = interval_builder.separated(", ");
@@ -402,7 +390,7 @@ impl KeyStore {
             interval_builder.push("))");
             interval_builder.build().execute(&mut *tx).await?;
 
-            let mut builder = QueryBuilder::new("UPDATE core.api_keys SET deleted_at = ");
+            let mut builder = QueryBuilder::new("UPDATE api_keys SET deleted_at = ");
             builder.push_bind(now);
             builder.push(" WHERE deleted_at IS NULL AND api_key NOT IN (");
             {
@@ -428,17 +416,17 @@ impl KeyStore {
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY last_used_at ASC, id ASC
             LIMIT 1
@@ -446,7 +434,7 @@ impl KeyStore {
         )
         .bind(STATUS_ACTIVE)
         .bind(month_start)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         {
             self.touch_key(&api_key, now).await?;
@@ -459,17 +447,17 @@ impl KeyStore {
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY
                 CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
@@ -480,7 +468,7 @@ impl KeyStore {
         )
         .bind(STATUS_EXHAUSTED)
         .bind(month_start)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         {
             self.touch_key(&api_key, now).await?;
@@ -493,17 +481,17 @@ impl KeyStore {
         if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT id, api_key
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY
                 CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
@@ -514,7 +502,7 @@ impl KeyStore {
         )
         .bind(STATUS_EXHAUSTED)
         .bind(month_start)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         {
             self.touch_key(&api_key, now).await?;
@@ -545,10 +533,10 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT id, api_key
-            FROM core.api_keys
+            FROM api_keys
             WHERE status = "#,
         );
         builder.push_bind(STATUS_ACTIVE);
@@ -561,8 +549,8 @@ impl KeyStore {
             r#"
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = "#,
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = "#,
         );
         builder.push_bind(month_start);
         builder.push(
@@ -570,13 +558,13 @@ impl KeyStore {
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_transient_backoffs b
-                  WHERE b.key_id = core.api_keys.id
+                  FROM api_key_transient_backoffs b
+                  WHERE b.key_id = api_keys.id
                     AND b.scope = "#,
         );
         builder.push_bind(scope);
@@ -592,7 +580,7 @@ impl KeyStore {
 
         if let Some((id, api_key)) = builder
             .build_query_as::<(String, String)>()
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await?
         {
             self.touch_key(&api_key, now).await?;
@@ -617,24 +605,24 @@ impl KeyStore {
         let active = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY id ASC
             "#,
         )
         .bind(STATUS_ACTIVE)
         .bind(month_start)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
         if !active.is_empty() {
             return Ok(active);
@@ -643,24 +631,24 @@ impl KeyStore {
         let exhausted = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY id ASC
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(month_start)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
         if !exhausted.is_empty() {
             return Ok(exhausted);
@@ -669,24 +657,24 @@ impl KeyStore {
         sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
-            FROM core.api_keys
-            WHERE status = $1 AND deleted_at IS NULL
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
               AND EXISTS (
                   SELECT 1
-                  FROM core.api_key_low_quota_depletions d
-                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  FROM api_key_low_quota_depletions d
+                  WHERE d.key_id = api_keys.id AND d.month_start = ?
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines q
-                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
               )
             ORDER BY id ASC
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(month_start)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -769,10 +757,7 @@ impl KeyStore {
             SpecificKeySelection::Unavailable => {}
         }
 
-        if self
-            .has_available_regular_exhausted_key_excluding(Some(key_id))
-            .await?
-        {
+        if self.has_available_regular_exhausted_key_excluding(Some(key_id)).await? {
             return Ok(None);
         }
 
@@ -805,23 +790,23 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key, EXISTS (
                     SELECT 1
-                    FROM core.api_key_transient_backoffs b
-                    WHERE b.key_id = core.api_keys.id AND b.scope = $1 AND b.cooldown_until > $2
+                    FROM api_key_transient_backoffs b
+                    WHERE b.key_id = api_keys.id AND b.scope = ? AND b.cooldown_until > ?
                 ) AS is_cooled_down
-                FROM core.api_keys
-                WHERE id = $3 AND status = $4 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE id = ? AND status = ? AND deleted_at IS NULL
                   AND (
-                      $5 = 1
+                      ? = 1
                       OR NOT EXISTS (
                           SELECT 1
-                          FROM core.api_key_low_quota_depletions d
-                          WHERE d.key_id = core.api_keys.id AND d.month_start = $6
+                          FROM api_key_low_quota_depletions d
+                          WHERE d.key_id = api_keys.id AND d.month_start = ?
                       )
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 LIMIT 1
                 "#,
@@ -832,26 +817,26 @@ impl KeyStore {
             .bind(status)
             .bind(if allow_low_quota_depleted { 1 } else { 0 })
             .bind(month_start)
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await?
         } else {
             let lease = sqlx::query_as::<_, (String, String)>(
                 r#"
                 SELECT id, api_key
-                FROM core.api_keys
-                WHERE id = $1 AND status = $2 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE id = ? AND status = ? AND deleted_at IS NULL
                   AND (
-                      $3 = 1
+                      ? = 1
                       OR NOT EXISTS (
                           SELECT 1
-                          FROM core.api_key_low_quota_depletions d
-                          WHERE d.key_id = core.api_keys.id AND d.month_start = $4
+                          FROM api_key_low_quota_depletions d
+                          WHERE d.key_id = api_keys.id AND d.month_start = ?
                       )
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 LIMIT 1
                 "#,
@@ -860,7 +845,7 @@ impl KeyStore {
             .bind(status)
             .bind(if allow_low_quota_depleted { 1 } else { 0 })
             .bind(month_start)
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await?;
             lease.map(|(id, api_key)| (id, api_key, false))
         };
@@ -890,46 +875,46 @@ impl KeyStore {
             sqlx::query_scalar(
                 r#"
                 SELECT COUNT(*)
-                FROM core.api_keys
-                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 "#,
             )
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
             .bind(month_start)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         } else {
             sqlx::query_scalar(
                 r#"
                 SELECT COUNT(*)
-                FROM core.api_keys
-                WHERE status = $1 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 "#,
             )
             .bind(STATUS_ACTIVE)
             .bind(month_start)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         };
 
@@ -947,46 +932,46 @@ impl KeyStore {
             sqlx::query_scalar(
                 r#"
                 SELECT COUNT(*)
-                FROM core.api_keys
-                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 "#,
             )
             .bind(excluded_key_id)
             .bind(STATUS_EXHAUSTED)
             .bind(month_start)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         } else {
             sqlx::query_scalar(
                 r#"
                 SELECT COUNT(*)
-                FROM core.api_keys
-                WHERE status = $1 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 "#,
             )
             .bind(STATUS_EXHAUSTED)
             .bind(month_start)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         };
 
@@ -1001,14 +986,14 @@ impl KeyStore {
         let exists = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT 1
-            FROM core.api_key_low_quota_depletions
-            WHERE key_id = $1 AND month_start = $2
+            FROM api_key_low_quota_depletions
+            WHERE key_id = ? AND month_start = ?
             LIMIT 1
             "#,
         )
         .bind(key_id)
         .bind(month_start)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .is_some();
         Ok(exists)
@@ -1019,13 +1004,13 @@ impl KeyStore {
         key_id: &str,
         threshold: i64,
     ) -> Result<bool, ProxyError> {
-        let Some(quota_remaining) = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT quota_remaining FROM core.api_keys WHERE id = $1",
-        )
-        .bind(key_id)
-        .fetch_optional(self.pg()?)
-        .await?
-        .flatten() else {
+        let Some(quota_remaining) =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT quota_remaining FROM api_keys WHERE id = ?")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten()
+        else {
             return Ok(false);
         };
 
@@ -1037,16 +1022,16 @@ impl KeyStore {
         let month_start = start_of_month(now).timestamp();
         sqlx::query(
             r#"
-            INSERT INTO core.api_key_low_quota_depletions (
+            INSERT INTO api_key_low_quota_depletions (
                 key_id,
                 month_start,
                 threshold,
                 quota_remaining,
                 created_at
-            ) VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (key_id, month_start) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key_id, month_start) DO UPDATE SET
                 threshold = excluded.threshold,
-                quota_remaining = LEAST(api_key_low_quota_depletions.quota_remaining, excluded.quota_remaining)
+                quota_remaining = MIN(api_key_low_quota_depletions.quota_remaining, excluded.quota_remaining)
             "#,
         )
         .bind(key_id)
@@ -1054,7 +1039,7 @@ impl KeyStore {
         .bind(threshold)
         .bind(quota_remaining)
         .bind(now.timestamp())
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         Ok(true)
@@ -1073,17 +1058,17 @@ impl KeyStore {
             sqlx::query_as::<_, (String, String)>(
                 r#"
                 SELECT id, api_key
-                FROM core.api_keys
-                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 ORDER BY last_used_at ASC, id ASC
                 LIMIT 1
@@ -1092,23 +1077,23 @@ impl KeyStore {
             .bind(excluded_key_id)
             .bind(STATUS_ACTIVE)
             .bind(month_start)
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await?
         } else {
             sqlx::query_as::<_, (String, String)>(
                 r#"
                 SELECT id, api_key
-                FROM core.api_keys
-                WHERE status = $1 AND deleted_at IS NULL
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_low_quota_depletions d
-                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                      FROM api_key_low_quota_depletions d
+                      WHERE d.key_id = api_keys.id AND d.month_start = ?
                   )
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM core.api_key_quarantines q
-                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
                   )
                 ORDER BY last_used_at ASC, id ASC
                 LIMIT 1
@@ -1116,7 +1101,7 @@ impl KeyStore {
             )
             .bind(STATUS_ACTIVE)
             .bind(month_start)
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await?
         };
 
@@ -1141,7 +1126,7 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            INSERT INTO core.research_requests (
+            INSERT INTO research_requests (
                 request_id,
                 key_id,
                 token_id,
@@ -1149,8 +1134,8 @@ impl KeyStore {
                 created_at,
                 updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (request_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
                 key_id = excluded.key_id,
                 token_id = excluded.token_id,
                 expires_at = excluded.expires_at,
@@ -1163,13 +1148,13 @@ impl KeyStore {
         .bind(expires_at)
         .bind(now)
         .bind(now)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         // Opportunistic cleanup to keep this small over time.
-        sqlx::query("DELETE FROM core.research_requests WHERE expires_at <= $1")
+        sqlx::query("DELETE FROM research_requests WHERE expires_at <= ?")
             .bind(now)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
 
         Ok(())
@@ -1178,51 +1163,51 @@ impl KeyStore {
     async fn ensure_api_key_maintenance_records_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS core.api_key_maintenance_records (
-                id text PRIMARY KEY,
-                key_id text NOT NULL,
-                source text NOT NULL,
-                operation_code text NOT NULL,
-                operation_summary text NOT NULL,
-                reason_code text,
-                reason_summary text,
-                reason_detail text,
-                request_log_id bigint,
-                auth_token_log_id bigint,
-                auth_token_id text,
-                actor_user_id text,
-                actor_display_name text,
-                status_before text,
-                status_after text,
-                quarantine_before bigint NOT NULL DEFAULT 0,
-                quarantine_after bigint NOT NULL DEFAULT 0,
-                created_at bigint NOT NULL,
-                FOREIGN KEY (key_id) REFERENCES core.api_keys (id),
-                FOREIGN KEY (auth_token_id) REFERENCES core.auth_tokens (id),
-                FOREIGN KEY (auth_token_log_id) REFERENCES core.auth_token_logs (id)
+            CREATE TABLE IF NOT EXISTS api_key_maintenance_records (
+                id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                operation_code TEXT NOT NULL,
+                operation_summary TEXT NOT NULL,
+                reason_code TEXT,
+                reason_summary TEXT,
+                reason_detail TEXT,
+                request_log_id INTEGER,
+                auth_token_log_id INTEGER,
+                auth_token_id TEXT,
+                actor_user_id TEXT,
+                actor_display_name TEXT,
+                status_before TEXT,
+                status_after TEXT,
+                quarantine_before INTEGER NOT NULL DEFAULT 0,
+                quarantine_after INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id),
+                FOREIGN KEY (auth_token_id) REFERENCES auth_tokens(id),
+                FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id)
             )
             "#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_key_created
                ON api_key_maintenance_records(key_id, created_at DESC)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_request_log
                ON api_key_maintenance_records(request_log_id)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auth_token_log
                ON api_key_maintenance_records(auth_token_log_id)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auto_exhausted_window
@@ -1231,7 +1216,7 @@ impl KeyStore {
                  AND operation_code = 'auto_mark_exhausted'
                  AND reason_code = 'quota_exhausted'"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
@@ -1240,40 +1225,40 @@ impl KeyStore {
     async fn ensure_api_key_transient_backoffs_schema(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS core.api_key_transient_backoffs (
-                key_id text NOT NULL,
-                scope text NOT NULL,
-                cooldown_until bigint NOT NULL,
-                retry_after_secs bigint NOT NULL,
-                reason_code text,
-                source_request_log_id bigint,
-                created_at bigint NOT NULL,
-                updated_at bigint NOT NULL,
+            CREATE TABLE IF NOT EXISTS api_key_transient_backoffs (
+                key_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                cooldown_until INTEGER NOT NULL,
+                retry_after_secs INTEGER NOT NULL,
+                reason_code TEXT,
+                source_request_log_id INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
                 PRIMARY KEY (key_id, scope),
-                FOREIGN KEY (key_id) REFERENCES core.api_keys (id)
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
             )
             "#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_scope_cooldown
-               ON core.api_key_transient_backoffs(scope, cooldown_until)"#,
+               ON api_key_transient_backoffs(scope, cooldown_until)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_key_scope
-               ON core.api_key_transient_backoffs(key_id, scope)"#,
+               ON api_key_transient_backoffs(key_id, scope)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_source_request_log
-               ON core.api_key_transient_backoffs(source_request_log_id)"#,
+               ON api_key_transient_backoffs(source_request_log_id)"#,
         )
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
@@ -1287,30 +1272,30 @@ impl KeyStore {
         let row = sqlx::query_as::<_, (String, String, i64)>(
             r#"
             SELECT key_id, token_id, expires_at
-            FROM core.research_requests
-            WHERE request_id = $1 AND expires_at > $2
+            FROM research_requests
+            WHERE request_id = ? AND expires_at > ?
             LIMIT 1
             "#,
         )
         .bind(request_id)
         .bind(now)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         if row.is_none() {
             sqlx::query(
                 r#"
-                DELETE FROM core.research_requests
-                WHERE request_id = $1 AND expires_at <= $2
+                DELETE FROM research_requests
+                WHERE request_id = ? AND expires_at <= ?
                 "#,
             )
             .bind(request_id)
             .bind(now)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         }
 
-        Ok(row)
+            Ok(row)
     }
 
     // ----- Access token helpers -----
@@ -1345,15 +1330,15 @@ impl KeyStore {
         // token exists and is enabled.
         let row = sqlx::query_as::<_, (i64, i64)>(
             r#"SELECT t.enabled, COALESCE(u.active, 1) AS user_active
-               FROM core.auth_tokens t
-               LEFT JOIN core.user_token_bindings b ON b.token_id = t.id
-               LEFT JOIN core.users u ON u.id = b.user_id
-               WHERE t.id = $1 AND t.secret = $2 AND t.deleted_at IS NULL
+               FROM auth_tokens t
+               LEFT JOIN user_token_bindings b ON b.token_id = t.id
+               LEFT JOIN users u ON u.id = b.user_id
+               WHERE t.id = ? AND t.secret = ? AND t.deleted_at IS NULL
                LIMIT 1"#,
         )
         .bind(id)
         .bind(secret)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(matches!(row, Some((enabled, user_active)) if enabled == 1 && user_active == 1))
@@ -1365,6 +1350,7 @@ impl KeyStore {
     ) -> Result<AuthTokenSecret, ProxyError> {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let deadline = self.backend_time.instant_now() + ACCESS_TOKEN_CREATE_RETRY_BUDGET;
+        let sqlite_deadline = deadline.into_std();
         let mut retry_attempt = 0usize;
         let deferred = || ProxyError::Deferred {
             operation: "admin_access_token_mutation",
@@ -1372,19 +1358,35 @@ impl KeyStore {
         };
 
         loop {
-            // PostgreSQL has no exclusive writer lock to take here: the `auth_tokens`
-            // primary key still rejects the rare id collision, and the retry loop below
-            // keeps its existing budget for serialization/deadlock failures.
-            let mut tx = match self.pg()?.begin().await {
+            let mut tx = match self
+                .sqlite_runtime
+                .begin_immediate_before(SqliteOperation::AdminMutation, sqlite_deadline)
+                .await
+            {
                 Ok(tx) => tx,
-                Err(err) => return Err(ProxyError::Database(err)),
+                Err(err) if is_transient_sqlite_write_error(&err) => {
+                    if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
+                        "create access token",
+                        retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(deferred());
+                }
+                Err(err) => return Err(err),
             };
             let id = random_string(ALPHABET, 4);
             // Increase secret length to strengthen token entropy while keeping id short.
             let secret = random_string(ALPHABET, 24);
             let res = sqlx::query(
-                r#"INSERT INTO core.auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
-                   VALUES ($1, $2, 1, $3, NULL, 0, $4, NULL, NULL)"#,
+                r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                   VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
             )
             .bind(&id)
             .bind(&secret)
@@ -1395,7 +1397,7 @@ impl KeyStore {
 
             match res {
                 Ok(_) => {
-                    match tx.commit().await.map_err(ProxyError::Database) {
+                    match tx.finish(Ok(())).await {
                         Ok(()) => {}
                         Err(err) if is_transient_sqlite_write_error(&err) => {
                             if sleep_before_sqlite_transient_write_retry(
@@ -1426,9 +1428,10 @@ impl KeyStore {
                     continue;
                 }
                 Err(e) => {
-                    let err = match tx.rollback().await {
-                        Ok(()) => ProxyError::Database(e),
-                        Err(rollback_error) => ProxyError::Database(rollback_error),
+                    let err = ProxyError::Database(e);
+                    let err = match tx.finish(Err(err)).await {
+                        Err(err) => err,
+                        Ok(()) => unreachable!("failed access-token creation must roll back"),
                     };
                     if is_transient_sqlite_write_error(&err) {
                         if sleep_before_sqlite_transient_write_retry(
@@ -1459,15 +1462,15 @@ impl KeyStore {
         note: Option<&str>,
     ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let mut out: Vec<AuthTokenSecret> = Vec::with_capacity(count);
         for _ in 0..count {
             loop {
                 let id = random_string(ALPHABET, 4);
                 let secret = random_string(ALPHABET, 24);
                 let res = sqlx::query(
-                    r#"INSERT INTO core.auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
-                       VALUES ($1, $2, 1, $3, $4, 0, $5, NULL, NULL)"#,
+                    r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                       VALUES (?, ?, 1, ?, ?, 0, ?, NULL, NULL)"#,
                 )
                 .bind(&id)
                 .bind(&secret)
@@ -1519,11 +1522,11 @@ impl KeyStore {
             ),
         >(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
-               FROM core.auth_tokens
+               FROM auth_tokens
                WHERE deleted_at IS NULL
                ORDER BY created_at DESC, id DESC"#,
         )
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
@@ -1564,13 +1567,13 @@ impl KeyStore {
             ),
         >(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
-               FROM core.auth_tokens
+               FROM auth_tokens
                WHERE deleted_at IS NULL AND enabled = 0
                ORDER BY created_at DESC, id DESC
-               LIMIT $1"#,
+               LIMIT ?"#,
         )
         .bind(limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
@@ -1600,23 +1603,23 @@ impl KeyStore {
         let limit = limit.clamp(1, 100) as i64;
         sqlx::query_scalar::<_, String>(
             r#"SELECT id
-               FROM core.auth_tokens
+               FROM auth_tokens
                WHERE deleted_at IS NULL AND enabled = 0
                ORDER BY created_at DESC, id DESC
-               LIMIT $1"#,
+               LIMIT ?"#,
         )
         .bind(limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
 
     pub(crate) async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
-        sqlx::query("UPDATE core.auth_tokens SET enabled = 0, deleted_at = $1 WHERE id = $2")
+        sqlx::query("UPDATE auth_tokens SET enabled = 0, deleted_at = ? WHERE id = ?")
             .bind(now)
             .bind(id)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
@@ -1626,13 +1629,11 @@ impl KeyStore {
         id: &str,
         enabled: bool,
     ) -> Result<(), ProxyError> {
-        sqlx::query(
-            "UPDATE core.auth_tokens SET enabled = $1 WHERE id = $2 AND deleted_at IS NULL",
-        )
-        .bind(if enabled { 1 } else { 0 })
-        .bind(id)
-        .execute(self.pg()?)
-        .await?;
+        sqlx::query("UPDATE auth_tokens SET enabled = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(if enabled { 1 } else { 0 })
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -1641,10 +1642,10 @@ impl KeyStore {
         id: &str,
         note: &str,
     ) -> Result<(), ProxyError> {
-        sqlx::query("UPDATE core.auth_tokens SET note = $1 WHERE id = $2 AND deleted_at IS NULL")
+        sqlx::query("UPDATE auth_tokens SET note = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(note)
             .bind(id)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
@@ -1654,10 +1655,10 @@ impl KeyStore {
         id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
         let row = sqlx::query_as::<_, (String,)>(
-            "SELECT secret FROM core.auth_tokens WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT secret FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
         )
         .bind(id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|(secret,)| AuthTokenSecret {
             id: id.to_string(),
@@ -1672,10 +1673,10 @@ impl KeyStore {
     ) -> Result<AuthTokenSecret, ProxyError> {
         // Ensure token exists first to provide a clearer error on missing id
         let exists = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT 1 FROM core.auth_tokens WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT 1 FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
         )
         .bind(id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         if exists.is_none() {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
@@ -1685,10 +1686,10 @@ impl KeyStore {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let new_secret = random_string(ALPHABET, 24);
 
-        sqlx::query("UPDATE core.auth_tokens SET secret = $1 WHERE id = $2 AND deleted_at IS NULL")
+        sqlx::query("UPDATE auth_tokens SET secret = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(&new_secret)
             .bind(id)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
 
         Ok(AuthTokenSecret {
@@ -1714,13 +1715,13 @@ impl KeyStore {
             ),
         >(
             r#"SELECT t.id, t.enabled, t.note, t.group_name, t.total_requests, t.created_at, t.last_used_at
-               FROM core.user_token_bindings b
-               JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1 AND t.deleted_at IS NULL
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND t.deleted_at IS NULL
                ORDER BY b.updated_at DESC, b.created_at DESC, t.id DESC"#,
         )
         .bind(user_id)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -1749,13 +1750,13 @@ impl KeyStore {
     ) -> Result<bool, ProxyError> {
         let exists = sqlx::query_scalar::<_, Option<i64>>(
             r#"SELECT 1
-               FROM core.user_token_bindings
-               WHERE user_id = $1 AND token_id = $2
+               FROM user_token_bindings
+               WHERE user_id = ? AND token_id = ?
                LIMIT 1"#,
         )
         .bind(user_id)
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(exists.is_some())
     }
@@ -1768,7 +1769,7 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
         let mut builder = QueryBuilder::new(
-            "SELECT token_id, user_id FROM core.user_token_bindings WHERE token_id IN (",
+            "SELECT token_id, user_id FROM user_token_bindings WHERE token_id IN (",
         );
         {
             let mut separated = builder.separated(", ");
@@ -1779,7 +1780,7 @@ impl KeyStore {
         builder.push(")");
         let rows = builder
             .build_query_as::<(String, String)>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         let mut map = HashMap::new();
         for (token_id, user_id) in rows {
@@ -1795,14 +1796,14 @@ impl KeyStore {
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
         let row = sqlx::query_as::<_, (String,)>(
             r#"SELECT t.secret
-               FROM core.user_token_bindings b
-               JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1 AND b.token_id = $2 AND t.deleted_at IS NULL AND t.enabled = 1
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND b.token_id = ? AND t.deleted_at IS NULL AND t.enabled = 1
                LIMIT 1"#,
         )
         .bind(user_id)
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|(secret,)| AuthTokenSecret {
             id: token_id.to_string(),
@@ -1832,10 +1833,10 @@ impl KeyStore {
         token_id: &str,
     ) -> Result<Option<String>, ProxyError> {
         let row = sqlx::query_as::<_, (String,)>(
-            r#"SELECT user_id FROM core.user_token_bindings WHERE token_id = $1 LIMIT 1"#,
+            r#"SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1"#,
         )
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         let user_id = row.map(|(id,)| id);
         self.cache_token_binding(token_id, user_id.as_deref()).await;
@@ -1909,9 +1910,9 @@ impl KeyStore {
             .load(std::sync::atomic::Ordering::Acquire)
             != 0
             || self
-                .account_quota_resolution_generation
-                .load(std::sync::atomic::Ordering::Acquire)
-                != generation.0
+            .account_quota_resolution_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            != generation.0
             || user_generations.get(user_id).copied().unwrap_or(0) != generation.1
         {
             return;
@@ -1941,7 +1942,10 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn quota_cache_generation(&self, user_id: &str) -> (u64, u64) {
+    pub(crate) async fn quota_cache_generation(
+        &self,
+        user_id: &str,
+    ) -> (u64, u64) {
         let global = self
             .account_quota_resolution_generation
             .load(std::sync::atomic::Ordering::Acquire);
@@ -2047,10 +2051,10 @@ impl KeyStore {
         tag_id: &str,
     ) -> Result<Vec<String>, ProxyError> {
         sqlx::query_scalar::<_, String>(
-            "SELECT DISTINCT user_id FROM core.user_tag_bindings WHERE tag_id = $1",
+            "SELECT DISTINCT user_id FROM user_tag_bindings WHERE tag_id = ?",
         )
         .bind(tag_id)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::Database)
     }
@@ -2078,15 +2082,14 @@ impl KeyStore {
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
         let active_since = self.admin_user_activity_since(activity_scope);
 
-        let mut count_builder =
-            QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM core.users u WHERE ");
+        let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM users u WHERE ");
         Self::push_admin_user_filters(&mut count_builder, tag_id, search.as_deref(), active_since);
         let total = count_builder
             .build_query_scalar::<i64>()
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?;
 
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new("");
+        let mut builder = QueryBuilder::<Sqlite>::new("");
         Self::push_admin_user_listing_select(&mut builder);
         Self::push_admin_user_filters(&mut builder, tag_id, search.as_deref(), active_since);
         Self::push_admin_user_listing_group_order(&mut builder);
@@ -2103,7 +2106,7 @@ impl KeyStore {
                 Option<i64>,
                 i64,
             )>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
 
         let items = rows
@@ -2130,7 +2133,7 @@ impl KeyStore {
             .map(|value| format!("%{value}%"));
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
         let active_since = self.admin_user_activity_since(activity_scope);
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new("");
+        let mut builder = QueryBuilder::<Sqlite>::new("");
         Self::push_admin_user_listing_select(&mut builder);
         Self::push_admin_user_filters(&mut builder, tag_id, search.as_deref(), active_since);
         Self::push_admin_user_listing_group_order(&mut builder);
@@ -2143,7 +2146,7 @@ impl KeyStore {
                 Option<i64>,
                 i64,
             )>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
 
         Ok(rows
@@ -2174,14 +2177,14 @@ impl KeyStore {
                  u.active,
                  u.last_login_at,
                  COALESCE(COUNT(b.token_id), 0) AS token_count
-               FROM core.users u
-               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
-               WHERE u.id = $1
+               FROM users u
+               LEFT JOIN user_token_bindings b ON b.user_id = u.id
+               WHERE u.id = ?
                GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
                LIMIT 1"#,
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
@@ -2214,8 +2217,8 @@ impl KeyStore {
                  u.active,
                  u.last_login_at,
                  COALESCE(COUNT(b.token_id), 0) AS token_count
-               FROM core.users u
-               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
+               FROM users u
+               LEFT JOIN user_token_bindings b ON b.user_id = u.id
                WHERE u.id IN ("#,
         );
         {
@@ -2235,7 +2238,7 @@ impl KeyStore {
                 Option<i64>,
                 i64,
             )>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
 
         let mut items = HashMap::with_capacity(rows.len());
@@ -2261,12 +2264,12 @@ impl KeyStore {
     ) -> Result<Option<String>, ProxyError> {
         sqlx::query_scalar::<_, String>(
             r#"SELECT api_key_id
-               FROM core.user_primary_api_key_affinity
-               WHERE user_id = $1
+               FROM user_primary_api_key_affinity
+               WHERE user_id = ?
                LIMIT 1"#,
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2277,12 +2280,12 @@ impl KeyStore {
     ) -> Result<Option<TokenPrimaryApiKeyAffinity>, ProxyError> {
         let row = sqlx::query_as::<_, (String, Option<String>, String)>(
             r#"SELECT token_id, user_id, api_key_id
-               FROM core.token_primary_api_key_affinity
-               WHERE token_id = $1
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
                LIMIT 1"#,
         )
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
@@ -2301,14 +2304,14 @@ impl KeyStore {
         sqlx::query_scalar::<_, String>(
             r#"
             SELECT api_key_id
-            FROM core.user_api_key_bindings
-            WHERE user_id = $1
+            FROM user_api_key_bindings
+            WHERE user_id = ?
             ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
             LIMIT 1
             "#,
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2319,13 +2322,13 @@ impl KeyStore {
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             r#"
-            INSERT INTO core.user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id) DO UPDATE SET
+            INSERT INTO user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
                 api_key_id = excluded.api_key_id,
                 updated_at = excluded.updated_at
             "#,
@@ -2339,17 +2342,17 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO core.token_primary_api_key_affinity (
+            INSERT INTO token_primary_api_key_affinity (
                 token_id,
                 user_id,
                 api_key_id,
                 created_at,
                 updated_at
             )
-            SELECT token_id, user_id, $1, $2, $3
-            FROM core.user_token_bindings
-            WHERE user_id = $4
-            ON CONFLICT (token_id) DO UPDATE SET
+            SELECT token_id, user_id, ?, ?, ?
+            FROM user_token_bindings
+            WHERE user_id = ?
+            ON CONFLICT(token_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 api_key_id = excluded.api_key_id,
                 updated_at = excluded.updated_at
@@ -2375,15 +2378,15 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            INSERT INTO core.token_primary_api_key_affinity (
+            INSERT INTO token_primary_api_key_affinity (
                 token_id,
                 user_id,
                 api_key_id,
                 created_at,
                 updated_at
             )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (token_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 api_key_id = excluded.api_key_id,
                 updated_at = excluded.updated_at
@@ -2394,7 +2397,7 @@ impl KeyStore {
         .bind(api_key_id)
         .bind(now)
         .bind(now)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2407,13 +2410,13 @@ impl KeyStore {
     ) -> Result<Option<HttpProjectAffinityBinding>, ProxyError> {
         let row = sqlx::query_as::<_, (String, String, String)>(
             r#"SELECT owner_subject, project_id_hash, api_key_id
-               FROM core.http_project_api_key_affinity
-               WHERE owner_subject = $1 AND project_id_hash = $2
+               FROM http_project_api_key_affinity
+               WHERE owner_subject = ? AND project_id_hash = ?
                LIMIT 1"#,
         )
         .bind(owner_subject)
         .bind(project_id_hash)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
@@ -2434,15 +2437,15 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            INSERT INTO core.http_project_api_key_affinity (
+            INSERT INTO http_project_api_key_affinity (
                 owner_subject,
                 project_id_hash,
                 api_key_id,
                 created_at,
                 updated_at
             )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (owner_subject, project_id_hash) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner_subject, project_id_hash) DO UPDATE SET
                 api_key_id = excluded.api_key_id,
                 updated_at = excluded.updated_at
             "#,
@@ -2452,7 +2455,7 @@ impl KeyStore {
         .bind(api_key_id)
         .bind(now)
         .bind(now)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2464,13 +2467,13 @@ impl KeyStore {
     ) -> Result<Option<ApiRouteAffinityBinding>, ProxyError> {
         let row = sqlx::query_as::<_, (String, String, String)>(
             r#"SELECT owner_subject, project_id_hash, api_key_id
-               FROM core.http_project_api_key_affinity
-               WHERE owner_subject = $1 AND project_id_hash = $2
+               FROM http_project_api_key_affinity
+               WHERE owner_subject = ? AND project_id_hash = ?
                LIMIT 1"#,
         )
         .bind(owner_subject)
         .bind(route_key_hash)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
@@ -2498,7 +2501,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            INSERT INTO core.mcp_sessions (
+            INSERT INTO mcp_sessions (
                 proxy_session_id,
                 upstream_session_id,
                 upstream_key_id,
@@ -2520,8 +2523,8 @@ impl KeyStore {
                 revoked_at,
                 revoke_reason
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-            ON CONFLICT (proxy_session_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proxy_session_id) DO UPDATE SET
                 upstream_session_id = excluded.upstream_session_id,
                 upstream_key_id = excluded.upstream_key_id,
                 auth_token_id = excluded.auth_token_id,
@@ -2562,7 +2565,7 @@ impl KeyStore {
         .bind(binding.expires_at)
         .bind(binding.revoked_at)
         .bind(binding.revoke_reason.as_deref())
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2595,16 +2598,16 @@ impl KeyStore {
                 expires_at,
                 revoked_at,
                 revoke_reason
-            FROM core.mcp_sessions
-            WHERE proxy_session_id = $1
+            FROM mcp_sessions
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
-              AND expires_at > $2
+              AND expires_at > ?
             LIMIT 1
             "#,
         )
         .bind(proxy_session_id)
         .bind(now)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(|row| McpSessionBinding {
@@ -2659,17 +2662,17 @@ impl KeyStore {
                 expires_at,
                 revoked_at,
                 revoke_reason
-            FROM core.mcp_sessions
-            WHERE auth_token_id = $1
+            FROM mcp_sessions
+            WHERE auth_token_id = ?
               AND revoked_at IS NULL
-              AND expires_at > $2
+              AND expires_at > ?
             ORDER BY updated_at DESC, expires_at DESC
             LIMIT 1
             "#,
         )
         .bind(token_id)
         .bind(now)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(|row| McpSessionBinding {
@@ -2705,18 +2708,18 @@ impl KeyStore {
             r#"
             SELECT EXISTS(
                 SELECT 1
-                FROM core.mcp_sessions
-                WHERE auth_token_id = $1
-                  AND gateway_mode <> $2
+                FROM mcp_sessions
+                WHERE auth_token_id = ?
+                  AND gateway_mode <> ?
                   AND revoked_at IS NULL
-                  AND expires_at > $3
+                  AND expires_at > ?
             )
             "#,
         )
         .bind(token_id)
         .bind(MCP_GATEWAY_MODE_REBALANCE)
         .bind(now)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         Ok(exists != 0)
     }
@@ -2731,13 +2734,13 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
+            UPDATE mcp_sessions
             SET
-                protocol_version = COALESCE($1, protocol_version),
-                last_event_id = COALESCE($2, last_event_id),
-                updated_at = $3,
-                expires_at = $4
-            WHERE proxy_session_id = $5
+                protocol_version = COALESCE(?, protocol_version),
+                last_event_id = COALESCE(?, last_event_id),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
             "#,
         )
@@ -2746,7 +2749,7 @@ impl KeyStore {
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2761,14 +2764,14 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
+            UPDATE mcp_sessions
             SET
-                rate_limited_until = $1,
-                last_rate_limited_at = $2,
-                last_rate_limit_reason = $3,
-                updated_at = $4,
-                expires_at = $5
-            WHERE proxy_session_id = $6
+                rate_limited_until = ?,
+                last_rate_limited_at = ?,
+                last_rate_limit_reason = ?,
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
             "#,
         )
@@ -2778,7 +2781,7 @@ impl KeyStore {
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2791,19 +2794,19 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
+            UPDATE mcp_sessions
             SET
                 rate_limited_until = NULL,
-                updated_at = $1,
-                expires_at = $2
-            WHERE proxy_session_id = $3
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
             "#,
         )
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2818,13 +2821,13 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
+            UPDATE mcp_sessions
             SET
-                upstream_session_id = $1,
-                protocol_version = COALESCE($2, protocol_version),
-                updated_at = $3,
-                expires_at = $4
-            WHERE proxy_session_id = $5
+                upstream_session_id = ?,
+                protocol_version = COALESCE(?, protocol_version),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
             "#,
         )
@@ -2833,7 +2836,7 @@ impl KeyStore {
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2848,13 +2851,13 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
+            UPDATE mcp_sessions
             SET
-                routing_subject_hash = COALESCE($1, routing_subject_hash),
-                fallback_reason = COALESCE($2, fallback_reason),
-                updated_at = $3,
-                expires_at = $4
-            WHERE proxy_session_id = $5
+                routing_subject_hash = COALESCE(?, routing_subject_hash),
+                fallback_reason = COALESCE(?, fallback_reason),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
               AND revoked_at IS NULL
             "#,
         )
@@ -2863,7 +2866,7 @@ impl KeyStore {
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2876,16 +2879,16 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
-            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
-            WHERE proxy_session_id = $4 AND revoked_at IS NULL
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE proxy_session_id = ? AND revoked_at IS NULL
             "#,
         )
         .bind(now)
         .bind(reason)
         .bind(now)
         .bind(proxy_session_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2899,9 +2902,9 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
-            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
-            WHERE user_id = $4 AND upstream_key_id = $5 AND revoked_at IS NULL
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE user_id = ? AND upstream_key_id = ? AND revoked_at IS NULL
             "#,
         )
         .bind(now)
@@ -2909,7 +2912,7 @@ impl KeyStore {
         .bind(now)
         .bind(user_id)
         .bind(upstream_key_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2923,9 +2926,9 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            UPDATE core.mcp_sessions
-            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
-            WHERE auth_token_id = $4 AND upstream_key_id = $5 AND revoked_at IS NULL
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE auth_token_id = ? AND upstream_key_id = ? AND revoked_at IS NULL
             "#,
         )
         .bind(now)
@@ -2933,8 +2936,9 @@ impl KeyStore {
         .bind(now)
         .bind(token_id)
         .bind(upstream_key_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
+
 }

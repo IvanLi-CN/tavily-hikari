@@ -72,37 +72,42 @@ impl KeyStore {
         let request_rate_limit = system_settings_meta_i64(&meta, META_KEY_REQUEST_RATE_LIMIT_V1)
             .unwrap_or(REQUEST_RATE_LIMIT)
             .max(REQUEST_RATE_LIMIT_MIN);
-        let auth_token_log_retention_days =
-            system_settings_meta_i64(&meta, META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1)
-                .and_then(normalize_auth_token_log_retention_days)
-                .map(Ok)
-                .unwrap_or_else(effective_auth_token_log_retention_days)?;
+        let auth_token_log_retention_days = system_settings_meta_i64(
+            &meta,
+            META_KEY_AUTH_TOKEN_LOG_RETENTION_DAYS_V1,
+        )
+        .and_then(normalize_auth_token_log_retention_days)
+        .map(Ok)
+        .unwrap_or_else(effective_auth_token_log_retention_days)?;
         let count = system_settings_meta_i64(&meta, META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
             .unwrap_or(MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT)
             .clamp(
                 MCP_SESSION_AFFINITY_KEY_COUNT_MIN,
                 MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
             );
-        let rebalance_mcp_enabled =
-            system_settings_meta_i64(&meta, META_KEY_REBALANCE_MCP_ENABLED_V1)
-                .unwrap_or(i64::from(REBALANCE_MCP_ENABLED_DEFAULT))
-                != 0;
-        let _stored_rebalance_mcp_session_percent =
-            system_settings_meta_i64(&meta, META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1)
-                .unwrap_or(REBALANCE_MCP_SESSION_PERCENT_DEFAULT)
-                .clamp(
-                    REBALANCE_MCP_SESSION_PERCENT_MIN,
-                    REBALANCE_MCP_SESSION_PERCENT_MAX,
-                );
-        let rebalance_mcp_session_percent = normalized_mcp_rebalance_percent(rebalance_mcp_enabled);
-        let api_rebalance_enabled =
-            system_settings_meta_i64(&meta, META_KEY_API_REBALANCE_ENABLED_V1)
-                .unwrap_or(i64::from(API_REBALANCE_ENABLED_DEFAULT))
-                != 0;
-        let _stored_api_rebalance_percent =
-            system_settings_meta_i64(&meta, META_KEY_API_REBALANCE_PERCENT_V1)
-                .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
-                .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
+        let rebalance_mcp_enabled = system_settings_meta_i64(&meta, META_KEY_REBALANCE_MCP_ENABLED_V1)
+            .unwrap_or(i64::from(REBALANCE_MCP_ENABLED_DEFAULT))
+            != 0;
+        let _stored_rebalance_mcp_session_percent = system_settings_meta_i64(
+            &meta,
+            META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
+        )
+            .unwrap_or(REBALANCE_MCP_SESSION_PERCENT_DEFAULT)
+            .clamp(
+                REBALANCE_MCP_SESSION_PERCENT_MIN,
+                REBALANCE_MCP_SESSION_PERCENT_MAX,
+            );
+        let rebalance_mcp_session_percent =
+            normalized_mcp_rebalance_percent(rebalance_mcp_enabled);
+        let api_rebalance_enabled = system_settings_meta_i64(&meta, META_KEY_API_REBALANCE_ENABLED_V1)
+            .unwrap_or(i64::from(API_REBALANCE_ENABLED_DEFAULT))
+            != 0;
+        let _stored_api_rebalance_percent = system_settings_meta_i64(
+            &meta,
+            META_KEY_API_REBALANCE_PERCENT_V1,
+        )
+            .unwrap_or(API_REBALANCE_PERCENT_DEFAULT)
+            .clamp(API_REBALANCE_PERCENT_MIN, API_REBALANCE_PERCENT_MAX);
         let api_rebalance_percent = normalized_api_rebalance_percent(api_rebalance_enabled);
         let upstream_project_id_mode = meta
             .get(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
@@ -117,22 +122,30 @@ impl KeyStore {
             .get(META_KEY_UPSTREAM_MCP_USER_AGENT_V1)
             .cloned()
             .unwrap_or_default();
-        let upstream_precise_reconciliation_enabled =
-            system_settings_meta_i64(&meta, META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
-                .unwrap_or(0)
-                != 0;
-        let recharge_feature_enabled =
-            system_settings_meta_i64(&meta, META_KEY_RECHARGE_FEATURE_ENABLED_V1).unwrap_or(0) != 0;
-        let recharge_user_enabled =
-            system_settings_meta_i64(&meta, META_KEY_RECHARGE_USER_ENABLED_V1).unwrap_or(0) != 0;
-        let admin_default_active_users_only =
-            system_settings_meta_i64(&meta, META_KEY_ADMIN_DEFAULT_ACTIVE_USERS_ONLY_V1)
-                .unwrap_or(0)
-                != 0;
-        let user_blocked_key_base_limit =
-            system_settings_meta_i64(&meta, META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1)
-                .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
-                .max(0);
+        let upstream_precise_reconciliation_enabled = system_settings_meta_i64(
+            &meta,
+            META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1,
+        )
+            .unwrap_or(0)
+            != 0;
+        let recharge_feature_enabled = system_settings_meta_i64(&meta, META_KEY_RECHARGE_FEATURE_ENABLED_V1)
+            .unwrap_or(0)
+            != 0;
+        let recharge_user_enabled = system_settings_meta_i64(&meta, META_KEY_RECHARGE_USER_ENABLED_V1)
+            .unwrap_or(0)
+            != 0;
+        let admin_default_active_users_only = system_settings_meta_i64(
+            &meta,
+            META_KEY_ADMIN_DEFAULT_ACTIVE_USERS_ONLY_V1,
+        )
+            .unwrap_or(0)
+            != 0;
+        let user_blocked_key_base_limit = system_settings_meta_i64(
+            &meta,
+            META_KEY_USER_BLOCKED_KEY_BASE_LIMIT_V1,
+        )
+        .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+        .max(0);
         let global_ip_limit = system_settings_meta_i64(&meta, META_KEY_GLOBAL_IP_LIMIT_V1)
             .unwrap_or(GLOBAL_IP_LIMIT_DEFAULT)
             .max(0);
@@ -150,70 +163,71 @@ impl KeyStore {
         let mut retention_defaults = default_request_log_retention_settings();
         retention_defaults.max_log_retention_days =
             effective_request_logs_retention_days().min(REQUEST_LOG_RETENTION_DAYS_MAX);
-        let request_log_retention =
-            normalize_request_log_retention_settings(&RequestLogRetentionSettings {
+        let request_log_retention = normalize_request_log_retention_settings(
+            &RequestLogRetentionSettings {
                 max_log_retention_days: system_settings_meta_i64(
                     &meta,
                     META_KEY_REQUEST_LOG_RETENTION_MAX_DAYS_V1,
                 )
-                .unwrap_or(retention_defaults.max_log_retention_days),
+                    .unwrap_or(retention_defaults.max_log_retention_days),
                 heavy_usage_threshold_percent: system_settings_meta_i64(
                     &meta,
                     META_KEY_REQUEST_LOG_RETENTION_HEAVY_THRESHOLD_PERCENT_V1,
                 )
-                .unwrap_or(retention_defaults.heavy_usage_threshold_percent),
+                    .unwrap_or(retention_defaults.heavy_usage_threshold_percent),
                 global: RequestLogRetentionProfile {
                     business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_GLOBAL_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.global.business_body_days),
+                        .unwrap_or(retention_defaults.global.business_body_days),
                     non_business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.global.non_business_body_days),
+                        .unwrap_or(retention_defaults.global.non_business_body_days),
                     non_success_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_GLOBAL_NON_SUCCESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.global.non_success_body_days),
+                        .unwrap_or(retention_defaults.global.non_success_body_days),
                 },
                 heavy_usage: RequestLogRetentionProfile {
                     business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_HEAVY_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.heavy_usage.business_body_days),
+                        .unwrap_or(retention_defaults.heavy_usage.business_body_days),
                     non_business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.heavy_usage.non_business_body_days),
+                        .unwrap_or(retention_defaults.heavy_usage.non_business_body_days),
                     non_success_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_HEAVY_NON_SUCCESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.heavy_usage.non_success_body_days),
+                        .unwrap_or(retention_defaults.heavy_usage.non_success_body_days),
                 },
                 debug_shared: RequestLogRetentionProfile {
                     business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_DEBUG_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.debug_shared.business_body_days),
+                        .unwrap_or(retention_defaults.debug_shared.business_body_days),
                     non_business_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_BUSINESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.debug_shared.non_business_body_days),
+                        .unwrap_or(retention_defaults.debug_shared.non_business_body_days),
                     non_success_body_days: system_settings_meta_i64(
                         &meta,
                         META_KEY_REQUEST_LOG_RETENTION_DEBUG_NON_SUCCESS_BODY_DAYS_V1,
                     )
-                    .unwrap_or(retention_defaults.debug_shared.non_success_body_days),
+                        .unwrap_or(retention_defaults.debug_shared.non_success_body_days),
                 },
-            })?;
+            },
+        )?;
         let settings = SystemSettings {
             request_rate_limit,
             auth_token_log_retention_days,
@@ -561,95 +575,6 @@ impl KeyStore {
     pub(crate) async fn clear_admin_totp_secret_record_and_login_requirement(
         &self,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            let mut tx = pool.begin().await?;
-            sqlx::query(
-                r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                "#,
-            )
-            .bind(META_KEY_ADMIN_TOTP_SECRET_CIPHERTEXT_V1)
-            .bind("")
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                "#,
-            )
-            .bind(META_KEY_ADMIN_TOTP_SECRET_NONCE_V1)
-            .bind("")
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                "#,
-            )
-            .bind(META_KEY_ADMIN_TOTP_ENABLED_AT_V1)
-            .bind("0")
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                "#,
-            )
-            .bind(META_KEY_ADMIN_TOTP_FAILURE_COUNT_V1)
-            .bind("0")
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
-                ON CONFLICT (key) DO UPDATE SET value = excluded.value
-                "#,
-            )
-            .bind(META_KEY_ADMIN_TOTP_LOCKED_UNTIL_V1)
-            .bind("0")
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"INSERT INTO core.admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
-                   VALUES (1, NULL, NULL, $1, 0)
-                   ON CONFLICT (id) DO UPDATE SET
-                       login_totp_required = 0,
-                       updated_at = excluded.updated_at"#,
-            )
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-            let settings = sqlx::query_as::<_, (Option<String>, Option<i64>, i64, i64)>(
-                r#"SELECT password_hash, disabled_at, updated_at, login_totp_required
-                   FROM core.admin_password_settings
-                   WHERE id = 1
-                   LIMIT 1"#,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
-            tx.commit().await?;
-            Ok(AdminPasswordSettingsRecord {
-                password_hash: settings.0,
-                disabled_at: settings.1,
-                updated_at: settings.2,
-                login_totp_required: settings.3 != 0,
-            })
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
         sqlx::query(

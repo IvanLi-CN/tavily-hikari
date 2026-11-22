@@ -8,171 +8,6 @@ pub(crate) struct QuotaSubjectDbLease {
 }
 
 impl KeyStore {
-    /// PostgreSQL twin of `increment_api_key_user_usage_bucket`; the SQLite original stays in
-    /// `key_store_migrations_a.rs` for the serving path.
-    async fn increment_api_key_user_usage_bucket_pg(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        api_key_id: &str,
-        user_id: &str,
-        bucket_start: i64,
-        credits: i64,
-        result_status: &str,
-    ) -> Result<(), ProxyError> {
-        if credits <= 0 {
-            return Ok(());
-        }
-        let (success_credits, failure_credits) = if result_status == OUTCOME_SUCCESS {
-            (credits, 0_i64)
-        } else {
-            (0_i64, credits)
-        };
-        let now = self.backend_time.now_ts();
-        sqlx::query(
-            r#"
-            INSERT INTO core.api_key_user_usage_buckets (
-                api_key_id,
-                user_id,
-                bucket_start,
-                bucket_secs,
-                success_credits,
-                failure_credits,
-                updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (api_key_id, user_id, bucket_start, bucket_secs)
-            DO UPDATE SET
-                success_credits = core.api_key_user_usage_buckets.success_credits + excluded.success_credits,
-                failure_credits = core.api_key_user_usage_buckets.failure_credits + excluded.failure_credits,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(api_key_id)
-        .bind(user_id)
-        .bind(bucket_start)
-        .bind(SECS_PER_DAY)
-        .bind(success_credits)
-        .bind(failure_credits)
-        .bind(now)
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
-    }
-
-    /// PostgreSQL twin of `refresh_user_api_key_binding`.
-    async fn refresh_user_api_key_binding_pg(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        user_id: &str,
-        api_key_id: &str,
-        success_at: i64,
-    ) -> Result<(), ProxyError> {
-        sqlx::query(
-            r#"
-            INSERT INTO core.user_api_key_bindings (
-                user_id,
-                api_key_id,
-                created_at,
-                updated_at,
-                last_success_at
-            )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id, api_key_id)
-            DO UPDATE SET
-                updated_at = CASE
-                    WHEN excluded.last_success_at >= core.user_api_key_bindings.last_success_at THEN excluded.updated_at
-                    ELSE core.user_api_key_bindings.updated_at
-                END,
-                last_success_at = GREATEST(core.user_api_key_bindings.last_success_at, excluded.last_success_at)
-            "#,
-        )
-        .bind(user_id)
-        .bind(api_key_id)
-        .bind(success_at)
-        .bind(success_at)
-        .bind(success_at)
-        .execute(&mut **tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            DELETE FROM core.user_api_key_bindings
-            WHERE user_id = $1
-              AND api_key_id IN (
-                  SELECT api_key_id
-                  FROM core.user_api_key_bindings
-                  WHERE user_id = $2
-                  ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
-                  OFFSET $3
-              )
-            "#,
-        )
-        .bind(user_id)
-        .bind(user_id)
-        .bind(USER_API_KEY_BINDING_RECENT_LIMIT)
-        .execute(&mut **tx)
-        .await?;
-
-        Ok(())
-    }
-
-    /// PostgreSQL twin of `refresh_token_api_key_binding`.
-    async fn refresh_token_api_key_binding_pg(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        token_id: &str,
-        api_key_id: &str,
-        success_at: i64,
-    ) -> Result<(), ProxyError> {
-        sqlx::query(
-            r#"
-            INSERT INTO core.token_api_key_bindings (
-                token_id,
-                api_key_id,
-                created_at,
-                updated_at,
-                last_success_at
-            )
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (token_id, api_key_id)
-            DO UPDATE SET
-                updated_at = CASE
-                    WHEN excluded.last_success_at >= core.token_api_key_bindings.last_success_at THEN excluded.updated_at
-                    ELSE core.token_api_key_bindings.updated_at
-                END,
-                last_success_at = GREATEST(core.token_api_key_bindings.last_success_at, excluded.last_success_at)
-            "#,
-        )
-        .bind(token_id)
-        .bind(api_key_id)
-        .bind(success_at)
-        .bind(success_at)
-        .bind(success_at)
-        .execute(&mut **tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            DELETE FROM core.token_api_key_bindings
-            WHERE token_id = $1
-              AND api_key_id IN (
-                  SELECT api_key_id
-                  FROM core.token_api_key_bindings
-                  WHERE token_id = $2
-                  ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
-                  OFFSET $3
-              )
-            "#,
-        )
-        .bind(token_id)
-        .bind(token_id)
-        .bind(TOKEN_API_KEY_BINDING_RECENT_LIMIT)
-        .execute(&mut **tx)
-        .await?;
-
-        Ok(())
-    }
-
     const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
 
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
@@ -188,10 +23,10 @@ impl KeyStore {
         }
 
         let value = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT debug_info_shared FROM core.users WHERE id = $1 LIMIT 1",
+            "SELECT debug_info_shared FROM users WHERE id = ? LIMIT 1",
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         let shared = value.flatten().unwrap_or(0) != 0;
         self.user_debug_info_shared_cache.write().await.insert(
@@ -212,15 +47,15 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let result = sqlx::query(
             r#"
-            UPDATE core.users
-            SET debug_info_shared = $1, updated_at = $2
-            WHERE id = $3
+            UPDATE users
+            SET debug_info_shared = ?, updated_at = ?
+            WHERE id = ?
             "#,
         )
         .bind(i64::from(shared))
         .bind(now)
         .bind(user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         if result.rows_affected() > 0 {
             self.user_debug_info_shared_cache.write().await.insert(
@@ -243,8 +78,8 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
-        let mut builder: QueryBuilder<sqlx::Postgres> =
-            QueryBuilder::new("SELECT id, debug_info_shared FROM core.users WHERE id IN (");
+        let mut builder: QueryBuilder<Sqlite> =
+            QueryBuilder::new("SELECT id, debug_info_shared FROM users WHERE id IN (");
         {
             let mut separated = builder.separated(", ");
             for user_id in user_ids {
@@ -253,7 +88,7 @@ impl KeyStore {
         }
         builder.push(")");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         let mut map = HashMap::with_capacity(rows.len());
         for row in rows {
             let id: String = row.try_get("id")?;
@@ -280,8 +115,7 @@ impl KeyStore {
         token_id: &str,
         billing_subject: Option<&str>,
     ) -> Result<Option<String>, ProxyError> {
-        if let Some(user_id) = billing_subject.and_then(|subject| subject.strip_prefix("account:"))
-        {
+        if let Some(user_id) = billing_subject.and_then(|subject| subject.strip_prefix("account:")) {
             return Ok(Some(user_id.to_string()));
         }
 
@@ -324,12 +158,12 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
 
         for _ in 0..4 {
-            let mut tx = self.pg()?.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
             let existing = sqlx::query_as::<_, (String,)>(
                 r#"SELECT user_id
-                   FROM core.oauth_accounts
-                   WHERE provider = $1 AND provider_user_id = $2
+                   FROM oauth_accounts
+                   WHERE provider = ? AND provider_user_id = ?
                    LIMIT 1"#,
             )
             .bind(&profile.provider)
@@ -346,9 +180,9 @@ impl KeyStore {
                 for _ in 0..8 {
                     let candidate = random_string(ALPHABET, 12);
                     let inserted = sqlx::query(
-                        r#"INSERT INTO core.users
+                        r#"INSERT INTO users
                            (id, display_name, username, avatar_template, active, created_at, updated_at, last_login_at)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
                     )
                     .bind(&candidate)
                     .bind(display_name.clone())
@@ -385,7 +219,7 @@ impl KeyStore {
 
                 let zero_base = AccountQuotaLimits::zero_base();
                 sqlx::query(
-                    r#"INSERT INTO core.account_quota_limits (
+                    r#"INSERT INTO account_quota_limits (
                            user_id,
                            business_calls_1h_limit,
                            daily_credits_limit,
@@ -394,7 +228,7 @@ impl KeyStore {
                            created_at,
                            updated_at
                        )
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+                       VALUES (?, ?, ?, ?, ?, ?, ?)"#,
                 )
                 .bind(&user_id)
                 .bind(zero_base.business_calls_1h_limit)
@@ -407,9 +241,9 @@ impl KeyStore {
                 .await?;
 
                 let inserted_account = sqlx::query(
-                    r#"INSERT INTO core.oauth_accounts
+                    r#"INSERT INTO oauth_accounts
                        (provider, provider_user_id, user_id, username, name, avatar_template, active, trust_level, raw_payload, created_at, updated_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
                 )
                 .bind(&profile.provider)
                 .bind(&profile.provider_user_id)
@@ -440,9 +274,9 @@ impl KeyStore {
 
             if touch_last_login_at {
                 sqlx::query(
-                    r#"UPDATE core.users
-                       SET display_name = $1, username = $2, avatar_template = $3, active = $4, updated_at = $5, last_login_at = $6
-                       WHERE id = $7"#,
+                    r#"UPDATE users
+                       SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?, last_login_at = ?
+                       WHERE id = ?"#,
                 )
                 .bind(display_name.clone())
                 .bind(username.clone())
@@ -455,9 +289,9 @@ impl KeyStore {
                 .await?;
             } else {
                 sqlx::query(
-                    r#"UPDATE core.users
-                       SET display_name = $1, username = $2, avatar_template = $3, active = $4, updated_at = $5
-                       WHERE id = $6"#,
+                    r#"UPDATE users
+                       SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?
+                       WHERE id = ?"#,
                 )
                 .bind(display_name.clone())
                 .bind(username.clone())
@@ -471,17 +305,17 @@ impl KeyStore {
 
             if let Some((refresh_token_ciphertext, refresh_token_nonce)) = refresh_token_update {
                 sqlx::query(
-                    r#"UPDATE core.oauth_accounts
-                       SET username = $1,
-                           name = $2,
-                           avatar_template = $3,
-                           active = $4,
-                           trust_level = $5,
-                           raw_payload = $6,
-                           refresh_token_ciphertext = $7,
-                           refresh_token_nonce = $8,
-                           updated_at = $9
-                       WHERE provider = $10 AND provider_user_id = $11"#,
+                    r#"UPDATE oauth_accounts
+                       SET username = ?,
+                           name = ?,
+                           avatar_template = ?,
+                           active = ?,
+                           trust_level = ?,
+                           raw_payload = ?,
+                           refresh_token_ciphertext = ?,
+                           refresh_token_nonce = ?,
+                           updated_at = ?
+                       WHERE provider = ? AND provider_user_id = ?"#,
                 )
                 .bind(username.clone())
                 .bind(display_name.clone())
@@ -498,9 +332,9 @@ impl KeyStore {
                 .await?;
             } else {
                 sqlx::query(
-                    r#"UPDATE core.oauth_accounts
-                       SET username = $1, name = $2, avatar_template = $3, active = $4, trust_level = $5, raw_payload = $6, updated_at = $7
-                       WHERE provider = $8 AND provider_user_id = $9"#,
+                    r#"UPDATE oauth_accounts
+                       SET username = ?, name = ?, avatar_template = ?, active = ?, trust_level = ?, raw_payload = ?, updated_at = ?
+                       WHERE provider = ? AND provider_user_id = ?"#,
                 )
                 .bind(username.clone())
                 .bind(display_name.clone())
@@ -574,13 +408,13 @@ impl KeyStore {
     ) -> Result<bool, ProxyError> {
         let row = sqlx::query_scalar::<_, i64>(
             r#"SELECT 1
-               FROM core.oauth_accounts
-               WHERE provider = $1 AND provider_user_id = $2
+               FROM oauth_accounts
+               WHERE provider = ? AND provider_user_id = ?
                LIMIT 1"#,
         )
         .bind(provider)
         .bind(provider_user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(row.is_some())
     }
@@ -594,16 +428,16 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         sqlx::query(
-            r#"UPDATE core.oauth_accounts
-               SET refresh_token_ciphertext = $1, refresh_token_nonce = $2, updated_at = $3
-               WHERE provider = $4 AND provider_user_id = $5"#,
+            r#"UPDATE oauth_accounts
+               SET refresh_token_ciphertext = ?, refresh_token_nonce = ?, updated_at = ?
+               WHERE provider = ? AND provider_user_id = ?"#,
         )
         .bind(refresh_token_ciphertext)
         .bind(refresh_token_nonce)
         .bind(now)
         .bind(provider)
         .bind(provider_user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -615,14 +449,14 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         sqlx::query(
-            r#"UPDATE core.users
-               SET active = $1, updated_at = $2
-               WHERE id = $3"#,
+            r#"UPDATE users
+               SET active = ?, updated_at = ?
+               WHERE id = ?"#,
         )
         .bind(if active { 1 } else { 0 })
         .bind(now)
         .bind(user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -640,14 +474,14 @@ impl KeyStore {
                     name,
                     refresh_token_ciphertext,
                     refresh_token_nonce
-               FROM core.oauth_accounts
-               WHERE provider = $1
+               FROM oauth_accounts
+               WHERE provider = ?
                  AND COALESCE(refresh_token_ciphertext, '') != ''
                  AND COALESCE(refresh_token_nonce, '') != ''
                ORDER BY id ASC"#,
         )
         .bind(provider)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
@@ -673,17 +507,17 @@ impl KeyStore {
         attempted_at: i64,
     ) -> Result<(), ProxyError> {
         sqlx::query(
-            r#"UPDATE core.oauth_accounts
-               SET last_profile_sync_attempt_at = $1,
-                   last_profile_sync_success_at = $2,
+            r#"UPDATE oauth_accounts
+               SET last_profile_sync_attempt_at = ?,
+                   last_profile_sync_success_at = ?,
                    last_profile_sync_error = NULL
-               WHERE provider = $3 AND provider_user_id = $4"#,
+               WHERE provider = ? AND provider_user_id = ?"#,
         )
         .bind(attempted_at)
         .bind(attempted_at)
         .bind(provider)
         .bind(provider_user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -696,16 +530,16 @@ impl KeyStore {
         error: &str,
     ) -> Result<(), ProxyError> {
         sqlx::query(
-            r#"UPDATE core.oauth_accounts
-               SET last_profile_sync_attempt_at = $1,
-                   last_profile_sync_error = $2
-               WHERE provider = $3 AND provider_user_id = $4"#,
+            r#"UPDATE oauth_accounts
+               SET last_profile_sync_attempt_at = ?,
+                   last_profile_sync_error = ?
+               WHERE provider = ? AND provider_user_id = ?"#,
         )
         .bind(attempted_at)
         .bind(error.trim())
         .bind(provider)
         .bind(provider_user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -729,10 +563,10 @@ impl KeyStore {
 
         for _ in 0..4 {
             let now = self.backend_time.now_ts();
-            let mut tx = self.pg()?.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
             let user_exists = sqlx::query_scalar::<_, Option<i64>>(
-                r#"SELECT 1 FROM core.users WHERE id = $1 LIMIT 1"#,
+                r#"SELECT 1 FROM users WHERE id = ? LIMIT 1"#,
             )
             .bind(user_id)
             .fetch_optional(&mut *tx)
@@ -747,9 +581,9 @@ impl KeyStore {
                 let token_id = random_string(ALPHABET, 4);
                 let secret = random_string(ALPHABET, 24);
                 let inserted_token = sqlx::query(
-                    r#"INSERT INTO core.auth_tokens
+                    r#"INSERT INTO auth_tokens
                        (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
-                       VALUES ($1, $2, 1, $3, NULL, 0, $4, NULL, NULL)"#,
+                       VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
                 )
                 .bind(&token_id)
                 .bind(&secret)
@@ -779,8 +613,8 @@ impl KeyStore {
             };
 
             let inserted_binding = sqlx::query(
-                r#"INSERT INTO core.user_token_bindings (user_id, token_id, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4)"#,
+                r#"INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)"#,
             )
             .bind(user_id)
             .bind(&token_id)
@@ -821,27 +655,27 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         let result = sqlx::query(
-            r#"UPDATE core.auth_tokens
-               SET enabled = 0, deleted_at = $1
-               WHERE id = $2
+            r#"UPDATE auth_tokens
+               SET enabled = 0, deleted_at = ?
+               WHERE id = ?
                  AND deleted_at IS NULL
                  AND EXISTS (
                    SELECT 1
-                   FROM core.user_token_bindings b
-                   WHERE b.user_id = $3 AND b.token_id = auth_tokens.id
+                   FROM user_token_bindings b
+                   WHERE b.user_id = ? AND b.token_id = auth_tokens.id
                  )
                  AND (
                    SELECT COUNT(*)
-                   FROM core.user_token_bindings b_count
-                   JOIN core.auth_tokens t_count ON t_count.id = b_count.token_id
-                   WHERE b_count.user_id = $4 AND t_count.deleted_at IS NULL
+                   FROM user_token_bindings b_count
+                   JOIN auth_tokens t_count ON t_count.id = b_count.token_id
+                   WHERE b_count.user_id = ? AND t_count.deleted_at IS NULL
                  ) > 1"#,
         )
         .bind(now)
         .bind(token_id)
         .bind(user_id)
         .bind(user_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         if result.rows_affected() > 0 {
@@ -851,23 +685,23 @@ impl KeyStore {
 
         let bound_active_count = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*)
-               FROM core.user_token_bindings b
-               JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1 AND t.deleted_at IS NULL"#,
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND t.deleted_at IS NULL"#,
         )
         .bind(user_id)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         let token_belongs_to_user = sqlx::query_scalar::<_, Option<i64>>(
             r#"SELECT 1
-               FROM core.user_token_bindings b
-               JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1 AND b.token_id = $2 AND t.deleted_at IS NULL
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND b.token_id = ? AND t.deleted_at IS NULL
                LIMIT 1"#,
         )
         .bind(user_id)
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .is_some();
 
@@ -886,12 +720,12 @@ impl KeyStore {
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
         let row = sqlx::query_as::<_, (String,)>(
             r#"SELECT secret
-               FROM core.auth_tokens
-               WHERE id = $1 AND enabled = 1 AND deleted_at IS NULL
+               FROM auth_tokens
+               WHERE id = ? AND enabled = 1 AND deleted_at IS NULL
                LIMIT 1"#,
         )
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(|(secret,)| AuthTokenSecret {
@@ -919,7 +753,7 @@ impl KeyStore {
         {
             for _ in 0..4 {
                 let now = self.backend_time.now_ts();
-                let mut tx = match self.pg()?.begin().await {
+                let mut tx = match self.pool.begin().await {
                     Ok(tx) => tx,
                     Err(err) => {
                         let err = ProxyError::Database(err);
@@ -941,8 +775,8 @@ impl KeyStore {
 
                 let owner = sqlx::query_as::<_, (String,)>(
                     r#"SELECT user_id
-                       FROM core.user_token_bindings
-                       WHERE token_id = $1
+                       FROM user_token_bindings
+                       WHERE token_id = ?
                        LIMIT 1"#,
                 )
                 .bind(preferred_token_id)
@@ -956,9 +790,9 @@ impl KeyStore {
                     }
                     Some(_) => {
                         let touch = sqlx::query(
-                            r#"UPDATE core.user_token_bindings
-                               SET updated_at = $1
-                               WHERE user_id = $2 AND token_id = $3"#,
+                            r#"UPDATE user_token_bindings
+                               SET updated_at = ?
+                               WHERE user_id = ? AND token_id = ?"#,
                         )
                         .bind(now)
                         .bind(user_id)
@@ -1014,9 +848,9 @@ impl KeyStore {
                     }
                     None => {
                         let result = sqlx::query(
-                            r#"INSERT INTO core.user_token_bindings (user_id, token_id, created_at, updated_at)
-                               VALUES ($1, $2, $3, $4)
-                               ON CONFLICT (user_id, token_id) DO UPDATE SET
+                            r#"INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at)
+                               VALUES (?, ?, ?, ?)
+                               ON CONFLICT(user_id, token_id) DO UPDATE SET
                                    updated_at = excluded.updated_at"#,
                         )
                         .bind(user_id)
@@ -1091,7 +925,7 @@ impl KeyStore {
         let note = note.unwrap_or("").trim().to_string();
 
         for _ in 0..4 {
-            let mut tx = match self.pg()?.begin().await {
+            let mut tx = match self.pool.begin().await {
                 Ok(tx) => tx,
                 Err(err) => {
                     let err = ProxyError::Database(err);
@@ -1112,9 +946,9 @@ impl KeyStore {
             };
             if let Some((token_id, secret)) = sqlx::query_as::<_, (String, String)>(
                 r#"SELECT b.token_id, t.secret
-                   FROM core.user_token_bindings b
-                   JOIN core.auth_tokens t ON t.id = b.token_id
-                   WHERE b.user_id = $1
+                   FROM user_token_bindings b
+                   JOIN auth_tokens t ON t.id = b.token_id
+                   WHERE b.user_id = ?
                    ORDER BY b.updated_at DESC, b.created_at DESC, b.token_id DESC
                    LIMIT 1"#,
             )
@@ -1135,9 +969,9 @@ impl KeyStore {
                 let secret = random_string(ALPHABET, 24);
 
                 let inserted_token = sqlx::query(
-                    r#"INSERT INTO core.auth_tokens
+                    r#"INSERT INTO auth_tokens
                        (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
-                       VALUES ($1, $2, 1, $3, NULL, 0, $4, NULL, NULL)"#,
+                       VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
                 )
                 .bind(&token_id)
                 .bind(&secret)
@@ -1167,8 +1001,8 @@ impl KeyStore {
             };
 
             let inserted_binding = sqlx::query(
-                r#"INSERT INTO core.user_token_bindings (user_id, token_id, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4)"#,
+                r#"INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)"#,
             )
             .bind(user_id)
             .bind(&token_id)
@@ -1242,14 +1076,14 @@ impl KeyStore {
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
         let row = sqlx::query_as::<_, (String, String)>(
             r#"SELECT b.token_id, t.secret
-               FROM core.user_token_bindings b
-               JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ?
                ORDER BY b.updated_at DESC, b.created_at DESC, b.token_id DESC
                LIMIT 1"#,
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(|(token_id, secret)| AuthTokenSecret {
@@ -1264,14 +1098,14 @@ impl KeyStore {
     ) -> Result<UserTokenLookup, ProxyError> {
         let row = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<i64>)>(
             r#"SELECT b.token_id, t.secret, t.enabled, t.deleted_at
-               FROM core.user_token_bindings b
-               LEFT JOIN core.auth_tokens t ON t.id = b.token_id
-               WHERE b.user_id = $1
+               FROM user_token_bindings b
+               LEFT JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ?
                ORDER BY b.updated_at DESC, b.created_at DESC, b.token_id DESC
                LIMIT 1"#,
         )
         .bind(user_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         let Some((token_id, maybe_secret, maybe_enabled, maybe_deleted_at)) = row else {
@@ -1300,25 +1134,23 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let expires_at = now + session_max_age_secs.max(60);
 
-        sqlx::query(
-            "DELETE FROM core.user_sessions WHERE expires_at < $1 OR revoked_at IS NOT NULL",
-        )
-        .bind(now)
-        .execute(self.pg()?)
-        .await?;
+        sqlx::query("DELETE FROM user_sessions WHERE expires_at < ? OR revoked_at IS NOT NULL")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
 
         loop {
             let token = random_string(ALPHABET, 48);
             let inserted = sqlx::query(
-                r#"INSERT INTO core.user_sessions (token, user_id, provider, created_at, expires_at, revoked_at)
-                   VALUES ($1, $2, $3, $4, $5, NULL)"#,
+                r#"INSERT INTO user_sessions (token, user_id, provider, created_at, expires_at, revoked_at)
+                   VALUES (?, ?, ?, ?, ?, NULL)"#,
             )
             .bind(&token)
             .bind(&user.user_id)
             .bind(&user.provider)
             .bind(now)
             .bind(expires_at)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await;
 
             match inserted {
@@ -1340,9 +1172,9 @@ impl KeyStore {
         token: &str,
     ) -> Result<Option<UserSession>, ProxyError> {
         let now = self.backend_time.now_ts();
-        sqlx::query("DELETE FROM core.user_sessions WHERE expires_at < $1")
+        sqlx::query("DELETE FROM user_sessions WHERE expires_at < ?")
             .bind(now)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
 
         let row = sqlx::query_as::<
@@ -1367,15 +1199,15 @@ impl KeyStore {
                     u.username,
                     u.avatar_template,
                     s.expires_at
-               FROM core.user_sessions s
-               JOIN core.users u ON u.id = s.user_id
-               LEFT JOIN core.oauth_accounts oa ON oa.user_id = u.id AND oa.provider = s.provider
-               WHERE s.token = $1 AND s.revoked_at IS NULL AND s.expires_at > $2 AND u.active = 1
+               FROM user_sessions s
+               JOIN users u ON u.id = s.user_id
+               LEFT JOIN oauth_accounts oa ON oa.user_id = u.id AND oa.provider = s.provider
+               WHERE s.token = ? AND s.revoked_at IS NULL AND s.expires_at > ? AND u.active = 1
                LIMIT 1"#,
         )
         .bind(token)
         .bind(now)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
@@ -1406,11 +1238,11 @@ impl KeyStore {
     pub(crate) async fn revoke_user_session(&self, token: &str) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
         sqlx::query(
-            "UPDATE core.user_sessions SET revoked_at = $1 WHERE token = $2 AND revoked_at IS NULL",
+            "UPDATE user_sessions SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL",
         )
         .bind(now)
         .bind(token)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -1465,7 +1297,7 @@ impl KeyStore {
         let upstream_operation_for_business = diagnostic_metadata.upstream_operation.clone();
         sqlx::query(
             r#"
-            INSERT INTO core.auth_token_logs (
+            INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status,
                 request_kind_key, request_kind_label, request_kind_detail,
                 result_status, error_message, failure_kind, key_effect_code, key_effect_summary,
@@ -1475,7 +1307,7 @@ impl KeyStore {
                 upstream_operation, fallback_reason,
                 counts_business_quota, request_log_id, created_at
                 , request_user_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -1506,7 +1338,7 @@ impl KeyStore {
         .bind(request_log_id)
         .bind(created_at)
         .bind(request_user_id.as_deref())
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         self.request_stats_coalescer
             .enqueue_auth_token_activity(token_id, request_user_id.as_deref(), created_at)
@@ -1571,9 +1403,10 @@ impl KeyStore {
         let diagnostic_metadata = self
             .resolve_request_log_diagnostic_metadata(request_log_id)
             .await?;
-        let request_user_id = diagnostic_metadata.request_user_id.clone().or(self
-            .resolve_request_rollup_user_id(token_id, Some(billing_subject))
-            .await?);
+        let request_user_id = diagnostic_metadata.request_user_id.clone().or(
+            self.resolve_request_rollup_user_id(token_id, Some(billing_subject))
+                .await?,
+        );
         let request_log_created_at = diagnostic_metadata.created_at;
         let upstream_operation_for_business = diagnostic_metadata.upstream_operation.clone();
         let retry_budget = Duration::from_secs(10);
@@ -1734,10 +1567,10 @@ impl KeyStore {
         request_user_id: Option<&str>,
         diagnostic_metadata: &RequestLogDiagnosticMetadata,
     ) -> Result<i64, ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let log_id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO core.auth_token_logs (
+            INSERT INTO auth_token_logs (
                 token_id,
                 method,
                 path,
@@ -1770,7 +1603,7 @@ impl KeyStore {
                 request_log_id,
                 created_at,
                 request_user_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -1815,7 +1648,7 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO core.billing_ledger (
+            INSERT INTO billing_ledger (
                 auth_token_log_id,
                 token_id,
                 billing_subject,
@@ -1829,8 +1662,8 @@ impl KeyStore {
                 updated_at,
                 settled_at,
                 error_message
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, $12)
-            ON CONFLICT (auth_token_log_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            ON CONFLICT(auth_token_log_id) DO UPDATE SET
                 token_id = excluded.token_id,
                 billing_subject = excluded.billing_subject,
                 billing_state = excluded.billing_state,
@@ -1901,7 +1734,7 @@ impl KeyStore {
             "#,
         )
         .bind(request_log_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row
@@ -1947,7 +1780,7 @@ impl KeyStore {
             "#,
         )
         .bind(request_log_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row
@@ -1974,15 +1807,15 @@ impl KeyStore {
         sqlx::query_scalar(
             r#"
             SELECT auth_token_log_id
-            FROM core.billing_ledger
-            WHERE billing_state = $1 AND billing_subject = $2 AND COALESCE(business_credits, 0) > 0
+            FROM billing_ledger
+            WHERE billing_state = ? AND billing_subject = ? AND COALESCE(business_credits, 0) > 0
               AND auth_token_log_id > 0
             ORDER BY auth_token_log_id ASC
             "#,
         )
         .bind(BILLING_STATE_PENDING)
         .bind(billing_subject)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -1994,9 +1827,9 @@ impl KeyStore {
         sqlx::query_scalar(
             r#"
             SELECT DISTINCT billing_subject
-            FROM core.billing_ledger
-            WHERE billing_state = $1
-              AND token_id = $2
+            FROM billing_ledger
+            WHERE billing_state = ?
+              AND token_id = ?
               AND billing_subject IS NOT NULL
               AND COALESCE(business_credits, 0) > 0
               AND auth_token_log_id > 0
@@ -2005,7 +1838,7 @@ impl KeyStore {
         )
         .bind(BILLING_STATE_PENDING)
         .bind(token_id)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2095,14 +1928,14 @@ impl KeyStore {
         let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
             r#"
             SELECT atl.path, atl.request_kind_key, bl.billing_subject
-            FROM core.billing_ledger bl
-            LEFT JOIN core.auth_token_logs atl ON atl.id = bl.auth_token_log_id
-            WHERE bl.auth_token_log_id = $1
+            FROM billing_ledger bl
+            LEFT JOIN auth_token_logs atl ON atl.id = bl.auth_token_log_id
+            WHERE bl.auth_token_log_id = ?
             LIMIT 1
             "#,
         )
         .bind(log_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|(path, request_kind, billing_subject)| {
             let billing_subject_kind = billing_subject
@@ -2122,7 +1955,7 @@ impl KeyStore {
         &self,
         log_id: i64,
     ) -> Result<PendingBillingSettleOutcome, ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         #[cfg(test)]
         let force_claim_miss = {
             let mut forced = self.forced_pending_claim_miss_log_ids.lock().await;
@@ -2140,14 +1973,14 @@ impl KeyStore {
                     COALESCE(business_credits, 0),
                     billing_subject,
                     COALESCE(
-                        (SELECT created_at FROM core.auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                        (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
                         billing_ledger.created_at
                     ),
                     api_key_id,
                     result_status,
                     request_log_id
-                FROM core.billing_ledger
-                WHERE auth_token_log_id = $1 AND billing_state = $2
+                FROM billing_ledger
+                WHERE auth_token_log_id = ? AND billing_state = ?
                 LIMIT 1
                 "#,
             )
@@ -2161,7 +1994,7 @@ impl KeyStore {
             claimed
         else {
             let billing_state = sqlx::query_scalar::<_, String>(
-                "SELECT billing_state FROM core.billing_ledger WHERE auth_token_log_id = $1 LIMIT 1",
+                "SELECT billing_state FROM billing_ledger WHERE auth_token_log_id = ? LIMIT 1",
             )
             .bind(log_id)
             .fetch_optional(&mut *tx)
@@ -2196,16 +2029,16 @@ impl KeyStore {
             let settled_at = self.backend_time.now_ts();
             let updated = sqlx::query(
                 r#"
-                UPDATE core.billing_ledger
-                SET billing_state = $1,
+                UPDATE billing_ledger
+                SET billing_state = ?,
                     created_at = COALESCE(
-                        (SELECT created_at FROM core.auth_token_logs WHERE id = core.billing_ledger.auth_token_log_id),
-                        core.billing_ledger.created_at
+                        (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                        billing_ledger.created_at
                     ),
-                    updated_at = $2,
-                    settled_at = $3,
+                    updated_at = ?,
+                    settled_at = ?,
                     error_message = NULL
-                WHERE auth_token_log_id = $4 AND billing_state = $5
+                WHERE auth_token_log_id = ? AND billing_state = ?
                 "#,
             )
             .bind(BILLING_STATE_CHARGED)
@@ -2221,9 +2054,9 @@ impl KeyStore {
             }
             sqlx::query(
                 r#"
-                UPDATE core.auth_token_logs
-                SET billing_state = $1
-                WHERE id = $2
+                UPDATE auth_token_logs
+                SET billing_state = ?
+                WHERE id = ?
                 "#,
             )
             .bind(BILLING_STATE_CHARGED)
@@ -2256,9 +2089,9 @@ impl KeyStore {
                 .begin_dashboard_rollup_source_mutation(charge_ts);
             sqlx::query(
                 r#"
-                UPDATE observability.request_logs
-                SET business_credits = $1
-                WHERE id = $2
+                UPDATE request_logs
+                SET business_credits = ?
+                WHERE id = ?
                 "#,
             )
             .bind(credits)
@@ -2273,10 +2106,10 @@ impl KeyStore {
         if let Some(user_id) = billing_subject.strip_prefix("account:") {
             sqlx::query(
                 r#"
-                INSERT INTO core.account_usage_buckets (user_id, bucket_start, granularity, count)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (user_id, bucket_start, granularity)
-                DO UPDATE SET count = core.account_usage_buckets.count + excluded.count
+                INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, bucket_start, granularity)
+                DO UPDATE SET count = account_usage_buckets.count + excluded.count
                 "#,
             )
             .bind(user_id)
@@ -2288,10 +2121,10 @@ impl KeyStore {
 
             sqlx::query(
                 r#"
-                INSERT INTO core.account_usage_buckets (user_id, bucket_start, granularity, count)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (user_id, bucket_start, granularity)
-                DO UPDATE SET count = core.account_usage_buckets.count + excluded.count
+                INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, bucket_start, granularity)
+                DO UPDATE SET count = account_usage_buckets.count + excluded.count
                 "#,
             )
             .bind(user_id)
@@ -2303,17 +2136,17 @@ impl KeyStore {
 
             let (_month_start, _month_count): (i64, i64) = sqlx::query_as(
                 r#"
-                INSERT INTO core.account_monthly_quota (user_id, month_start, month_count)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id) DO UPDATE SET
+                INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
                     month_start = CASE
-                        WHEN excluded.month_start > core.account_monthly_quota.month_start THEN excluded.month_start
-                        ELSE core.account_monthly_quota.month_start
+                        WHEN excluded.month_start > account_monthly_quota.month_start THEN excluded.month_start
+                        ELSE account_monthly_quota.month_start
                     END,
                     month_count = CASE
-                        WHEN excluded.month_start > core.account_monthly_quota.month_start THEN excluded.month_count
-                        WHEN excluded.month_start < core.account_monthly_quota.month_start THEN core.account_monthly_quota.month_count
-                        ELSE core.account_monthly_quota.month_count + excluded.month_count
+                        WHEN excluded.month_start > account_monthly_quota.month_start THEN excluded.month_count
+                        WHEN excluded.month_start < account_monthly_quota.month_start THEN account_monthly_quota.month_count
+                        ELSE account_monthly_quota.month_count + excluded.month_count
                     END
                 RETURNING month_start, month_count
                 "#,
@@ -2328,7 +2161,7 @@ impl KeyStore {
                 .await?;
 
             if let Some(api_key_id) = api_key_id.as_deref() {
-                self.increment_api_key_user_usage_bucket_pg(
+                self.increment_api_key_user_usage_bucket(
                     &mut tx,
                     api_key_id,
                     user_id,
@@ -2339,14 +2172,14 @@ impl KeyStore {
                 .await?;
 
                 if result_status == OUTCOME_SUCCESS {
-                    self.refresh_user_api_key_binding_pg(&mut tx, user_id, api_key_id, created_at)
+                    self.refresh_user_api_key_binding(&mut tx, user_id, api_key_id, created_at)
                         .await?;
                     let now = self.backend_time.now_ts();
                     sqlx::query(
                         r#"
-                        INSERT INTO core.user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (user_id) DO UPDATE SET
+                        INSERT INTO user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
                             api_key_id = excluded.api_key_id,
                             updated_at = excluded.updated_at
                         "#,
@@ -2360,17 +2193,17 @@ impl KeyStore {
 
                     sqlx::query(
                         r#"
-                        INSERT INTO core.token_primary_api_key_affinity (
+                        INSERT INTO token_primary_api_key_affinity (
                             token_id,
                             user_id,
                             api_key_id,
                             created_at,
                             updated_at
                         )
-                        SELECT token_id, user_id, $1, $2, $3
-                        FROM core.user_token_bindings
-                        WHERE user_id = $4
-                        ON CONFLICT (token_id) DO UPDATE SET
+                        SELECT token_id, user_id, ?, ?, ?
+                        FROM user_token_bindings
+                        WHERE user_id = ?
+                        ON CONFLICT(token_id) DO UPDATE SET
                             user_id = excluded.user_id,
                             api_key_id = excluded.api_key_id,
                             updated_at = excluded.updated_at
@@ -2387,10 +2220,10 @@ impl KeyStore {
         } else if let Some(token_id) = billing_subject.strip_prefix("token:") {
             sqlx::query(
                 r#"
-                INSERT INTO core.token_usage_buckets (token_id, bucket_start, granularity, count)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (token_id, bucket_start, granularity)
-                DO UPDATE SET count = core.token_usage_buckets.count + excluded.count
+                INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(token_id, bucket_start, granularity)
+                DO UPDATE SET count = token_usage_buckets.count + excluded.count
                 "#,
             )
             .bind(token_id)
@@ -2402,10 +2235,10 @@ impl KeyStore {
 
             sqlx::query(
                 r#"
-                INSERT INTO core.token_usage_buckets (token_id, bucket_start, granularity, count)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (token_id, bucket_start, granularity)
-                DO UPDATE SET count = core.token_usage_buckets.count + excluded.count
+                INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(token_id, bucket_start, granularity)
+                DO UPDATE SET count = token_usage_buckets.count + excluded.count
                 "#,
             )
             .bind(token_id)
@@ -2417,17 +2250,17 @@ impl KeyStore {
 
             let (_month_start, _month_count): (i64, i64) = sqlx::query_as(
                 r#"
-                INSERT INTO core.auth_token_quota (token_id, month_start, month_count)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (token_id) DO UPDATE SET
+                INSERT INTO auth_token_quota (token_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
                     month_start = CASE
-                        WHEN excluded.month_start > core.auth_token_quota.month_start THEN excluded.month_start
-                        ELSE core.auth_token_quota.month_start
+                        WHEN excluded.month_start > auth_token_quota.month_start THEN excluded.month_start
+                        ELSE auth_token_quota.month_start
                     END,
                     month_count = CASE
-                        WHEN excluded.month_start > core.auth_token_quota.month_start THEN excluded.month_count
-                        WHEN excluded.month_start < core.auth_token_quota.month_start THEN core.auth_token_quota.month_count
-                        ELSE core.auth_token_quota.month_count + excluded.month_count
+                        WHEN excluded.month_start > auth_token_quota.month_start THEN excluded.month_count
+                        WHEN excluded.month_start < auth_token_quota.month_start THEN auth_token_quota.month_count
+                        ELSE auth_token_quota.month_count + excluded.month_count
                     END
                 RETURNING month_start, month_count
                 "#,
@@ -2441,20 +2274,20 @@ impl KeyStore {
             if let Some(api_key_id) = api_key_id.as_deref()
                 && result_status == OUTCOME_SUCCESS
             {
-                self.refresh_token_api_key_binding_pg(&mut tx, token_id, api_key_id, created_at)
+                self.refresh_token_api_key_binding(&mut tx, token_id, api_key_id, created_at)
                     .await?;
                 let now = self.backend_time.now_ts();
                 sqlx::query(
                     r#"
-                    INSERT INTO core.token_primary_api_key_affinity (
+                    INSERT INTO token_primary_api_key_affinity (
                         token_id,
                         user_id,
                         api_key_id,
                         created_at,
                         updated_at
                     )
-                    VALUES ($1, NULL, $2, $3, $4)
-                    ON CONFLICT (token_id) DO UPDATE SET
+                    VALUES (?, NULL, ?, ?, ?)
+                    ON CONFLICT(token_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         api_key_id = excluded.api_key_id,
                         updated_at = excluded.updated_at
@@ -2479,16 +2312,16 @@ impl KeyStore {
         let settled_at = self.backend_time.now_ts();
         let updated = sqlx::query(
             r#"
-            UPDATE core.billing_ledger
-            SET billing_state = $1,
+            UPDATE billing_ledger
+            SET billing_state = ?,
                 created_at = COALESCE(
-                    (SELECT created_at FROM core.auth_token_logs WHERE id = core.billing_ledger.auth_token_log_id),
-                    core.billing_ledger.created_at
+                    (SELECT created_at FROM auth_token_logs WHERE id = billing_ledger.auth_token_log_id),
+                    billing_ledger.created_at
                 ),
-                updated_at = $2,
-                settled_at = $3,
+                updated_at = ?,
+                settled_at = ?,
                 error_message = NULL
-            WHERE auth_token_log_id = $4 AND billing_state = $5
+            WHERE auth_token_log_id = ? AND billing_state = ?
             "#,
         )
         .bind(BILLING_STATE_CHARGED)
@@ -2504,9 +2337,9 @@ impl KeyStore {
         }
         sqlx::query(
             r#"
-            UPDATE core.auth_token_logs
-            SET billing_state = $1
-            WHERE id = $2
+            UPDATE auth_token_logs
+            SET billing_state = ?
+            WHERE id = ?
             "#,
         )
         .bind(BILLING_STATE_CHARGED)
@@ -2532,14 +2365,14 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.billing_ledger
+            UPDATE billing_ledger
             SET error_message = CASE
-                WHEN error_message IS NULL OR error_message = '' THEN $1
-                WHEN error_message = $2 THEN error_message
-                ELSE error_message || ' | ' || $3
+                WHEN error_message IS NULL OR error_message = '' THEN ?
+                WHEN error_message = ? THEN error_message
+                ELSE error_message || ' | ' || ?
             END,
-                updated_at = $4
-            WHERE auth_token_log_id = $5
+                updated_at = ?
+            WHERE auth_token_log_id = ?
             "#,
         )
         .bind(message)
@@ -2547,24 +2380,24 @@ impl KeyStore {
         .bind(message)
         .bind(self.backend_time.now_ts())
         .bind(log_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         sqlx::query(
             r#"
-            UPDATE core.auth_token_logs
+            UPDATE auth_token_logs
             SET error_message = CASE
-                WHEN error_message IS NULL OR error_message = '' THEN $1
-                WHEN error_message = $2 THEN error_message
-                ELSE error_message || ' | ' || $3
+                WHEN error_message IS NULL OR error_message = '' THEN ?
+                WHEN error_message = ? THEN error_message
+                ELSE error_message || ' | ' || ?
             END
-            WHERE id = $4
+            WHERE id = ?
             "#,
         )
         .bind(message)
         .bind(message)
         .bind(message)
         .bind(log_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2588,7 +2421,7 @@ impl KeyStore {
         loop {
             let now = self.backend_time.now_ts();
             let expires_at = now + ttl_secs;
-            let mut tx = match self.pg()?.begin().await {
+            let mut tx = match self.pool.begin().await {
                 Ok(tx) => tx,
                 Err(err) => {
                     let err = ProxyError::Database(err);
@@ -2608,20 +2441,17 @@ impl KeyStore {
                 }
             };
 
-            let inserted_result: Result<sqlx::postgres::PgQueryResult, ProxyError> = async {
-                sqlx::query(
-                    "DELETE FROM core.quota_subject_locks WHERE subject = $1 AND expires_at <= $2",
-                )
-                .bind(subject)
-                .bind(now)
-                .execute(&mut *tx)
-                .await?;
+            let inserted_result: Result<sqlx::sqlite::SqliteQueryResult, ProxyError> = async {
+                sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND expires_at <= ?")
+                    .bind(subject)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
 
                 let inserted = sqlx::query(
                     r#"
-                    INSERT INTO core.quota_subject_locks (subject, owner, expires_at, updated_at)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT DO NOTHING
+                    INSERT OR IGNORE INTO quota_subject_locks (subject, owner, expires_at, updated_at)
+                    VALUES (?, ?, ?, ?)
                     "#,
                 )
                 .bind(subject)
@@ -2701,13 +2531,13 @@ impl KeyStore {
             let now = self.backend_time.now_ts();
             let expires_at = now + lease.ttl.as_secs().max(1) as i64;
             match sqlx::query(
-                "UPDATE core.quota_subject_locks SET expires_at = $1, updated_at = $2 WHERE subject = $3 AND owner = $4",
+                "UPDATE quota_subject_locks SET expires_at = ?, updated_at = ? WHERE subject = ? AND owner = ?",
             )
             .bind(expires_at)
             .bind(now)
             .bind(&lease.subject)
             .bind(&lease.owner)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await
             {
                 Ok(rows) => break rows,
@@ -2746,13 +2576,11 @@ impl KeyStore {
         let deadline = self.backend_time.deadline_after(Duration::from_secs(2));
         let mut attempt = 0usize;
         loop {
-            match sqlx::query(
-                "DELETE FROM core.quota_subject_locks WHERE subject = $1 AND owner = $2",
-            )
-            .bind(&lease.subject)
-            .bind(&lease.owner)
-            .execute(self.pg()?)
-            .await
+            match sqlx::query("DELETE FROM quota_subject_locks WHERE subject = ? AND owner = ?")
+                .bind(&lease.subject)
+                .bind(&lease.owner)
+                .execute(&self.pool)
+                .await
             {
                 Ok(_) => break,
                 Err(err) => {
@@ -2775,6 +2603,7 @@ impl KeyStore {
         }
         Ok(())
     }
+
 }
 
 fn build_user_business_call_event_write(

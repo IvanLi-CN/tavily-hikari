@@ -305,7 +305,6 @@ impl KeyStore {
             Self::flush_request_stats_writes_drained_batch(
                 self.request_stats_coalescer.clone(),
                 self.backend_time.clone(),
-                self.pg()?.clone(),
                 self.sqlite_runtime.clone(),
                 retry_budget,
                 drained,
@@ -351,12 +350,10 @@ impl KeyStore {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn flush_request_stats_writes_drained_batch(
         request_stats_coalescer: RequestStatsCoalescer,
         backend_time: BackendTime,
-        pool: sqlx::PgPool,
-        _sqlite_runtime: SqliteRuntime,
+        sqlite_runtime: SqliteRuntime,
         retry_budget: Duration,
         drained: DrainedRequestStatsFlushBatch,
         log_transient_exhaustion: bool,
@@ -380,8 +377,7 @@ impl KeyStore {
             let chunk = uncommitted.take_chunk(chunk_size);
             let chunk_started = Instant::now();
             match Self::flush_request_stats_chunk_with_retry(
-                &pool,
-                &_sqlite_runtime,
+                &sqlite_runtime,
                 &backend_time,
                 retry_deadline,
                 operation_started,
@@ -447,7 +443,6 @@ impl KeyStore {
     }
 
     async fn flush_request_stats_chunk_with_retry(
-        pool: &sqlx::PgPool,
         sqlite_runtime: &SqliteRuntime,
         backend_time: &BackendTime,
         retry_deadline: Instant,
@@ -478,7 +473,6 @@ impl KeyStore {
         let mut retry_attempt = 0usize;
         loop {
             match Self::flush_request_stats_writes_once(
-                pool,
                 sqlite_runtime,
                 backend_time,
                 retry_deadline,
@@ -521,7 +515,6 @@ impl KeyStore {
     }
 
     async fn flush_request_stats_writes_once(
-        pool: &sqlx::PgPool,
         sqlite_runtime: &SqliteRuntime,
         backend_time: &BackendTime,
         retry_deadline: Instant,
@@ -535,11 +528,12 @@ impl KeyStore {
             );
             return Err(ProxyError::Database(sqlx::Error::PoolTimedOut));
         }
-        // The remaining retry budget bounds both the transaction's lock wait and the
-        // flush itself. The batch commits or rolls back inside this call, so a cancelled
-        // wait can never leave a half-applied delta for the coalescer to requeue.
+        // `begin_immediate_before` applies the remaining retry budget to pool
+        // acquisition and `BEGIN IMMEDIATE`. Once it succeeds, `finish` owns
+        // the commit or rollback boundary. Cancelling that wait after `BEGIN`
+        // would let the coalescer requeue a batch that the owned commit can
+        // still persist.
         Self::flush_request_stats_writes_once_within_deadline(
-            pool,
             sqlite_runtime,
             backend_time,
             retry_deadline,
@@ -548,27 +542,18 @@ impl KeyStore {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn flush_request_stats_writes_once_within_deadline(
-        pool: &sqlx::PgPool,
-        _sqlite_runtime: &SqliteRuntime,
+        sqlite_runtime: &SqliteRuntime,
         backend_time: &BackendTime,
         retry_deadline: Instant,
         chunk: &DrainedRequestStatsFlushBatch,
     ) -> Result<(), ProxyError> {
         let updated_at = backend_time.now_ts();
-        // The coalescer's `flushing` flag serializes flushes inside one process; the
-        // advisory lock keeps two processes from interleaving the same bucket deltas the
-        // way the SQLite immediate-write lock used to. The deadline becomes the lock wait
-        // budget so a blocked batch fails inside its retry window.
-        let mut tx = pool.begin().await?;
-        let remaining = retry_deadline.saturating_duration_since(backend_time.instant_now());
-        sqlx::query("SELECT set_config('lock_timeout', $1, true)")
-            .bind(format!("{}ms", (remaining.as_millis() as i64).max(1)))
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('tavily_hikari.request_stats_flush'))")
-            .execute(&mut *tx)
+        let mut tx = sqlite_runtime
+            .begin_immediate_before(
+                SqliteOperation::RequestStatsFlush,
+                retry_deadline.into(),
+            )
             .await?;
         let write_result = async {
         let mut dashboard_entries = chunk
@@ -578,7 +563,7 @@ impl KeyStore {
             .collect::<Vec<_>>();
         dashboard_entries.sort_by(|left, right| left.0.cmp(&right.0));
         for ((bucket_start, bucket_secs), counts) in dashboard_entries {
-            Self::upsert_dashboard_request_rollup_bucket_pg(
+            Self::upsert_dashboard_request_rollup_bucket(
                 &mut tx,
                 bucket_start,
                 bucket_secs,
@@ -632,7 +617,7 @@ impl KeyStore {
                 ] {
                     sqlx::query(
                         r#"
-                        INSERT INTO core.account_usage_rollup_buckets (
+                        INSERT INTO account_usage_rollup_buckets (
                             user_id,
                             metric_kind,
                             bucket_kind,
@@ -640,7 +625,7 @@ impl KeyStore {
                             value,
                             updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
                         DO UPDATE SET
                             value = account_usage_rollup_buckets.value + excluded.value,
@@ -664,7 +649,7 @@ impl KeyStore {
                 ] {
                     sqlx::query(
                         r#"
-                        INSERT INTO core.account_usage_rollup_buckets (
+                        INSERT INTO account_usage_rollup_buckets (
                             user_id,
                             metric_kind,
                             bucket_kind,
@@ -672,7 +657,7 @@ impl KeyStore {
                             value,
                             updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
                         DO UPDATE SET
                             value = account_usage_rollup_buckets.value + excluded.value,
@@ -696,7 +681,7 @@ impl KeyStore {
                 ] {
                     sqlx::query(
                         r#"
-                        INSERT INTO core.account_usage_rollup_buckets (
+                        INSERT INTO account_usage_rollup_buckets (
                             user_id,
                             metric_kind,
                             bucket_kind,
@@ -704,7 +689,7 @@ impl KeyStore {
                             value,
                             updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
                         DO UPDATE SET
                             value = account_usage_rollup_buckets.value + excluded.value,
@@ -730,14 +715,13 @@ impl KeyStore {
             .collect::<Vec<_>>();
         request_log_catalog_entries.sort_by(|left, right| left.0.cmp(&right.0));
         for (key, delta) in request_log_catalog_entries {
-            Self::upsert_request_log_catalog_rollup_delta_pg(&mut tx, &key, delta, updated_at)
-                .await?;
+            Self::upsert_request_log_catalog_rollup_delta(&mut tx, &key, delta, updated_at).await?;
         }
 
         sqlx::query(
             r#"
-            INSERT INTO core.meta (key, value)
-            VALUES ($1, $2)
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             "#,
         )
@@ -749,16 +733,7 @@ impl KeyStore {
         Ok(())
         }
         .await;
-        match write_result {
-            Ok(()) => {
-                tx.commit().await?;
-                Ok(())
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                Err(err)
-            }
-        }
+        tx.finish(write_result).await
     }
 
     async fn fetch_api_key_usage_bucket_success_count(
@@ -769,29 +744,29 @@ impl KeyStore {
         if let Some(bucket_start_before) = bucket_start_before {
             sqlx::query_scalar::<_, i64>(
                 r#"
-                SELECT COALESCE(SUM(success_count), 0)::bigint
-                FROM observability.api_key_usage_buckets
+                SELECT COALESCE(SUM(success_count), 0)
+                FROM api_key_usage_buckets
                 WHERE bucket_secs = 86400
-                  AND bucket_start >= $1
-                  AND bucket_start < $2
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
                 "#,
             )
             .bind(bucket_start_at_least)
             .bind(bucket_start_before)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await
             .map_err(ProxyError::Database)
         } else {
             sqlx::query_scalar::<_, i64>(
                 r#"
-                SELECT COALESCE(SUM(success_count), 0)::bigint
-                FROM observability.api_key_usage_buckets
+                SELECT COALESCE(SUM(success_count), 0)
+                FROM api_key_usage_buckets
                 WHERE bucket_secs = 86400
-                  AND bucket_start >= $1
+                  AND bucket_start >= ?
                 "#,
             )
             .bind(bucket_start_at_least)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await
             .map_err(ProxyError::Database)
         }
@@ -896,7 +871,7 @@ impl KeyStore {
                     Some(last_gap_bucket_end),
                 )
                 .await?;
-            let mut tx = self.pg()?.begin().await?;
+            let mut tx = self.pool.begin().await?;
             let retained_tail_success = Self::fetch_visible_request_log_success_count_tx(
                 &mut tx,
                 gap_end,

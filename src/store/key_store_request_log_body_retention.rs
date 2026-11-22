@@ -352,7 +352,7 @@ impl KeyStore {
             .begin_dashboard_rollup_source_mutation(created_at);
         // Finalize the write before the pooled connection is reused; an
         // INSERT ... RETURNING statement can retain a stale sidecar snapshot.
-        let insert = sqlx::query_scalar::<_, i64>(
+        let insert = sqlx::query(
             r#"
             INSERT INTO observability.request_logs (
                 api_key_id,
@@ -401,8 +401,7 @@ impl KeyStore {
                 client_ip_trusted,
                 ip_headers,
                 created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
-            RETURNING id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(entry.key_id)
@@ -451,9 +450,9 @@ impl KeyStore {
         .bind(client_ip_trusted)
         .bind(ip_headers_json)
         .bind(created_at)
-        .fetch_one(self.pg()?)
+        .execute(&self.pool)
         .await?;
-        let request_log_id = insert;
+        let request_log_id = insert.last_insert_rowid();
         if entry.auth_token_id.is_some() {
             self.request_log_diagnostic_handoff.lock().await.insert(
                 request_log_id,
@@ -581,7 +580,7 @@ impl KeyStore {
                     {
                         // Finalize the write before the receipt is handed to the
                         // coalescer so another pooled connection sees the row.
-                        let insert = sqlx::query_scalar::<_, i64>(
+                        let insert = sqlx::query(
                             r#"
                             INSERT INTO observability.request_logs (
                                 auth_token_id, request_user_id, method, path, status_code, tavily_status_code,
@@ -592,8 +591,7 @@ impl KeyStore {
                                 proxy_session_id, routing_subject_hash, upstream_operation,
                                 fallback_reason, request_body, response_body, request_body_bytes,
                                 response_body_bytes, forwarded_headers, dropped_headers, created_at
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'mcp', $21, $22, $23, $24, $25, '[]', '[]', $26)
-                            RETURNING id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mcp', ?, ?, ?, ?, ?, '[]', '[]', ?)
                             "#,
                         )
                         .bind(entry.auth_token_id.as_deref())
@@ -622,9 +620,9 @@ impl KeyStore {
                         .bind(entry.request_body.len() as i64)
                         .bind(entry.response_body.len() as i64)
                         .bind(created_at)
-                        .fetch_one(&mut **tx)
+                        .execute(&mut **tx)
                         .await?;
-                        let request_log_id = insert;
+                        let request_log_id = insert.last_insert_rowid();
                         receipts.push((request_log_id, created_at));
                     }
                     Ok(receipts)
@@ -653,32 +651,31 @@ impl KeyStore {
         Ok(receipts)
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn api_key_metrics_from_clause() -> &'static str {
         r#"
-            FROM core.api_keys ak
+            FROM api_keys ak
             LEFT JOIN (
                 SELECT
                     api_key_id,
-                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
-                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
-                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count
-                FROM observability.api_key_usage_buckets
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+                FROM api_key_usage_buckets
                 WHERE bucket_secs = 86400
                 GROUP BY api_key_id
             ) AS stats
             ON stats.api_key_id = ak.id
-            LEFT JOIN core.api_key_quarantines aq
+            LEFT JOIN api_key_quarantines aq
             ON aq.key_id = ak.id AND aq.cleared_at IS NULL
             LEFT JOIN (
                 SELECT
                     key_id,
                     MAX(cooldown_until) AS transient_backoff_cooldown_until,
                     MAX(retry_after_secs) AS transient_backoff_retry_after_secs,
-                    STRING_AGG(scope, ',') AS transient_backoff_scopes
-                FROM core.api_key_transient_backoffs
-                WHERE cooldown_until > EXTRACT(EPOCH FROM now())::bigint
+                    GROUP_CONCAT(scope, ',') AS transient_backoff_scopes
+                FROM api_key_transient_backoffs
+                WHERE cooldown_until > strftime('%s', 'now')
                   AND reason_code = 'upstream_unknown_403'
                 GROUP BY key_id
             ) AS tb
@@ -687,7 +684,6 @@ impl KeyStore {
         "#
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn api_key_metrics_query(include_quarantine_detail: bool) -> String {
         let quarantine_detail_sql = if include_quarantine_detail {
             "aq.reason_detail AS quarantine_reason_detail,"
@@ -726,9 +722,8 @@ impl KeyStore {
         )
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn map_api_key_metrics_row(
-        row: sqlx::postgres::PgRow,
+        row: sqlx::sqlite::SqliteRow,
     ) -> Result<ApiKeyMetrics, sqlx::Error> {
         let id: String = row.try_get("id")?;
         let status: String = row.try_get("status")?;
@@ -836,9 +831,8 @@ impl KeyStore {
         normalized
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn push_api_key_group_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         groups: &'a [String],
     ) {
         if groups.is_empty() {
@@ -862,9 +856,8 @@ impl KeyStore {
         builder.push(")");
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn push_api_key_status_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         statuses: &'a [String],
     ) {
         if statuses.is_empty() {
@@ -897,9 +890,8 @@ impl KeyStore {
         builder.push(")");
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn push_api_key_registration_ip_filter<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         registration_ip: Option<&'a str>,
     ) {
         let Some(registration_ip) = registration_ip
@@ -914,9 +906,8 @@ impl KeyStore {
             .push_bind(registration_ip);
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) fn push_api_key_region_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         regions: &'a [String],
     ) {
         if regions.is_empty() {

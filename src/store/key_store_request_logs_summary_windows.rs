@@ -1,6 +1,6 @@
 impl KeyStore {
     pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
         let row = sqlx::query(
@@ -9,24 +9,24 @@ impl KeyStore {
                 COALESCE(COUNT(*), 0) AS bucket_count,
                 COALESCE(MAX(updated_at), 0) AS max_updated_at,
                 COALESCE(MAX(bucket_start), 0) AS max_bucket_start,
-                COALESCE(SUM(bucket_secs), 0)::bigint AS bucket_secs_sum,
-                COALESCE(SUM(total_requests), 0)::bigint AS total_requests_sum,
-                COALESCE(SUM(success_count), 0)::bigint AS success_count_sum,
-                COALESCE(SUM(error_count), 0)::bigint AS error_count_sum,
-                COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count_sum,
-                COALESCE(SUM(valuable_success_count), 0)::bigint AS valuable_success_count_sum,
-                COALESCE(SUM(valuable_failure_count), 0)::bigint AS valuable_failure_count_sum,
-                COALESCE(SUM(valuable_failure_429_count), 0)::bigint AS valuable_failure_429_count_sum,
-                COALESCE(SUM(other_success_count), 0)::bigint AS other_success_count_sum,
-                COALESCE(SUM(other_failure_count), 0)::bigint AS other_failure_count_sum,
-                COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count_sum,
-                COALESCE(SUM(mcp_non_billable), 0)::bigint AS mcp_non_billable_sum,
-                COALESCE(SUM(mcp_billable), 0)::bigint AS mcp_billable_sum,
-                COALESCE(SUM(api_non_billable), 0)::bigint AS api_non_billable_sum,
-                COALESCE(SUM(api_billable), 0)::bigint AS api_billable_sum,
-                COALESCE(SUM(local_estimated_credits), 0)::bigint AS local_estimated_credits_sum
-            FROM observability.dashboard_request_rollup_buckets
-            WHERE bucket_start >= $1
+                COALESCE(SUM(bucket_secs), 0) AS bucket_secs_sum,
+                COALESCE(SUM(total_requests), 0) AS total_requests_sum,
+                COALESCE(SUM(success_count), 0) AS success_count_sum,
+                COALESCE(SUM(error_count), 0) AS error_count_sum,
+                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count_sum,
+                COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count_sum,
+                COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count_sum,
+                COALESCE(SUM(valuable_failure_429_count), 0) AS valuable_failure_429_count_sum,
+                COALESCE(SUM(other_success_count), 0) AS other_success_count_sum,
+                COALESCE(SUM(other_failure_count), 0) AS other_failure_count_sum,
+                COALESCE(SUM(unknown_count), 0) AS unknown_count_sum,
+                COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable_sum,
+                COALESCE(SUM(mcp_billable), 0) AS mcp_billable_sum,
+                COALESCE(SUM(api_non_billable), 0) AS api_non_billable_sum,
+                COALESCE(SUM(api_billable), 0) AS api_billable_sum,
+                COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits_sum
+            FROM dashboard_request_rollup_buckets
+            WHERE bucket_start >= ?
             "#,
         )
         .bind(range_start)
@@ -59,7 +59,7 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let signature =
             Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start)
                 .await?;
@@ -71,9 +71,9 @@ impl KeyStore {
         &self,
     ) -> Result<Option<i64>, ProxyError> {
         sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(captured_at) FROM core.api_key_quota_sync_samples",
+            "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
         )
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
     }
@@ -95,13 +95,13 @@ impl KeyStore {
             SELECT
                 COALESCE(COUNT(*), 0) AS key_count,
                 COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
-            FROM core.api_keys
-            WHERE created_at >= $1
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_keys
+            WHERE created_at >= ?
             "#,
         )
         .bind(range_start)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         Ok([
             row.try_get("key_count")?,
@@ -119,13 +119,13 @@ impl KeyStore {
             SELECT
                 COALESCE(COUNT(*), 0) AS quarantine_count,
                 COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
-            FROM core.api_key_quarantines
-            WHERE created_at >= $1
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_key_quarantines
+            WHERE created_at >= ?
             "#,
         )
         .bind(range_start)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         Ok([
             row.try_get("quarantine_count")?,
@@ -144,13 +144,13 @@ impl KeyStore {
             SELECT
                 COALESCE(COUNT(*), 0) AS exhausted_count,
                 COALESCE(MAX(created_at), 0) AS max_created_at,
-                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
-            FROM core.api_key_maintenance_records
-            WHERE source = $1
-              AND operation_code = $2
-              AND reason_code = $3
-              AND created_at >= $4
-              AND created_at < $5
+                COALESCE(SUM(created_at), 0) AS created_at_sum
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND operation_code = ?
+              AND reason_code = ?
+              AND created_at >= ?
+              AND created_at < ?
             "#,
         )
         .bind(MAINTENANCE_SOURCE_SYSTEM)
@@ -158,7 +158,7 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(range_start)
         .bind(range_end)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         Ok([
             row.try_get("exhausted_count")?,
@@ -179,20 +179,20 @@ impl KeyStore {
             r#"
             WITH window_rows AS (
                 SELECT id, key_id, quota_remaining, captured_at
-                FROM core.api_key_quota_sync_samples
-                WHERE captured_at >= $1
-                  AND captured_at < $2
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
             ),
             sampled_keys AS (
                 SELECT DISTINCT key_id FROM window_rows
             ),
             baseline_rows AS (
                 SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM core.api_key_quota_sync_samples s
+                FROM api_key_quota_sync_samples s
                 INNER JOIN (
                     SELECT key_id, MAX(captured_at) AS captured_at
-                    FROM core.api_key_quota_sync_samples
-                    WHERE captured_at < $3
+                    FROM api_key_quota_sync_samples
+                    WHERE captured_at < ?
                       AND key_id IN (SELECT key_id FROM sampled_keys)
                     GROUP BY key_id
                 ) latest
@@ -209,15 +209,15 @@ impl KeyStore {
             SELECT
                 COALESCE(COUNT(*), 0) AS sample_count,
                 COALESCE(MAX(captured_at), 0) AS max_captured_at,
-                COALESCE(SUM(captured_at), 0)::bigint AS captured_at_sum,
-                COALESCE(SUM(quota_remaining), 0)::bigint AS remaining_sum
+                COALESCE(SUM(captured_at), 0) AS captured_at_sum,
+                COALESCE(SUM(quota_remaining), 0) AS remaining_sum
             FROM signature_rows
             "#,
         )
         .bind(window_start)
         .bind(window_end)
         .bind(window_start)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
         Ok([
             row.try_get("sample_count")?,
@@ -236,20 +236,20 @@ impl KeyStore {
         sqlx::query_scalar(
             r#"
             SELECT COALESCE(COUNT(*), 0)
-            FROM core.api_keys
+            FROM api_keys
             WHERE deleted_at IS NULL
-              AND status <> $1
+              AND status <> ?
               AND NOT EXISTS (
                   SELECT 1
-                  FROM core.api_key_quarantines aq
+                  FROM api_key_quarantines aq
                   WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
               )
               AND CASE
-                  WHEN last_used_at >= $2 THEN (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $3
+                  WHEN last_used_at >= ? THEN (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
                   )
                   ELSE (
-                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $4
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
                   )
               END
             "#,
@@ -258,13 +258,13 @@ impl KeyStore {
         .bind(hot_active_since)
         .bind(hot_stale_before)
         .bind(cold_stale_before)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
 
     async fn fetch_summary_windows_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
         let SummaryWindowBounds {
@@ -279,14 +279,14 @@ impl KeyStore {
             previous_month_start,
             previous_month_end,
         } = bounds;
-        let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx_pg(
+        let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
             &mut *tx,
             SECS_PER_MINUTE,
             today_start,
             Some(today_end),
         )
         .await?;
-        let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx_pg(
+        let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
             &mut *tx,
             SECS_PER_MINUTE,
             yesterday_start,
@@ -311,15 +311,15 @@ impl KeyStore {
         let lifecycle_row = sqlx::query(
             r#"
             SELECT
-                COUNT(DISTINCT CASE WHEN created_at >= $1 AND created_at < $2 THEN key_id END) AS today_upstream_exhausted_key_count,
-                COUNT(DISTINCT CASE WHEN created_at >= $3 AND created_at < $4 THEN key_id END) AS yesterday_upstream_exhausted_key_count,
-                COUNT(DISTINCT CASE WHEN created_at >= $5 AND created_at < $6 THEN key_id END) AS month_upstream_exhausted_key_count
-            FROM core.api_key_maintenance_records
-            WHERE source = $7
-              AND operation_code = $8
-              AND reason_code = $9
-              AND created_at >= $10
-              AND created_at < $11
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS today_upstream_exhausted_key_count,
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS yesterday_upstream_exhausted_key_count,
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS month_upstream_exhausted_key_count
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND operation_code = ?
+              AND reason_code = ?
+              AND created_at >= ?
+              AND created_at < ?
             "#,
         )
         .bind(today_start)
@@ -341,13 +341,13 @@ impl KeyStore {
             SELECT
                 (
                     SELECT COALESCE(COUNT(*), 0)
-                    FROM core.api_keys
-                    WHERE created_at >= $1
+                    FROM api_keys
+                    WHERE created_at >= ?
                 ) AS month_new_keys,
                 (
                     SELECT COALESCE(COUNT(*), 0)
-                    FROM core.api_key_quarantines
-                    WHERE created_at >= $2
+                    FROM api_key_quarantines
+                    WHERE created_at >= ?
                 ) AS month_new_quarantines
             "#,
         )
@@ -397,14 +397,14 @@ impl KeyStore {
         &self,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
         tx.commit().await?;
         Ok(windows)
     }
 
     async fn fetch_dashboard_hourly_request_window_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
         current_bucket_start: i64,
         bucket_seconds: i64,
         visible_buckets: i64,
@@ -427,19 +427,19 @@ impl KeyStore {
         let rows = sqlx::query(
             r#"
             WITH RECURSIVE hour_series(bucket_start) AS (
-                SELECT $1::bigint AS bucket_start
+                SELECT ? AS bucket_start
                 UNION ALL
-                SELECT bucket_start + $2
+                SELECT bucket_start + ?
                 FROM hour_series
-                WHERE bucket_start + $3 < $4
+                WHERE bucket_start + ? < ?
             ),
             aggregated AS (
                 SELECT
-                    ((bucket_start - $5) / $6) * $7 + $8 AS hour_bucket_start,
-                    COALESCE(SUM(other_success_count), 0)::bigint AS secondary_success,
-                    COALESCE(SUM(valuable_success_count), 0)::bigint AS primary_success,
-                    COALESCE(SUM(other_failure_count), 0)::bigint AS secondary_failure,
-                    COALESCE(SUM(valuable_failure_429_count), 0)::bigint AS primary_failure_429,
+                    ((bucket_start - ?) / ?) * ? + ? AS hour_bucket_start,
+                    COALESCE(SUM(other_success_count), 0) AS secondary_success,
+                    COALESCE(SUM(valuable_success_count), 0) AS primary_success,
+                    COALESCE(SUM(other_failure_count), 0) AS secondary_failure,
+                    COALESCE(SUM(valuable_failure_429_count), 0) AS primary_failure_429,
                     COALESCE(
                         SUM(
                             CASE
@@ -449,17 +449,17 @@ impl KeyStore {
                             END
                         ),
                         0
-                    )::bigint AS primary_failure_other,
-                    COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count,
-                    COALESCE(SUM(mcp_non_billable), 0)::bigint AS mcp_non_billable,
-                    COALESCE(SUM(mcp_billable), 0)::bigint AS mcp_billable,
-                    COALESCE(SUM(api_non_billable), 0)::bigint AS api_non_billable,
-                    COALESCE(SUM(api_billable), 0)::bigint AS api_billable,
-                    COALESCE(SUM(local_estimated_credits), 0)::bigint AS local_estimated_credits
-                FROM observability.dashboard_request_rollup_buckets
-                WHERE bucket_secs = $9
-                  AND bucket_start >= $10
-                  AND bucket_start < $11
+                    ) AS primary_failure_other,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
+                    COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable,
+                    COALESCE(SUM(mcp_billable), 0) AS mcp_billable,
+                    COALESCE(SUM(api_non_billable), 0) AS api_non_billable,
+                    COALESCE(SUM(api_billable), 0) AS api_billable,
+                    COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_secs = ?
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
                 GROUP BY hour_bucket_start
             )
             SELECT
@@ -498,20 +498,20 @@ impl KeyStore {
             r#"
             WITH window_rows AS (
                 SELECT id, key_id, quota_remaining, captured_at
-                FROM core.api_key_quota_sync_samples
-                WHERE captured_at >= $1
-                  AND captured_at < $2
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
             ),
             sampled_keys AS (
                 SELECT DISTINCT key_id FROM window_rows
             ),
             baseline_rows AS (
                 SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
-                FROM core.api_key_quota_sync_samples s
+                FROM api_key_quota_sync_samples s
                 INNER JOIN (
                     SELECT key_id, MAX(captured_at) AS captured_at
-                    FROM core.api_key_quota_sync_samples
-                    WHERE captured_at < $3
+                    FROM api_key_quota_sync_samples
+                    WHERE captured_at < ?
                       AND key_id IN (SELECT key_id FROM sampled_keys)
                     GROUP BY key_id
                 ) latest
@@ -582,29 +582,29 @@ impl KeyStore {
 
         let gap_rows = sqlx::query(
             r#"
-            SELECT range_start, range_end FROM observability.dashboard_rollup_integrity_gaps
-            WHERE range_start < $1 AND range_end > $2
+            SELECT range_start, range_end FROM dashboard_rollup_integrity_gaps
+            WHERE range_start < ? AND range_end > ?
             UNION
-            SELECT range_start, range_end FROM observability.dashboard_rollup_integrity_work_items
-            WHERE status = 'pending' AND range_start < $3 AND range_end > $4
+            SELECT range_start, range_end FROM dashboard_rollup_integrity_work_items
+            WHERE status = 'pending' AND range_start < ? AND range_end > ?
             UNION
             SELECT hot_cursor AS range_start, hot_fence AS range_end
-            FROM observability.dashboard_rollup_integrity_state
-            WHERE hot_cursor < hot_fence AND hot_cursor < $5 AND hot_fence > $6
+            FROM dashboard_rollup_integrity_state
+            WHERE hot_cursor < hot_fence AND hot_cursor < ? AND hot_fence > ?
             UNION
             SELECT MIN(log.created_at) AS range_start, state.history_cursor AS range_end
-            FROM observability.dashboard_rollup_integrity_state AS state
-            JOIN observability.request_logs AS log
-                ON log.visibility = $7 AND log.created_at < state.history_cursor
-            WHERE state.history_cursor > $8 AND log.created_at < $9
+            FROM dashboard_rollup_integrity_state AS state
+            JOIN request_logs AS log
+                ON log.visibility = ? AND log.created_at < state.history_cursor
+            WHERE state.history_cursor > ? AND log.created_at < ?
             UNION
             SELECT bucket_start AS range_start, bucket_end AS range_end
-            FROM observability.dashboard_rollup_integrity_day_reaudits
-            WHERE status = 'pending' AND bucket_start < $10 AND bucket_end > $11
+            FROM dashboard_rollup_integrity_day_reaudits
+            WHERE status = 'pending' AND bucket_start < ? AND bucket_end > ?
             UNION
-            SELECT $12::bigint AS range_start, $13::bigint AS range_end
+            SELECT ? AS range_start, ? AS range_end
             WHERE NOT EXISTS (
-                SELECT 1 FROM observability.dashboard_rollup_integrity_state WHERE id = 1
+                SELECT 1 FROM dashboard_rollup_integrity_state WHERE id = 1
             )
             ORDER BY range_start ASC
             "#,
@@ -651,7 +651,7 @@ impl KeyStore {
         visible_buckets: i64,
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let window = Self::fetch_dashboard_hourly_request_window_tx(
             &mut tx,
             current_bucket_start,
@@ -684,7 +684,7 @@ impl KeyStore {
     > {
         let pending_dashboard_rollup_signature =
             self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         let summary_windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
         #[cfg(debug_assertions)]
         self.wait_for_dashboard_overview_read_pause_if_installed().await;
@@ -735,11 +735,11 @@ impl KeyStore {
         let row = sqlx::query(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN created_at >= $1 AND result_status = $2 THEN 1 ELSE 0 END), 0)::bigint AS monthly_success,
-              COALESCE(SUM(CASE WHEN created_at >= $3 AND created_at < $4 AND result_status = $5 THEN 1 ELSE 0 END), 0)::bigint AS daily_success
+              COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS monthly_success,
+              COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS daily_success
             FROM observability.request_logs
-            WHERE visibility = $6
-              AND created_at >= $7
+            WHERE visibility = ?
+              AND created_at >= ?
             "#,
         )
         .bind(month_since)
@@ -749,7 +749,7 @@ impl KeyStore {
         .bind(OUTCOME_SUCCESS)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(scan_floor)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
 
         Ok(SuccessBreakdown {

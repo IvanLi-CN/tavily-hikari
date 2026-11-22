@@ -1,15 +1,10 @@
 impl KeyStore {
-    fn push_admin_mcp_session_binding_filters<DB>(
-        builder: &mut QueryBuilder<'_, DB>,
+    fn push_admin_mcp_session_binding_filters(
+        builder: &mut QueryBuilder<'_, Sqlite>,
         query: &AdminMcpSessionBindingsQuery,
         now: i64,
         active_only: bool,
-    ) where
-        DB: sqlx::Database,
-        for<'a> &'a str: sqlx::Encode<'a, DB> + sqlx::Type<DB>,
-        for<'a> i64: sqlx::Encode<'a, DB>,
-        i64: sqlx::Type<DB>,
-    {
+    ) {
         builder.push("gateway_mode = ");
         builder.push_bind(MCP_GATEWAY_MODE_UPSTREAM);
 
@@ -56,113 +51,6 @@ impl KeyStore {
         &self,
         query: &AdminMcpSessionBindingsQuery,
     ) -> Result<AdminMcpSessionBindingsPage, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let _permit = self
-                    .admin_heavy_read_semaphore
-                    .acquire()
-                    .await
-                    .expect("admin heavy read semaphore is never closed");
-                let now = self.backend_time.now_ts();
-                let page = query.page.max(1);
-                let per_page = query.per_page.clamp(1, 100);
-                let offset = (page - 1) * per_page;
-
-                let mut total_builder = QueryBuilder::<sqlx::Postgres>::new(
-                    "SELECT COUNT(*) FROM core.mcp_sessions WHERE ",
-                );
-                Self::push_admin_mcp_session_binding_filters(&mut total_builder, query, now, false);
-                let total = total_builder
-                    .build_query_scalar::<i64>()
-                    .fetch_one(pool)
-                    .await?;
-
-                let mut active_matching_builder = QueryBuilder::<sqlx::Postgres>::new(
-                    "SELECT COUNT(*) FROM core.mcp_sessions WHERE ",
-                );
-                Self::push_admin_mcp_session_binding_filters(
-                    &mut active_matching_builder,
-                    query,
-                    now,
-                    true,
-                );
-                let active_matching_count = active_matching_builder
-                    .build_query_scalar::<i64>()
-                    .fetch_one(pool)
-                    .await?;
-
-                let mut rows_builder = QueryBuilder::<sqlx::Postgres>::new(
-                    "SELECT proxy_session_id, auth_token_id, user_id, upstream_key_id, \
-                 created_at, updated_at, expires_at, revoked_at, revoke_reason \
-                 FROM core.mcp_sessions WHERE ",
-                );
-                Self::push_admin_mcp_session_binding_filters(&mut rows_builder, query, now, false);
-                rows_builder.push(" ORDER BY updated_at DESC, proxy_session_id DESC LIMIT ");
-                rows_builder.push_bind(per_page);
-                rows_builder.push(" OFFSET ");
-                rows_builder.push_bind(offset);
-                let rows = rows_builder
-                    .build_query_as::<(
-                        String,
-                        Option<String>,
-                        Option<String>,
-                        Option<String>,
-                        i64,
-                        i64,
-                        i64,
-                        Option<i64>,
-                        Option<String>,
-                    )>()
-                    .fetch_all(pool)
-                    .await?;
-
-                Ok(AdminMcpSessionBindingsPage {
-                    items: rows
-                        .into_iter()
-                        .map(
-                            |(
-                                proxy_session_id,
-                                auth_token_id,
-                                user_id,
-                                upstream_key_id,
-                                created_at,
-                                updated_at,
-                                expires_at,
-                                revoked_at,
-                                revoke_reason,
-                            )| {
-                                let status = if revoked_at.is_some() {
-                                    "revoked"
-                                } else if expires_at > now {
-                                    "active"
-                                } else {
-                                    "expired"
-                                };
-                                AdminMcpSessionBindingListItem {
-                                    proxy_session_id,
-                                    auth_token_id,
-                                    user_id,
-                                    upstream_key_id,
-                                    created_at,
-                                    updated_at,
-                                    expires_at,
-                                    status: status.to_string(),
-                                    revoked_at,
-                                    revoke_reason,
-                                }
-                            },
-                        )
-                        .collect(),
-                    total,
-                    page,
-                    per_page,
-                    active_matching_count,
-                })
-            }
-            .await;
-        }
-
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -268,46 +156,14 @@ impl KeyStore {
         proxy_session_ids: &[String],
         reason: &str,
     ) -> Result<i64, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                if proxy_session_ids.is_empty() {
-                    return Ok(0);
-                }
-
-                let now = self.backend_time.now_ts();
-                let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-                    "UPDATE core.mcp_sessions SET revoked_at = ",
-                );
-                builder.push_bind(now);
-                builder.push(", revoke_reason = ");
-                builder.push_bind(reason);
-                builder.push(", updated_at = ");
-                builder.push_bind(now);
-                builder.push(" WHERE gateway_mode = ");
-                builder.push_bind(MCP_GATEWAY_MODE_UPSTREAM);
-                builder.push(" AND revoked_at IS NULL AND expires_at > ");
-                builder.push_bind(now);
-                builder.push(" AND proxy_session_id IN (");
-                {
-                    let mut separated = builder.separated(", ");
-                    for proxy_session_id in proxy_session_ids {
-                        separated.push_bind(proxy_session_id);
-                    }
-                }
-                builder.push(")");
-
-                Ok(builder.build().execute(pool).await?.rows_affected() as i64)
-            }
-            .await;
-        }
-
         if proxy_session_ids.is_empty() {
             return Ok(0);
         }
 
         let now = self.backend_time.now_ts();
-        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE mcp_sessions SET revoked_at = ");
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "UPDATE mcp_sessions SET revoked_at = ",
+        );
         builder.push_bind(now);
         builder.push(", revoke_reason = ");
         builder.push_bind(reason);
@@ -334,27 +190,10 @@ impl KeyStore {
         query: &AdminMcpSessionBindingsQuery,
         reason: &str,
     ) -> Result<i64, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-                    "UPDATE core.mcp_sessions SET revoked_at = ",
-                );
-                builder.push_bind(now);
-                builder.push(", revoke_reason = ");
-                builder.push_bind(reason);
-                builder.push(", updated_at = ");
-                builder.push_bind(now);
-                builder.push(" WHERE ");
-                Self::push_admin_mcp_session_binding_filters(&mut builder, query, now, true);
-                Ok(builder.build().execute(pool).await?.rows_affected() as i64)
-            }
-            .await;
-        }
-
         let now = self.backend_time.now_ts();
-        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE mcp_sessions SET revoked_at = ");
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "UPDATE mcp_sessions SET revoked_at = ",
+        );
         builder.push_bind(now);
         builder.push(", revoke_reason = ");
         builder.push_bind(reason);

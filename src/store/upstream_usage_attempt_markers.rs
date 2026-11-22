@@ -3,9 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex as MarkerMutex, OnceLock as MarkerOnceLock};
 
-static ABANDONED_UPSTREAM_USAGE_ATTEMPTS: MarkerOnceLock<
-    MarkerMutex<MarkerHashSet<(String, String)>>,
-> = MarkerOnceLock::new();
+static ABANDONED_UPSTREAM_USAGE_ATTEMPTS: MarkerOnceLock<MarkerMutex<MarkerHashSet<(String, String)>>> =
+    MarkerOnceLock::new();
 
 fn abandoned_upstream_usage_marker_path(database_path: &str) -> PathBuf {
     PathBuf::from(format!("{database_path}.abandoned-upstream-usage"))

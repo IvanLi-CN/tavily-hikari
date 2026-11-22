@@ -10,28 +10,6 @@ impl KeyStore {
         &self,
         scope: &AdminPasskeyScope,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                sqlx::query(
-                    r#"INSERT INTO core.admin_passkey_scopes
-                   (scope_id, node_id, rp_id, rp_origin, created_at, last_seen_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)
-                   ON CONFLICT (scope_id) DO UPDATE SET last_seen_at = excluded.last_seen_at"#,
-                )
-                .bind(&scope.id)
-                .bind(&scope.node_id)
-                .bind(&scope.rp_id)
-                .bind(&scope.rp_origin)
-                .bind(now)
-                .bind(now)
-                .execute(pool)
-                .await?;
-                Ok(())
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"INSERT INTO admin_passkey_scopes
@@ -54,30 +32,6 @@ impl KeyStore {
         &self,
         scope: &AdminPasskeyScope,
     ) -> Result<AdminPasskeyScopeStatus, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let inactive_credential_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE scope_id != $1 AND scope_id != $2 AND revoked_at IS NULL",
-            )
-            .bind(&scope.id)
-            .bind(LEGACY_ADMIN_PASSKEY_SCOPE_ID)
-            .fetch_one(pool)
-            .await?;
-            let legacy_credential_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE scope_id = $1 AND revoked_at IS NULL",
-            )
-            .bind(LEGACY_ADMIN_PASSKEY_SCOPE_ID)
-            .fetch_one(pool)
-            .await?;
-            Ok(AdminPasskeyScopeStatus {
-                inactive_credential_count,
-                legacy_credential_count,
-            })
-            }
-            .await;
-        }
         let inactive_credential_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM admin_passkey_credentials WHERE scope_id != ? AND scope_id != ? AND revoked_at IS NULL",
         )
@@ -100,31 +54,6 @@ impl KeyStore {
     pub async fn get_admin_password_settings(
         &self,
     ) -> Result<Option<AdminPasswordSettingsRecord>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let row = sqlx::query_as::<_, (Option<String>, Option<i64>, i64, i64)>(
-                    r#"SELECT password_hash, disabled_at, updated_at, login_totp_required
-                   FROM core.admin_password_settings
-                   WHERE id = 1
-                   LIMIT 1"#,
-                )
-                .fetch_optional(pool)
-                .await?;
-
-                Ok(row.map(
-                    |(password_hash, disabled_at, updated_at, login_totp_required)| {
-                        AdminPasswordSettingsRecord {
-                            password_hash,
-                            disabled_at,
-                            updated_at,
-                            login_totp_required: login_totp_required != 0,
-                        }
-                    },
-                ))
-            }
-            .await;
-        }
         let row = sqlx::query_as::<_, (Option<String>, Option<i64>, i64, i64)>(
             r#"SELECT password_hash, disabled_at, updated_at, login_totp_required
                FROM admin_password_settings
@@ -135,13 +64,11 @@ impl KeyStore {
         .await?;
 
         Ok(row.map(
-            |(password_hash, disabled_at, updated_at, login_totp_required)| {
-                AdminPasswordSettingsRecord {
-                    password_hash,
-                    disabled_at,
-                    updated_at,
-                    login_totp_required: login_totp_required != 0,
-                }
+            |(password_hash, disabled_at, updated_at, login_totp_required)| AdminPasswordSettingsRecord {
+                password_hash,
+                disabled_at,
+                updated_at,
+                login_totp_required: login_totp_required != 0,
             },
         ))
     }
@@ -150,37 +77,6 @@ impl KeyStore {
         &self,
         password_hash: &str,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            sqlx::query(
-                r#"INSERT INTO core.admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
-                   VALUES (1, $1, NULL, $2, 0)
-                   ON CONFLICT (id) DO UPDATE SET
-                       password_hash = excluded.password_hash,
-                       disabled_at = NULL,
-                       updated_at = excluded.updated_at"#,
-            )
-            .bind(password_hash)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            let login_totp_required = self
-                .get_admin_password_settings()
-                .await?
-                .map(|settings| settings.login_totp_required)
-                .unwrap_or(false);
-            Ok(AdminPasswordSettingsRecord {
-                password_hash: Some(password_hash.to_string()),
-                disabled_at: None,
-                updated_at: now,
-                login_totp_required,
-            })
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"INSERT INTO admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
@@ -351,24 +247,7 @@ impl KeyStore {
         }
     }
 
-    pub async fn admin_passkey_enabled(
-        &self,
-        scope: &AdminPasskeyScope,
-    ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE scope_id = $1 AND revoked_at IS NULL",
-            )
-            .bind(&scope.id)
-            .fetch_one(pool)
-            .await?;
-            Ok(count > 0)
-            }
-            .await;
-        }
+    pub async fn admin_passkey_enabled(&self, scope: &AdminPasskeyScope) -> Result<bool, ProxyError> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM admin_passkey_credentials WHERE scope_id = ? AND revoked_at IS NULL",
         )
@@ -383,54 +262,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         ttl_secs: i64,
     ) -> Result<AdminPasskeyResetTokenRecord, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            let now = self.backend_time.now_ts();
-            let expires_at = now + ttl_secs.max(60);
-
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_reset_tokens WHERE scope_id = $1 AND (expires_at < $2 OR consumed_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-
-            loop {
-                let token = random_string(ALPHABET, 48);
-                let token_hash = admin_passkey_reset_token_hash(&token);
-                let res = sqlx::query(
-                    r#"INSERT INTO core.admin_passkey_reset_tokens
-                       (token_hash, scope_id, created_at, expires_at, consumed_at)
-                       VALUES ($1, $2, $3, $4, NULL)"#,
-                )
-                .bind(&token_hash)
-                .bind(&scope.id)
-                .bind(now)
-                .bind(expires_at)
-                .execute(pool)
-                .await;
-
-                match res {
-                    Ok(_) => {
-                        return Ok(AdminPasskeyResetTokenRecord {
-                            token: Some(token),
-                            token_hash,
-                            created_at: now,
-                            expires_at,
-                            consumed_at: None,
-                        });
-                    }
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
-                    Err(err) => return Err(ProxyError::Database(err)),
-                }
-            }
-            }
-            .await;
-        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let now = self.backend_time.now_ts();
         let expires_at = now + ttl_secs.max(60);
@@ -479,36 +310,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         token: &str,
     ) -> Result<Option<AdminPasskeyResetTokenRecord>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            let token_hash = admin_passkey_reset_token_hash(token);
-            let row = sqlx::query_as::<_, (String, i64, i64, Option<i64>)>(
-                r#"SELECT token_hash, created_at, expires_at, consumed_at
-                   FROM core.admin_passkey_reset_tokens
-                   WHERE token_hash = $1 AND scope_id = $2 AND consumed_at IS NULL AND expires_at >= $3
-                   LIMIT 1"#,
-            )
-            .bind(&token_hash)
-            .bind(&scope.id)
-            .bind(now)
-            .fetch_optional(pool)
-            .await?;
-
-            Ok(row.map(|(token_hash, created_at, expires_at, consumed_at)| {
-                AdminPasskeyResetTokenRecord {
-                    token: None,
-                    token_hash,
-                    created_at,
-                    expires_at,
-                    consumed_at,
-                }
-            }))
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let token_hash = admin_passkey_reset_token_hash(token);
         let row = sqlx::query_as::<_, (String, i64, i64, Option<i64>)>(
@@ -523,17 +324,15 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(
-            row.map(|(token_hash, created_at, expires_at, consumed_at)| {
-                AdminPasskeyResetTokenRecord {
-                    token: None,
-                    token_hash,
-                    created_at,
-                    expires_at,
-                    consumed_at,
-                }
-            }),
-        )
+        Ok(row.map(|(token_hash, created_at, expires_at, consumed_at)| {
+            AdminPasskeyResetTokenRecord {
+                token: None,
+                token_hash,
+                created_at,
+                expires_at,
+                consumed_at,
+            }
+        }))
     }
 
     pub async fn consume_admin_passkey_reset_token_hash(
@@ -541,34 +340,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         token_hash: &str,
     ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_reset_tokens WHERE scope_id = $1 AND (expires_at < $2 OR consumed_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-
-            let updated = sqlx::query(
-                r#"UPDATE core.admin_passkey_reset_tokens
-                   SET consumed_at = $1
-                   WHERE token_hash = $2 AND scope_id = $3 AND consumed_at IS NULL AND expires_at >= $4"#,
-            )
-            .bind(now)
-            .bind(token_hash)
-            .bind(&scope.id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            Ok(updated.rows_affected() > 0)
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             "DELETE FROM admin_passkey_reset_tokens WHERE scope_id = ? AND (expires_at < ? OR consumed_at IS NOT NULL)",
@@ -601,88 +372,6 @@ impl KeyStore {
         label: Option<&str>,
         revoke_credential_ids: &[String],
     ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            let mut tx = pool.begin().await?;
-
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_reset_tokens WHERE scope_id = $1 AND (expires_at < $2 OR consumed_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-
-            let consumed = sqlx::query(
-                r#"UPDATE core.admin_passkey_reset_tokens
-                   SET consumed_at = $1
-                   WHERE token_hash = $2 AND scope_id = $3 AND consumed_at IS NULL AND expires_at >= $4"#,
-            )
-            .bind(now)
-            .bind(token_hash)
-            .bind(&scope.id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-            if consumed.rows_affected() == 0 {
-                tx.rollback().await.ok();
-                return Ok(false);
-            }
-
-            sqlx::query(
-                r#"INSERT INTO core.admin_passkey_credentials
-                   (credential_id, scope_id, passkey_json, label, created_at, updated_at, last_used_at, revoked_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
-                   ON CONFLICT (scope_id, credential_id) DO UPDATE SET
-                       passkey_json = excluded.passkey_json,
-                       label = excluded.label,
-                       updated_at = excluded.updated_at,
-                       revoked_at = NULL"#,
-            )
-            .bind(credential_id)
-            .bind(&scope.id)
-            .bind(passkey_json)
-            .bind(label.map(str::trim).filter(|value| !value.is_empty()))
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-
-            for old_credential_id in revoke_credential_ids {
-                if old_credential_id == credential_id {
-                    continue;
-                }
-                sqlx::query(
-                    r#"UPDATE core.admin_passkey_credentials
-                       SET revoked_at = $1, updated_at = $2
-                       WHERE credential_id = $3 AND scope_id = $4 AND revoked_at IS NULL"#,
-                )
-                .bind(now)
-                .bind(now)
-                .bind(old_credential_id)
-                .bind(&scope.id)
-                .execute(&mut *tx)
-                .await?;
-                sqlx::query(
-                    r#"UPDATE core.admin_passkey_sessions
-                       SET revoked_at = $1
-                       WHERE credential_id = $2 AND scope_id = $3 AND revoked_at IS NULL"#,
-                )
-                .bind(now)
-                .bind(old_credential_id)
-                .bind(&scope.id)
-                .execute(&mut *tx)
-                .await?;
-            }
-
-            tx.commit().await?;
-            Ok(true)
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
@@ -764,56 +453,6 @@ impl KeyStore {
         &self,
         scope: &AdminPasskeyScope,
     ) -> Result<Vec<AdminPasskeyCredentialRecord>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let rows = sqlx::query_as::<
-                _,
-                (
-                    String,
-                    String,
-                    Option<String>,
-                    i64,
-                    i64,
-                    Option<i64>,
-                    Option<i64>,
-                ),
-            >(
-                r#"SELECT credential_id, passkey_json, label, created_at, updated_at, last_used_at, revoked_at
-                   FROM core.admin_passkey_credentials
-                   WHERE scope_id = $1 AND revoked_at IS NULL
-                   ORDER BY created_at ASC"#,
-            )
-            .bind(&scope.id)
-            .fetch_all(pool)
-            .await?;
-
-            Ok(rows
-                .into_iter()
-                .map(
-                    |(
-                        credential_id,
-                        passkey_json,
-                        label,
-                        created_at,
-                        updated_at,
-                        last_used_at,
-                        revoked_at,
-                    )| AdminPasskeyCredentialRecord {
-                        credential_id,
-                        passkey_json,
-                        label,
-                        created_at,
-                        updated_at,
-                        last_used_at,
-                        revoked_at,
-                    },
-                )
-                .collect())
-            }
-            .await;
-        }
         let rows = sqlx::query_as::<
             _,
             (
@@ -866,33 +505,6 @@ impl KeyStore {
         passkey_json: &str,
         label: Option<&str>,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            sqlx::query(
-                r#"INSERT INTO core.admin_passkey_credentials
-                   (credential_id, scope_id, passkey_json, label, created_at, updated_at, last_used_at, revoked_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
-                   ON CONFLICT (scope_id, credential_id) DO UPDATE SET
-                       passkey_json = excluded.passkey_json,
-                       label = excluded.label,
-                       updated_at = excluded.updated_at,
-                       revoked_at = NULL"#,
-            )
-            .bind(credential_id)
-            .bind(&scope.id)
-            .bind(passkey_json)
-            .bind(label.map(str::trim).filter(|value| !value.is_empty()))
-            .bind(now)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            Ok(())
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"INSERT INTO admin_passkey_credentials
@@ -921,26 +533,6 @@ impl KeyStore {
         credential_id: &str,
         passkey_json: &str,
     ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let updated = sqlx::query(
-                    r#"UPDATE core.admin_passkey_credentials
-                   SET passkey_json = $1, updated_at = $2, last_used_at = $3
-                   WHERE credential_id = $4 AND scope_id = $5 AND revoked_at IS NULL"#,
-                )
-                .bind(passkey_json)
-                .bind(now)
-                .bind(now)
-                .bind(credential_id)
-                .bind(&scope.id)
-                .execute(pool)
-                .await?;
-                Ok(updated.rows_affected() > 0)
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let updated = sqlx::query(
             r#"UPDATE admin_passkey_credentials
@@ -963,25 +555,6 @@ impl KeyStore {
         credential_id: &str,
         label: Option<&str>,
     ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let updated = sqlx::query(
-                    r#"UPDATE core.admin_passkey_credentials
-                   SET label = $1, updated_at = $2
-                   WHERE credential_id = $3 AND scope_id = $4 AND revoked_at IS NULL"#,
-                )
-                .bind(label.map(str::trim).filter(|value| !value.is_empty()))
-                .bind(now)
-                .bind(credential_id)
-                .bind(&scope.id)
-                .execute(pool)
-                .await?;
-                Ok(updated.rows_affected() > 0)
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let updated = sqlx::query(
             r#"UPDATE admin_passkey_credentials
@@ -1090,58 +663,6 @@ impl KeyStore {
         state_json: &str,
         ttl_secs: i64,
     ) -> Result<AdminPasskeyChallengeRecord, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            let now = self.backend_time.now_ts();
-            let expires_at = now + ttl_secs.max(60);
-
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_challenges WHERE scope_id = $1 AND (expires_at < $2 OR consumed_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-
-            loop {
-                let id = random_string(ALPHABET, 32);
-                let res = sqlx::query(
-                    r#"INSERT INTO core.admin_passkey_challenges
-                       (id, scope_id, kind, reset_token, state_json, created_at, expires_at, consumed_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)"#,
-                )
-                .bind(&id)
-                .bind(&scope.id)
-                .bind(kind.as_str())
-                .bind(reset_token)
-                .bind(state_json)
-                .bind(now)
-                .bind(expires_at)
-                .execute(pool)
-                .await;
-
-                match res {
-                    Ok(_) => {
-                        return Ok(AdminPasskeyChallengeRecord {
-                            id,
-                            kind,
-                            reset_token: reset_token.map(str::to_string),
-                            state_json: state_json.to_string(),
-                            created_at: now,
-                            expires_at,
-                            consumed_at: None,
-                        });
-                    }
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
-                    Err(err) => return Err(ProxyError::Database(err)),
-                }
-            }
-            }
-            .await;
-        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let now = self.backend_time.now_ts();
         let expires_at = now + ttl_secs.max(60);
@@ -1195,73 +716,6 @@ impl KeyStore {
         id: &str,
         kind: AdminPasskeyChallengeKind,
     ) -> Result<Option<AdminPasskeyChallengeRecord>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            let mut tx = pool.begin().await?;
-
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_challenges WHERE scope_id = $1 AND (expires_at < $2 OR consumed_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-
-            let row = sqlx::query_as::<
-                _,
-                (String, String, Option<String>, String, i64, i64, Option<i64>),
-            >(
-                r#"SELECT id, kind, reset_token, state_json, created_at, expires_at, consumed_at
-                   FROM core.admin_passkey_challenges
-                   WHERE id = $1 AND scope_id = $2 AND kind = $3 AND consumed_at IS NULL AND expires_at >= $4
-                   LIMIT 1"#,
-            )
-            .bind(id)
-            .bind(&scope.id)
-            .bind(kind.as_str())
-            .bind(now)
-            .fetch_optional(&mut *tx)
-            .await?;
-
-            let Some((id, kind_raw, reset_token, state_json, created_at, expires_at, consumed_at)) =
-                row
-            else {
-                tx.rollback().await.ok();
-                return Ok(None);
-            };
-
-            let updated = sqlx::query(
-                r#"UPDATE core.admin_passkey_challenges
-                   SET consumed_at = $1
-                   WHERE id = $2 AND scope_id = $3 AND consumed_at IS NULL"#,
-            )
-            .bind(now)
-            .bind(&id)
-            .bind(&scope.id)
-            .execute(&mut *tx)
-            .await?;
-
-            if updated.rows_affected() == 0 {
-                tx.rollback().await.ok();
-                return Ok(None);
-            }
-
-            tx.commit().await?;
-            Ok(Some(AdminPasskeyChallengeRecord {
-                id,
-                kind: AdminPasskeyChallengeKind::parse(&kind_raw).unwrap_or(kind),
-                reset_token,
-                state_json,
-                created_at,
-                expires_at,
-                consumed_at,
-            }))
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
@@ -1330,54 +784,6 @@ impl KeyStore {
         credential_id: Option<&str>,
         ttl_secs: i64,
     ) -> Result<AdminPasskeySessionRecord, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            let now = self.backend_time.now_ts();
-            let expires_at = now + ttl_secs.max(60);
-
-            sqlx::query(
-                "DELETE FROM core.admin_passkey_sessions WHERE scope_id = $1 AND (expires_at < $2 OR revoked_at IS NOT NULL)",
-            )
-            .bind(&scope.id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-
-            loop {
-                let token = random_string(ALPHABET, 48);
-                let res = sqlx::query(
-                    r#"INSERT INTO core.admin_passkey_sessions
-                       (token, scope_id, credential_id, created_at, expires_at, revoked_at)
-                       VALUES ($1, $2, $3, $4, $5, NULL)"#,
-                )
-                .bind(&token)
-                .bind(&scope.id)
-                .bind(credential_id)
-                .bind(now)
-                .bind(expires_at)
-                .execute(pool)
-                .await;
-
-                match res {
-                    Ok(_) => {
-                        return Ok(AdminPasskeySessionRecord {
-                            token,
-                            credential_id: credential_id.map(str::to_string),
-                            created_at: now,
-                            expires_at,
-                            revoked_at: None,
-                        });
-                    }
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
-                    Err(err) => return Err(ProxyError::Database(err)),
-                }
-            }
-            }
-            .await;
-        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let now = self.backend_time.now_ts();
         let expires_at = now + ttl_secs.max(60);
@@ -1426,45 +832,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         token: &str,
     ) -> Result<Option<AdminPasskeySessionRecord>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let mut connection = pool.acquire().await?;
-                let row_result =
-                    sqlx::query_as::<_, (String, Option<String>, i64, i64, Option<i64>)>(
-                        r#"SELECT s.token, s.credential_id, s.created_at, s.expires_at, s.revoked_at
-                   FROM core.admin_passkey_sessions s
-                   LEFT JOIN core.admin_passkey_credentials c
-                     ON s.credential_id = c.credential_id AND c.scope_id = s.scope_id
-                   WHERE s.token = $1
-                     AND s.scope_id = $2
-                     AND s.revoked_at IS NULL
-                     AND s.expires_at >= $3
-                     AND (s.credential_id IS NULL OR c.revoked_at IS NULL)
-                   LIMIT 1"#,
-                    )
-                    .bind(token)
-                    .bind(&scope.id)
-                    .bind(now)
-                    .fetch_optional(&mut *connection)
-                    .await;
-                let row = row_result?;
-
-                Ok(row.map(
-                    |(token, credential_id, created_at, expires_at, revoked_at)| {
-                        AdminPasskeySessionRecord {
-                            token,
-                            credential_id,
-                            created_at,
-                            expires_at,
-                            revoked_at,
-                        }
-                    },
-                ))
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         let mut connection = self
             .sqlite_runtime
@@ -1508,8 +875,7 @@ impl KeyStore {
         ready: tokio::sync::oneshot::Sender<()>,
         release: std::sync::Arc<tokio::sync::Notify>,
     ) -> Result<(), ProxyError> {
-        let mut connections =
-            Vec::with_capacity(crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT as usize);
+        let mut connections = Vec::with_capacity(crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT as usize);
         for _ in 0..crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT {
             connections.push(self.pool.acquire().await?);
         }
@@ -1524,23 +890,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         token: &str,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            sqlx::query(
-                "UPDATE core.admin_passkey_sessions SET revoked_at = $1 WHERE token = $2 AND scope_id = $3 AND revoked_at IS NULL",
-            )
-            .bind(now)
-            .bind(token)
-            .bind(&scope.id)
-            .execute(pool)
-            .await?;
-            Ok(())
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             "UPDATE admin_passkey_sessions SET revoked_at = ? WHERE token = ? AND scope_id = ? AND revoked_at IS NULL",
@@ -1558,24 +907,6 @@ impl KeyStore {
         scope: &AdminPasskeyScope,
         credential_id: &str,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                sqlx::query(
-                    r#"UPDATE core.admin_passkey_sessions
-                   SET revoked_at = $1
-                   WHERE credential_id = $2 AND scope_id = $3 AND revoked_at IS NULL"#,
-                )
-                .bind(now)
-                .bind(credential_id)
-                .bind(&scope.id)
-                .execute(pool)
-                .await?;
-                Ok(())
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"UPDATE admin_passkey_sessions
@@ -1594,22 +925,6 @@ impl KeyStore {
         &self,
         scope: &AdminPasskeyScope,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            sqlx::query(
-                "UPDATE core.admin_passkey_sessions SET revoked_at = $1 WHERE scope_id = $2 AND revoked_at IS NULL",
-            )
-                .bind(now)
-                .bind(&scope.id)
-                .execute(pool)
-                .await?;
-            Ok(())
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             "UPDATE admin_passkey_sessions SET revoked_at = ? WHERE scope_id = ? AND revoked_at IS NULL",
@@ -1634,12 +949,8 @@ mod admin_passkey_store_tests {
     }
 
     fn test_scope() -> AdminPasskeyScope {
-        AdminPasskeyScope::new(
-            "node-test",
-            "admin.test.example",
-            "https://admin.test.example",
-        )
-        .expect("test passkey scope")
+        AdminPasskeyScope::new("node-test", "admin.test.example", "https://admin.test.example")
+            .expect("test passkey scope")
     }
 
     #[tokio::test]
@@ -1651,8 +962,7 @@ mod admin_passkey_store_tests {
             .expect("create store");
 
         let challenge = store
-            .insert_admin_passkey_challenge(
-                &test_scope(),
+            .insert_admin_passkey_challenge(&test_scope(),
                 AdminPasskeyChallengeKind::Registration,
                 Some("reset-token"),
                 r#"{"state":true}"#,
@@ -1663,8 +973,7 @@ mod admin_passkey_store_tests {
 
         assert!(
             store
-                .consume_admin_passkey_challenge(
-                    &test_scope(),
+                .consume_admin_passkey_challenge(&test_scope(),
                     &challenge.id,
                     AdminPasskeyChallengeKind::Authentication
                 )
@@ -1674,11 +983,7 @@ mod admin_passkey_store_tests {
         );
 
         let consumed = store
-            .consume_admin_passkey_challenge(
-                &test_scope(),
-                &challenge.id,
-                AdminPasskeyChallengeKind::Registration,
-            )
+            .consume_admin_passkey_challenge(&test_scope(), &challenge.id, AdminPasskeyChallengeKind::Registration)
             .await
             .expect("consume challenge")
             .expect("challenge exists");
@@ -1687,8 +992,7 @@ mod admin_passkey_store_tests {
 
         assert!(
             store
-                .consume_admin_passkey_challenge(
-                    &test_scope(),
+                .consume_admin_passkey_challenge(&test_scope(),
                     &challenge.id,
                     AdminPasskeyChallengeKind::Registration
                 )
@@ -1698,8 +1002,7 @@ mod admin_passkey_store_tests {
         );
 
         let expiring = store
-            .insert_admin_passkey_challenge(
-                &test_scope(),
+            .insert_admin_passkey_challenge(&test_scope(),
                 AdminPasskeyChallengeKind::Authentication,
                 None,
                 r#"{"state":"expired"}"#,
@@ -1711,8 +1014,7 @@ mod admin_passkey_store_tests {
 
         assert!(
             store
-                .consume_admin_passkey_challenge(
-                    &test_scope(),
+                .consume_admin_passkey_challenge(&test_scope(),
                     &expiring.id,
                     AdminPasskeyChallengeKind::Authentication
                 )
@@ -1781,10 +1083,9 @@ mod admin_passkey_store_tests {
     #[tokio::test]
     async fn cli_reset_token_helper_uses_store_without_proxy_startup() {
         let (_temp, db_path) = temp_db_path("cli-reset-token.db");
-        let reset =
-            crate::create_admin_passkey_reset_token_for_database(&db_path, &test_scope(), 120)
-                .await
-                .expect("create reset token");
+        let reset = crate::create_admin_passkey_reset_token_for_database(&db_path, &test_scope(), 120)
+            .await
+            .expect("create reset token");
         let token = reset.token.as_deref().expect("raw token returned once");
 
         let store = KeyStore::new_with_time(&db_path, BackendTime::system())
@@ -1808,12 +1109,7 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "old-credential",
-                r#"{"credential":"old"}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "old-credential", r#"{"credential":"old"}"#, None)
             .await
             .expect("insert old credential");
         let old_session = store
@@ -1833,8 +1129,7 @@ mod admin_passkey_store_tests {
 
         assert!(
             store
-                .complete_admin_passkey_reset_registration(
-                    &test_scope(),
+                .complete_admin_passkey_reset_registration(&test_scope(),
                     &active.token_hash,
                     "new-credential",
                     r#"{"credential":"new"}"#,
@@ -1854,8 +1149,7 @@ mod admin_passkey_store_tests {
         );
         assert!(
             !store
-                .complete_admin_passkey_reset_registration(
-                    &test_scope(),
+                .complete_admin_passkey_reset_registration(&test_scope(),
                     &active.token_hash,
                     "another-credential",
                     r#"{"credential":"another"}"#,
@@ -1907,21 +1201,11 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert credential");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-2",
-                r#"{"credential":2}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-2", r#"{"credential":2}"#, None)
             .await
             .expect("insert expiring credential");
 
@@ -1939,12 +1223,7 @@ mod admin_passkey_store_tests {
         );
         assert!(
             store
-                .revoke_admin_passkey_credential_preserving_login(
-                    &test_scope(),
-                    "credential-1",
-                    true,
-                    true
-                )
+                .revoke_admin_passkey_credential_preserving_login(&test_scope(), "credential-1", true, true)
                 .await
                 .expect("revoke credential")
         );
@@ -1956,12 +1235,7 @@ mod admin_passkey_store_tests {
                 .is_none()
         );
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("restore credential");
 
@@ -2034,21 +1308,11 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert first credential");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-2",
-                r#"{"credential":2}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-2", r#"{"credential":2}"#, None)
             .await
             .expect("insert second credential");
         let first = store
@@ -2088,12 +1352,7 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert credential");
 
@@ -2102,12 +1361,7 @@ mod admin_passkey_store_tests {
             .await
             .expect("passkey keeps admin login available");
         let err = store
-            .revoke_admin_passkey_credential_preserving_login(
-                &test_scope(),
-                "credential-1",
-                false,
-                true,
-            )
+            .revoke_admin_passkey_credential_preserving_login(&test_scope(), "credential-1", false, true)
             .await
             .expect_err("cannot revoke final passkey after password disable");
         assert!(matches!(err, ProxyError::LastAdminLoginMethod));
@@ -2120,12 +1374,7 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert stale passkey credential");
 
@@ -2148,22 +1397,12 @@ mod admin_passkey_store_tests {
             .await
             .expect("seed stale persisted password");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert credential");
 
         let err = store
-            .revoke_admin_passkey_credential_preserving_login(
-                &test_scope(),
-                "credential-1",
-                false,
-                false,
-            )
+            .revoke_admin_passkey_credential_preserving_login(&test_scope(), "credential-1", false, false)
             .await
             .expect_err("disabled runtime password cannot preserve login");
 
@@ -2182,42 +1421,22 @@ mod admin_passkey_store_tests {
             .await
             .expect("create store");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-1",
-                r#"{"credential":1}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-1", r#"{"credential":1}"#, None)
             .await
             .expect("insert first credential");
         store
-            .upsert_admin_passkey_credential(
-                &test_scope(),
-                "credential-2",
-                r#"{"credential":2}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&test_scope(), "credential-2", r#"{"credential":2}"#, None)
             .await
             .expect("insert second credential");
 
         assert!(
             store
-                .revoke_admin_passkey_credential_preserving_login(
-                    &test_scope(),
-                    "credential-1",
-                    false,
-                    false
-                )
+                .revoke_admin_passkey_credential_preserving_login(&test_scope(), "credential-1", false, false)
                 .await
                 .expect("first passkey revoke keeps second")
         );
         let err = store
-            .revoke_admin_passkey_credential_preserving_login(
-                &test_scope(),
-                "credential-2",
-                false,
-                false,
-            )
+            .revoke_admin_passkey_credential_preserving_login(&test_scope(), "credential-2", false, false)
             .await
             .expect_err("cannot revoke final passkey");
         assert!(matches!(err, ProxyError::LastAdminLoginMethod));
@@ -2233,30 +1452,14 @@ mod admin_passkey_store_tests {
             .expect("scope a");
         let scope_b = AdminPasskeyScope::new("node-b", "admin.example", "https://admin.example")
             .expect("scope b");
+        store.ensure_admin_passkey_scope(&scope_a).await.expect("store scope a");
+        store.ensure_admin_passkey_scope(&scope_b).await.expect("store scope b");
         store
-            .ensure_admin_passkey_scope(&scope_a)
-            .await
-            .expect("store scope a");
-        store
-            .ensure_admin_passkey_scope(&scope_b)
-            .await
-            .expect("store scope b");
-        store
-            .upsert_admin_passkey_credential(
-                &scope_a,
-                "credential-a",
-                r#"{"credential":"a"}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&scope_a, "credential-a", r#"{"credential":"a"}"#, None)
             .await
             .expect("insert scoped credential");
         store
-            .upsert_admin_passkey_credential(
-                &scope_b,
-                "credential-a",
-                r#"{"credential":"b"}"#,
-                None,
-            )
+            .upsert_admin_passkey_credential(&scope_b, "credential-a", r#"{"credential":"b"}"#, None)
             .await
             .expect("same credential id can be stored in another scope");
         sqlx::query(
@@ -2295,43 +1498,34 @@ mod admin_passkey_store_tests {
                 .passkey_json,
             r#"{"credential":"b"}"#
         );
-        assert!(
-            store
-                .get_active_admin_passkey_reset_token(
-                    &scope_b,
-                    reset.token.as_deref().expect("reset token"),
-                )
-                .await
-                .expect("read reset from scope b")
-                .is_none()
-        );
-        assert!(
-            store
-                .consume_admin_passkey_challenge(
-                    &scope_b,
-                    &challenge.id,
-                    AdminPasskeyChallengeKind::Authentication,
-                )
-                .await
-                .expect("consume challenge from scope b")
-                .is_none()
-        );
-        assert!(
-            store
-                .get_active_admin_passkey_session(&scope_b, &session.token)
-                .await
-                .expect("read session from scope b")
-                .is_none()
-        );
+        assert!(store
+            .get_active_admin_passkey_reset_token(
+                &scope_b,
+                reset.token.as_deref().expect("reset token"),
+            )
+            .await
+            .expect("read reset from scope b")
+            .is_none());
+        assert!(store
+            .consume_admin_passkey_challenge(
+                &scope_b,
+                &challenge.id,
+                AdminPasskeyChallengeKind::Authentication,
+            )
+            .await
+            .expect("consume challenge from scope b")
+            .is_none());
+        assert!(store
+            .get_active_admin_passkey_session(&scope_b, &session.token)
+            .await
+            .expect("read session from scope b")
+            .is_none());
 
-        assert_eq!(
-            store
-                .list_active_admin_passkey_credentials(&scope_a)
-                .await
-                .expect("restore scope a")
-                .len(),
-            1
-        );
+        assert_eq!(store
+            .list_active_admin_passkey_credentials(&scope_a)
+            .await
+            .expect("restore scope a")
+            .len(), 1);
         assert_eq!(
             store
                 .list_active_admin_passkey_credentials(&scope_a)
@@ -2340,10 +1534,7 @@ mod admin_passkey_store_tests {
                 .passkey_json,
             r#"{"credential":"a"}"#
         );
-        let status = store
-            .admin_passkey_scope_status(&scope_b)
-            .await
-            .expect("scope status");
+        let status = store.admin_passkey_scope_status(&scope_b).await.expect("scope status");
         assert_eq!(status.inactive_credential_count, 1);
         assert_eq!(status.legacy_credential_count, 1);
     }
@@ -2406,13 +1597,11 @@ mod admin_passkey_store_tests {
         .await
         .expect("read migrated scope");
         assert_eq!(scope_id, LEGACY_ADMIN_PASSKEY_SCOPE_ID);
-        assert!(
-            store
-                .list_active_admin_passkey_credentials(&scope)
-                .await
-                .expect("list current scope")
-                .is_empty()
-        );
+        assert!(store
+            .list_active_admin_passkey_credentials(&scope)
+            .await
+            .expect("list current scope")
+            .is_empty());
         let primary_key_columns: Vec<(String, i64)> = sqlx::query_as(
             "SELECT name, pk FROM pragma_table_info('admin_passkey_credentials') WHERE pk > 0 ORDER BY pk",
         )
@@ -2421,10 +1610,7 @@ mod admin_passkey_store_tests {
         .expect("read primary key columns");
         assert_eq!(
             primary_key_columns,
-            vec![
-                ("scope_id".to_string(), 1),
-                ("credential_id".to_string(), 2)
-            ]
+            vec![("scope_id".to_string(), 1), ("credential_id".to_string(), 2)]
         );
     }
 }

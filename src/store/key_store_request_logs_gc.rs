@@ -137,63 +137,36 @@ impl KeyStore {
         self.sqlite_runtime.maintenance_bulk_continue_reason()
     }
 
-    /// Serializes request-log GC batches for the whole transaction.
-    ///
-    /// PostgreSQL has no database-wide write lock, so this advisory lock replaces the
-    /// mutual exclusion that the SQLite immediate-write lock used to give the fence read,
-    /// the reference unlink, and the bounded delete. The key is derived from a fixed lane
-    /// name inside PostgreSQL (`hashtext`), so every process computes the same value.
-    async fn lock_request_log_gc_batch(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<(), ProxyError> {
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('tavily_hikari.request_logs_gc'))")
-            .execute(&mut **tx)
-            .await?;
-        Ok(())
-    }
-
-    /// Turns the batch deadline into the transaction's lock wait budget.
-    async fn set_gc_statement_budget(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        deadline: tokio::time::Instant,
-    ) -> Result<(), ProxyError> {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let millis = (remaining.as_millis() as i64).max(1);
-        sqlx::query("SELECT set_config('lock_timeout', $1, true)")
-            .bind(format!("{millis}ms"))
-            .execute(&mut **tx)
-            .await?;
-        Ok(())
-    }
-
-    /// Asserts the indexes the bounded GC pass depends on.
-    ///
-    /// PostgreSQL owns this schema: `src/store/pg/migrations/0001_baseline.sql` creates all
-    /// four indexes, so the startup path only checks their presence instead of issuing DDL.
     pub(crate) async fn ensure_request_logs_gc_support_indexes(&self) -> Result<(), ProxyError> {
-        let missing: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT required.rel
-            FROM unnest($1::text[]) AS required(rel)
-            WHERE to_regclass(required.rel) IS NULL
-            ORDER BY required.rel
-            LIMIT 1
-            "#,
-        )
-        .bind(vec![
-            "core.idx_token_logs_request_log_id",
-            "core.idx_api_key_maintenance_records_request_log",
-            "core.idx_api_key_transient_backoffs_source_request_log",
-            "observability.idx_request_logs_time",
-        ])
-        .fetch_optional(self.pg()?)
-        .await?;
-        match missing {
-            None => Ok(()),
-            Some(relation) => Err(ProxyError::Other(format!(
-                "postgresql baseline is missing {relation}; apply src/store/pg/migrations first"
-            ))),
+        for (table, sql) in [
+            (
+                "auth_token_logs",
+                r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
+                   ON auth_token_logs(request_log_id)"#,
+            ),
+            (
+                "api_key_maintenance_records",
+                r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_request_log
+                   ON api_key_maintenance_records(request_log_id)"#,
+            ),
+            (
+                "api_key_transient_backoffs",
+                r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_source_request_log
+                   ON api_key_transient_backoffs(source_request_log_id)"#,
+            ),
+            (
+                "request_logs",
+                r#"CREATE INDEX IF NOT EXISTS observability.idx_request_logs_time
+                   ON request_logs(created_at DESC, id DESC)"#,
+            ),
+        ] {
+            if !self.table_exists(table).await? {
+                continue;
+            }
+            sqlx::query(sql).execute(&self.pool).await?;
         }
+
+        Ok(())
     }
 
     async fn delete_old_request_logs_batch_fenced(
@@ -202,16 +175,18 @@ impl KeyStore {
         batch_size: i64,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<FencedRequestLogDelete, ProxyError> {
-        // SQLite relied on its immediate-write lock (a database-wide lock) to keep the
-        // fence check and the delete in one serialized critical section. In PostgreSQL
-        // this batch takes the request-log GC advisory lock for the whole transaction,
-        // so concurrent GC passes serialize, and the fence/version equality checks below
-        // still prove the day was sealed before any row is removed.
-        let mut tx = self.pg()?.begin().await?;
-        if let Some(deadline) = deadline {
-            Self::set_gc_statement_budget(&mut tx, deadline).await?;
-        }
-        Self::lock_request_log_gc_batch(&mut tx).await?;
+        let has_auth_token_logs = self.table_exists("auth_token_logs").await?;
+        let has_maintenance_records = self.table_exists("api_key_maintenance_records").await?;
+        let has_transient_backoffs = self.table_exists("api_key_transient_backoffs").await?;
+        let mut tx = if let Some(deadline) = deadline {
+            self.sqlite_runtime
+                .begin_immediate_before(SqliteOperation::RequestLogsGc, deadline.into_std())
+                .await?
+        } else {
+            self.sqlite_runtime
+                .begin_immediate(SqliteOperation::RequestLogsGc)
+                .await?
+        };
         let result = async {
             sqlx::query(
                 "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 1 WHERE id = 1",
@@ -219,7 +194,7 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
             let current_fence: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(MAX(id), 0) FROM observability.request_logs WHERE visibility = $1 AND created_at >= $2 AND created_at < $3",
+                "SELECT COALESCE(MAX(id), 0) FROM observability.request_logs WHERE visibility = ? AND created_at >= ? AND created_at < ?",
             )
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(guard.day_start)
@@ -227,7 +202,7 @@ impl KeyStore {
             .fetch_one(&mut *tx)
             .await?;
             let current_durable_source_version: i64 = sqlx::query_scalar(
-                "SELECT COALESCE(SUM(revision), 0)::bigint FROM observability.dashboard_rollup_source_revisions WHERE bucket_start >= $1 AND bucket_start < $2",
+                "SELECT COALESCE(SUM(revision), 0) FROM observability.dashboard_rollup_source_revisions WHERE bucket_start >= ? AND bucket_start < ?",
             )
             .bind(guard.day_start)
             .bind(guard.day_end)
@@ -258,9 +233,9 @@ impl KeyStore {
                 SELECT created_at, visibility, result_status, failure_kind, request_kind_key,
                        request_body, path, business_credits, counts_business_quota
                 FROM observability.request_logs
-                WHERE created_at >= $1 AND created_at < $2
+                WHERE created_at >= ? AND created_at < ?
                 ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC
-                LIMIT $3
+                LIMIT ?
                 "#,
             )
             .bind(guard.day_start)
@@ -313,7 +288,7 @@ impl KeyStore {
             }
             for (bucket_start, counts) in deleted_source_counts {
                 let existing_json: Option<String> = sqlx::query_scalar(
-                    "SELECT counts_json FROM observability.dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start = $1",
+                    "SELECT counts_json FROM observability.dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start = ?",
                 )
                 .bind(bucket_start)
                 .fetch_optional(&mut *tx)
@@ -334,7 +309,7 @@ impl KeyStore {
                     r#"
                     INSERT INTO observability.dashboard_rollup_gc_deleted_source_contributions (
                         bucket_start, counts_json, updated_at
-                    ) VALUES ($1, $2, $3)
+                    ) VALUES (?, ?, ?)
                     ON CONFLICT(bucket_start) DO UPDATE SET
                         counts_json = excluded.counts_json,
                         updated_at = excluded.updated_at
@@ -346,41 +321,52 @@ impl KeyStore {
                 .execute(&mut *tx)
                 .await?;
             }
-            for sql in [
-                r#"
-                    UPDATE core.auth_token_logs
+            for (table, sql) in [
+                (
+                    has_auth_token_logs,
+                    r#"
+                    UPDATE auth_token_logs
                     SET request_log_id = NULL
                     WHERE request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE created_at >= $1 AND created_at < $2
-                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                        WHERE created_at >= ? AND created_at < ?
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT ?
                     )
                     "#,
-                r#"
-                    UPDATE core.api_key_maintenance_records
+                ),
+                (
+                    has_maintenance_records,
+                    r#"
+                    UPDATE api_key_maintenance_records
                     SET request_log_id = NULL
                     WHERE request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE created_at >= $1 AND created_at < $2
-                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                        WHERE created_at >= ? AND created_at < ?
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT ?
                     )
                     "#,
-                r#"
-                    UPDATE core.api_key_transient_backoffs
+                ),
+                (
+                    has_transient_backoffs,
+                    r#"
+                    UPDATE api_key_transient_backoffs
                     SET source_request_log_id = NULL
                     WHERE source_request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE created_at >= $1 AND created_at < $2
-                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                        WHERE created_at >= ? AND created_at < ?
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT ?
                     )
                     "#,
+                ),
             ] {
-                sqlx::query(sql)
-                    .bind(guard.day_start)
-                    .bind(guard.day_end)
-                    .bind(batch_size)
-                    .execute(&mut *tx)
-                    .await?;
+                if table {
+                    sqlx::query(sql)
+                        .bind(guard.day_start)
+                        .bind(guard.day_end)
+                        .bind(batch_size)
+                        .execute(&mut *tx)
+                        .await?;
+                }
             }
             let deleted = sqlx::query(
                 r#"
@@ -388,9 +374,9 @@ impl KeyStore {
                 WHERE id IN (
                     SELECT id
                     FROM observability.request_logs
-                    WHERE created_at >= $1 AND created_at < $2
+                    WHERE created_at >= ? AND created_at < ?
                     ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC
-                    LIMIT $3
+                    LIMIT ?
                 )
                 "#,
             )
@@ -411,12 +397,13 @@ impl KeyStore {
         .await;
         match result {
             Ok(result) => {
-                tx.commit().await?;
+                tx.make_cancel_safe_on_drop();
+                tx.finish_in_place(Ok(())).await?;
                 Ok(result)
             }
             Err(err) => {
-                tx.rollback().await?;
-                Err(err)
+                tx.make_cancel_safe_on_drop();
+                tx.finish_in_place(Err(err)).await.map(|_| unreachable!())
             }
         }
     }
@@ -427,54 +414,69 @@ impl KeyStore {
         batch_size: i64,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<i64, ProxyError> {
-        // Same serialization contract as the sealed-day batch: the GC advisory lock holds
-        // the unlink + delete critical section that the SQLite immediate-write lock used to
-        // provide.
-        let mut tx = self.pg()?.begin().await?;
-        if let Some(deadline) = deadline {
-            Self::set_gc_statement_budget(&mut tx, deadline).await?;
-        }
-        Self::lock_request_log_gc_batch(&mut tx).await?;
+        let has_auth_token_logs = self.table_exists("auth_token_logs").await?;
+        let has_maintenance_records = self.table_exists("api_key_maintenance_records").await?;
+        let has_transient_backoffs = self.table_exists("api_key_transient_backoffs").await?;
+        let mut tx = if let Some(deadline) = deadline {
+            self.sqlite_runtime
+                .begin_immediate_before(SqliteOperation::RequestLogsGc, deadline.into_std())
+                .await?
+        } else {
+            self.sqlite_runtime
+                .begin_immediate(SqliteOperation::RequestLogsGc)
+                .await?
+        };
         let result = async {
             sqlx::query(
                 "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 1 WHERE id = 1",
             )
             .execute(&mut *tx)
             .await?;
-            for sql in [
-                r#"
-                    UPDATE core.auth_token_logs
+            for (table, sql) in [
+                (
+                    has_auth_token_logs,
+                    r#"
+                    UPDATE auth_token_logs
                     SET request_log_id = NULL
                     WHERE request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE visibility <> 'visible' AND created_at < $1
-                        ORDER BY id ASC LIMIT $2
+                        WHERE visibility <> 'visible' AND created_at < ?
+                        ORDER BY id ASC LIMIT ?
                     )
                     "#,
-                r#"
-                    UPDATE core.api_key_maintenance_records
+                ),
+                (
+                    has_maintenance_records,
+                    r#"
+                    UPDATE api_key_maintenance_records
                     SET request_log_id = NULL
                     WHERE request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE visibility <> 'visible' AND created_at < $1
-                        ORDER BY id ASC LIMIT $2
+                        WHERE visibility <> 'visible' AND created_at < ?
+                        ORDER BY id ASC LIMIT ?
                     )
                     "#,
-                r#"
-                    UPDATE core.api_key_transient_backoffs
+                ),
+                (
+                    has_transient_backoffs,
+                    r#"
+                    UPDATE api_key_transient_backoffs
                     SET source_request_log_id = NULL
                     WHERE source_request_log_id IN (
                         SELECT id FROM observability.request_logs
-                        WHERE visibility <> 'visible' AND created_at < $1
-                        ORDER BY id ASC LIMIT $2
+                        WHERE visibility <> 'visible' AND created_at < ?
+                        ORDER BY id ASC LIMIT ?
                     )
                     "#,
+                ),
             ] {
-                sqlx::query(sql)
-                    .bind(threshold)
-                    .bind(batch_size)
-                    .execute(&mut *tx)
-                    .await?;
+                if table {
+                    sqlx::query(sql)
+                        .bind(threshold)
+                        .bind(batch_size)
+                        .execute(&mut *tx)
+                        .await?;
+                }
             }
             let deleted = sqlx::query(
                 r#"
@@ -482,9 +484,9 @@ impl KeyStore {
                 WHERE id IN (
                     SELECT id
                     FROM observability.request_logs
-                    WHERE visibility <> 'visible' AND created_at < $1
+                    WHERE visibility <> 'visible' AND created_at < ?
                     ORDER BY id ASC
-                    LIMIT $2
+                    LIMIT ?
                 )
                 "#,
             )
@@ -500,15 +502,13 @@ impl KeyStore {
             Ok::<_, ProxyError>(deleted.rows_affected() as i64)
         }
         .await;
+        tx.make_cancel_safe_on_drop();
         match result {
             Ok(deleted) => {
-                tx.commit().await?;
+                tx.finish_in_place(Ok(())).await?;
                 Ok(deleted)
             }
-            Err(err) => {
-                tx.rollback().await?;
-                Err(err)
-            }
+            Err(err) => tx.finish_in_place(Err(err)).await.map(|_| unreachable!()),
         }
     }
 
@@ -518,12 +518,7 @@ impl KeyStore {
         batch_size: i64,
         target_day: Option<(i64, i64)>,
     ) -> Result<i64, ProxyError> {
-        let rollup_table_exists: bool = sqlx::query_scalar(
-            "SELECT to_regclass('observability.request_log_catalog_rollups') IS NOT NULL",
-        )
-        .fetch_one(self.pg()?)
-        .await?;
-        if !rollup_table_exists {
+        if !self.table_exists("request_log_catalog_rollups").await? {
             return Ok(0);
         }
         let deadline = self.backend_time.deadline_after(Duration::from_secs(10));
@@ -538,33 +533,12 @@ impl KeyStore {
                     sqlx::query(
                         r#"
                         DELETE FROM observability.request_log_catalog_rollups
-                        WHERE (
-                            bucket_start,
-                            request_kind_key,
-                            request_kind_label,
-                            result_bucket,
-                            key_effect_code,
-                            binding_effect_code,
-                            selection_effect_code,
-                            auth_token_id,
-                            api_key_id,
-                            operational_class
-                        ) IN (
-                            SELECT
-                                bucket_start,
-                                request_kind_key,
-                                request_kind_label,
-                                result_bucket,
-                                key_effect_code,
-                                binding_effect_code,
-                                selection_effect_code,
-                                auth_token_id,
-                                api_key_id,
-                                operational_class
+                        WHERE rowid IN (
+                            SELECT rowid
                             FROM observability.request_log_catalog_rollups
-                            WHERE bucket_start >= $1 AND bucket_start < $2 AND bucket_start < $3
+                            WHERE bucket_start >= ? AND bucket_start < ? AND bucket_start < ?
                             ORDER BY bucket_start ASC
-                            LIMIT $4
+                            LIMIT ?
                         )
                         "#,
                     )
@@ -579,33 +553,12 @@ impl KeyStore {
                     sqlx::query(
                         r#"
                         DELETE FROM observability.request_log_catalog_rollups
-                        WHERE (
-                            bucket_start,
-                            request_kind_key,
-                            request_kind_label,
-                            result_bucket,
-                            key_effect_code,
-                            binding_effect_code,
-                            selection_effect_code,
-                            auth_token_id,
-                            api_key_id,
-                            operational_class
-                        ) IN (
-                            SELECT
-                                bucket_start,
-                                request_kind_key,
-                                request_kind_label,
-                                result_bucket,
-                                key_effect_code,
-                                binding_effect_code,
-                                selection_effect_code,
-                                auth_token_id,
-                                api_key_id,
-                                operational_class
+                        WHERE rowid IN (
+                            SELECT rowid
                             FROM observability.request_log_catalog_rollups
-                            WHERE bucket_start < $1
+                            WHERE bucket_start < ?
                             ORDER BY bucket_start ASC
-                            LIMIT $2
+                            LIMIT ?
                         )
                         "#,
                     )
@@ -654,7 +607,7 @@ impl KeyStore {
         let exists = match target_day {
             Some((day_start, day_end)) => {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM observability.request_logs WHERE created_at >= $1 AND created_at < $2 AND created_at < $3 LIMIT 1",
+                    "SELECT 1 FROM observability.request_logs WHERE created_at >= ? AND created_at < ? AND created_at < ? LIMIT 1",
                 )
                 .bind(day_start)
                 .bind(day_end)
@@ -664,7 +617,7 @@ impl KeyStore {
             }
             None => {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM observability.request_logs WHERE created_at < $1 LIMIT 1",
+                    "SELECT 1 FROM observability.request_logs WHERE created_at < ? LIMIT 1",
                 )
                 .bind(threshold)
                 .fetch_optional(&mut *conn)
@@ -684,19 +637,20 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::RequestLogsGc)
             .await?;
-        let rollup_table_exists: bool = sqlx::query_scalar(
-            "SELECT to_regclass('observability.request_log_catalog_rollups') IS NOT NULL",
+        let rollup_table_exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM observability.sqlite_master WHERE type = 'table' AND name = ?)",
         )
+        .bind("request_log_catalog_rollups")
         .fetch_one(&mut *conn)
         .await?;
-        if !rollup_table_exists {
+        if rollup_table_exists == 0 {
             conn.close().await?;
             return Ok(false);
         }
         let exists = match target_day {
             Some((day_start, day_end)) => {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM observability.request_log_catalog_rollups WHERE bucket_start >= $1 AND bucket_start < $2 AND bucket_start < $3 LIMIT 1",
+                    "SELECT 1 FROM observability.request_log_catalog_rollups WHERE bucket_start >= ? AND bucket_start < ? AND bucket_start < ? LIMIT 1",
                 )
                 .bind(day_start)
                 .bind(day_end)
@@ -706,7 +660,7 @@ impl KeyStore {
             }
             None => {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM observability.request_log_catalog_rollups WHERE bucket_start < $1 LIMIT 1",
+                    "SELECT 1 FROM observability.request_log_catalog_rollups WHERE bucket_start < ? LIMIT 1",
                 )
                 .bind(threshold)
                 .fetch_optional(&mut *conn)
@@ -717,19 +671,9 @@ impl KeyStore {
         Ok(exists.is_some())
     }
 
-    fn map_request_log_body_gc_candidate<R>(
-        row: R,
-    ) -> Result<RequestLogBodyGcCandidate, sqlx::Error>
-    where
-        R: sqlx::Row,
-        for<'r> &'r str: sqlx::ColumnIndex<R>,
-        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<i64>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Vec<u8>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<Vec<u8>>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<String>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-    {
+    fn map_request_log_body_gc_candidate(
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<RequestLogBodyGcCandidate, sqlx::Error> {
         Ok(RequestLogBodyGcCandidate {
             id: row.try_get("id")?,
             created_at: row.try_get("created_at")?,
@@ -758,11 +702,11 @@ impl KeyStore {
             sqlx::query_as(
                 r#"
                 SELECT id, created_at
-                FROM observability.request_logs
-                WHERE created_at >= $1
-                  AND (created_at > $2 OR (created_at = $3 AND id > $4))
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at > ? OR (created_at = ? AND id > ?))
                 ORDER BY created_at ASC, id ASC
-                LIMIT $5
+                LIMIT ?
                 "#,
             )
             .bind(row_retention_threshold)
@@ -776,10 +720,10 @@ impl KeyStore {
             sqlx::query_as(
                 r#"
                 SELECT id, created_at
-                FROM observability.request_logs
-                WHERE created_at >= $1
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
                 ORDER BY created_at ASC, id ASC
-                LIMIT $2
+                LIMIT ?
                 "#,
             )
             .bind(row_retention_threshold)
@@ -801,10 +745,10 @@ impl KeyStore {
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
                        request_kind_label, request_kind_detail, path, request_body, response_body
-                FROM observability.request_logs
-                WHERE created_at >= $1
-                  AND (created_at > $2 OR (created_at = $3 AND id > $4))
-                  AND (created_at < $5 OR (created_at = $6 AND id <= $7))
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at > ? OR (created_at = ? AND id > ?))
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
                   AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 "#,
@@ -823,9 +767,9 @@ impl KeyStore {
                 r#"
                 SELECT id, created_at, request_user_id, result_status, request_kind_key,
                        request_kind_label, request_kind_detail, path, request_body, response_body
-                FROM observability.request_logs
-                WHERE created_at >= $1
-                  AND (created_at < $2 OR (created_at = $3 AND id <= $4))
+                FROM observability.request_logs INDEXED BY idx_request_logs_time
+                WHERE created_at >= ?
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
                   AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                 ORDER BY created_at ASC, id ASC
                 "#,
@@ -881,7 +825,7 @@ impl KeyStore {
             .acquire_operation_connection(SqliteOperation::RequestLogsGc)
             .await?;
         let value = sqlx::query_scalar::<_, String>(
-            "SELECT value FROM core.meta WHERE key = $1 LIMIT 1",
+            "SELECT value FROM meta WHERE key = ? LIMIT 1",
         )
         .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
         .fetch_optional(&mut *conn)
@@ -915,10 +859,10 @@ impl KeyStore {
         &self,
         cursor: Option<RequestLogBodyGcCursor>,
     ) -> Result<(), ProxyError> {
-        // The cursor row is the only durable fence for the body scan; the GC advisory
-        // lock serializes concurrent GC passes now that there is no database-wide writer.
-        let mut tx = self.pg()?.begin().await?;
-        Self::lock_request_log_gc_batch(&mut tx).await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate(SqliteOperation::RequestLogsGc)
+            .await?;
         let result = if let Some(cursor) = cursor {
             let value = if let Some(restart_at) = cursor.restart_at {
                 format!("{}:{}:{}", cursor.created_at, cursor.id, restart_at)
@@ -927,30 +871,25 @@ impl KeyStore {
             };
             sqlx::query(
                 r#"
-                INSERT INTO core.meta (key, value)
-                VALUES ($1, $2)
+                INSERT INTO meta (key, value)
+                VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 "#,
             )
             .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
             .bind(value)
-            .execute(&mut *tx)
-            .await
+                .execute(&mut *tx)
+                .await
         } else {
-            sqlx::query("DELETE FROM core.meta WHERE key = $1")
+            sqlx::query("DELETE FROM meta WHERE key = ?")
                 .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
                 .execute(&mut *tx)
                 .await
         };
+        tx.make_cancel_safe_on_drop();
         match result {
-            Ok(_) => {
-                tx.commit().await?;
-                Ok(())
-            }
-            Err(err) => {
-                tx.rollback().await?;
-                Err(ProxyError::Database(err))
-            }
+            Ok(_) => tx.finish_in_place(Ok(())).await,
+            Err(err) => tx.finish_in_place(Err(ProxyError::Database(err))).await,
         }
     }
 
@@ -1085,19 +1024,19 @@ impl KeyStore {
                         UPDATE observability.request_logs
                         SET request_body = NULL,
                             response_body = NULL,
-                            request_kind_key = $1,
-                            request_kind_label = $2,
-                            request_kind_detail = $3,
-                            counts_business_quota = COALESCE(counts_business_quota, $4),
-                            request_body_bytes = COALESCE(request_body_bytes, $5),
-                            response_body_bytes = COALESCE(response_body_bytes, $6),
-                            request_body_sha256 = COALESCE(request_body_sha256, $7),
-                            response_body_sha256 = COALESCE(response_body_sha256, $8),
-                            body_retention_days = $9,
-                            body_retention_profile = $10,
-                            body_cleaned_reason = $11,
-                            body_cleaned_at = $12
-                        WHERE id = $13 AND (request_body IS NOT NULL OR response_body IS NOT NULL)
+                            request_kind_key = ?,
+                            request_kind_label = ?,
+                            request_kind_detail = ?,
+                            counts_business_quota = COALESCE(counts_business_quota, ?),
+                            request_body_bytes = COALESCE(request_body_bytes, ?),
+                            response_body_bytes = COALESCE(response_body_bytes, ?),
+                            request_body_sha256 = COALESCE(request_body_sha256, ?),
+                            response_body_sha256 = COALESCE(response_body_sha256, ?),
+                            body_retention_days = ?,
+                            body_retention_profile = ?,
+                            body_cleaned_reason = ?,
+                            body_cleaned_at = ?
+                        WHERE id = ? AND (request_body IS NOT NULL OR response_body IS NOT NULL)
                         "#,
                     )
                     .bind(&request_kind_key)

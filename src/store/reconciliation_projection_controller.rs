@@ -118,7 +118,7 @@ impl<'a> ReconciliationProjectionController<'a> {
             .sqlite_runtime
             .begin_immediate(SqliteOperation::ReconciliationProjection)
             .await?;
-        let write_result: Result<_, ProxyError> = async {
+        let write_result = async {
             if let Some((job_id, claim_generation)) = claimed_job
                 && !Self::claim_is_current(&mut tx, claimed_job).await?
             {
@@ -195,10 +195,9 @@ impl<'a> ReconciliationProjectionController<'a> {
                 reason: "projection_backoff",
             });
         }
-        let batch_size = state.batch_size.clamp(
-            RECONCILIATION_PROJECTION_MIN_BATCH,
-            RECONCILIATION_PROJECTION_MAX_BATCH,
-        );
+        let batch_size = state
+            .batch_size
+            .clamp(RECONCILIATION_PROJECTION_MIN_BATCH, RECONCILIATION_PROJECTION_MAX_BATCH);
         let mut snapshot = self
             .store
             .sqlite_runtime
@@ -240,14 +239,20 @@ impl<'a> ReconciliationProjectionController<'a> {
             };
         let Some(last) = rows
             .last()
-            .map(|row| (row.token_id.clone(), String::new(), row.period_code.clone()))
+            .map(|row| {
+                (
+                    row.token_id.clone(),
+                    String::new(),
+                    row.period_code.clone(),
+                )
+            })
         else {
             let mut tx = self
                 .store
                 .sqlite_runtime
                 .begin_immediate(SqliteOperation::ReconciliationProjection)
                 .await?;
-            let write_result: Result<_, ProxyError> = async {
+            let write_result = async {
                 if !Self::claim_is_current(&mut tx, claimed_job).await? {
                     return Ok(ReconciliationProjectionWriteStatus::StaleClaim);
                 }
@@ -311,9 +316,10 @@ impl<'a> ReconciliationProjectionController<'a> {
             };
         };
 
-        let mut aggregates =
-            std::collections::BTreeMap::<(String, String), ReconciliationProjectionAggregate>::new(
-            );
+        let mut aggregates = std::collections::BTreeMap::<
+            (String, String),
+            ReconciliationProjectionAggregate,
+        >::new();
         for row in &rows {
             aggregates
                 .entry((row.token_id.clone(), row.period_code.clone()))
@@ -336,10 +342,9 @@ impl<'a> ReconciliationProjectionController<'a> {
         let terminal_repairs = aggregates
             .iter()
             .filter_map(|((token_id, period_code), aggregate)| {
-                aggregate
-                    .terminal_outcome
-                    .as_ref()
-                    .map(|outcome| (token_id.clone(), period_code.clone(), outcome.clone()))
+                aggregate.terminal_outcome.as_ref().map(|outcome| {
+                    (token_id.clone(), period_code.clone(), outcome.clone())
+                })
             })
             .collect::<Vec<_>>();
 
@@ -349,7 +354,7 @@ impl<'a> ReconciliationProjectionController<'a> {
             .begin_immediate(SqliteOperation::ReconciliationProjection)
             .await?;
         let write_started = std::time::Instant::now();
-        let write_result: Result<_, ProxyError> = async {
+        let write_result = async {
             if !Self::claim_is_current(&mut tx, claimed_job).await? {
                 return Ok(ReconciliationProjectionWriteStatus::StaleClaim);
             }
@@ -603,15 +608,12 @@ impl<'a> ReconciliationProjectionController<'a> {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "WITH expected(token_id, period_code, work_generation) AS (",
         );
-        query.push_values(
-            aggregates.iter(),
-            |mut values, ((token_id, period_code), aggregate)| {
-                values
-                    .push_bind(token_id)
-                    .push_bind(period_code)
-                    .push_bind(aggregate.source_work_generation);
-            },
-        );
+        query.push_values(aggregates.iter(), |mut values, ((token_id, period_code), aggregate)| {
+            values
+                .push_bind(token_id)
+                .push_bind(period_code)
+                .push_bind(aggregate.source_work_generation);
+        });
         query.push(
             r#") SELECT e.work_generation, w.work_generation
                   FROM expected e
@@ -646,9 +648,7 @@ impl<'a> ReconciliationProjectionController<'a> {
                     reason: "projection_read_budget",
                 })
             }
-            Err(ProxyError::StaleClaim { .. }) => {
-                Ok(ReconciliationProjectionSliceOutcome::StaleClaim)
-            }
+            Err(ProxyError::StaleClaim { .. }) => Ok(ReconciliationProjectionSliceOutcome::StaleClaim),
             Err(err) => Err(err),
         }
     }

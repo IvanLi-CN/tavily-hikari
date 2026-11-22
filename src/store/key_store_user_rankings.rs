@@ -21,10 +21,16 @@ impl KeyStore {
             .fetch_user_ranking_window(generated_at.saturating_sub(SECS_PER_DAY), generated_at)
             .await?;
         let last7d = self
-            .fetch_user_ranking_window(generated_at.saturating_sub(7 * SECS_PER_DAY), generated_at)
+            .fetch_user_ranking_window(
+                generated_at.saturating_sub(7 * SECS_PER_DAY),
+                generated_at,
+            )
             .await?;
         let last30d = self
-            .fetch_user_ranking_window(generated_at.saturating_sub(30 * SECS_PER_DAY), generated_at)
+            .fetch_user_ranking_window(
+                generated_at.saturating_sub(30 * SECS_PER_DAY),
+                generated_at,
+            )
             .await?;
 
         Ok((
@@ -79,9 +85,7 @@ impl KeyStore {
             AccountUsageRollupMetricKind::BusinessCredits => AccountUsageRollupBucketKind::Hour,
             AccountUsageRollupMetricKind::PrimarySuccess
             | AccountUsageRollupMetricKind::SecondarySuccess
-            | AccountUsageRollupMetricKind::RequestCount => {
-                AccountUsageRollupBucketKind::FiveMinute
-            }
+            | AccountUsageRollupMetricKind::RequestCount => AccountUsageRollupBucketKind::FiveMinute,
         };
 
         let bucket_secs = match bucket_kind {
@@ -92,17 +96,11 @@ impl KeyStore {
             AccountUsageRollupBucketKind::Month => SECS_PER_DAY * 31,
         };
 
-        let first_full_bucket_start =
-            ((start_at + bucket_secs - 1).div_euclid(bucket_secs)) * bucket_secs;
+        let first_full_bucket_start = ((start_at + bucket_secs - 1).div_euclid(bucket_secs)) * bucket_secs;
         let final_full_bucket_end = (end_at.div_euclid(bucket_secs)) * bucket_secs;
 
         let mut totals = self
-            .fetch_user_ranking_rollup_totals(
-                metric_kind,
-                bucket_kind,
-                first_full_bucket_start,
-                final_full_bucket_end,
-            )
+            .fetch_user_ranking_rollup_totals(metric_kind, bucket_kind, first_full_bucket_start, final_full_bucket_end)
             .await?;
 
         if start_at < first_full_bucket_start {
@@ -152,21 +150,21 @@ impl KeyStore {
         let rows = sqlx::query_as::<_, (String, i64)>(
             r#"
             SELECT request_user_id AS user_id, COUNT(DISTINCT client_ip) AS total
-            FROM observability.request_logs
-            WHERE visibility = $1
-              AND created_at >= $2
-              AND created_at < $3
+            FROM request_logs INDEXED BY idx_request_logs_user_ip_time
+            WHERE visibility = ?
+              AND created_at >= ?
+              AND created_at < ?
               AND request_user_id IS NOT NULL
               AND client_ip IS NOT NULL
               AND TRIM(client_ip) != ''
             GROUP BY request_user_id
-            HAVING COUNT(DISTINCT client_ip) > 0
+            HAVING total > 0
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(start_at)
         .bind(end_at)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         let totals = rows.into_iter().collect::<HashMap<_, _>>();
@@ -198,21 +196,21 @@ impl KeyStore {
 
         let rows = sqlx::query_as::<_, (String, i64)>(
             r#"
-            SELECT user_id, COALESCE(SUM(value), 0)::bigint AS total
-            FROM core.account_usage_rollup_buckets
-            WHERE metric_kind = $1
-              AND bucket_kind = $2
-              AND bucket_start >= $3
-              AND bucket_start < $4
+            SELECT user_id, COALESCE(SUM(value), 0) AS total
+            FROM account_usage_rollup_buckets
+            WHERE metric_kind = ?
+              AND bucket_kind = ?
+              AND bucket_start >= ?
+              AND bucket_start < ?
             GROUP BY user_id
-            HAVING COALESCE(SUM(value), 0) > 0
+            HAVING total > 0
             "#,
         )
         .bind(metric_kind.as_str())
         .bind(bucket_kind.as_str())
         .bind(bucket_start_at_least)
         .bind(bucket_start_before)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         Ok(rows.into_iter().collect())
@@ -258,12 +256,12 @@ impl KeyStore {
                             b.user_id
                         ) AS user_id,
                         COUNT(*) AS total
-                    FROM core.auth_token_logs atl
-                    LEFT JOIN core.user_token_bindings b ON b.token_id = atl.token_id
-                    LEFT JOIN observability.request_logs rl ON rl.id = atl.request_log_id
-                    WHERE atl.created_at >= $1
-                      AND atl.created_at < $2
-                      AND atl.result_status = $3
+                    FROM auth_token_logs atl
+                    LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
+                    LEFT JOIN request_logs rl ON rl.id = atl.request_log_id
+                    WHERE atl.created_at >= ?
+                      AND atl.created_at < ?
+                      AND atl.result_status = ?
                       AND COALESCE(
                             atl.request_user_id,
                             CASE
@@ -274,13 +272,13 @@ impl KeyStore {
                         ) IS NOT NULL
                       AND ({request_value_bucket_sql}) = 'valuable'
                     GROUP BY user_id
-                    HAVING COUNT(*) > 0
+                    HAVING total > 0
                     "#,
                 ))
                 .bind(start_at)
                 .bind(end_at)
                 .bind(OUTCOME_SUCCESS)
-                .fetch_all(self.pg()?)
+                .fetch_all(&self.pool)
                 .await?;
 
                 for (user_id, value) in rows {
@@ -300,12 +298,12 @@ impl KeyStore {
                             b.user_id
                         ) AS user_id,
                         COUNT(*) AS total
-                    FROM core.auth_token_logs atl
-                    LEFT JOIN core.user_token_bindings b ON b.token_id = atl.token_id
-                    LEFT JOIN observability.request_logs rl ON rl.id = atl.request_log_id
-                    WHERE atl.created_at >= $1
-                      AND atl.created_at < $2
-                      AND atl.result_status = $3
+                    FROM auth_token_logs atl
+                    LEFT JOIN user_token_bindings b ON b.token_id = atl.token_id
+                    LEFT JOIN request_logs rl ON rl.id = atl.request_log_id
+                    WHERE atl.created_at >= ?
+                      AND atl.created_at < ?
+                      AND atl.result_status = ?
                       AND COALESCE(
                             atl.request_user_id,
                             CASE
@@ -316,13 +314,13 @@ impl KeyStore {
                         ) IS NOT NULL
                       AND ({request_value_bucket_sql}) = 'other'
                     GROUP BY user_id
-                    HAVING COUNT(*) > 0
+                    HAVING total > 0
                     "#,
                 ))
                 .bind(start_at)
                 .bind(end_at)
                 .bind(OUTCOME_SUCCESS)
-                .fetch_all(self.pg()?)
+                .fetch_all(&self.pool)
                 .await?;
 
                 for (user_id, value) in rows {
@@ -337,30 +335,30 @@ impl KeyStore {
                             bl.billing_subject,
                             bl.created_at,
                             COALESCE(bl.business_credits, 0) AS business_credits
-                        FROM core.billing_ledger bl
-                        WHERE bl.billing_state = $1
+                        FROM billing_ledger bl
+                        WHERE bl.billing_state = ?
                           AND COALESCE(bl.business_credits, 0) > 0
                           AND bl.billing_subject LIKE 'account:%'
-                          AND bl.created_at >= $2
-                          AND bl.created_at < $3
+                          AND bl.created_at >= ?
+                          AND bl.created_at < ?
                         UNION ALL
                         SELECT
                             atl.billing_subject,
                             atl.created_at,
                             COALESCE(atl.business_credits, 0) AS business_credits
-                        FROM core.auth_token_logs atl
-                        LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = atl.id
+                        FROM auth_token_logs atl
+                        LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = atl.id
                         WHERE bl.auth_token_log_id IS NULL
-                          AND atl.billing_state = $4
+                          AND atl.billing_state = ?
                           AND COALESCE(atl.business_credits, 0) > 0
                           AND atl.billing_subject LIKE 'account:%'
-                          AND atl.created_at >= $5
-                          AND atl.created_at < $6
+                          AND atl.created_at >= ?
+                          AND atl.created_at < ?
                     )
-                    SELECT SUBSTR(billing_subject, 9) AS user_id, SUM(business_credits)::bigint AS total
+                    SELECT SUBSTR(billing_subject, 9) AS user_id, SUM(business_credits) AS total
                     FROM charged_rows
                     GROUP BY user_id
-                    HAVING SUM(business_credits) > 0
+                    HAVING total > 0
                     "#,
                 )
                 .bind(BILLING_STATE_CHARGED)
@@ -369,7 +367,7 @@ impl KeyStore {
                 .bind(BILLING_STATE_CHARGED)
                 .bind(start_at)
                 .bind(end_at)
-                .fetch_all(self.pg()?)
+                .fetch_all(&self.pool)
                 .await?;
 
                 for (user_id, value) in rows {
@@ -393,8 +391,8 @@ impl KeyStore {
         let mut user_ids: Vec<&String> = totals.keys().collect();
         user_ids.sort();
 
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT id, display_name, username, avatar_template FROM core.users WHERE id IN (",
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT id, display_name, username, avatar_template FROM users WHERE id IN (",
         );
         let mut separated = builder.separated(", ");
         for user_id in &user_ids {
@@ -402,7 +400,7 @@ impl KeyStore {
         }
         separated.push_unseparated(")");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         let mut by_id: HashMap<String, UserRankingIdentity> = HashMap::new();
         for row in rows {
             let user_id: String = row.try_get("id")?;
@@ -423,19 +421,13 @@ impl KeyStore {
             if value <= 0 {
                 continue;
             }
-            let user = by_id
-                .remove(user_id.as_str())
-                .unwrap_or(UserRankingIdentity {
-                    user_id: user_id.clone(),
-                    display_name: None,
-                    username: None,
-                    avatar_template: None,
-                });
-            ranking_rows.push(UserRankingRow {
-                rank: 0,
-                value,
-                user,
+            let user = by_id.remove(user_id.as_str()).unwrap_or(UserRankingIdentity {
+                user_id: user_id.clone(),
+                display_name: None,
+                username: None,
+                avatar_template: None,
             });
+            ranking_rows.push(UserRankingRow { rank: 0, value, user });
         }
 
         Ok(ranking_rows)

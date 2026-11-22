@@ -108,17 +108,12 @@ impl KeyStore {
             .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
             .await?;
         #[cfg(test)]
-        if self
-            .sqlite_runtime
-            .take_reconciliation_research_read_failure_for_test()
-        {
+        if self.sqlite_runtime.take_reconciliation_research_read_failure_for_test() {
             let injected_result = Err::<Vec<(String, String, String, String, i64, i64)>, _>(
                 sqlx::Error::PoolTimedOut,
             );
-            return session
-                .complete_query_or_defer(injected_result)
-                .await
-                .map(|_| UpstreamReconciliationResearchCandidatePage {
+            return session.complete_query_or_defer(injected_result).await.map(|_| {
+                UpstreamReconciliationResearchCandidatePage {
                     candidates: Vec::new(),
                     cooled_due_count: 0,
                     earliest_cooldown_until: None,
@@ -130,7 +125,8 @@ impl KeyStore {
                     candidate_cursors: std::collections::HashMap::new(),
                     next_cursor: None,
                     wrapped: false,
-                });
+                }
+            });
         }
 
         let cursor_result = sqlx::query_as::<_, (i64, String, String, i64)>(
@@ -158,8 +154,7 @@ impl KeyStore {
         let force_wrap = cursor.0 != -1 && now.saturating_sub(cursor.3) >= 300;
         let mut wrapped = force_wrap;
         for pass in 0..2 {
-            let (cursor_next_poll_at, cursor_key_id, cursor_request_id) = if pass == 1 || force_wrap
-            {
+            let (cursor_next_poll_at, cursor_key_id, cursor_request_id) = if pass == 1 || force_wrap {
                 wrapped = true;
                 (-1_i64, String::new(), String::new())
             } else {
@@ -219,9 +214,14 @@ impl KeyStore {
                 Ok(rows) => rows,
                 Err(error) => {
                     return session
-                        .complete_query_or_defer::<Vec<(String, String, String, String, i64, i64)>>(
-                            Err(error),
-                        )
+                        .complete_query_or_defer::<Vec<(
+                            String,
+                            String,
+                            String,
+                            String,
+                            i64,
+                            i64,
+                        )>>(Err(error))
                         .await
                         .map(|_| unreachable!("a failed research page read cannot complete"));
                 }
@@ -269,7 +269,16 @@ impl KeyStore {
             query.push_bind(day_window.end);
             query.push(" AND prior_s.status = 'shadow_settled') THEN 1 ELSE 0 END AS has_settled_period FROM hydrated h ORDER BY has_settled_period, h.period_end DESC, h.request_id");
             let hydrated_result = query
-                .build_query_as::<(String, String, String, String, String, i64, i64, i64)>()
+                .build_query_as::<(
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    i64,
+                    i64,
+                    i64,
+                )>()
                 .fetch_all(&mut *session)
                 .await;
             match hydrated_result {
@@ -382,16 +391,16 @@ impl KeyStore {
                 )
             })
             .collect::<std::collections::HashMap<_, _>>();
-        let next_cursor = raw_rows.last().map(|(_, _, key_id, _, next_poll_at, _)| {
-            UpstreamReconciliationResearchCursor {
+        let next_cursor = raw_rows.last().map(
+            |(_, _, key_id, _, next_poll_at, _)| UpstreamReconciliationResearchCursor {
                 next_poll_at: *next_poll_at,
                 key_id: key_id.clone(),
                 request_id: raw_rows
                     .last()
                     .map(|(request_id, _, _, _, _, _)| request_id.clone())
                     .unwrap_or_default(),
-            }
-        });
+            },
+        );
         let result = session
             .complete_query_or_defer(Ok::<_, sqlx::Error>((
                 candidates,
@@ -700,13 +709,7 @@ impl KeyStore {
             });
         }
         let (next_poll_at, key_id, request_id) = cursor
-            .map(|value| {
-                (
-                    value.next_poll_at,
-                    value.key_id.as_str(),
-                    value.request_id.as_str(),
-                )
-            })
+            .map(|value| (value.next_poll_at, value.key_id.as_str(), value.request_id.as_str()))
             .unwrap_or((-1, "", ""));
         sqlx::query(
             "UPDATE upstream_reconciliation_research_scan_state
@@ -732,27 +735,18 @@ impl KeyStore {
         transaction.finish(Ok(())).await
     }
 
-    pub(crate) async fn has_due_upstream_reconciliation_research(
-        &self,
-    ) -> Result<bool, ProxyError> {
+    pub(crate) async fn has_due_upstream_reconciliation_research(&self) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut session = self
             .sqlite_runtime
             .begin_reconciliation_read(ReconciliationReadKind::ResearchCandidates)
             .await?;
         #[cfg(test)]
-        if self
-            .sqlite_runtime
-            .take_reconciliation_research_read_failure_for_test()
-        {
+        if self.sqlite_runtime.take_reconciliation_research_read_failure_for_test() {
             let injected_result = Err::<i64, _>(sqlx::Error::PoolTimedOut);
-            return session
-                .complete_query_or_defer(injected_result)
-                .await
-                .map(|_| false);
+            return session.complete_query_or_defer(injected_result).await.map(|_| false);
         }
-        let due_result = sqlx::query_scalar::<_, i64>(
-            r#"
+        let due_result = sqlx::query_scalar::<_, i64>(r#"
             SELECT EXISTS(
                 SELECT 1
                  FROM upstream_reconciliation_research r
@@ -769,8 +763,7 @@ impl KeyStore {
                  ORDER BY r.next_poll_at, r.key_id, r.request_id
                  LIMIT 1
             )
-            "#,
-        )
+            "#)
         .bind(now)
         .bind(now)
         .fetch_one(&mut *session)

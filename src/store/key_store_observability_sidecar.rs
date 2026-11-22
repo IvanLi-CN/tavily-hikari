@@ -1,9 +1,3 @@
-
-
-/// Keeps the SQLite observability sidecar in WAL mode for the serving path.
-///
-/// The PostgreSQL store never calls this: WAL is managed by the server, so the
-/// `observability` schema needs no journal-mode probe.
 pub(crate) async fn configure_observability_journal_mode(
     observability_database_path: &str,
     core_database_path: &str,
@@ -1752,9 +1746,9 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: None,
+            pg_pool: None,
             sqlite_runtime: SqliteRuntime::new(pool.clone()),
             pool,
-            pg_pool: None,
             backend_time: BackendTime::system(),
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: Arc::new(RwLock::new(HashMap::new())),

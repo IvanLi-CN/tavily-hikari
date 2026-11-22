@@ -30,26 +30,27 @@ impl KeyStore {
         let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
         let active_since = self.admin_user_activity_since(activity_scope);
 
-        let mut count_builder =
-            QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM core.users u WHERE ");
+        let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM users u WHERE ");
         Self::push_admin_user_filters(&mut count_builder, tag_id, search.as_deref(), active_since);
         let total = count_builder
             .build_query_scalar::<i64>()
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?;
         let monthly_broken_base_limit = self.fetch_user_blocked_key_base_limit().await?;
 
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-            "WITH filtered_users AS (SELECT u.id FROM core.users u WHERE ",
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "WITH filtered_users AS (SELECT u.id FROM users u WHERE ",
         );
         Self::push_admin_user_filters(&mut builder, tag_id, search.as_deref(), active_since);
-        builder.push("), metric(user_id, sort_value, sort_limit, sort_total, sort_failure) AS (");
+        builder.push(
+            "), metric(user_id, sort_value, sort_limit, sort_total, sort_failure) AS (",
+        );
         match sort {
             AdminUserListSortField::DailyCreditsUsed => {
                 builder.push(
-                    "SELECT user_id, COALESCE(SUM(total), 0)::bigint, 0, 0, 0 FROM (\
+                    "SELECT user_id, COALESCE(SUM(total), 0), 0, 0, 0 FROM (\
                      SELECT aub.user_id, SUM(aub.count) AS total \
-                     FROM core.account_usage_buckets aub \
+                     FROM account_usage_buckets aub \
                      JOIN filtered_users fu ON fu.id = aub.user_id \
                      WHERE aub.granularity = ",
                 );
@@ -69,7 +70,7 @@ impl KeyStore {
                 builder.push_bind(month_start);
                 builder.push(
                     " THEN amq.month_count ELSE 0 END, 0, 0, 0 \
-                     FROM core.account_monthly_quota amq \
+                     FROM account_monthly_quota amq \
                      JOIN filtered_users fu ON fu.id = amq.user_id",
                 );
             }
@@ -84,8 +85,8 @@ impl KeyStore {
                 builder.push(
                     " THEN 1 ELSE 0 END), 0) \
                      FROM filtered_users fu \
-                     JOIN core.user_token_bindings b ON b.user_id = fu.id \
-                     JOIN core.auth_token_logs l ON l.token_id = b.token_id \
+                     JOIN user_token_bindings b ON b.user_id = fu.id \
+                     JOIN auth_token_logs l INDEXED BY idx_token_logs_token_time ON l.token_id = b.token_id \
                      WHERE l.created_at >= ",
                 );
                 builder.push_bind(day_window_start);
@@ -108,8 +109,8 @@ impl KeyStore {
                 builder.push(
                     " THEN 1 ELSE 0 END), 0) \
                      FROM filtered_users fu \
-                     JOIN core.user_token_bindings b ON b.user_id = fu.id \
-                     JOIN core.auth_token_logs l ON l.token_id = b.token_id \
+                     JOIN user_token_bindings b ON b.user_id = fu.id \
+                     JOIN auth_token_logs l INDEXED BY idx_token_logs_token_time ON l.token_id = b.token_id \
                      WHERE l.created_at >= ",
                 );
                 builder.push_bind(month_start);
@@ -122,10 +123,10 @@ impl KeyStore {
             AdminUserListSortField::MonthlyBrokenCount => {
                 builder.push(
                     "SELECT skb.subject_id, COUNT(*), 0, 0, 0 \
-                     FROM core.subject_key_breakages skb \
+                     FROM subject_key_breakages skb \
                      JOIN filtered_users fu ON fu.id = skb.subject_id \
-                     JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL \
-                     LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL \
+                     JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL \
+                     LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL \
                      WHERE skb.subject_kind = ",
                 );
                 builder.push_bind(BROKEN_KEY_SUBJECT_USER);
@@ -148,7 +149,7 @@ impl KeyStore {
             AdminUserListSortField::RecentIpCount7d => {
                 builder.push(
                     "SELECT rl.request_user_id, COUNT(DISTINCT rl.client_ip), 0, 0, 0 \
-                     FROM observability.request_logs rl \
+                     FROM request_logs rl INDEXED BY idx_request_logs_user_ip_time \
                      JOIN filtered_users fu ON fu.id = rl.request_user_id \
                      WHERE rl.visibility = ",
                 );
@@ -164,39 +165,40 @@ impl KeyStore {
                 builder.push(
                     "SELECT b.user_id, MAX(l.created_at), 0, 0, 0 \
                      FROM filtered_users fu \
-                     JOIN core.user_token_bindings b ON b.user_id = fu.id \
-                     JOIN core.auth_token_logs l ON l.token_id = b.token_id \
+                     JOIN user_token_bindings b ON b.user_id = fu.id \
+                     JOIN auth_token_logs l INDEXED BY idx_token_logs_token_time ON l.token_id = b.token_id \
                      GROUP BY b.user_id",
                 );
             }
             AdminUserListSortField::LastLoginAt => {
-                builder.push("SELECT CAST(NULL AS text), CAST(NULL AS bigint), CAST(NULL AS bigint), CAST(NULL AS bigint), CAST(NULL AS bigint) WHERE false");
+                builder.push("SELECT NULL, NULL, NULL, NULL, NULL WHERE 0");
             }
         }
         builder.push(
             "), quota_limits AS (\
              SELECT fu.id AS user_id, \
-             COALESCE((SELECT s.business_calls_1h_limit FROM core.account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS hourly_limit, \
-             COALESCE((SELECT s.daily_credits_limit FROM core.account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS daily_limit, \
-             COALESCE((SELECT s.monthly_credits_limit FROM core.account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS monthly_limit \
+             COALESCE((SELECT s.business_calls_1h_limit FROM account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS hourly_limit, \
+             COALESCE((SELECT s.daily_credits_limit FROM account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS daily_limit, \
+             COALESCE((SELECT s.monthly_credits_limit FROM account_quota_limit_snapshots s WHERE s.user_id = fu.id ORDER BY s.changed_at DESC, s.id DESC LIMIT 1), 0) AS monthly_limit \
              FROM filtered_users fu\
              ), broken_limits AS (\
-             SELECT fu.id AS user_id, GREATEST(0, ",
+             SELECT fu.id AS user_id, MAX(0, ",
         );
         builder.push_bind(monthly_broken_base_limit);
-        builder
-            .push(" + COALESCE(aql.monthly_blocked_key_limit_delta, aql.monthly_broken_limit - ");
+        builder.push(
+            " + COALESCE(aql.monthly_blocked_key_limit_delta, aql.monthly_broken_limit - ",
+        );
         builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
         builder.push(
             ", 0)) AS monthly_broken_limit \
              FROM filtered_users fu \
-             LEFT JOIN core.account_quota_limits aql ON aql.user_id = fu.id \
+             LEFT JOIN account_quota_limits aql ON aql.user_id = fu.id \
              GROUP BY fu.id\
              ) SELECT u.id, u.display_name, u.username, u.active, u.last_login_at, \
              COALESCE(COUNT(b.token_id), 0) AS token_count \
-             FROM core.users u \
+             FROM users u \
              JOIN filtered_users fu ON fu.id = u.id \
-             LEFT JOIN core.user_token_bindings b ON b.user_id = u.id \
+             LEFT JOIN user_token_bindings b ON b.user_id = u.id \
              LEFT JOIN metric m ON m.user_id = u.id \
              LEFT JOIN quota_limits ql ON ql.user_id = u.id \
              LEFT JOIN broken_limits bl ON bl.user_id = u.id \
@@ -208,7 +210,7 @@ impl KeyStore {
         match sort {
             AdminUserListSortField::DailySuccessRate
             | AdminUserListSortField::MonthlySuccessRate => {
-                builder.push(" ORDER BY (COALESCE(m.sort_total, 0) = 0) ASC, (CAST(COALESCE(m.sort_value, 0) AS double precision) / NULLIF(m.sort_total, 0)) ");
+                builder.push(" ORDER BY (COALESCE(m.sort_total, 0) = 0) ASC, (CAST(COALESCE(m.sort_value, 0) AS REAL) / NULLIF(m.sort_total, 0)) ");
                 builder.push(direction_sql);
                 builder.push(", COALESCE(m.sort_failure, 0) ASC, u.id ASC");
             }
@@ -269,7 +271,7 @@ impl KeyStore {
                 Option<i64>,
                 i64,
             )>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         let items = rows
             .into_iter()

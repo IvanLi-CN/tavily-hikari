@@ -1,52 +1,3 @@
-/// Emits the request-kind filter predicate for any `QueryBuilder` backend. Expanding a
-/// macro keeps one clause definition while letting each backend bind its own placeholders.
-macro_rules! push_request_kind_filter_clause_body {
-    ($builder:expr, $stored:expr, $legacy_pred:expr, $legacy:expr, $kinds:expr) => {{
-        $builder.push("(");
-        $builder.push($stored.to_string());
-        $builder.push(" IN (");
-        {
-            let mut separated = $builder.separated(", ");
-            for request_kind in $kinds {
-                separated.push_bind(request_kind.clone());
-            }
-            separated.push_unseparated(")");
-        }
-        $builder.push(" OR (");
-        $builder.push($legacy_pred.to_string());
-        $builder.push(" AND ");
-        $builder.push($legacy.to_string());
-        $builder.push(" IN (");
-        {
-            let mut separated = $builder.separated(", ");
-            for request_kind in $kinds {
-                separated.push_bind(request_kind.clone());
-            }
-            separated.push_unseparated(")");
-        }
-        $builder.push("))");
-    }};
-}
-
-macro_rules! push_class_filter_clause_body {
-    ($builder:expr, $value:expr, $legacy_pred:expr, $stored:expr, $legacy:expr) => {{
-        $builder.push("(");
-        $builder.push("((NOT ");
-        $builder.push($legacy_pred.to_string());
-        $builder.push(") AND ");
-        $builder.push($stored.to_string());
-        $builder.push(" = ");
-        $builder.push_bind($value);
-        $builder.push(") OR (");
-        $builder.push($legacy_pred.to_string());
-        $builder.push(" AND ");
-        $builder.push($legacy.to_string());
-        $builder.push(" = ");
-        $builder.push_bind($value);
-        $builder.push("))");
-    }};
-}
-
 struct RequestLogBodyStorageDecision<'a> {
     request_body: Option<&'a [u8]>,
     response_body: Option<&'a [u8]>,
@@ -91,35 +42,6 @@ const REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL: &str = "global";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE: &str = "heavy_usage";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED: &str = "debug_shared";
 
-macro_rules! push_desc_cursor_clause_body {
-    ($builder:expr, $created_at_column:expr, $id_column:expr, $cursor:expr, $direction:expr, $has_where:expr) => {{
-        let Some(cursor) = $cursor else {
-            return $has_where;
-        };
-        let builder = $builder;
-        builder.push(if $has_where { " AND (" } else { " WHERE (" });
-        builder.push($created_at_column);
-        builder.push(match $direction {
-            RequestLogsCursorDirection::Older => " < ",
-            RequestLogsCursorDirection::Newer => " > ",
-        });
-        builder.push_bind(cursor.created_at);
-        builder.push(" OR (");
-        builder.push($created_at_column);
-        builder.push(" = ");
-        builder.push_bind(cursor.created_at);
-        builder.push(" AND ");
-        builder.push($id_column);
-        builder.push(match $direction {
-            RequestLogsCursorDirection::Older => " < ",
-            RequestLogsCursorDirection::Newer => " > ",
-        });
-        builder.push_bind(cursor.id);
-        builder.push("))");
-        true
-    }};
-}
-
 impl KeyStore {
     pub async fn fetch_token_logs(
         &self,
@@ -153,8 +75,8 @@ impl KeyStore {
                    auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
                    auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
                    auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
-            FROM core.auth_token_logs
-            LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            FROM auth_token_logs
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
             WHERE auth_token_logs.token_id =
             "#,
         );
@@ -168,7 +90,7 @@ impl KeyStore {
         }
         builder.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
         builder.push_bind(limit);
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -184,7 +106,6 @@ impl KeyStore {
             .collect()
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     fn push_request_kind_filter_clause<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         stored_request_kind_sql: &str,
@@ -192,32 +113,31 @@ impl KeyStore {
         legacy_request_kind_sql: &str,
         request_kinds: &[String],
     ) {
-        push_request_kind_filter_clause_body!(
-            builder,
-            stored_request_kind_sql,
-            legacy_request_kind_predicate_sql,
-            legacy_request_kind_sql,
-            request_kinds
-        );
+        builder.push("(");
+        builder.push(stored_request_kind_sql.to_string());
+        builder.push(" IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for request_kind in request_kinds {
+                separated.push_bind(request_kind.clone());
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push(" OR (");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(" AND ");
+        builder.push(legacy_request_kind_sql.to_string());
+        builder.push(" IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for request_kind in request_kinds {
+                separated.push_bind(request_kind.clone());
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push("))");
     }
 
-    fn push_request_kind_filter_clause_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        stored_request_kind_sql: &str,
-        legacy_request_kind_predicate_sql: &str,
-        legacy_request_kind_sql: &str,
-        request_kinds: &[String],
-    ) {
-        push_request_kind_filter_clause_body!(
-            builder,
-            stored_request_kind_sql,
-            legacy_request_kind_predicate_sql,
-            legacy_request_kind_sql,
-            request_kinds
-        );
-    }
-
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     fn push_operational_class_filter_clause<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         operational_class: &'a str,
@@ -225,32 +145,22 @@ impl KeyStore {
         stored_operational_class_sql: &str,
         legacy_operational_class_sql: &str,
     ) {
-        push_class_filter_clause_body!(
-            builder,
-            operational_class,
-            legacy_request_kind_predicate_sql,
-            stored_operational_class_sql,
-            legacy_operational_class_sql
-        );
+        builder.push("(");
+        builder.push("((NOT ");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(") AND ");
+        builder.push(stored_operational_class_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(operational_class);
+        builder.push(") OR (");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(" AND ");
+        builder.push(legacy_operational_class_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(operational_class);
+        builder.push("))");
     }
 
-    fn push_operational_class_filter_clause_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        operational_class: &'a str,
-        legacy_request_kind_predicate_sql: &str,
-        stored_operational_class_sql: &str,
-        legacy_operational_class_sql: &str,
-    ) {
-        push_class_filter_clause_body!(
-            builder,
-            operational_class,
-            legacy_request_kind_predicate_sql,
-            stored_operational_class_sql,
-            legacy_operational_class_sql
-        );
-    }
-
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     fn push_result_bucket_filter_clause<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         result_bucket: &'a str,
@@ -258,338 +168,23 @@ impl KeyStore {
         stored_result_bucket_sql: &str,
         legacy_result_bucket_sql: &str,
     ) {
-        push_class_filter_clause_body!(
-            builder,
-            result_bucket,
-            legacy_request_kind_predicate_sql,
-            stored_result_bucket_sql,
-            legacy_result_bucket_sql
-        );
+        builder.push("(");
+        builder.push("((NOT ");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(") AND ");
+        builder.push(stored_result_bucket_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(result_bucket);
+        builder.push(") OR (");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(" AND ");
+        builder.push(legacy_result_bucket_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(result_bucket);
+        builder.push("))");
     }
 
-    fn push_result_bucket_filter_clause_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        result_bucket: &'a str,
-        legacy_request_kind_predicate_sql: &str,
-        stored_result_bucket_sql: &str,
-        legacy_result_bucket_sql: &str,
-    ) {
-        push_class_filter_clause_body!(
-            builder,
-            result_bucket,
-            legacy_request_kind_predicate_sql,
-            stored_result_bucket_sql,
-            legacy_result_bucket_sql
-        );
-    }
-
-    /// PostgreSQL twin of `KeyStore::api_key_metrics_from_clause`; the SQLite original keeps
-    /// serving the SQLite path while this slice reads PostgreSQL.
-    fn api_key_metrics_from_clause_pg() -> &'static str {
-        r#"
-            FROM core.api_keys ak
-            LEFT JOIN (
-                SELECT
-                    api_key_id,
-                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
-                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
-                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count
-                FROM observability.api_key_usage_buckets
-                WHERE bucket_secs = 86400
-                GROUP BY api_key_id
-            ) AS stats
-            ON stats.api_key_id = ak.id
-            LEFT JOIN core.api_key_quarantines aq
-            ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            LEFT JOIN (
-                SELECT
-                    key_id,
-                    MAX(cooldown_until) AS transient_backoff_cooldown_until,
-                    MAX(retry_after_secs) AS transient_backoff_retry_after_secs,
-                    STRING_AGG(scope, ',') AS transient_backoff_scopes
-                FROM core.api_key_transient_backoffs
-                WHERE cooldown_until > EXTRACT(EPOCH FROM now())::bigint
-                  AND reason_code = 'upstream_unknown_403'
-                GROUP BY key_id
-            ) AS tb
-            ON tb.key_id = ak.id
-            WHERE ak.deleted_at IS NULL
-        "#
-    }
-
-    fn api_key_metrics_query_pg(include_quarantine_detail: bool) -> String {
-        let quarantine_detail_sql = if include_quarantine_detail {
-            "aq.reason_detail AS quarantine_reason_detail,"
-        } else {
-            "NULL AS quarantine_reason_detail,"
-        };
-        format!(
-            r#"
-            SELECT
-                ak.id,
-                ak.status,
-                ak.group_name,
-                ak.registration_ip,
-                ak.registration_region,
-                ak.status_changed_at,
-                ak.last_used_at,
-                ak.deleted_at,
-                ak.quota_limit,
-                ak.quota_remaining,
-                ak.quota_synced_at,
-                aq.source AS quarantine_source,
-                aq.reason_code AS quarantine_reason_code,
-                aq.reason_summary AS quarantine_reason_summary,
-                {quarantine_detail_sql}
-                aq.created_at AS quarantine_created_at,
-                tb.transient_backoff_cooldown_until,
-                tb.transient_backoff_retry_after_secs,
-                tb.transient_backoff_scopes,
-                COALESCE(stats.total_requests, 0) AS total_requests,
-                COALESCE(stats.success_count, 0) AS success_count,
-                COALESCE(stats.error_count, 0) AS error_count,
-                COALESCE(stats.quota_exhausted_count, 0) AS quota_exhausted_count
-            {}
-            "#,
-            Self::api_key_metrics_from_clause_pg(),
-        )
-    }
-
-    fn map_api_key_metrics_row_pg(
-        row: sqlx::postgres::PgRow,
-    ) -> Result<ApiKeyMetrics, sqlx::Error> {
-        let id: String = row.try_get("id")?;
-        let status: String = row.try_get("status")?;
-        let group_name: Option<String> = row.try_get("group_name")?;
-        let registration_ip: Option<String> = row.try_get("registration_ip")?;
-        let registration_region: Option<String> = row.try_get("registration_region")?;
-        let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
-        let last_used_at: i64 = row.try_get("last_used_at")?;
-        let deleted_at: Option<i64> = row.try_get("deleted_at")?;
-        let quota_limit: Option<i64> = row.try_get("quota_limit")?;
-        let quota_remaining: Option<i64> = row.try_get("quota_remaining")?;
-        let quota_synced_at: Option<i64> = row.try_get("quota_synced_at")?;
-        let total_requests: i64 = row.try_get("total_requests")?;
-        let success_count: i64 = row.try_get("success_count")?;
-        let error_count: i64 = row.try_get("error_count")?;
-        let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
-        let quarantine_source: Option<String> = row.try_get("quarantine_source")?;
-        let quarantine_reason_code: Option<String> = row.try_get("quarantine_reason_code")?;
-        let quarantine_reason_summary: Option<String> = row.try_get("quarantine_reason_summary")?;
-        let quarantine_reason_detail: Option<String> = row.try_get("quarantine_reason_detail")?;
-        let quarantine_created_at: Option<i64> = row.try_get("quarantine_created_at")?;
-        let transient_backoff_cooldown_until: Option<i64> =
-            row.try_get("transient_backoff_cooldown_until")?;
-        let transient_backoff_retry_after_secs: Option<i64> =
-            row.try_get("transient_backoff_retry_after_secs")?;
-        let transient_backoff_scopes: Option<String> = row.try_get("transient_backoff_scopes")?;
-        let is_temporary_isolated = status == STATUS_ACTIVE
-            && quarantine_source.is_none()
-            && transient_backoff_cooldown_until.is_some();
-
-        Ok(ApiKeyMetrics {
-            id,
-            status,
-            group_name: normalize_optional_api_key_field(group_name),
-            registration_ip: normalize_optional_api_key_field(registration_ip),
-            registration_region: normalize_optional_api_key_field(registration_region),
-            status_changed_at: status_changed_at.and_then(normalize_timestamp),
-            last_used_at: normalize_timestamp(last_used_at),
-            deleted_at: deleted_at.and_then(normalize_timestamp),
-            quota_limit,
-            quota_remaining,
-            quota_synced_at: quota_synced_at.and_then(normalize_timestamp),
-            total_requests,
-            success_count,
-            error_count,
-            quota_exhausted_count,
-            quarantine: quarantine_source.map(|source| ApiKeyQuarantine {
-                source,
-                reason_code: quarantine_reason_code.unwrap_or_default(),
-                reason_summary: quarantine_reason_summary.unwrap_or_default(),
-                reason_detail: quarantine_reason_detail.unwrap_or_default(),
-                created_at: quarantine_created_at.unwrap_or_default(),
-            }),
-            transient_backoff: is_temporary_isolated.then(|| ApiKeyTransientBackoff {
-                reason_code: FAILURE_KIND_UPSTREAM_UNKNOWN_403.to_string(),
-                cooldown_until: transient_backoff_cooldown_until.unwrap_or_default(),
-                retry_after_secs: transient_backoff_retry_after_secs.unwrap_or_default(),
-                scopes: transient_backoff_scopes
-                    .unwrap_or_default()
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|scope| !scope.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-            }),
-        })
-    }
-
-    fn push_api_key_group_filters_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        groups: &'a [String],
-    ) {
-        if groups.is_empty() {
-            return;
-        }
-        builder.push(" AND (");
-        for (index, group) in groups.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            if group.is_empty() {
-                builder.push("(TRIM(COALESCE(ak.group_name, '')) = '')");
-            } else {
-                builder
-                    .push("(TRIM(COALESCE(ak.group_name, '')) = ")
-                    .push_bind(group.as_str())
-                    .push(")");
-            }
-        }
-        builder.push(")");
-    }
-
-    fn push_api_key_status_filters_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        statuses: &'a [String],
-    ) {
-        if statuses.is_empty() {
-            return;
-        }
-        builder.push(" AND (");
-        for (index, status) in statuses.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            if status == "quarantined" {
-                builder.push("(aq.key_id IS NOT NULL)");
-            } else if status == "temporary_isolated" {
-                builder
-                    .push("(aq.key_id IS NULL AND ak.status = 'active' AND tb.key_id IS NOT NULL)");
-            } else if status == STATUS_ACTIVE {
-                builder
-                    .push("(aq.key_id IS NULL AND ak.status = ")
-                    .push_bind(status.as_str())
-                    .push(" AND tb.key_id IS NULL)");
-            } else {
-                builder
-                    .push("(aq.key_id IS NULL AND ak.status = ")
-                    .push_bind(status.as_str())
-                    .push(")");
-            }
-        }
-        builder.push(")");
-    }
-
-    fn push_api_key_registration_ip_filter_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        registration_ip: Option<&'a str>,
-    ) {
-        let Some(registration_ip) = registration_ip
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return;
-        };
-        builder
-            .push(" AND TRIM(COALESCE(ak.registration_ip, '')) = ")
-            .push_bind(registration_ip);
-    }
-
-    fn push_api_key_region_filters_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        regions: &'a [String],
-    ) {
-        if regions.is_empty() {
-            return;
-        }
-        builder.push(" AND (");
-        for (index, region) in regions.iter().enumerate() {
-            if index > 0 {
-                builder.push(" OR ");
-            }
-            builder
-                .push("(TRIM(COALESCE(ak.registration_region, '')) = ")
-                .push_bind(region.as_str())
-                .push(")");
-        }
-        builder.push(")");
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn push_token_logs_catalog_filters_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        token_id: &'a str,
-        since: i64,
-        until: Option<i64>,
-        filters: TokenLogsCatalogFilters<'a>,
-        stored_request_kind_sql: &'a str,
-        legacy_request_kind_predicate_sql: &'a str,
-        legacy_request_kind_sql: &'a str,
-        stored_operational_class_case_sql: &'a str,
-        legacy_operational_class_case_sql: &'a str,
-        stored_result_bucket_sql: &'a str,
-        legacy_result_bucket_sql: &'a str,
-    ) {
-        let normalized_request_kinds = Self::normalize_request_kind_filters(filters.request_kinds);
-        builder.push(" WHERE auth_token_logs.token_id = ");
-        builder.push_bind(token_id);
-        builder.push(" AND auth_token_logs.created_at >= ");
-        builder.push_bind(since);
-        if let Some(until) = until {
-            builder.push(" AND auth_token_logs.created_at < ");
-            builder.push_bind(until);
-        }
-        if let Some(key_effect_code) = filters.key_effect_code {
-            builder.push(" AND auth_token_logs.key_effect_code = ");
-            builder.push_bind(key_effect_code);
-        }
-        if let Some(binding_effect_code) = filters.binding_effect_code {
-            builder.push(" AND auth_token_logs.binding_effect_code = ");
-            builder.push_bind(binding_effect_code);
-        }
-        if let Some(selection_effect_code) = filters.selection_effect_code {
-            builder.push(" AND auth_token_logs.selection_effect_code = ");
-            builder.push_bind(selection_effect_code);
-        }
-        if let Some(key_id) = filters.key_id {
-            builder.push(" AND auth_token_logs.api_key_id = ");
-            builder.push_bind(key_id);
-        }
-        if !normalized_request_kinds.is_empty() {
-            builder.push(" AND ");
-            Self::push_request_kind_filter_clause_pg(
-                builder,
-                stored_request_kind_sql,
-                legacy_request_kind_predicate_sql,
-                legacy_request_kind_sql,
-                &normalized_request_kinds,
-            );
-        }
-        if let Some(result_status) = filters.result_status {
-            builder.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
-                builder,
-                result_status,
-                legacy_request_kind_predicate_sql,
-                stored_result_bucket_sql,
-                legacy_result_bucket_sql,
-            );
-        }
-        if let Some(operational_class) = filters.operational_class {
-            builder.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
-                builder,
-                operational_class,
-                legacy_request_kind_predicate_sql,
-                stored_operational_class_case_sql,
-                legacy_operational_class_case_sql,
-            );
-        }
-    }
-
-    fn map_token_log_row(row: sqlx::postgres::PgRow) -> Result<TokenLogRecord, sqlx::Error> {
+    fn map_token_log_row(row: sqlx::sqlite::SqliteRow) -> Result<TokenLogRecord, sqlx::Error> {
         let key_id: Option<String> = row.try_get("api_key_id")?;
         let method: String = row.try_get("method")?;
         let path: String = row.try_get("path")?;
@@ -664,8 +259,8 @@ impl KeyStore {
                 system_failure_count,
                 external_failure_count,
                 quota_exhausted_count
-            FROM core.token_usage_stats
-            WHERE token_id = $1 AND bucket_secs = $2 AND bucket_start >= $3 AND bucket_start < $4
+            FROM token_usage_stats
+            WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
             ORDER BY bucket_start ASC
             "#,
         )
@@ -673,7 +268,7 @@ impl KeyStore {
         .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
         .bind(since)
         .bind(end_exclusive)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         let mut total_requests = 0;
@@ -900,16 +495,12 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql = result_bucket_case_sql(
-            &stored_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let legacy_result_bucket_sql = result_bucket_case_sql(
-            &legacy_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
-        let mut rows_query = QueryBuilder::<sqlx::Postgres>::new(
+        let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT auth_token_logs.id, auth_token_logs.api_key_id, auth_token_logs.method, auth_token_logs.path, auth_token_logs.query, auth_token_logs.http_status, auth_token_logs.mcp_status,
                    CASE
@@ -926,8 +517,8 @@ impl KeyStore {
                    auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
                    auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
                    auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
-            FROM core.auth_token_logs
-            LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            FROM auth_token_logs
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
             WHERE auth_token_logs.token_id =
             "#
             .to_string(),
@@ -941,7 +532,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             rows_query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut rows_query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -967,7 +558,7 @@ impl KeyStore {
         }
         if !normalized_request_kinds.is_empty() {
             rows_query.push(" AND ");
-            Self::push_request_kind_filter_clause_pg(
+            Self::push_request_kind_filter_clause(
                 &mut rows_query,
                 stored_request_kind_sql,
                 &legacy_request_kind_predicate_sql,
@@ -977,7 +568,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             rows_query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut rows_query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -985,7 +576,7 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        Self::push_desc_cursor_clause_pg(
+        Self::push_desc_cursor_clause(
             &mut rows_query,
             "auth_token_logs.created_at",
             "auth_token_logs.id",
@@ -995,19 +586,15 @@ impl KeyStore {
         );
         match direction {
             RequestLogsCursorDirection::Older => {
-                rows_query.push(
-                    " ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ",
-                );
+                rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
             }
             RequestLogsCursorDirection::Newer => {
-                rows_query.push(
-                    " ORDER BY auth_token_logs.created_at ASC, auth_token_logs.id ASC LIMIT ",
-                );
+                rows_query.push(" ORDER BY auth_token_logs.created_at ASC, auth_token_logs.id ASC LIMIT ");
             }
         }
         rows_query.push_bind(query_limit);
 
-        let mut rows = rows_query.build().fetch_all(self.pg()?).await?;
+        let mut rows = rows_query.build().fetch_all(&self.pool).await?;
         let has_more = rows.len() as i64 > page_size;
         if has_more {
             rows.truncate(page_size as usize);
@@ -1126,17 +713,13 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql = result_bucket_case_sql(
-            &stored_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let legacy_result_bucket_sql = result_bucket_case_sql(
-            &legacy_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
-        let mut total_query = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT COUNT(*) FROM core.auth_token_logs WHERE auth_token_logs.token_id = ",
+        let mut total_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) FROM auth_token_logs WHERE auth_token_logs.token_id = ",
         );
         total_query.push_bind(token_id);
         total_query.push(" AND auth_token_logs.created_at >= ");
@@ -1147,7 +730,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             total_query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut total_query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -1173,7 +756,7 @@ impl KeyStore {
         }
         if !normalized_request_kinds.is_empty() {
             total_query.push(" AND ");
-            Self::push_request_kind_filter_clause_pg(
+            Self::push_request_kind_filter_clause(
                 &mut total_query,
                 stored_request_kind_sql,
                 &legacy_request_kind_predicate_sql,
@@ -1183,7 +766,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             total_query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut total_query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -1193,10 +776,10 @@ impl KeyStore {
         }
         let total: i64 = total_query
             .build_query_scalar()
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?;
 
-        let mut rows_query = QueryBuilder::<sqlx::Postgres>::new(
+        let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT auth_token_logs.id, auth_token_logs.api_key_id, auth_token_logs.method, auth_token_logs.path, auth_token_logs.query, auth_token_logs.http_status, auth_token_logs.mcp_status,
                    CASE
@@ -1213,8 +796,8 @@ impl KeyStore {
                    auth_token_logs.selection_effect_code, auth_token_logs.selection_effect_summary,
                    auth_token_logs.gateway_mode, auth_token_logs.experiment_variant, auth_token_logs.proxy_session_id, auth_token_logs.routing_subject_hash,
                    auth_token_logs.upstream_operation, auth_token_logs.fallback_reason, auth_token_logs.created_at
-            FROM core.auth_token_logs
-            LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
+            FROM auth_token_logs
+            LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = auth_token_logs.id
             WHERE auth_token_logs.token_id =
             "#
             .to_string(),
@@ -1228,7 +811,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             rows_query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut rows_query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -1254,7 +837,7 @@ impl KeyStore {
         }
         if !normalized_request_kinds.is_empty() {
             rows_query.push(" AND ");
-            Self::push_request_kind_filter_clause_pg(
+            Self::push_request_kind_filter_clause(
                 &mut rows_query,
                 stored_request_kind_sql,
                 &legacy_request_kind_predicate_sql,
@@ -1264,7 +847,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             rows_query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut rows_query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -1272,12 +855,11 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        rows_query
-            .push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
+        rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
         rows_query.push_bind(per_page);
         rows_query.push(" OFFSET ");
         rows_query.push_bind(offset);
-        let rows = rows_query.build().fetch_all(self.pg()?).await?;
+        let rows = rows_query.build().fetch_all(&self.pool).await?;
 
         let items = rows
             .into_iter()
@@ -1390,18 +972,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql = result_bucket_case_sql(
-            &stored_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let legacy_result_bucket_sql = result_bucket_case_sql(
-            &legacy_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let mut query = QueryBuilder::<sqlx::Postgres>::new(format!(
-            "SELECT {column_expr} AS value, COUNT(*) AS count FROM core.auth_token_logs"
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {column_expr} AS value, COUNT(*) AS count FROM auth_token_logs"
         ));
-        Self::push_token_logs_catalog_filters_pg(
+        Self::push_token_logs_catalog_filters(
             &mut query,
             token_id,
             since,
@@ -1423,7 +1001,7 @@ impl KeyStore {
         }
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
-        let rows = query.build().fetch_all(self.pg()?).await?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| -> Result<LogFacetOption, sqlx::Error> {
                 Ok(LogFacetOption {
@@ -1461,16 +1039,12 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql = result_bucket_case_sql(
-            &stored_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let legacy_result_bucket_sql = result_bucket_case_sql(
-            &legacy_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
 
-        let mut query = QueryBuilder::<sqlx::Postgres>::new(format!(
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
             "
             SELECT
                 CASE
@@ -1478,10 +1052,10 @@ impl KeyStore {
                     ELSE {stored_result_bucket_sql}
                 END AS value,
                 COUNT(*) AS count
-            FROM core.auth_token_logs
+            FROM auth_token_logs
             "
         ));
-        Self::push_token_logs_catalog_filters_pg(
+        Self::push_token_logs_catalog_filters(
             &mut query,
             token_id,
             since,
@@ -1497,7 +1071,7 @@ impl KeyStore {
         );
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
-        let rows = query.build().fetch_all(self.pg()?).await?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| -> Result<LogFacetOption, sqlx::Error> {
                 Ok(LogFacetOption {
@@ -1523,7 +1097,7 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let stored_label_sql = canonical_request_kind_label_sql(stored_request_kind_sql);
-        let mut stored_query = QueryBuilder::<sqlx::Postgres>::new(format!(
+        let mut stored_query = QueryBuilder::<Sqlite>::new(format!(
             "
             SELECT
                 {stored_request_kind_sql} AS request_kind_key,
@@ -1531,7 +1105,7 @@ impl KeyStore {
                 COUNT(*) AS request_count,
                 MAX(CASE WHEN auth_token_logs.counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                 MAX(CASE WHEN auth_token_logs.counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
-            FROM core.auth_token_logs
+            FROM auth_token_logs
             "
         ));
         let stored_operational_class_case_sql = token_log_operational_class_case_sql(
@@ -1550,15 +1124,11 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql = result_bucket_case_sql(
-            &stored_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        let legacy_result_bucket_sql = result_bucket_case_sql(
-            &legacy_operational_class_case_sql,
-            "auth_token_logs.result_status",
-        );
-        Self::push_token_logs_catalog_filters_pg(
+        let stored_result_bucket_sql =
+            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
+        let legacy_result_bucket_sql =
+            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        Self::push_token_logs_catalog_filters(
             &mut stored_query,
             token_id,
             since,
@@ -1578,10 +1148,10 @@ impl KeyStore {
 
         let stored_options = stored_query
             .build_query_as::<RequestKindOptionRow>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         let legacy_label_sql = canonical_request_kind_label_sql(&legacy_request_kind_sql);
-        let mut legacy_query = QueryBuilder::<sqlx::Postgres>::new(format!(
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(format!(
             "
             SELECT
                 {legacy_request_kind_sql} AS request_kind_key,
@@ -1589,10 +1159,10 @@ impl KeyStore {
                 COUNT(*) AS request_count,
                 MAX(CASE WHEN auth_token_logs.counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                 MAX(CASE WHEN auth_token_logs.counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
-            FROM core.auth_token_logs
+            FROM auth_token_logs
             "
         ));
-        Self::push_token_logs_catalog_filters_pg(
+        Self::push_token_logs_catalog_filters(
             &mut legacy_query,
             token_id,
             since,
@@ -1612,7 +1182,7 @@ impl KeyStore {
 
         let legacy_options = legacy_query
             .build_query_as::<RequestKindOptionRow>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         let mut options_by_key = BTreeMap::<String, (String, bool, bool, i64)>::new();
         for (key, label, request_count, has_billable, has_non_billable) in
@@ -1691,15 +1261,15 @@ impl KeyStore {
                 success_count,
                 system_failure_count,
                 external_failure_count
-            FROM core.token_usage_stats
-            WHERE token_id = $1 AND bucket_secs = $2 AND bucket_start >= $3
+            FROM token_usage_stats
+            WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ?
             ORDER BY bucket_start ASC
             "#,
         )
         .bind(token_id)
         .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
         .bind(window_start)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
@@ -1757,8 +1327,8 @@ impl KeyStore {
                     success_count,
                     system_failure_count,
                     external_failure_count
-                FROM core.token_usage_stats
-                WHERE token_id = $1 AND bucket_secs = $2 AND bucket_start >= $3 AND bucket_start < $4
+                FROM token_usage_stats
+                WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
                 ORDER BY bucket_start ASC
                 "#,
             )
@@ -1766,7 +1336,7 @@ impl KeyStore {
             .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
             .bind(since)
             .bind(until)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
 
             Ok(rows
@@ -1796,8 +1366,8 @@ impl KeyStore {
                     success_count,
                     system_failure_count,
                     external_failure_count
-                FROM core.token_usage_stats
-                WHERE token_id = $1 AND bucket_secs = $2 AND bucket_start >= $3 AND bucket_start < $4
+                FROM token_usage_stats
+                WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
                 ORDER BY bucket_start ASC
                 "#,
             )
@@ -1805,7 +1375,7 @@ impl KeyStore {
             .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
             .bind(since)
             .bind(until)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
 
             let mut by_day: HashMap<i64, (i64, i64, i64)> = HashMap::new();
@@ -1846,18 +1416,18 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET status = $1, status_changed_at = $2
-            WHERE status = $3
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE status = ?
               AND status_changed_at IS NOT NULL
-              AND status_changed_at < $4
+              AND status_changed_at < ?
             "#,
         )
         .bind(STATUS_ACTIVE)
         .bind(now_ts)
         .bind(STATUS_EXHAUSTED)
         .bind(month_start)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
@@ -1867,9 +1437,9 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET status = $1, status_changed_at = $2, last_used_at = $3
-            WHERE api_key = $4 AND status NOT IN ($5, $6) AND deleted_at IS NULL
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?, last_used_at = ?
+            WHERE api_key = ? AND status NOT IN (?, ?) AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_EXHAUSTED)
@@ -1878,7 +1448,7 @@ impl KeyStore {
         .bind(key)
         .bind(STATUS_DISABLED)
         .bind(STATUS_EXHAUSTED)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
     }
@@ -1887,16 +1457,16 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET status = $1, status_changed_at = $2
-            WHERE api_key = $3 AND status = $4 AND deleted_at IS NULL
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE api_key = ? AND status = ? AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
         .bind(now)
         .bind(key)
         .bind(STATUS_EXHAUSTED)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
     }
@@ -1913,11 +1483,11 @@ impl KeyStore {
         let quarantine_id = nanoid!(12);
         let insert_result = sqlx::query(
             r#"
-            INSERT INTO core.api_key_quarantines (
+            INSERT INTO api_key_quarantines (
                 id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
-            ON CONFLICT (key_id) WHERE cleared_at IS NULL DO NOTHING
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(key_id) WHERE cleared_at IS NULL DO NOTHING
             "#,
         )
         .bind(quarantine_id)
@@ -1927,15 +1497,15 @@ impl KeyStore {
         .bind(reason_summary)
         .bind(reason_detail)
         .bind(now)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
 
         if insert_result.rows_affected() == 0 {
             sqlx::query(
                 r#"
-                UPDATE core.api_key_quarantines
-                SET source = $1, reason_code = $2, reason_summary = $3, reason_detail = $4
-                WHERE key_id = $5 AND cleared_at IS NULL
+                UPDATE api_key_quarantines
+                SET source = ?, reason_code = ?, reason_summary = ?, reason_detail = ?
+                WHERE key_id = ? AND cleared_at IS NULL
                 "#,
             )
             .bind(source)
@@ -1943,7 +1513,7 @@ impl KeyStore {
             .bind(reason_summary)
             .bind(reason_detail)
             .bind(key_id)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
             return Ok(false);
         }
@@ -1958,14 +1528,14 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
-            UPDATE core.api_key_quarantines
-            SET cleared_at = $1
-            WHERE key_id = $2 AND cleared_at IS NULL
+            UPDATE api_key_quarantines
+            SET cleared_at = ?
+            WHERE key_id = ? AND cleared_at IS NULL
             "#,
         )
         .bind(now)
         .bind(key_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
     }
@@ -1984,7 +1554,7 @@ impl KeyStore {
         }
 
         let mut builder = QueryBuilder::new(
-            "SELECT api_key FROM core.api_keys WHERE deleted_at IS NULL AND api_key IN (",
+            "SELECT api_key FROM api_keys WHERE deleted_at IS NULL AND api_key IN (",
         );
         let mut separated = builder.separated(", ");
         for api_key in api_keys {
@@ -1994,7 +1564,7 @@ impl KeyStore {
 
         let rows = builder
             .build_query_scalar::<String>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().collect())
     }
@@ -2085,9 +1655,10 @@ impl KeyStore {
                     let remaining = input
                         .deadline
                         .saturating_duration_since(std::time::Instant::now());
-                    let backoff =
-                        Duration::from_millis(API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS[retry_idx])
-                            .min(remaining);
+                    let backoff = Duration::from_millis(
+                        API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS[retry_idx],
+                    )
+                    .min(remaining);
                     if backoff.is_zero() {
                         return Err(ProxyError::Deferred {
                             operation: "admin_api_key_mutation",
@@ -2121,13 +1692,16 @@ impl KeyStore {
         api_key: &str,
         input: ApiKeyUpsertInput<'_>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self
+            .sqlite_runtime
+            .begin_immediate_before(SqliteOperation::AdminMutation, input.deadline)
+            .await?;
         let now = self.backend_time.now_ts();
 
         let operation_result: Result<(String, ApiKeyUpsertStatus), ProxyError> = async {
             if let Some((id, deleted_at, existing_group, existing_registration_ip, existing_registration_region)) =
                 sqlx::query_as::<_, (String, Option<i64>, Option<String>, Option<String>, Option<String>)>(
-                    "SELECT id, deleted_at, group_name, registration_ip, registration_region FROM core.api_keys WHERE api_key = $1 LIMIT 1",
+                    "SELECT id, deleted_at, group_name, registration_ip, registration_region FROM api_keys WHERE api_key = ? LIMIT 1",
                 )
                 .bind(api_key)
                 .fetch_optional(&mut *tx)
@@ -2160,23 +1734,10 @@ impl KeyStore {
                 }
 
                 if !assignments.is_empty() {
-                    let mut query = String::from("UPDATE core.api_keys SET ");
+                    let mut query = String::from("UPDATE api_keys SET ");
                     query.push_str(&assignments.join(", "));
                     query.push_str(" WHERE id = ?");
-                    // `assignments` grows at runtime, so the positional parameters are numbered
-                    // as the statement is assembled instead of being hard-coded per branch.
-                    let mut numbered = String::with_capacity(query.len() + 8);
-                    let mut param_index = 0usize;
-                    let mut rest = query.as_str();
-                    while let Some(position) = rest.find('?') {
-                        numbered.push_str(&rest[..position]);
-                        param_index += 1;
-                        numbered.push('$');
-                        numbered.push_str(&param_index.to_string());
-                        rest = &rest[position + 1..];
-                    }
-                    numbered.push_str(rest);
-                    let mut sql = sqlx::query(&numbered);
+                    let mut sql = sqlx::query(&query);
                     if let Some(group) = input.group
                         && existing_empty
                     {
@@ -2192,7 +1753,7 @@ impl KeyStore {
                 }
                 if deleted_at.is_some() {
                     sqlx::query(
-                        "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+                        "INSERT INTO api_key_membership_intervals (key_id, active_from) VALUES (?, ?)",
                     )
                     .bind(&id)
                     .bind(now)
@@ -2204,12 +1765,12 @@ impl KeyStore {
                 {
                     sqlx::query(
                         r#"
-                        INSERT INTO core.forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                        VALUES ($1, $2, $3, EXTRACT(EPOCH FROM now())::bigint)
-                        ON CONFLICT (key_id) DO UPDATE SET
+                        INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                        VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                        ON CONFLICT(key_id) DO UPDATE SET
                             primary_proxy_key = excluded.primary_proxy_key,
                             secondary_proxy_key = excluded.secondary_proxy_key,
-                            updated_at = EXTRACT(EPOCH FROM now())::bigint
+                            updated_at = strftime('%s', 'now')
                         "#,
                     )
                     .bind(&id)
@@ -2226,23 +1787,10 @@ impl KeyStore {
                 return Ok((id, ApiKeyUpsertStatus::Existed));
             }
 
-            // PostgreSQL branch: the SQLite `generate_unique_key_id` helper takes a SQLite
-            // connection, so the candidate probe runs against the PostgreSQL transaction.
-            let id = loop {
-                let candidate = nanoid!(4);
-                let exists = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT id FROM core.api_keys WHERE id = $1 LIMIT 1",
-                )
-                .bind(&candidate)
-                .fetch_optional(&mut *tx)
-                .await?;
-                if exists.is_none() {
-                    break candidate;
-                }
-            };
+            let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO core.api_keys (
+                INSERT INTO api_keys (
                     id,
                     api_key,
                     group_name,
@@ -2252,7 +1800,7 @@ impl KeyStore {
                     created_at,
                     status_changed_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
@@ -2266,7 +1814,7 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
             sqlx::query(
-                "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+                "INSERT INTO api_key_membership_intervals (key_id, active_from) VALUES (?, ?)",
             )
             .bind(&id)
             .bind(now)
@@ -2275,12 +1823,12 @@ impl KeyStore {
             if let Some(proxy_affinity) = input.proxy_affinity {
                 sqlx::query(
                     r#"
-                    INSERT INTO core.forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                    VALUES ($1, $2, $3, EXTRACT(EPOCH FROM now())::bigint)
-                    ON CONFLICT (key_id) DO UPDATE SET
+                    INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                    VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                    ON CONFLICT(key_id) DO UPDATE SET
                         primary_proxy_key = excluded.primary_proxy_key,
                         secondary_proxy_key = excluded.secondary_proxy_key,
-                        updated_at = EXTRACT(EPOCH FROM now())::bigint
+                        updated_at = strftime('%s', 'now')
                     "#,
                 )
                 .bind(&id)
@@ -2295,27 +1843,27 @@ impl KeyStore {
 
         match operation_result {
             Ok(result) => {
-                tx.commit().await?;
+                tx.finish(Ok(())).await?;
                 Ok(result)
             }
-            Err(err) => {
-                tx.rollback().await.ok();
-                Err(err)
-            }
+            Err(err) => match tx.finish(Err(err)).await {
+                Err(err) => Err(err),
+                Ok(()) => unreachable!("rolling back a failed API key mutation must return its error"),
+            },
         }
     }
 
     // Admin ops: soft-delete by ID (mark deleted_at)
     pub(crate) async fn soft_delete_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
-        let mut tx = self.pg()?.begin().await?;
-        sqlx::query("UPDATE core.api_keys SET deleted_at = $1 WHERE id = $2")
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
             .bind(now)
             .bind(key_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "UPDATE core.api_key_membership_intervals SET active_until = $1 WHERE key_id = $2 AND active_until IS NULL",
+            "UPDATE api_key_membership_intervals SET active_until = ? WHERE key_id = ? AND active_until IS NULL",
         )
         .bind(now)
         .bind(key_id)
@@ -2329,15 +1877,15 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET status = $1, status_changed_at = $2
-            WHERE id = $3 AND deleted_at IS NULL
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE id = ? AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_DISABLED)
         .bind(now)
         .bind(key_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2346,9 +1894,9 @@ impl KeyStore {
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET status = $1, status_changed_at = $2
-            WHERE id = $3 AND status IN ($4, $5) AND deleted_at IS NULL
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE id = ? AND status IN (?, ?) AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
@@ -2356,7 +1904,7 @@ impl KeyStore {
         .bind(key_id)
         .bind(STATUS_DISABLED)
         .bind(STATUS_EXHAUSTED)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2364,14 +1912,14 @@ impl KeyStore {
     pub(crate) async fn touch_key(&self, key: &str, timestamp: i64) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            UPDATE core.api_keys
-            SET last_used_at = $1
-            WHERE api_key = $2
+            UPDATE api_keys
+            SET last_used_at = ?
+            WHERE api_key = ?
             "#,
         )
         .bind(timestamp)
         .bind(key)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2382,16 +1930,16 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.group_name, '')) AS value, COUNT(*) AS count",
         );
-        builder.push(Self::api_key_metrics_from_clause_pg());
-        Self::push_api_key_status_filters_pg(&mut builder, statuses);
-        Self::push_api_key_registration_ip_filter_pg(&mut builder, registration_ip);
-        Self::push_api_key_region_filters_pg(&mut builder, regions);
+        builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_status_filters(&mut builder, statuses);
+        Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
+        Self::push_api_key_region_filters(&mut builder, regions);
         builder.push(" GROUP BY value ORDER BY value ASC");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| {
                 Ok(ApiKeyFacetCount {
@@ -2409,7 +1957,7 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT CASE
                 WHEN aq.key_id IS NOT NULL THEN 'quarantined'
@@ -2418,13 +1966,13 @@ impl KeyStore {
             END AS value, COUNT(*) AS count
             "#,
         );
-        builder.push(Self::api_key_metrics_from_clause_pg());
-        Self::push_api_key_group_filters_pg(&mut builder, groups);
-        Self::push_api_key_registration_ip_filter_pg(&mut builder, registration_ip);
-        Self::push_api_key_region_filters_pg(&mut builder, regions);
+        builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_group_filters(&mut builder, groups);
+        Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
+        Self::push_api_key_region_filters(&mut builder, regions);
         builder.push(" GROUP BY value ORDER BY value ASC");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| {
                 Ok(ApiKeyFacetCount {
@@ -2442,17 +1990,17 @@ impl KeyStore {
         statuses: &[String],
         registration_ip: Option<&str>,
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.registration_region, '')) AS value, COUNT(*) AS count",
         );
-        builder.push(Self::api_key_metrics_from_clause_pg());
-        Self::push_api_key_group_filters_pg(&mut builder, groups);
-        Self::push_api_key_status_filters_pg(&mut builder, statuses);
-        Self::push_api_key_registration_ip_filter_pg(&mut builder, registration_ip);
+        builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_group_filters(&mut builder, groups);
+        Self::push_api_key_status_filters(&mut builder, statuses);
+        Self::push_api_key_registration_ip_filter(&mut builder, registration_ip);
         builder.push(" AND TRIM(COALESCE(ak.registration_region, '')) != ''");
         builder.push(" GROUP BY value ORDER BY value ASC");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| {
                 Ok(ApiKeyFacetCount {
@@ -2470,11 +2018,11 @@ impl KeyStore {
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
         let query = format!(
             "{} ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
-            Self::api_key_metrics_query_pg(include_quarantine_detail),
+            Self::api_key_metrics_query(include_quarantine_detail),
         );
-        let rows = sqlx::query(&query).fetch_all(self.pg()?).await?;
+        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
         rows.into_iter()
-            .map(Self::map_api_key_metrics_row_pg)
+            .map(Self::map_api_key_metrics_row)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProxyError::from)
     }
@@ -2485,19 +2033,18 @@ impl KeyStore {
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
         let limit = limit.clamp(1, 50) as i64;
         let statuses = vec![STATUS_EXHAUSTED.to_string()];
-        let mut items_builder =
-            QueryBuilder::<sqlx::Postgres>::new(Self::api_key_metrics_query_pg(false));
-        Self::push_api_key_status_filters_pg(&mut items_builder, &statuses);
+        let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
+        Self::push_api_key_status_filters(&mut items_builder, &statuses);
         items_builder.push(
             " ORDER BY COALESCE(ak.last_used_at, 0) DESC, COALESCE(ak.status_changed_at, 0) DESC, ak.id ASC",
         );
         items_builder.push(" LIMIT ").push_bind(limit);
         items_builder
             .build()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
             .into_iter()
-            .map(Self::map_api_key_metrics_row_pg)
+            .map(Self::map_api_key_metrics_row)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ProxyError::from)
     }
@@ -2510,19 +2057,19 @@ impl KeyStore {
         sqlx::query_scalar::<_, String>(
             r#"
             SELECT ak.id
-            FROM core.api_keys ak
-            LEFT JOIN core.api_key_quarantines aq
+            FROM api_keys ak
+            LEFT JOIN api_key_quarantines aq
               ON aq.key_id = ak.id AND aq.cleared_at IS NULL
             WHERE ak.deleted_at IS NULL
               AND aq.key_id IS NULL
-              AND ak.status = $1
+              AND ak.status = ?
             ORDER BY COALESCE(ak.last_used_at, 0) DESC, COALESCE(ak.status_changed_at, 0) DESC, ak.id ASC
-            LIMIT $2
+            LIMIT ?
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2550,26 +2097,25 @@ impl KeyStore {
             .filter(|value| !value.is_empty());
         let regions = Self::normalize_api_key_regions(regions);
 
-        let mut count_builder = QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*)");
-        count_builder.push(Self::api_key_metrics_from_clause_pg());
-        Self::push_api_key_group_filters_pg(&mut count_builder, &groups);
-        Self::push_api_key_status_filters_pg(&mut count_builder, &statuses);
-        Self::push_api_key_registration_ip_filter_pg(&mut count_builder, registration_ip);
-        Self::push_api_key_region_filters_pg(&mut count_builder, &regions);
+        let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*)");
+        count_builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_group_filters(&mut count_builder, &groups);
+        Self::push_api_key_status_filters(&mut count_builder, &statuses);
+        Self::push_api_key_registration_ip_filter(&mut count_builder, registration_ip);
+        Self::push_api_key_region_filters(&mut count_builder, &regions);
         let total = count_builder
             .build_query_scalar::<i64>()
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?;
         let total_pages = ((total + per_page - 1) / per_page).max(1);
         let page = requested_page.min(total_pages);
         let offset = (page - 1) * per_page;
 
-        let mut items_builder =
-            QueryBuilder::<sqlx::Postgres>::new(Self::api_key_metrics_query_pg(false));
-        Self::push_api_key_group_filters_pg(&mut items_builder, &groups);
-        Self::push_api_key_status_filters_pg(&mut items_builder, &statuses);
-        Self::push_api_key_registration_ip_filter_pg(&mut items_builder, registration_ip);
-        Self::push_api_key_region_filters_pg(&mut items_builder, &regions);
+        let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
+        Self::push_api_key_group_filters(&mut items_builder, &groups);
+        Self::push_api_key_status_filters(&mut items_builder, &statuses);
+        Self::push_api_key_registration_ip_filter(&mut items_builder, registration_ip);
+        Self::push_api_key_region_filters(&mut items_builder, &regions);
         items_builder.push(
             " ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
         );
@@ -2577,10 +2123,10 @@ impl KeyStore {
         items_builder.push(" OFFSET ").push_bind(offset);
         let items = items_builder
             .build()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
             .into_iter()
-            .map(Self::map_api_key_metrics_row_pg)
+            .map(Self::map_api_key_metrics_row)
             .collect::<Result<Vec<_>, _>>()?;
 
         let group_counts = self
@@ -2610,14 +2156,17 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(Self::api_key_metrics_query_pg(true));
+        let mut builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(true));
         builder.push(" AND ak.id = ");
         builder.push_bind(key_id);
         builder.push(" LIMIT 1");
 
-        let row = builder.build().fetch_optional(self.pg()?).await?;
+        let row = builder
+            .build()
+            .fetch_optional(&self.pool)
+            .await?;
 
-        row.map(Self::map_api_key_metrics_row_pg)
+        row.map(Self::map_api_key_metrics_row)
             .transpose()
             .map_err(ProxyError::from)
     }
@@ -2677,16 +2226,16 @@ impl KeyStore {
                 client_ip_trusted,
                 ip_headers,
                 created_at
-            FROM observability.request_logs
-            WHERE visibility = $1 AND created_at >= $2
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
             ORDER BY created_at DESC, id DESC
-            LIMIT $3
+            LIMIT ?
             "#,
             )
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(since)
             .bind(limit)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
@@ -2736,15 +2285,15 @@ impl KeyStore {
                 client_ip_trusted,
                 ip_headers,
                 created_at
-            FROM observability.request_logs
-            WHERE visibility = $1
+            FROM request_logs
+            WHERE visibility = ?
             ORDER BY created_at DESC, id DESC
-            LIMIT $2
+            LIMIT ?
             "#,
             )
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(limit)
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?
         };
 
@@ -2760,8 +2309,8 @@ impl KeyStore {
         &self,
         since: Option<i64>,
     ) -> Result<Option<i64>, ProxyError> {
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT id FROM observability.request_logs WHERE visibility = ",
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT id FROM request_logs WHERE visibility = ",
         );
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
         if let Some(since) = since {
@@ -2771,7 +2320,7 @@ impl KeyStore {
 
         builder
             .build_query_scalar::<Option<i64>>()
-            .fetch_optional(self.pg()?)
+            .fetch_optional(&self.pool)
             .await
             .map(|value| value.flatten())
             .map_err(ProxyError::from)
@@ -2786,16 +2335,16 @@ impl KeyStore {
         sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT id, created_at
-            FROM observability.request_logs
-            WHERE visibility = $1 AND created_at >= $2
+            FROM request_logs
+            WHERE visibility = ? AND created_at >= ?
             ORDER BY created_at DESC, id DESC
-            LIMIT $3
+            LIMIT ?
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(since)
         .bind(limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2809,8 +2358,8 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
-        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM observability.request_logs INDEXED BY idx_request_logs_user_ip_time WHERE visibility = ",
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT request_user_id, COUNT(DISTINCT client_ip) AS ip_count FROM request_logs INDEXED BY idx_request_logs_user_ip_time WHERE visibility = ",
         );
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
         builder.push(" AND request_user_id IN (");
@@ -2823,10 +2372,9 @@ impl KeyStore {
         }
         builder.push(" AND created_at >= ");
         builder.push_bind(since);
-        builder
-            .push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
+        builder.push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
 
-        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let rows = builder.build().fetch_all(&self.pool).await?;
         let mut result = HashMap::new();
         for row in rows {
             let user_id: String = row.try_get("request_user_id")?;
@@ -2844,16 +2392,17 @@ impl KeyStore {
     ) -> Result<Vec<String>, ProxyError> {
         let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
-            "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM observability.request_logs \
-             WHERE request_user_id = $1 AND created_at >= $2 AND visibility = $3 \
+            "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
+             INDEXED BY idx_request_logs_user_ip_time \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
-             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC LIMIT $4",
+             GROUP BY client_ip ORDER BY latest_seen_at DESC, client_ip ASC LIMIT ?",
         )
         .bind(user_id)
         .bind(since)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(row_limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
@@ -2870,27 +2419,26 @@ impl KeyStore {
         let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
-             COUNT(*) AS request_count FROM observability.request_logs \
-             WHERE request_user_id = $1 AND created_at >= $2 AND visibility = $3 \
+             COUNT(*) AS request_count FROM request_logs \
+             INDEXED BY idx_request_logs_user_ip_time \
+             WHERE request_user_id = ? AND created_at >= ? AND visibility = ? \
              AND client_ip IS NOT NULL AND TRIM(client_ip) != '' \
-             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC LIMIT $4",
+             GROUP BY client_ip ORDER BY last_seen_at DESC, client_ip ASC LIMIT ?",
         )
         .bind(user_id)
         .bind(since)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(row_limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         rows.into_iter()
-            .map(|row| {
-                Ok(AdminUserIpTimelineEntry {
-                    ip_address: row.try_get("client_ip")?,
-                    first_seen_at: row.try_get("first_seen_at")?,
-                    last_seen_at: row.try_get("last_seen_at")?,
-                    request_count: row.try_get("request_count")?,
-                })
-            })
+            .map(|row| Ok(AdminUserIpTimelineEntry {
+                ip_address: row.try_get("client_ip")?,
+                first_seen_at: row.try_get("first_seen_at")?,
+                last_seen_at: row.try_get("last_seen_at")?,
+                request_count: row.try_get("request_count")?,
+            }))
             .collect()
     }
 
@@ -2902,13 +2450,13 @@ impl KeyStore {
         let rows = sqlx::query(
             r#"
             SELECT id, created_at, remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
-            FROM observability.request_logs
-            WHERE visibility = $1
+            FROM request_logs
+            WHERE visibility = ?
               AND NOT (
                 gateway_mode IS NOT NULL
                 AND upstream_operation IS NOT NULL
-                AND gateway_mode = $2
-                AND upstream_operation = $3
+                AND gateway_mode = ?
+                AND upstream_operation = ?
                 AND remote_addr IS NULL
                 AND client_ip IS NULL
                 AND (
@@ -2918,14 +2466,14 @@ impl KeyStore {
                 )
               )
             ORDER BY created_at DESC, id DESC
-            LIMIT $4
+            LIMIT ?
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(MCP_GATEWAY_MODE_REBALANCE)
         .bind("mcp")
         .bind(row_limit)
-        .fetch_all(self.pg()?)
+        .fetch_all(&self.pool)
         .await?;
 
         let mut items = Vec::with_capacity(rows.len());
@@ -2937,9 +2485,7 @@ impl KeyStore {
                 client_ip: row.try_get("client_ip")?,
                 client_ip_source: row.try_get("client_ip_source")?,
                 client_ip_trusted: row.try_get::<i64, _>("client_ip_trusted")? != 0,
-                ip_headers: parse_client_ip_header_values(
-                    row.try_get::<Option<String>, _>("ip_headers")?,
-                ),
+                ip_headers: parse_client_ip_header_values(row.try_get::<Option<String>, _>("ip_headers")?),
             });
         }
         Ok(items)
@@ -2976,16 +2522,7 @@ impl KeyStore {
         Ok((result.items, result.total))
     }
 
-    fn map_request_log_row<R>(row: R) -> Result<RequestLogRecord, sqlx::Error>
-    where
-        R: sqlx::Row,
-        for<'r> &'r str: sqlx::ColumnIndex<R>,
-        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<i64>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<String>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-        for<'r> Option<Vec<u8>>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
-    {
+    fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, sqlx::Error> {
         let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
         let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
         let ip_headers =
@@ -3007,10 +2544,11 @@ impl KeyStore {
         );
         let result_status: String = row.try_get("result_status")?;
         let failure_kind: Option<String> = row.try_get("failure_kind")?;
-        let counts_business_quota = match row.try_get::<Option<i64>, _>("counts_business_quota") {
-            Ok(Some(value)) => value != 0,
-            _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
-        };
+        let counts_business_quota =
+            match row.try_get::<Option<i64>, _>("counts_business_quota") {
+                Ok(Some(value)) => value != 0,
+                _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
+            };
         let request_kind_protocol_group =
             match row.try_get::<Option<String>, _>("request_kind_protocol_group") {
                 Ok(Some(value)) => value,
@@ -3087,7 +2625,7 @@ impl KeyStore {
     }
 
     fn map_request_log_bodies_row(
-        row: sqlx::postgres::PgRow,
+        row: sqlx::sqlite::SqliteRow,
     ) -> Result<RequestLogBodiesRecord, sqlx::Error> {
         Ok(RequestLogBodiesRecord {
             request_body: row.try_get("request_body")?,
@@ -3111,14 +2649,14 @@ impl KeyStore {
                    request_body_bytes, response_body_bytes,
                    request_body_sha256, response_body_sha256,
                    body_cleaned_reason, body_cleaned_at
-            FROM observability.request_logs
-            WHERE id = $1 AND visibility = $2
+            FROM request_logs
+            WHERE id = ? AND visibility = ?
             LIMIT 1
             "#,
         )
         .bind(log_id)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
@@ -3136,15 +2674,15 @@ impl KeyStore {
                    request_body_bytes, response_body_bytes,
                    request_body_sha256, response_body_sha256,
                    body_cleaned_reason, body_cleaned_at
-            FROM observability.request_logs
-            WHERE id = $1 AND api_key_id = $2 AND visibility = $3
+            FROM request_logs
+            WHERE id = ? AND api_key_id = ? AND visibility = ?
             LIMIT 1
             "#,
         )
         .bind(log_id)
         .bind(key_id)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
@@ -3162,18 +2700,18 @@ impl KeyStore {
                    rl.request_body_bytes, rl.response_body_bytes,
                    rl.request_body_sha256, rl.response_body_sha256,
                    rl.body_cleaned_reason, rl.body_cleaned_at
-            FROM core.auth_token_logs atl
-            LEFT JOIN observability.request_logs rl
+            FROM auth_token_logs atl
+            LEFT JOIN request_logs rl
               ON rl.id = atl.request_log_id
-             AND rl.visibility = $1
-            WHERE atl.id = $2 AND atl.token_id = $3
+             AND rl.visibility = ?
+            WHERE atl.id = ? AND atl.token_id = ?
             LIMIT 1
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(log_id)
         .bind(token_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .map(Self::map_request_log_bodies_row)
         .transpose()
@@ -3192,7 +2730,6 @@ impl KeyStore {
         Self::request_logs_cursor(record.created_at, record.id)
     }
 
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     fn push_desc_cursor_clause<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         created_at_column: &str,
@@ -3201,32 +2738,30 @@ impl KeyStore {
         direction: RequestLogsCursorDirection,
         has_where: bool,
     ) -> bool {
-        push_desc_cursor_clause_body!(
-            builder,
-            created_at_column,
-            id_column,
-            cursor,
-            direction,
-            has_where
-        )
-    }
+        let Some(cursor) = cursor else {
+            return has_where;
+        };
 
-    fn push_desc_cursor_clause_pg<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
-        created_at_column: &str,
-        id_column: &str,
-        cursor: Option<&RequestLogsCursor>,
-        direction: RequestLogsCursorDirection,
-        has_where: bool,
-    ) -> bool {
-        push_desc_cursor_clause_body!(
-            builder,
-            created_at_column,
-            id_column,
-            cursor,
-            direction,
-            has_where
-        )
+        builder.push(if has_where { " AND (" } else { " WHERE (" });
+        builder.push(created_at_column);
+        builder.push(match direction {
+            RequestLogsCursorDirection::Older => " < ",
+            RequestLogsCursorDirection::Newer => " > ",
+        });
+        builder.push_bind(cursor.created_at);
+        builder.push(" OR (");
+        builder.push(created_at_column);
+        builder.push(" = ");
+        builder.push_bind(cursor.created_at);
+        builder.push(" AND ");
+        builder.push(id_column);
+        builder.push(match direction {
+            RequestLogsCursorDirection::Older => " < ",
+            RequestLogsCursorDirection::Newer => " > ",
+        });
+        builder.push_bind(cursor.id);
+        builder.push("))");
+        true
     }
 
     fn request_logs_catalog_cache_key(
@@ -3271,4 +2806,5 @@ impl KeyStore {
             && filters.key_id.is_none()
             && filters.operational_class.is_none()
     }
+
 }

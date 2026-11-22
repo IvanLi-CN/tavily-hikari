@@ -1,106 +1,4 @@
 impl KeyStore {
-    fn scheduled_job_effective_priority_sql_pg(
-        job_type_column: &str,
-        trigger_source_column: &str,
-        queued_at_column: &str,
-        now_placeholder: usize,
-    ) -> String {
-        let priority_sql = Self::scheduled_job_priority_sql(job_type_column, trigger_source_column);
-        format!(
-            "CASE WHEN {trigger_source_column} = 'manual' THEN ({priority_sql}) \
-                 ELSE GREATEST({}, ({priority_sql}) - GREATEST(0, (${now_placeholder} - {queued_at_column}) / {})) END",
-            Self::SCHEDULED_JOB_PRIORITY_AGING_FLOOR,
-            Self::SCHEDULED_JOB_PRIORITY_AGING_SECS,
-        )
-    }
-
-    async fn scheduled_job_lookup_active_locked_pg(
-        conn: &mut sqlx::PgConnection,
-        job_type: &str,
-        key_id: Option<&str>,
-    ) -> Result<Option<(i64, String, String)>, ProxyError> {
-        sqlx::query_as::<_, (i64, String, String)>(
-                r#"
-                SELECT id, status, trigger_source
-                FROM core.scheduled_jobs
-                WHERE job_type = $1
-                  AND (status = 'queued' OR status = 'running')
-                  AND ((key_id IS NULL AND $2::text IS NULL) OR key_id = $3)
-                ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, COALESCE(started_at, queued_at) DESC, id DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(job_type)
-            .bind(key_id)
-            .bind(key_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(ProxyError::from)
-    }
-
-    async fn abandon_stale_quota_sync_job_locked_pg(
-        conn: &mut sqlx::PgConnection,
-        job_type: &str,
-        key_id: Option<&str>,
-        now: i64,
-    ) -> Result<(), ProxyError> {
-        let stale_before = now.saturating_sub(QUOTA_SYNC_STALE_RUNNING_SECS);
-        let Some(stale_group) = Self::scheduled_job_stale_group(job_type) else {
-            return Ok(());
-        };
-        sqlx::query(
-                r#"
-                UPDATE core.scheduled_jobs
-                SET status = 'abandoned',
-                    message = COALESCE(message, 'abandoned after quota_sync timeout window'),
-                    finished_at = $1
-                WHERE status = 'running'
-                  AND finished_at IS NULL
-                  AND started_at IS NOT NULL
-                  AND started_at <= $2
-                  AND (
-                        ((job_type = 'quota_sync' OR job_type = 'quota_sync/manual') AND $3 = 'quota_sync')
-                        OR (job_type = $4 AND $5 = 'quota_sync/hot')
-                      )
-                  AND ((key_id IS NULL AND $6::text IS NULL) OR key_id = $7)
-                "#,
-            )
-            .bind(now)
-            .bind(stale_before)
-            .bind(stale_group)
-            .bind(stale_group)
-            .bind(stale_group)
-            .bind(key_id)
-            .bind(key_id)
-            .execute(&mut *conn)
-            .await?;
-        Ok(())
-    }
-    async fn scheduled_job_lookup_active_pg(
-        &self,
-        job_type: &str,
-        key_id: Option<&str>,
-    ) -> Result<Option<(i64, String, String)>, ProxyError> {
-        let mut conn = self.pg()?.acquire().await?;
-        sqlx::query_as::<_, (i64, String, String)>(
-                r#"
-                SELECT id, status, trigger_source
-                FROM core.scheduled_jobs
-                WHERE job_type = $1
-                  AND (status = 'queued' OR status = 'running')
-                  AND ((key_id IS NULL AND $2::text IS NULL) OR key_id = $3)
-                ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, COALESCE(started_at, queued_at) DESC, id DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(job_type)
-            .bind(key_id)
-            .bind(key_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(ProxyError::from)
-    }
-
     const SCHEDULED_JOB_PRIORITY_AGING_SECS: i64 = 5 * 60;
     const SCHEDULED_JOB_PRIORITY_AGING_FLOOR: i64 = 2;
     fn is_scheduled_job_active_identity_conflict(err: &ProxyError) -> bool {
@@ -246,26 +144,17 @@ impl KeyStore {
     }
 
     pub(crate) async fn ensure_scheduled_jobs_queue_schema(&self) -> Result<(), ProxyError> {
-        if !self
-            .table_column_exists("scheduled_jobs", "queued_at")
-            .await?
-        {
+        if !self.table_column_exists("scheduled_jobs", "queued_at").await? {
             self.rebuild_scheduled_jobs_table().await?;
         }
-        if !self
-            .table_column_exists("scheduled_jobs", "available_at")
-            .await?
-        {
+        if !self.table_column_exists("scheduled_jobs", "available_at").await? {
             sqlx::query(
                 "ALTER TABLE scheduled_jobs ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0",
             )
             .execute(&self.pool)
             .await?;
         }
-        if !self
-            .table_column_exists("scheduled_jobs", "claim_generation")
-            .await?
-        {
+        if !self.table_column_exists("scheduled_jobs", "claim_generation").await? {
             sqlx::query(
                 "ALTER TABLE scheduled_jobs ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0",
             )
@@ -282,7 +171,7 @@ impl KeyStore {
             .await?;
         let mut conn = ImmediateSqliteTransaction::begin(raw_conn).await?;
 
-        let rebuild_result: Result<_, ProxyError> = async {
+        let rebuild_result = async {
             sqlx::query("DROP TABLE IF EXISTS scheduled_jobs_new")
                 .execute(&mut *conn)
                 .await?;
@@ -463,9 +352,7 @@ impl KeyStore {
         self.sqlite_db_stats().await
     }
 
-    pub(crate) async fn checkpoint_sqlite_wal_passive(
-        &self,
-    ) -> Result<(i64, i64, i64), ProxyError> {
+    pub(crate) async fn checkpoint_sqlite_wal_passive(&self) -> Result<(i64, i64, i64), ProxyError> {
         let (main, _) = self.checkpoint_sqlite_wal_passive_detailed().await?;
         Ok((
             i64::from(main.busy),
@@ -476,34 +363,38 @@ impl KeyStore {
 
     pub(crate) async fn checkpoint_sqlite_wal_passive_detailed(
         &self,
-    ) -> Result<(SqliteWalCheckpointStats, Option<SqliteWalCheckpointStats>), ProxyError> {
+    ) -> Result<
+        (
+            SqliteWalCheckpointStats,
+            Option<SqliteWalCheckpointStats>,
+        ),
+        ProxyError,
+    > {
         let main = sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA main.wal_checkpoint(PASSIVE)")
             .fetch_one(&self.pool)
             .await
-            .map(
-                |(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
-                    busy: busy != 0,
-                    log_frames,
-                    checkpointed_frames,
-                },
-            )
+            .map(|(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
+                busy: busy != 0,
+                log_frames,
+                checkpointed_frames,
+            })
             .map_err(ProxyError::Database)?;
         let observability = self
             .observability_database_path
             .as_deref()
             .filter(|path| !sqlite_paths_match(&self.database_path, path))
             .map(|_| async {
-                sqlx::query_as::<_, (i64, i64, i64)>("PRAGMA observability.wal_checkpoint(PASSIVE)")
-                    .fetch_one(&self.pool)
-                    .await
-                    .map(
-                        |(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
-                            busy: busy != 0,
-                            log_frames,
-                            checkpointed_frames,
-                        },
-                    )
-                    .map_err(ProxyError::Database)
+                sqlx::query_as::<_, (i64, i64, i64)>(
+                    "PRAGMA observability.wal_checkpoint(PASSIVE)",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .map(|(busy, log_frames, checkpointed_frames)| SqliteWalCheckpointStats {
+                    busy: busy != 0,
+                    log_frames,
+                    checkpointed_frames,
+                })
+                .map_err(ProxyError::Database)
             });
         let observability = match observability {
             Some(future) => Some(future.await?),
@@ -529,77 +420,12 @@ impl KeyStore {
         key_id: Option<&str>,
         attempt: i64,
     ) -> Result<i64, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let started_at = self.backend_time.now_ts();
-                let mut conn = pool.begin().await?;
-                let result: Result<_, ProxyError> = async {
-                    if let Some((job_id, status, _current_trigger_source)) =
-                        Self::scheduled_job_lookup_active_locked_pg(&mut conn, job_type, key_id)
-                            .await?
-                        && status == "running"
-                    {
-                        return Ok::<i64, ProxyError>(job_id);
-                    }
-
-                    let res = sqlx::query(
-                        r#"
-                    INSERT INTO core.scheduled_jobs (
-                        job_type,
-                        trigger_source,
-                        key_id,
-                        status,
-                        attempt,
-                        queued_at,
-                        available_at,
-                        started_at
-                    )
-                    VALUES ($1, $2, $3, 'running', $4, $5, $6, $7)
-                    RETURNING id
-                    "#,
-                    )
-                    .bind(job_type)
-                    .bind(trigger_source)
-                    .bind(key_id)
-                    .bind(attempt)
-                    .bind(started_at)
-                    .bind(started_at)
-                    .bind(started_at)
-                    .fetch_one(&mut *conn)
-                    .await?;
-                    Ok(res.get::<i64, _>("id"))
-                }
-                .await;
-                match result {
-                    Ok(job_id) => {
-                        conn.commit().await?;
-                        Ok(job_id)
-                    }
-                    Err(err) if Self::is_scheduled_job_active_identity_conflict(&err) => {
-                        conn.rollback().await?;
-                        let original_error = err;
-                        if let Some((job_id, _status, _current_trigger_source)) = self
-                            .scheduled_job_lookup_active_pg(job_type, key_id)
-                            .await?
-                        {
-                            Ok(job_id)
-                        } else {
-                            Err(original_error)
-                        }
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
-
         let started_at = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
             if let Some((job_id, status, _current_trigger_source)) =
                 Self::scheduled_job_lookup_active_locked(&mut conn, job_type, key_id).await?
                 && status == "running"
@@ -644,8 +470,8 @@ impl KeyStore {
                     Err(err) => err,
                     Ok(()) => unreachable!("failed scheduled job transaction committed"),
                 };
-                if let Some((job_id, _status, _current_trigger_source)) = self
-                    .scheduled_job_lookup_active(
+                if let Some((job_id, _status, _current_trigger_source)) =
+                    self.scheduled_job_lookup_active(
                         job_type,
                         key_id,
                         SqliteOperation::ScheduledJobControl,
@@ -727,40 +553,12 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
-    #[allow(clippy::let_and_return)]
     async fn scheduled_job_lookup_active(
         &self,
         job_type: &str,
         key_id: Option<&str>,
         operation: SqliteOperation,
     ) -> Result<Option<(i64, String, String)>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let mut conn = pool.acquire().await?;
-            let lookup = sqlx::query_as::<_, (i64, String, String)>(
-                r#"
-                SELECT id, status, trigger_source
-                FROM core.scheduled_jobs
-                WHERE job_type = $1
-                  AND (status = 'queued' OR status = 'running')
-                  AND ((key_id IS NULL AND $2::text IS NULL) OR key_id = $3)
-                ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, COALESCE(started_at, queued_at) DESC, id DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(job_type)
-            .bind(key_id)
-            .bind(key_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(ProxyError::from);
-                lookup
-            }
-            .await;
-        }
-
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(operation)
@@ -805,7 +603,7 @@ impl KeyStore {
             available_at,
             SqliteOperation::ScheduledJobControl,
         )
-        .await
+            .await
     }
 
     pub(crate) async fn scheduled_job_enqueue_foreground(
@@ -881,7 +679,11 @@ impl KeyStore {
         }
 
         let queued_at = self.backend_time.now_ts();
-        let mut conn = match self.sqlite_runtime.begin_immediate(operation).await {
+        let mut conn = match self
+            .sqlite_runtime
+            .begin_immediate(operation)
+            .await
+        {
             Ok(conn) => conn,
             Err(err) if crate::is_transient_sqlite_write_error(&err) => {
                 if let Some((job_id, status, trigger_source)) = active_representative {
@@ -897,7 +699,7 @@ impl KeyStore {
             }
             Err(err) => return Err(err),
         };
-        let result: Result<_, ProxyError> = async {
+        let result = async {
             Self::abandon_stale_quota_sync_job_locked(&mut conn, job_type, key_id, queued_at)
                 .await?;
             if let Some((job_id, status, current_trigger_source)) =
@@ -984,9 +786,8 @@ impl KeyStore {
                 // a coalesced manual wake into a foreground 500 solely to
                 // promote metadata that the next unlocked scheduler pass can
                 // update safely.
-                if let Some((job_id, status, current_trigger_source)) = self
-                    .scheduled_job_lookup_active(job_type, key_id, operation)
-                    .await?
+                if let Some((job_id, status, current_trigger_source)) =
+                    self.scheduled_job_lookup_active(job_type, key_id, operation).await?
                 {
                     return Ok(ScheduledJobEnqueueResult {
                         job_id,
@@ -1041,129 +842,16 @@ impl KeyStore {
         message: Option<&str>,
         available_at: i64,
     ) -> Result<ScheduledJobEnqueueResult, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let finished_at = self.backend_time.now_ts();
-            let preserve_research_wait_anchor = job_type == "upstream_reconciliation_research_drain"
-                && message
-                    .and_then(crate::ResearchDrainDeferReason::from_scheduled_job_message)
-                    .is_some_and(crate::ResearchDrainDeferReason::preserves_research_wait_anchor);
-            let mut conn = pool.begin().await?;
-            let result: Result<_, ProxyError> = async {
-                // `queued_at` is the durable fairness anchor for a Research drain
-                // that is otherwise ready but temporarily yields to foreground work
-                // or the request lease. Key cooldowns and accepted polls do not use
-                // this path, so their next eligibility begins a new wait interval.
-                let continuation_queued_at = if preserve_research_wait_anchor {
-                    sqlx::query_scalar(
-                        "SELECT queued_at FROM core.scheduled_jobs WHERE id = $1 AND status = 'running' AND claim_generation = $2",
-                    )
-                    .bind(job_id)
-                    .bind(claim_generation)
-                    .fetch_optional(&mut *conn)
-                    .await?
-                    .ok_or(ProxyError::StaleClaim {
-                        job_id,
-                        claim_generation,
-                    })?
-                } else {
-                    finished_at
-                };
-                // A deferred online slice must not turn a short SQLite writer conflict
-                // into the scheduler's long retry window.
-                let updated = sqlx::query(
-                    r#"UPDATE core.scheduled_jobs
-                       SET status = $1, message = $2, finished_at = $3
-                       WHERE id = $4 AND status = 'running' AND claim_generation = $5"#,
-                )
-                .bind(status)
-                .bind(message)
-                .bind(finished_at)
-                .bind(job_id)
-                .bind(claim_generation)
-                .execute(&mut *conn)
-                .await?;
-                if updated.rows_affected() == 0 {
-                    return Err(ProxyError::StaleClaim {
-                        job_id,
-                        claim_generation,
-                    });
-                }
-
-                if let Some((continuation_id, status, current_trigger_source)) =
-                    Self::scheduled_job_lookup_active_locked_pg(&mut conn, job_type, key_id).await?
-                {
-                    if status == "queued" {
-                        sqlx::query(
-                            "UPDATE core.scheduled_jobs SET available_at = LEAST(available_at, $1) WHERE id = $2",
-                        )
-                        .bind(available_at)
-                        .bind(continuation_id)
-                        .execute(&mut *conn)
-                        .await?;
-                    }
-                    return Ok(ScheduledJobEnqueueResult {
-                        job_id: continuation_id,
-                        created: false,
-                        promoted: false,
-                        status,
-                        trigger_source: current_trigger_source,
-                    });
-                }
-
-                let inserted = sqlx::query(
-                    r#"INSERT INTO core.scheduled_jobs (
-                           job_type,
-                           trigger_source,
-                           key_id,
-                           status,
-                           attempt,
-                           queued_at,
-                           available_at,
-                           started_at,
-                           finished_at
-                       ) VALUES ($1, 'auto', $2, 'queued', $3, $4, $5, NULL, NULL)
-                       RETURNING id"#,
-                )
-                .bind(job_type)
-                .bind(key_id)
-                .bind(attempt)
-                .bind(continuation_queued_at)
-                .bind(available_at)
-                .fetch_one(&mut *conn)
-                .await?;
-                Ok(ScheduledJobEnqueueResult {
-                    job_id: inserted.get::<i64, _>("id"),
-                    created: true,
-                    promoted: false,
-                    status: "queued".to_string(),
-                    trigger_source: "auto".to_string(),
-                })
-            }
-            .await;
-            match result {
-                Ok(result) => {
-                    conn.commit().await?;
-                    Ok(result)
-                }
-                Err(err) => {
-                    conn.rollback().await?;
-                    Err(err)
-                }
-            }
-            }
-            .await;
-        }
-
         let finished_at = self.backend_time.now_ts();
         let preserve_research_wait_anchor = job_type == "upstream_reconciliation_research_drain"
             && message
                 .and_then(crate::ResearchDrainDeferReason::from_scheduled_job_message)
                 .is_some_and(crate::ResearchDrainDeferReason::preserves_research_wait_anchor);
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
             // `queued_at` is the durable fairness anchor for a Research drain
             // that is otherwise ready but temporarily yields to foreground work
             // or the request lease. Key cooldowns and accepted polls do not use
@@ -1266,79 +954,17 @@ impl KeyStore {
         }
     }
 
-    #[allow(clippy::let_and_return)]
     pub(crate) async fn fetch_queued_scheduled_jobs(
         &self,
         limit: usize,
     ) -> Result<Vec<QueuedScheduledJob>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let limit = limit.clamp(1, 128) as i64;
-                let now = self.backend_time.now_ts();
-                let priority_sql = Self::scheduled_job_effective_priority_sql_pg(
-                    "job_type",
-                    "trigger_source",
-                    "queued_at",
-                    1,
-                );
-                let query = format!(
-                    r#"
-                SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
-                       {priority_sql} AS effective_priority
-                FROM core.scheduled_jobs
-                WHERE status = 'queued' AND available_at <= $2
-                ORDER BY effective_priority ASC, available_at ASC, queued_at ASC, id ASC
-                LIMIT $3
-                "#
-                );
-                let mut conn = pool.acquire().await?;
-                let result = sqlx::query_as::<
-                    _,
-                    (i64, String, String, Option<String>, i64, i64, i64, i64),
-                >(&query)
-                .bind(now)
-                .bind(now)
-                .bind(limit)
-                .fetch_all(&mut *conn)
-                .await
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(
-                            |(
-                                id,
-                                job_type,
-                                trigger_source,
-                                key_id,
-                                attempt,
-                                queued_at,
-                                available_at,
-                                effective_priority,
-                            )| {
-                                QueuedScheduledJob {
-                                    id,
-                                    job_type,
-                                    trigger_source,
-                                    key_id,
-                                    attempt,
-                                    queued_at,
-                                    available_at,
-                                    effective_priority,
-                                }
-                            },
-                        )
-                        .collect()
-                })
-                .map_err(ProxyError::from);
-                result
-            }
-            .await;
-        }
-
         let limit = limit.clamp(1, 128) as i64;
         let now = self.backend_time.now_ts();
-        let priority_sql =
-            Self::scheduled_job_effective_priority_sql("job_type", "trigger_source", "queued_at");
+        let priority_sql = Self::scheduled_job_effective_priority_sql(
+            "job_type",
+            "trigger_source",
+            "queued_at",
+        );
         let query = format!(
             r#"
             SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
@@ -1353,17 +979,17 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
-        let result =
-            sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
-                .bind(now)
-                .bind(now)
-                .bind(limit)
-                .fetch_all(&mut *conn)
-                .await
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(
-                            |(
+        let result = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+            .bind(now)
+            .bind(now)
+            .bind(limit)
+            .fetch_all(&mut *conn)
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(
+                        |(id, job_type, trigger_source, key_id, attempt, queued_at, available_at, effective_priority)| {
+                            QueuedScheduledJob {
                                 id,
                                 job_type,
                                 trigger_source,
@@ -1372,22 +998,12 @@ impl KeyStore {
                                 queued_at,
                                 available_at,
                                 effective_priority,
-                            )| {
-                                QueuedScheduledJob {
-                                    id,
-                                    job_type,
-                                    trigger_source,
-                                    key_id,
-                                    attempt,
-                                    queued_at,
-                                    available_at,
-                                    effective_priority,
-                                }
-                            },
-                        )
-                        .collect()
-                })
-                .map_err(ProxyError::from);
+                            }
+                        },
+                    )
+                    .collect()
+            })
+            .map_err(ProxyError::from);
         let close = conn.close().await;
         match (result, close) {
             (Ok(rows), Ok(())) => Ok(rows),
@@ -1395,101 +1011,20 @@ impl KeyStore {
         }
     }
 
-    #[allow(clippy::let_and_return)]
     pub(crate) async fn fetch_next_queued_scheduled_job_excluding_types(
         &self,
         excluded_job_types: &[&str],
     ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                if excluded_job_types.is_empty() {
-                    return Ok(self
-                        .fetch_queued_scheduled_jobs(1)
-                        .await?
-                        .into_iter()
-                        .next());
-                }
-
-                let now = self.backend_time.now_ts();
-                let priority_sql = Self::scheduled_job_effective_priority_sql_pg(
-                    "job_type",
-                    "trigger_source",
-                    "queued_at",
-                    1,
-                );
-                let placeholders = (3..3 + excluded_job_types.len())
-                    .map(|index| format!("${index}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let query = format!(
-                    r#"
-                SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
-                       {priority_sql} AS effective_priority
-                FROM core.scheduled_jobs
-                WHERE status = 'queued'
-                  AND available_at <= $2
-                  AND job_type NOT IN ({placeholders})
-                ORDER BY effective_priority ASC, available_at ASC, queued_at ASC, id ASC
-                LIMIT 1
-                "#,
-                );
-                let mut query = sqlx::query_as::<
-                    _,
-                    (i64, String, String, Option<String>, i64, i64, i64, i64),
-                >(&query)
-                .bind(now)
-                .bind(now);
-                for job_type in excluded_job_types {
-                    query = query.bind(*job_type);
-                }
-
-                let mut conn = pool.acquire().await?;
-                let result = query
-                    .fetch_optional(&mut *conn)
-                    .await
-                    .map(|row| {
-                        row.map(
-                            |(
-                                id,
-                                job_type,
-                                trigger_source,
-                                key_id,
-                                attempt,
-                                queued_at,
-                                available_at,
-                                effective_priority,
-                            )| {
-                                QueuedScheduledJob {
-                                    id,
-                                    job_type,
-                                    trigger_source,
-                                    key_id,
-                                    attempt,
-                                    queued_at,
-                                    available_at,
-                                    effective_priority,
-                                }
-                            },
-                        )
-                    })
-                    .map_err(ProxyError::from);
-                result
-            }
-            .await;
-        }
-
         if excluded_job_types.is_empty() {
-            return Ok(self
-                .fetch_queued_scheduled_jobs(1)
-                .await?
-                .into_iter()
-                .next());
+            return Ok(self.fetch_queued_scheduled_jobs(1).await?.into_iter().next());
         }
 
         let now = self.backend_time.now_ts();
-        let priority_sql =
-            Self::scheduled_job_effective_priority_sql("job_type", "trigger_source", "queued_at");
+        let priority_sql = Self::scheduled_job_effective_priority_sql(
+            "job_type",
+            "trigger_source",
+            "queued_at",
+        );
         let placeholders = std::iter::repeat_n("?", excluded_job_types.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -1505,10 +1040,9 @@ impl KeyStore {
             LIMIT 1
             "#,
         );
-        let mut query =
-            sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
-                .bind(now)
-                .bind(now);
+        let mut query = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+            .bind(now)
+            .bind(now);
         for job_type in excluded_job_types {
             query = query.bind(*job_type);
         }
@@ -1522,16 +1056,7 @@ impl KeyStore {
             .await
             .map(|row| {
                 row.map(
-                    |(
-                        id,
-                        job_type,
-                        trigger_source,
-                        key_id,
-                        attempt,
-                        queued_at,
-                        available_at,
-                        effective_priority,
-                    )| {
+                    |(id, job_type, trigger_source, key_id, attempt, queued_at, available_at, effective_priority)| {
                         QueuedScheduledJob {
                             id,
                             job_type,
@@ -1553,86 +1078,17 @@ impl KeyStore {
         }
     }
 
-    #[allow(clippy::let_and_return)]
     pub(crate) async fn fetch_aged_queued_scheduled_job_by_type(
         &self,
         job_type: &str,
         minimum_eligible_wait_secs: i64,
     ) -> Result<Option<QueuedScheduledJob>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let priority_sql = Self::scheduled_job_effective_priority_sql_pg(
-                    "job_type",
-                    "trigger_source",
-                    "queued_at",
-                    1,
-                );
-                let wait_anchor = if job_type == "upstream_reconciliation_research_drain" {
-                    "queued_at"
-                } else {
-                    "available_at"
-                };
-                let query = format!(
-                    r#"
-                SELECT id, job_type, trigger_source, key_id, attempt, queued_at, available_at,
-                       {priority_sql} AS effective_priority
-                FROM core.scheduled_jobs
-                WHERE status = 'queued'
-                  AND job_type = $2
-                  AND available_at <= $3
-                  AND $4 - {wait_anchor} >= $5
-                ORDER BY {wait_anchor} ASC, queued_at ASC, id ASC
-                LIMIT 1
-                "#,
-                );
-                let mut conn = pool.acquire().await?;
-                let result = sqlx::query_as::<
-                    _,
-                    (i64, String, String, Option<String>, i64, i64, i64, i64),
-                >(&query)
-                .bind(now)
-                .bind(job_type)
-                .bind(now)
-                .bind(now)
-                .bind(minimum_eligible_wait_secs.max(0))
-                .fetch_optional(&mut *conn)
-                .await
-                .map(|row| {
-                    row.map(
-                        |(
-                            id,
-                            job_type,
-                            trigger_source,
-                            key_id,
-                            attempt,
-                            queued_at,
-                            available_at,
-                            effective_priority,
-                        )| {
-                            QueuedScheduledJob {
-                                id,
-                                job_type,
-                                trigger_source,
-                                key_id,
-                                attempt,
-                                queued_at,
-                                available_at,
-                                effective_priority,
-                            }
-                        },
-                    )
-                })
-                .map_err(ProxyError::from);
-                result
-            }
-            .await;
-        }
-
         let now = self.backend_time.now_ts();
-        let priority_sql =
-            Self::scheduled_job_effective_priority_sql("job_type", "trigger_source", "queued_at");
+        let priority_sql = Self::scheduled_job_effective_priority_sql(
+            "job_type",
+            "trigger_source",
+            "queued_at",
+        );
         let wait_anchor = if job_type == "upstream_reconciliation_research_drain" {
             "queued_at"
         } else {
@@ -1655,18 +1111,18 @@ impl KeyStore {
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
-        let result =
-            sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
-                .bind(now)
-                .bind(job_type)
-                .bind(now)
-                .bind(now)
-                .bind(minimum_eligible_wait_secs.max(0))
-                .fetch_optional(&mut *conn)
-                .await
-                .map(|row| {
-                    row.map(
-                        |(
+        let result = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, i64, i64, i64)>(&query)
+            .bind(now)
+            .bind(job_type)
+            .bind(now)
+            .bind(now)
+            .bind(minimum_eligible_wait_secs.max(0))
+            .fetch_optional(&mut *conn)
+            .await
+            .map(|row| {
+                row.map(
+                    |(id, job_type, trigger_source, key_id, attempt, queued_at, available_at, effective_priority)| {
+                        QueuedScheduledJob {
                             id,
                             job_type,
                             trigger_source,
@@ -1675,21 +1131,11 @@ impl KeyStore {
                             queued_at,
                             available_at,
                             effective_priority,
-                        )| {
-                            QueuedScheduledJob {
-                                id,
-                                job_type,
-                                trigger_source,
-                                key_id,
-                                attempt,
-                                queued_at,
-                                available_at,
-                                effective_priority,
-                            }
-                        },
-                    )
-                })
-                .map_err(ProxyError::from);
+                        }
+                    },
+                )
+            })
+            .map_err(ProxyError::from);
         let close = conn.close().await;
         match (result, close) {
             (Ok(job), Ok(())) => Ok(job),
@@ -1697,25 +1143,9 @@ impl KeyStore {
         }
     }
 
-    #[allow(clippy::let_and_return)]
     pub(crate) async fn next_queued_scheduled_job_available_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let mut conn = pool.acquire().await?;
-                let result = sqlx::query_scalar(
-                    "SELECT MIN(available_at) FROM core.scheduled_jobs WHERE status = 'queued'",
-                )
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(ProxyError::from);
-                result
-            }
-            .await;
-        }
-
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -1737,121 +1167,14 @@ impl KeyStore {
         &self,
         job_id: i64,
     ) -> Result<Option<JobLog>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let started_at = self.backend_time.now_ts();
-                let mut conn = pool.begin().await?;
-                let result: Result<_, ProxyError> = async {
-                    let updated = sqlx::query(
-                        r#"
-                        UPDATE core.scheduled_jobs
-                        SET status = 'running',
-                            started_at = $1,
-                            claim_generation = claim_generation + 1
-                        WHERE id = $2
-                          AND status = 'queued'
-                          AND available_at <= $3
-                        "#,
-                    )
-                    .bind(started_at)
-                    .bind(job_id)
-                    .bind(started_at)
-                    .execute(&mut *conn)
-                    .await?;
-                    if updated.rows_affected() == 0 {
-                        return Ok::<Option<JobLog>, ProxyError>(None);
-                    }
-                    let row = sqlx::query_as::<
-                        _,
-                        (
-                            i64,
-                            String,
-                            String,
-                            Option<String>,
-                            Option<String>,
-                            String,
-                            i64,
-                            Option<String>,
-                            i64,
-                            Option<i64>,
-                            Option<i64>,
-                            i64,
-                        ),
-                    >(
-                        r#"
-                        SELECT
-                            j.id,
-                            j.job_type,
-                            j.trigger_source,
-                            j.key_id,
-                            k.group_name AS key_group,
-                            j.status,
-                            j.attempt,
-                            j.message,
-                            j.queued_at,
-                            j.started_at,
-                            j.finished_at,
-                            j.claim_generation
-                        FROM core.scheduled_jobs j
-                        LEFT JOIN core.api_keys k ON k.id = j.key_id
-                        WHERE j.id = $1
-                        LIMIT 1
-                        "#,
-                    )
-                    .bind(job_id)
-                    .fetch_optional(&mut *conn)
-                    .await?;
-                    Ok(row.map(
-                        |(
-                            id,
-                            job_type,
-                            trigger_source,
-                            key_id,
-                            key_group,
-                            status,
-                            attempt,
-                            message,
-                            queued_at,
-                            started_at,
-                            finished_at,
-                            claim_generation,
-                        )| JobLog {
-                            id,
-                            job_type,
-                            trigger_source,
-                            key_id,
-                            key_group,
-                            status,
-                            attempt,
-                            message,
-                            queued_at,
-                            started_at,
-                            finished_at,
-                            claim_generation,
-                        },
-                    ))
-                }
-                .await;
-                match result {
-                    Ok(job) => {
-                        conn.commit().await?;
-                        Ok(job)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
-
         let started_at = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
-            let updated = sqlx::query(
-                r#"
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
+                let updated = sqlx::query(
+                    r#"
                     UPDATE scheduled_jobs
                     SET status = 'running',
                         started_at = ?,
@@ -1860,33 +1183,33 @@ impl KeyStore {
                       AND status = 'queued'
                       AND available_at <= ?
                     "#,
-            )
-            .bind(started_at)
-            .bind(job_id)
-            .bind(started_at)
-            .execute(&mut *conn)
-            .await?;
-            if updated.rows_affected() == 0 {
-                return Ok::<Option<JobLog>, ProxyError>(None);
-            }
-            let row = sqlx::query_as::<
-                _,
-                (
-                    i64,
-                    String,
-                    String,
-                    Option<String>,
-                    Option<String>,
-                    String,
-                    i64,
-                    Option<String>,
-                    i64,
-                    Option<i64>,
-                    Option<i64>,
-                    i64,
-                ),
-            >(
-                r#"
+                )
+                .bind(started_at)
+                .bind(job_id)
+                .bind(started_at)
+                .execute(&mut *conn)
+                .await?;
+                if updated.rows_affected() == 0 {
+                    return Ok::<Option<JobLog>, ProxyError>(None);
+                }
+                let row = sqlx::query_as::<
+                    _,
+                    (
+                        i64,
+                        String,
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        String,
+                        i64,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"
                     SELECT
                         j.id,
                         j.job_type,
@@ -1905,50 +1228,52 @@ impl KeyStore {
                     WHERE j.id = ?
                     LIMIT 1
                     "#,
-            )
-            .bind(job_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-            Ok(row.map(
-                |(
-                    id,
-                    job_type,
-                    trigger_source,
-                    key_id,
-                    key_group,
-                    status,
-                    attempt,
-                    message,
-                    queued_at,
-                    started_at,
-                    finished_at,
-                    claim_generation,
-                )| JobLog {
-                    id,
-                    job_type,
-                    trigger_source,
-                    key_id,
-                    key_group,
-                    status,
-                    attempt,
-                    message,
-                    queued_at,
-                    started_at,
-                    finished_at,
-                    claim_generation,
-                },
-            ))
-        }
-        .await;
+                )
+                .bind(job_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                Ok(row.map(
+                    |(
+                        id,
+                        job_type,
+                        trigger_source,
+                        key_id,
+                        key_group,
+                        status,
+                        attempt,
+                        message,
+                        queued_at,
+                        started_at,
+                        finished_at,
+                        claim_generation,
+                    )| JobLog {
+                        id,
+                        job_type,
+                        trigger_source,
+                        key_id,
+                        key_group,
+                        status,
+                        attempt,
+                        message,
+                        queued_at,
+                        started_at,
+                        finished_at,
+                        claim_generation,
+                    },
+                ))
+            }
+            .await;
         match result {
             Ok(job) => {
                 conn.finish(Ok(())).await?;
                 Ok(job)
             }
-            Err(err) => match conn.finish(Err(err)).await {
-                Err(err) => Err(err),
-                Ok(()) => unreachable!("failed scheduled job transaction committed"),
-            },
+            Err(err) => {
+                match conn.finish(Err(err)).await {
+                    Err(err) => Err(err),
+                    Ok(()) => unreachable!("failed scheduled job transaction committed"),
+                }
+            }
         }
     }
 
@@ -1956,84 +1281,6 @@ impl KeyStore {
         &self,
         job_id: i64,
     ) -> Result<Option<JobLog>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                sqlx::query_as::<
-                    _,
-                    (
-                        i64,
-                        String,
-                        String,
-                        Option<String>,
-                        Option<String>,
-                        String,
-                        i64,
-                        Option<String>,
-                        i64,
-                        Option<i64>,
-                        Option<i64>,
-                        i64,
-                    ),
-                >(
-                    r#"
-                SELECT
-                    j.id,
-                    j.job_type,
-                    j.trigger_source,
-                    j.key_id,
-                    k.group_name AS key_group,
-                    j.status,
-                    j.attempt,
-                    j.message,
-                    j.queued_at,
-                    j.started_at,
-                    j.finished_at,
-                    j.claim_generation
-                FROM core.scheduled_jobs j
-                LEFT JOIN core.api_keys k ON k.id = j.key_id
-                WHERE j.id = $1
-                LIMIT 1
-                "#,
-                )
-                .bind(job_id)
-                .fetch_optional(pool)
-                .await
-                .map(|row| {
-                    row.map(
-                        |(
-                            id,
-                            job_type,
-                            trigger_source,
-                            key_id,
-                            key_group,
-                            status,
-                            attempt,
-                            message,
-                            queued_at,
-                            started_at,
-                            finished_at,
-                            claim_generation,
-                        )| JobLog {
-                            id,
-                            job_type,
-                            trigger_source,
-                            key_id,
-                            key_group,
-                            status,
-                            attempt,
-                            message,
-                            queued_at,
-                            started_at,
-                            finished_at,
-                            claim_generation,
-                        },
-                    )
-                })
-                .map_err(ProxyError::from)
-            }
-            .await;
-        }
         sqlx::query_as::<
             _,
             (
@@ -2113,28 +1360,6 @@ impl KeyStore {
         job_id: i64,
         claim_generation: i64,
     ) -> Result<bool, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let mut conn = pool.acquire().await?;
-                let current: i64 = sqlx::query_scalar(
-                    r#"
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM core.scheduled_jobs
-                    WHERE id = $1 AND status = 'running' AND claim_generation = $2
-                )::int::bigint
-                "#,
-                )
-                .bind(job_id)
-                .bind(claim_generation)
-                .fetch_one(&mut *conn)
-                .await?;
-                Ok(current != 0)
-            }
-            .await;
-        }
-
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -2163,67 +1388,12 @@ impl KeyStore {
         key_id: Option<&str>,
         attempt: i64,
     ) -> Result<Option<i64>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let mut conn = pool.begin().await?;
-                let result: Result<_, ProxyError> = async {
-                    Self::abandon_stale_quota_sync_job_locked_pg(&mut conn, job_type, key_id, now)
-                        .await?;
-                    if Self::scheduled_job_lookup_active_locked_pg(&mut conn, job_type, key_id)
-                        .await?
-                        .is_some()
-                    {
-                        return Ok::<Option<i64>, ProxyError>(None);
-                    }
-                    let res = sqlx::query(
-                        r#"
-                    INSERT INTO core.scheduled_jobs (
-                        job_type,
-                        trigger_source,
-                        key_id,
-                        status,
-                        attempt,
-                        queued_at,
-                        available_at,
-                        claim_generation,
-                        started_at,
-                        finished_at
-                    )
-                    VALUES ($1, $2, $3, 'running', $4, $5, $6, 1, $7, NULL)
-                    RETURNING id
-                    "#,
-                    )
-                    .bind(job_type)
-                    .bind(trigger_source)
-                    .bind(key_id)
-                    .bind(attempt)
-                    .bind(now)
-                    .bind(now)
-                    .bind(now)
-                    .fetch_one(&mut *conn)
-                    .await?;
-                    Ok(Some(res.get::<i64, _>("id")))
-                }
-                .await;
-                match result {
-                    Ok(job_id) => {
-                        conn.commit().await?;
-                        Ok(job_id)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
-
         let now = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
             Self::abandon_stale_quota_sync_job_locked(&mut conn, job_type, key_id, now).await?;
             if Self::scheduled_job_lookup_active_locked(&mut conn, job_type, key_id)
                 .await?
@@ -2273,86 +1443,13 @@ impl KeyStore {
     }
 
     pub(crate) async fn abandon_active_scheduled_jobs(&self) -> Result<u64, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let mut conn = pool.begin().await?;
-                let result = sqlx::query(
-                    r#"
-                    UPDATE core.scheduled_jobs
-                    SET status = CASE
-                            WHEN status = 'running'
-                                AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
-                                THEN 'queued'
-                            ELSE 'abandoned'
-                        END,
-                        message = CASE
-                            WHEN status = 'running'
-                                AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
-                                THEN COALESCE(message, 'deferred=process_restart')
-                            ELSE COALESCE(message, 'abandoned after process restart')
-                        END,
-                        started_at = CASE
-                            WHEN status = 'running'
-                                AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
-                                THEN NULL
-                            ELSE started_at
-                        END,
-                        finished_at = CASE
-                            WHEN status = 'running'
-                                AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
-                                THEN NULL
-                            ELSE $1
-                        END,
-                        available_at = CASE
-                            WHEN status = 'running'
-                                AND job_type IN ('ha_outbox_gc', 'request_logs_gc')
-                                THEN GREATEST(available_at, $2)
-                            ELSE available_at
-                        END
-                    WHERE (
-                            status = 'running'
-                            OR (
-                                status = 'queued'
-                                -- These are durable GC catch-up contracts. Their available_at
-                                -- guards still prevent an early claim after restart.
-                                AND NOT (
-                                    trigger_source = 'auto'
-                                    AND (
-                                        job_type = 'request_logs_gc'
-                                        OR job_type = 'ha_outbox_gc'
-                                    )
-                                )
-                            )
-                        )
-                      AND finished_at IS NULL
-                    "#,
-                )
-                .bind(now)
-                .bind(now.saturating_add(30))
-                .execute(&mut *conn)
-                .await
-                .map(|result| result.rows_affected())
-                .map_err(ProxyError::Database);
-                match result {
-                    Ok(rows) => {
-                        conn.commit().await?;
-                        Ok(rows)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
-
         let now = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
         let result = sqlx::query(
-            r#"
+                r#"
                 UPDATE scheduled_jobs
                 SET status = CASE
                         WHEN status = 'running'
@@ -2425,66 +1522,11 @@ impl KeyStore {
     }
 
     pub(crate) async fn recover_stale_scheduled_jobs(&self) -> Result<u64, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let now = self.backend_time.now_ts();
-            let mut conn = pool.begin().await?;
-            let result = sqlx::query(
-                r#"UPDATE core.scheduled_jobs
-                   SET status = 'queued',
-                       started_at = NULL,
-                       finished_at = NULL,
-                       available_at = CASE
-                           WHEN job_type = 'request_logs_gc' THEN $1
-                           ELSE $2
-                       END,
-                       claim_generation = claim_generation + 1,
-                       message = CASE
-                           WHEN job_type = 'ha_outbox_gc' THEN 'deferred=stale_recovery'
-                           WHEN job_type IN ('upstream_reconciliation', 'upstream_reconciliation_research_drain') THEN 'deferred=stale_reconciliation_recovery'
-                           WHEN job_type = 'request_logs_gc' THEN 'deferred=stale_request_logs_gc_recovery'
-                           ELSE 'deferred=stale_control_recovery'
-                       END
-                   WHERE status = 'running'
-                     AND started_at IS NOT NULL
-                     AND (
-                         (job_type = 'ha_outbox_gc' AND started_at <= $3)
-                         OR (job_type IN ('upstream_reconciliation', 'upstream_reconciliation_research_drain') AND started_at <= $4)
-                         OR (job_type = 'request_logs_gc' AND started_at <= $5)
-                         OR (
-                             job_type NOT IN ('ha_outbox_gc', 'upstream_reconciliation', 'upstream_reconciliation_research_drain', 'request_logs_gc', 'db_compaction')
-                             AND started_at <= $6
-                         )
-                     )"#,
-            )
-            .bind(now.saturating_add(300))
-            .bind(now.saturating_add(30))
-            .bind(now.saturating_sub(120))
-            .bind(now.saturating_sub(60))
-            .bind(now.saturating_sub(120))
-            .bind(now.saturating_sub(300))
-            .execute(&mut *conn)
-            .await
-            .map(|result| result.rows_affected())
-            .map_err(ProxyError::Database);
-            match result {
-                Ok(rows) => {
-                    conn.commit().await?;
-                    Ok(rows)
-                }
-                Err(err) => {
-                    conn.rollback().await?;
-                    Err(err)
-                }
-            }
-            }
-            .await;
-        }
-
         let now = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
         let result = sqlx::query(
             r#"UPDATE scheduled_jobs
                SET status = 'queued',
@@ -2541,38 +1583,11 @@ impl KeyStore {
         status: &str,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-
-            let finished_at = self.backend_time.now_ts();
-            let mut conn = pool.begin().await?;
-            let result = sqlx::query(
-                r#"UPDATE core.scheduled_jobs SET status = $1, message = $2, finished_at = $3 WHERE id = $4"#,
-            )
-            .bind(status)
-            .bind(message)
-            .bind(finished_at)
-            .bind(job_id)
-            .execute(&mut *conn)
-            .await
-            .map(|_| ())
-            .map_err(ProxyError::Database);
-            match result {
-                    Ok(value) => {
-                        conn.commit().await?;
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
         let finished_at = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
         let result = sqlx::query(
             r#"UPDATE scheduled_jobs SET status = ?, message = ?, finished_at = ? WHERE id = ?"#,
         )
@@ -2594,46 +1609,11 @@ impl KeyStore {
         status: &str,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let finished_at = self.backend_time.now_ts();
-                let mut conn = pool.begin().await?;
-                let write_result = match sqlx::query(
-                    r#"UPDATE core.scheduled_jobs
-                   SET status = $1, message = $2, finished_at = $3
-                   WHERE id = $4 AND status = 'running' AND claim_generation = $5"#,
-                )
-                .bind(status)
-                .bind(message)
-                .bind(finished_at)
-                .bind(job_id)
-                .bind(claim_generation)
-                .execute(&mut *conn)
-                .await
-                {
-                    Ok(updated) if updated.rows_affected() == 0 => Err(ProxyError::StaleClaim {
-                        job_id,
-                        claim_generation,
-                    }),
-                    Ok(_) => Ok(()),
-                    Err(err) => Err(ProxyError::Database(err)),
-                };
-                match write_result {
-                    Ok(value) => {
-                        conn.commit().await?;
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
         let finished_at = self.backend_time.now_ts();
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
         let write_result = match sqlx::query(
             r#"UPDATE scheduled_jobs
                SET status = ?, message = ?, finished_at = ?
@@ -2662,32 +1642,10 @@ impl KeyStore {
         job_id: i64,
         message: Option<&str>,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let mut conn = pool.begin().await?;
-                let result =
-                    sqlx::query(r#"UPDATE core.scheduled_jobs SET message = $1 WHERE id = $2"#)
-                        .bind(message)
-                        .bind(job_id)
-                        .execute(&mut *conn)
-                        .await
-                        .map(|_| ())
-                        .map_err(ProxyError::Database);
-                match result {
-                    Ok(value) => {
-                        conn.commit().await?;
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        conn.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
-        let mut conn = self.sqlite_runtime.begin_scheduled_job_control().await?;
+        let mut conn = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
         let result = sqlx::query(r#"UPDATE scheduled_jobs SET message = ? WHERE id = ?"#)
             .bind(message)
             .bind(job_id)

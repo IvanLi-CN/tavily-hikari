@@ -607,7 +607,6 @@ pub(crate) struct SqliteMaintenanceRunLease {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SqliteOperation {
-    #[allow(dead_code)] // retired admission class, removed at the cutover wave
     AdminMutation,
     AdminAlertsRead,
     AdminAlertsCacheWarm,
@@ -3579,7 +3578,6 @@ impl SqliteReadSnapshot {
         self.cooperative_run_budget_for_test
     }
 
-    #[allow(dead_code)] // retired cooperative budget, removed at the cutover wave
     pub(crate) fn ensure_cooperative_run_budget(&mut self) -> Result<(), ProxyError> {
         #[cfg(test)]
         if let Some(checks_remaining) = self

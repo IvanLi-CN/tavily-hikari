@@ -34,54 +34,12 @@ pub(crate) struct ReconciliationControlState {
     pub(crate) transitioned_at: i64,
 }
 
-type ReconciliationControlStateRow = (
-    String,
-    Option<String>,
-    Option<i64>,
-    i64,
-    Option<String>,
-    i64,
-);
+type ReconciliationControlStateRow = (String, Option<String>, Option<i64>, i64, Option<String>, i64);
 
 impl KeyStore {
     pub(crate) async fn upstream_reconciliation_control_state(
         &self,
     ) -> Result<ReconciliationControlState, ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let mut conn = pool.acquire().await?;
-                let result = sqlx::query_as::<_, ReconciliationControlStateRow>(
-                    r#"SELECT mode, activation_period_code, activation_period_start, legacy_active,
-                          paused_reason, transitioned_at
-                     FROM core.upstream_reconciliation_control_state
-                    WHERE id = 'local'"#,
-                )
-                .fetch_one(&mut *conn)
-                .await;
-                let result = result?;
-                let (
-                    mode,
-                    activation_period_code,
-                    activation_period_start,
-                    legacy_active,
-                    paused_reason,
-                    transitioned_at,
-                ) = result;
-                let mode = ReconciliationMode::parse(&mode).ok_or_else(|| {
-                    ProxyError::Other("invalid persisted upstream reconciliation mode".to_string())
-                })?;
-                Ok(ReconciliationControlState {
-                    mode,
-                    activation_period_code,
-                    activation_period_start,
-                    legacy_active: legacy_active != 0,
-                    paused_reason,
-                    transitioned_at,
-                })
-            }
-            .await;
-        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -95,14 +53,8 @@ impl KeyStore {
         .fetch_one(&mut *conn)
         .await;
         let result = conn.complete_query(result).await?;
-        let (
-            mode,
-            activation_period_code,
-            activation_period_start,
-            legacy_active,
-            paused_reason,
-            transitioned_at,
-        ) = result;
+        let (mode, activation_period_code, activation_period_start, legacy_active, paused_reason, transitioned_at) =
+            result;
         let mode = ReconciliationMode::parse(&mode).ok_or_else(|| {
             ProxyError::Other("invalid persisted upstream reconciliation mode".to_string())
         })?;
@@ -121,117 +73,17 @@ impl KeyStore {
         previous_enabled: bool,
         enabled: bool,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                if previous_enabled == enabled {
-                    return Ok(());
-                }
-
-                let now = self.backend_time.now_ts();
-                let mut tx = pool.begin().await?;
-                let result: Result<_, ProxyError> = async {
-                    let (
-                        mode,
-                        activation_period_code,
-                        activation_period_start,
-                        legacy_active,
-                        paused_reason,
-                        action,
-                    ): (
-                        ReconciliationMode,
-                        Option<String>,
-                        Option<i64>,
-                        i64,
-                        Option<String>,
-                        &str,
-                    ) = if enabled {
-                        let current = crate::business_period_for_timestamp(now);
-                        let next =
-                            crate::business_period_for_timestamp(current.ends_at.saturating_add(1));
-                        (
-                            ReconciliationMode::Active,
-                            Some(next.code),
-                            Some(next.starts_at),
-                            0_i64,
-                            None,
-                            "active_requested",
-                        )
-                    } else {
-                        (
-                            ReconciliationMode::Compare,
-                            None,
-                            None,
-                            0_i64,
-                            None,
-                            "compare_requested",
-                        )
-                    };
-                    sqlx::query(
-                        r#"INSERT INTO core.meta (key, value) VALUES ($1, $2)
-                       ON CONFLICT (key) DO UPDATE SET value = excluded.value"#,
-                    )
-                    .bind(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
-                    .bind(i64::from(enabled).to_string())
-                    .execute(&mut *tx)
-                    .await?;
-                    sqlx::query(
-                        r#"UPDATE core.upstream_reconciliation_control_state
-                       SET mode = $1, activation_period_code = $2, activation_period_start = $3,
-                           legacy_active = $4, paused_reason = $5, transitioned_at = $6
-                     WHERE id = 'local'"#,
-                    )
-                    .bind(mode.as_str())
-                    .bind(&activation_period_code)
-                    .bind(activation_period_start)
-                    .bind(legacy_active)
-                    .bind(&paused_reason)
-                    .bind(now)
-                    .execute(&mut *tx)
-                    .await?;
-                    sqlx::query(
-                        r#"INSERT INTO core.upstream_reconciliation_control_transitions
-                        (mode, action, activation_period_code, transitioned_at, detail)
-                       VALUES ($1, $2, $3, $4, $5)"#,
-                    )
-                    .bind(mode.as_str())
-                    .bind(action)
-                    .bind(activation_period_code)
-                    .bind(now)
-                    .bind(paused_reason)
-                    .execute(&mut *tx)
-                    .await?;
-                    Ok::<(), ProxyError>(())
-                }
-                .await;
-                match result {
-                    Ok(value) => {
-                        tx.commit().await?;
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        tx.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
         if previous_enabled == enabled {
             return Ok(());
         }
 
         let now = self.backend_time.now_ts();
-        let mut tx = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
-            let (
-                mode,
-                activation_period_code,
-                activation_period_start,
-                legacy_active,
-                paused_reason,
-                action,
-            ): (
+        let mut tx = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
+            let (mode, activation_period_code, activation_period_start, legacy_active, paused_reason, action): (
                 ReconciliationMode,
                 Option<String>,
                 Option<i64>,
@@ -239,26 +91,26 @@ impl KeyStore {
                 Option<String>,
                 &str,
             ) = if enabled {
-                let current = crate::business_period_for_timestamp(now);
-                let next = crate::business_period_for_timestamp(current.ends_at.saturating_add(1));
-                (
-                    ReconciliationMode::Active,
-                    Some(next.code),
-                    Some(next.starts_at),
-                    0_i64,
-                    None,
-                    "active_requested",
-                )
-            } else {
-                (
-                    ReconciliationMode::Compare,
-                    None,
-                    None,
-                    0_i64,
-                    None,
-                    "compare_requested",
-                )
-            };
+                    let current = crate::business_period_for_timestamp(now);
+                    let next = crate::business_period_for_timestamp(current.ends_at.saturating_add(1));
+                    (
+                        ReconciliationMode::Active,
+                        Some(next.code),
+                        Some(next.starts_at),
+                        0_i64,
+                        None,
+                        "active_requested",
+                    )
+                } else {
+                    (
+                        ReconciliationMode::Compare,
+                        None,
+                        None,
+                        0_i64,
+                        None,
+                        "compare_requested",
+                    )
+                };
             sqlx::query(
                 r#"INSERT INTO meta (key, value) VALUES (?, ?)
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
@@ -303,58 +155,12 @@ impl KeyStore {
         &self,
         reason: &'static str,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return async {
-                let now = self.backend_time.now_ts();
-                let mut tx = pool.begin().await?;
-                let result: Result<_, ProxyError> = async {
-                    sqlx::query(
-                        r#"INSERT INTO core.meta (key, value) VALUES ($1, '0')
-                       ON CONFLICT (key) DO UPDATE SET value = excluded.value"#,
-                    )
-                    .bind(META_KEY_UPSTREAM_PRECISE_RECONCILIATION_ENABLED_V1)
-                    .execute(&mut *tx)
-                    .await?;
-                    let updated = sqlx::query(
-                        r#"UPDATE core.upstream_reconciliation_control_state
-                       SET mode = 'active_paused', paused_reason = $1, transitioned_at = $2
-                     WHERE id = 'local' AND mode = 'active'"#,
-                    )
-                    .bind(reason)
-                    .bind(now)
-                    .execute(&mut *tx)
-                    .await?;
-                    if updated.rows_affected() != 0 {
-                        sqlx::query(
-                            r#"INSERT INTO core.upstream_reconciliation_control_transitions
-                            (mode, action, activation_period_code, transitioned_at, detail)
-                           VALUES ('active_paused', 'integrity_paused', NULL, $1, $2)"#,
-                        )
-                        .bind(now)
-                        .bind(reason)
-                        .execute(&mut *tx)
-                        .await?;
-                    }
-                    Ok::<(), ProxyError>(())
-                }
-                .await;
-                match result {
-                    Ok(value) => {
-                        tx.commit().await?;
-                        Ok(value)
-                    }
-                    Err(err) => {
-                        tx.rollback().await?;
-                        Err(err)
-                    }
-                }
-            }
-            .await;
-        }
         let now = self.backend_time.now_ts();
-        let mut tx = self.sqlite_runtime.begin_scheduled_job_control().await?;
-        let result: Result<_, ProxyError> = async {
+        let mut tx = self
+            .sqlite_runtime
+            .begin_scheduled_job_control()
+            .await?;
+        let result = async {
             sqlx::query(
                 r#"INSERT INTO meta (key, value) VALUES (?, '0')
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value"#,
@@ -405,8 +211,10 @@ impl KeyStore {
             ReconciliationMode::Active => match state.activation_period_start {
                 Some(boundary) => period.starts_at >= boundary,
                 None => {
-                    self.pause_upstream_reconciliation_for_integrity("missing_activation_boundary")
-                        .await?;
+                    self.pause_upstream_reconciliation_for_integrity(
+                        "missing_activation_boundary",
+                    )
+                    .await?;
                     return Err(ProxyError::Other(
                         "active reconciliation controller is missing its activation boundary"
                             .to_string(),

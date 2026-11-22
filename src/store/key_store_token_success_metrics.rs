@@ -1,4 +1,5 @@
 impl KeyStore {
+
     pub(crate) async fn fetch_token_success_failure(
         &self,
         token_id: &str,
@@ -10,12 +11,12 @@ impl KeyStore {
         let row = sqlx::query(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN result_status = $1 AND created_at >= $2 THEN 1 ELSE 0 END), 0)::bigint AS monthly_success,
-              COALESCE(SUM(CASE WHEN result_status = $3 AND created_at >= $4 AND created_at < $5 THEN 1 ELSE 0 END), 0)::bigint AS daily_success,
-              COALESCE(SUM(CASE WHEN result_status = $6 AND created_at >= $7 AND created_at < $8 THEN 1 ELSE 0 END), 0)::bigint AS daily_failure
-            FROM core.auth_token_logs
-            WHERE token_id = $9
-              AND created_at >= $10
+              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
+              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS daily_success,
+              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS daily_failure
+            FROM auth_token_logs
+            WHERE token_id = ?
+              AND created_at >= ?
             "#,
         )
         .bind(OUTCOME_SUCCESS)
@@ -28,7 +29,7 @@ impl KeyStore {
         .bind(day_end)
         .bind(token_id)
         .bind(scan_floor)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await?;
 
         Ok((

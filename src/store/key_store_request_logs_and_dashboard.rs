@@ -92,124 +92,6 @@ impl KeyStore {
         })
     }
 
-    async fn upsert_request_log_catalog_rollup_delta_pg(
-        tx: &mut sqlx::PgConnection,
-        key: &RequestLogCatalogRollupKey,
-        request_count_delta: i64,
-        updated_at: i64,
-    ) -> Result<(), ProxyError> {
-        if request_count_delta == 0 {
-            return Ok(());
-        }
-
-        sqlx::query(
-            r#"
-            INSERT INTO observability.request_log_catalog_rollups (
-                bucket_start,
-                request_kind_key,
-                request_kind_label,
-                result_bucket,
-                key_effect_code,
-                binding_effect_code,
-                selection_effect_code,
-                auth_token_id,
-                api_key_id,
-                operational_class,
-                request_count,
-                updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            ON CONFLICT(
-                bucket_start,
-                request_kind_key,
-                request_kind_label,
-                result_bucket,
-                key_effect_code,
-                binding_effect_code,
-                selection_effect_code,
-                auth_token_id,
-                api_key_id,
-                operational_class
-            ) DO UPDATE SET
-                request_count = request_log_catalog_rollups.request_count + excluded.request_count,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(key.bucket_start)
-        .bind(&key.request_kind_key)
-        .bind(&key.request_kind_label)
-        .bind(&key.result_bucket)
-        .bind(&key.key_effect_code)
-        .bind(&key.binding_effect_code)
-        .bind(&key.selection_effect_code)
-        .bind(&key.auth_token_id)
-        .bind(&key.api_key_id)
-        .bind(&key.operational_class)
-        .bind(request_count_delta)
-        .bind(updated_at)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            DELETE FROM observability.request_log_catalog_rollups
-            WHERE bucket_start = $1
-              AND request_kind_key = $2
-              AND request_kind_label = $3
-              AND result_bucket = $4
-              AND key_effect_code = $5
-              AND binding_effect_code = $6
-              AND selection_effect_code = $7
-              AND auth_token_id = $8
-              AND api_key_id = $9
-              AND operational_class = $10
-              AND request_count <= 0
-            "#,
-        )
-        .bind(key.bucket_start)
-        .bind(&key.request_kind_key)
-        .bind(&key.request_kind_label)
-        .bind(&key.result_bucket)
-        .bind(&key.key_effect_code)
-        .bind(&key.binding_effect_code)
-        .bind(&key.selection_effect_code)
-        .bind(&key.auth_token_id)
-        .bind(&key.api_key_id)
-        .bind(&key.operational_class)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-                DELETE FROM observability.request_log_catalog_rollups
-                WHERE bucket_start = $1
-                  AND request_kind_key = $2
-                  AND request_kind_label = $3
-                  AND result_bucket = $4
-                  AND key_effect_code = $5
-                  AND binding_effect_code = $6
-                  AND selection_effect_code = $7
-                  AND auth_token_id = $8
-                  AND api_key_id = $9
-                  AND operational_class = $10
-                  AND request_count <= 0
-                "#,
-        )
-        .bind(key.bucket_start)
-        .bind(&key.request_kind_key)
-        .bind(&key.request_kind_label)
-        .bind(&key.result_bucket)
-        .bind(&key.key_effect_code)
-        .bind(&key.binding_effect_code)
-        .bind(&key.selection_effect_code)
-        .bind(&key.auth_token_id)
-        .bind(&key.api_key_id)
-        .bind(&key.operational_class)
-        .execute(tx)
-        .await?;
-        Ok(())
-    }
-
-    /// SQLite twin of [`Self::upsert_request_log_catalog_rollup_delta_pg`].
     async fn upsert_request_log_catalog_rollup_delta(
         tx: &mut SqliteConnection,
         key: &RequestLogCatalogRollupKey,
@@ -299,7 +181,7 @@ impl KeyStore {
     }
 
     async fn upsert_api_key_usage_bucket_delta(
-        tx: &mut sqlx::PgConnection,
+        tx: &mut SqliteConnection,
         key_id: &str,
         bucket_start: i64,
         delta: ApiKeyUsageBucketDelta,
@@ -311,7 +193,7 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO observability.api_key_usage_buckets (
+            INSERT INTO api_key_usage_buckets (
                 api_key_id,
                 bucket_start,
                 bucket_secs,
@@ -325,7 +207,7 @@ impl KeyStore {
                 other_failure_count,
                 unknown_count,
                 updated_at
-            ) VALUES ($1, $2, 86400, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(api_key_id, bucket_start, bucket_secs)
             DO UPDATE SET
                 total_requests = api_key_usage_buckets.total_requests + excluded.total_requests,
@@ -358,7 +240,7 @@ impl KeyStore {
     }
 
     async fn upsert_auth_token_activity_delta(
-        tx: &mut sqlx::PgConnection,
+        tx: &mut SqliteConnection,
         token_id: &str,
         delta: AuthTokenActivityDelta,
     ) -> Result<(), ProxyError> {
@@ -368,14 +250,14 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            UPDATE core.auth_tokens
-            SET total_requests = total_requests + $1,
+            UPDATE auth_tokens
+            SET total_requests = total_requests + ?,
                 last_used_at = CASE
-                    WHEN $2 IS NULL THEN last_used_at
-                    WHEN last_used_at IS NULL OR last_used_at < $3 THEN $4
+                    WHEN ? IS NULL THEN last_used_at
+                    WHEN last_used_at IS NULL OR last_used_at < ? THEN ?
                     ELSE last_used_at
                 END
-            WHERE id = $5 AND deleted_at IS NULL
+            WHERE id = ? AND deleted_at IS NULL
             "#,
         )
         .bind(delta.total_requests_delta)
@@ -394,8 +276,7 @@ impl KeyStore {
         target_column: &str,
         legacy_effect_codes: &[&str],
     ) -> Result<bool, ProxyError> {
-        let placeholders = (1..=legacy_effect_codes.len())
-            .map(|index| format!("${index}"))
+        let placeholders = std::iter::repeat_n("?", legacy_effect_codes.len())
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
@@ -408,7 +289,7 @@ impl KeyStore {
         for code in legacy_effect_codes {
             query = query.bind(*code);
         }
-        Ok(query.fetch_optional(self.pg()?).await?.is_some())
+        Ok(query.fetch_optional(&self.pool).await?.is_some())
     }
 
     async fn migrate_log_effect_buckets(&self) -> Result<(), ProxyError> {
@@ -479,14 +360,14 @@ impl KeyStore {
                 .await?
             || self
                 .log_effect_bucket_migration_needed_for_table(
-                    "core.auth_token_logs",
+                    "auth_token_logs",
                     "binding_effect_code",
                     &binding_codes,
                 )
                 .await?
             || self
                 .log_effect_bucket_migration_needed_for_table(
-                    "core.auth_token_logs",
+                    "auth_token_logs",
                     "selection_effect_code",
                     &selection_codes,
                 )
@@ -497,15 +378,15 @@ impl KeyStore {
             return Ok(());
         }
 
-        let mut tx = self.pg()?.begin().await?;
-        for table in [request_logs_table, "core.auth_token_logs"] {
+        let mut tx = self.pool.begin().await?;
+        for table in [request_logs_table, "auth_token_logs"] {
             let binding_sql = format!(
                 "UPDATE {table}
                  SET binding_effect_code = key_effect_code,
                      binding_effect_summary = key_effect_summary,
                      key_effect_code = 'none',
                      key_effect_summary = NULL
-                 WHERE key_effect_code IN ($1, $2, $3, $4, $5, $6)
+                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?)
                    AND (binding_effect_code IS NULL OR TRIM(binding_effect_code) = '' OR binding_effect_code = 'none')"
             );
             sqlx::query(&binding_sql)
@@ -524,7 +405,7 @@ impl KeyStore {
                      selection_effect_summary = key_effect_summary,
                      key_effect_code = 'none',
                      key_effect_summary = NULL
-                 WHERE key_effect_code IN ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    AND (selection_effect_code IS NULL OR TRIM(selection_effect_code) = '' OR selection_effect_code = 'none')"
             );
             sqlx::query(&selection_sql)
@@ -540,7 +421,7 @@ impl KeyStore {
                 .execute(&mut *tx)
                 .await?;
         }
-        set_meta_i64_executor_pg(
+        set_meta_i64_executor(
             &mut *tx,
             META_KEY_REQUEST_LOG_EFFECT_BUCKET_MIGRATION_V1_DONE,
             1,
@@ -559,7 +440,7 @@ impl KeyStore {
     }
 
     fn push_request_logs_scope<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,
         since: Option<i64>,
         until: Option<i64>,
@@ -594,7 +475,7 @@ impl KeyStore {
     }
 
     fn push_request_logs_filters<'a, 'b>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         filters: RequestLogFilterParams<'a, 'b>,
     ) {
         let RequestLogFilterParams {
@@ -676,7 +557,7 @@ impl KeyStore {
         }
         if !request_kinds.is_empty() {
             builder.push(if has_where { " AND " } else { " WHERE " });
-            Self::push_request_kind_filter_clause_pg(
+            Self::push_request_kind_filter_clause(
                 builder,
                 stored_request_kind_sql,
                 legacy_request_kind_predicate_sql,
@@ -687,7 +568,7 @@ impl KeyStore {
     }
 
     fn push_effective_request_kind_filter_clause<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         effective_request_kind_sql: &str,
         request_kinds: &[String],
     ) {
@@ -705,9 +586,8 @@ impl KeyStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     fn push_token_logs_catalog_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         token_id: &'a str,
         since: i64,
         until: Option<i64>,
@@ -747,7 +627,7 @@ impl KeyStore {
         }
         if !normalized_request_kinds.is_empty() {
             builder.push(" AND ");
-            Self::push_request_kind_filter_clause_pg(
+            Self::push_request_kind_filter_clause(
                 builder,
                 stored_request_kind_sql,
                 legacy_request_kind_predicate_sql,
@@ -757,7 +637,7 @@ impl KeyStore {
         }
         if let Some(result_status) = filters.result_status {
             builder.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 builder,
                 result_status,
                 legacy_request_kind_predicate_sql,
@@ -767,7 +647,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = filters.operational_class {
             builder.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 builder,
                 operational_class,
                 legacy_request_kind_predicate_sql,
@@ -801,10 +681,8 @@ impl KeyStore {
         };
         let stored_request_kind_sql = col("request_kind_key");
         let effective_request_kind_sql = stored_request_kind_sql.clone();
-        let fallback_counts_business_quota_sql = request_log_counts_business_quota_sql(
-            &effective_request_kind_sql,
-            &col("request_body"),
-        );
+        let fallback_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"));
         let counts_business_quota_sql = format!(
             "COALESCE({}, {fallback_counts_business_quota_sql})",
             col("counts_business_quota")
@@ -815,8 +693,7 @@ impl KeyStore {
             &col("result_status"),
             &format!("COALESCE({}, '')", col("failure_kind")),
         );
-        let result_bucket_sql =
-            result_bucket_case_sql(&operational_class_sql, &col("result_status"));
+        let result_bucket_sql = result_bucket_case_sql(&operational_class_sql, &col("result_status"));
         let request_kind_label_sql = format!(
             "COALESCE(NULLIF(TRIM({}), ''), {})",
             col("request_kind_label"),
@@ -854,7 +731,7 @@ impl KeyStore {
     }
 
     fn push_request_log_catalog_rollup_filters<'a>(
-        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'a>,
@@ -913,13 +790,13 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<i64, ProxyError> {
-        let mut query = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT COALESCE(SUM(request_count), 0)::bigint FROM observability.request_log_catalog_rollups",
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT COALESCE(SUM(request_count), 0) FROM observability.request_log_catalog_rollups",
         );
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         query
             .build_query_scalar::<i64>()
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await
             .map_err(ProxyError::from)
     }
@@ -970,8 +847,7 @@ impl KeyStore {
         let legacy_result_bucket_sql =
             result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
 
-        let mut query =
-            QueryBuilder::<sqlx::Postgres>::new("SELECT 1 FROM observability.request_logs");
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT 1 FROM observability.request_logs");
         let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since, None);
         let mut has_where = has_where;
         if let Some(key_effect_code) = key_effect_code {
@@ -1029,7 +905,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -1039,7 +915,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -1048,7 +924,7 @@ impl KeyStore {
             );
         }
         query.push(" LIMIT 1");
-        Ok(query.build().fetch_optional(self.pg()?).await?.is_some())
+        Ok(query.build().fetch_optional(&self.pool).await?.is_some())
     }
 
     async fn fetch_request_log_request_kind_options(
@@ -1058,8 +934,8 @@ impl KeyStore {
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64);
-        let mut legacy_query = QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT request_kind_key, request_kind_label, SUM(request_count)::bigint AS request_count FROM observability.request_log_catalog_rollups",
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(
+            "SELECT request_kind_key, request_kind_label, SUM(request_count) AS request_count FROM observability.request_log_catalog_rollups",
         );
         Self::push_request_log_catalog_rollup_filters(
             &mut legacy_query,
@@ -1071,7 +947,7 @@ impl KeyStore {
 
         let rows = legacy_query
             .build_query_as::<RequestKindOptionRow>()
-            .fetch_all(self.pg()?)
+            .fetch_all(&self.pool)
             .await?;
         let mut options_by_key = BTreeMap::<String, (String, i64)>::new();
         for (key, label, count) in rows {
@@ -1119,8 +995,8 @@ impl KeyStore {
             "api_key_id" => "api_key_id",
             _ => unreachable!("unsupported request log rollup facet column"),
         };
-        let mut query = QueryBuilder::<sqlx::Postgres>::new(format!(
-            "SELECT {column_expr} AS value, SUM(request_count)::bigint AS count FROM observability.request_log_catalog_rollups"
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {column_expr} AS value, SUM(request_count) AS count FROM observability.request_log_catalog_rollups"
         ));
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         if require_non_empty {
@@ -1130,7 +1006,7 @@ impl KeyStore {
         }
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
-        let rows = query.build().fetch_all(self.pg()?).await?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| -> Result<LogFacetOption, sqlx::Error> {
                 Ok(LogFacetOption {
@@ -1148,18 +1024,18 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
-        let mut query = QueryBuilder::<sqlx::Postgres>::new(
+        let mut query = QueryBuilder::<Sqlite>::new(
             "
             SELECT
                 result_bucket AS value,
-                SUM(request_count)::bigint AS count
+                SUM(request_count) AS count
             FROM observability.request_log_catalog_rollups
             ",
         );
         Self::push_request_log_catalog_rollup_filters(&mut query, scoped_key_id, since, filters);
         query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
 
-        let rows = query.build().fetch_all(self.pg()?).await?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|row| -> Result<LogFacetOption, sqlx::Error> {
                 Ok(LogFacetOption {
@@ -1180,11 +1056,8 @@ impl KeyStore {
         include_key_facets: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
-        let since = Self::clamp_request_logs_rollup_since_at(
-            since,
-            retention_days,
-            self.backend_time.local_now(),
-        );
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
         let cache_key = Self::request_logs_catalog_filters_are_empty(filters).then(|| {
             Self::request_logs_catalog_cache_key(
                 scoped_key_id,
@@ -1294,11 +1167,7 @@ impl KeyStore {
                 "admin_read",
                 PerfLogScope {
                     route: Some("/api/logs/catalog"),
-                    scope: Some(if scoped_key_id.is_some() {
-                        "key"
-                    } else {
-                        "global"
-                    }),
+                    scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                     row_count: Some(cached.request_kind_options.len()),
                     degraded: Some("cache_hit"),
                     ..Default::default()
@@ -1311,11 +1180,7 @@ impl KeyStore {
                 started.elapsed(),
                 PerfLogScope {
                     route: Some("/api/logs/catalog"),
-                    scope: Some(if scoped_key_id.is_some() {
-                        "key"
-                    } else {
-                        "global"
-                    }),
+                    scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                     row_count: Some(cached.request_kind_options.len()),
                     degraded: Some("cache_hit"),
                     ..Default::default()
@@ -1371,11 +1236,7 @@ impl KeyStore {
             "admin_read",
             PerfLogScope {
                 route: Some("/api/logs/catalog"),
-                scope: Some(if scoped_key_id.is_some() {
-                    "key"
-                } else {
-                    "global"
-                }),
+                scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                 degraded: Some("full"),
                 ..Default::default()
             },
@@ -1387,11 +1248,7 @@ impl KeyStore {
             started.elapsed(),
             PerfLogScope {
                 route: Some("/api/logs/catalog"),
-                scope: Some(if scoped_key_id.is_some() {
-                    "key"
-                } else {
-                    "global"
-                }),
+                scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                 row_count: Some(catalog.request_kind_options.len()),
                 degraded: Some("full"),
                 ..Default::default()
@@ -1425,11 +1282,8 @@ impl KeyStore {
             .await?
             .request_log_retention
             .max_log_retention_days;
-        let since = Self::clamp_request_logs_rollup_since_at(
-            since,
-            retention_days,
-            self.backend_time.local_now(),
-        );
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
         let page_size = page_size.clamp(1, 200);
         let query_limit = page_size + 1;
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
@@ -1493,7 +1347,7 @@ impl KeyStore {
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_operational_class_case_sql} ELSE {stored_operational_class_case_sql} END"
         );
 
-        let mut items_query = QueryBuilder::<sqlx::Postgres>::new(format!(
+        let mut items_query = QueryBuilder::<Sqlite>::new(format!(
             r#"
             SELECT
                 id,
@@ -1574,7 +1428,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             items_query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut items_query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -1584,7 +1438,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             items_query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut items_query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -1592,7 +1446,7 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        Self::push_desc_cursor_clause_pg(
+        Self::push_desc_cursor_clause(
             &mut items_query,
             "created_at",
             "id",
@@ -1610,7 +1464,7 @@ impl KeyStore {
         }
         items_query.push_bind(query_limit);
 
-        let mut rows = items_query.build().fetch_all(self.pg()?).await?;
+        let mut rows = items_query.build().fetch_all(&self.pool).await?;
         let has_more = rows.len() as i64 > page_size;
         if has_more {
             rows.truncate(page_size as usize);
@@ -1667,11 +1521,7 @@ impl KeyStore {
             "admin_read",
             PerfLogScope {
                 route: Some("/api/logs/list"),
-                scope: Some(if scoped_key_id.is_some() {
-                    "key"
-                } else {
-                    "global"
-                }),
+                scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                 page_size: Some(page_size),
                 degraded: Some("full"),
                 ..Default::default()
@@ -1684,11 +1534,7 @@ impl KeyStore {
             started.elapsed(),
             PerfLogScope {
                 route: Some("/api/logs/list"),
-                scope: Some(if scoped_key_id.is_some() {
-                    "key"
-                } else {
-                    "global"
-                }),
+                scope: Some(if scoped_key_id.is_some() { "key" } else { "global" }),
                 page_size: Some(page_size),
                 row_count: Some(result.items.len()),
                 degraded: Some("full"),
@@ -1723,11 +1569,8 @@ impl KeyStore {
             .await?
             .request_log_retention
             .max_log_retention_days;
-        let since = Self::clamp_request_logs_rollup_since_at(
-            since,
-            retention_days,
-            self.backend_time.local_now(),
-        );
+        let since =
+            Self::clamp_request_logs_rollup_since_at(since, retention_days, self.backend_time.local_now());
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
@@ -1821,7 +1664,7 @@ impl KeyStore {
         } else {
             "NULL AS response_body"
         };
-        let mut items_query = QueryBuilder::<sqlx::Postgres>::new(format!(
+        let mut items_query = QueryBuilder::<Sqlite>::new(format!(
             r#"
             SELECT
                 id,
@@ -1901,7 +1744,7 @@ impl KeyStore {
         }
         if let Some(result_status) = result_status {
             items_query.push(" AND ");
-            Self::push_result_bucket_filter_clause_pg(
+            Self::push_result_bucket_filter_clause(
                 &mut items_query,
                 result_status,
                 &legacy_request_kind_predicate_sql,
@@ -1911,7 +1754,7 @@ impl KeyStore {
         }
         if let Some(operational_class) = operational_class {
             items_query.push(" AND ");
-            Self::push_operational_class_filter_clause_pg(
+            Self::push_operational_class_filter_clause(
                 &mut items_query,
                 operational_class,
                 &legacy_request_kind_predicate_sql,
@@ -1923,7 +1766,7 @@ impl KeyStore {
         items_query.push_bind(per_page);
         items_query.push(" OFFSET ");
         items_query.push_bind(offset);
-        let rows = items_query.build().fetch_all(self.pg()?).await?;
+        let rows = items_query.build().fetch_all(&self.pool).await?;
         let items = rows
             .into_iter()
             .map(Self::map_request_log_row)
@@ -2012,39 +1855,129 @@ impl KeyStore {
         })
     }
 
-    /// Asserts the `observability.request_log_catalog_rollups` relation and its indexes.
-    ///
-    /// PostgreSQL owns this schema: `src/store/pg/migrations/0001_baseline.sql` creates the
-    /// table and every index, so the startup path only checks that they are present. The
-    /// retired SQLite staleness triggers (`trg_request_logs_catalog_rollup_*`) and the two
-    /// `trg_request_logs_canonical_request_kind_*` canonicalization triggers are ported by
-    /// the trigger slice; no trigger is created here.
-    pub(crate) async fn ensure_request_log_catalog_rollup_schema(&self) -> Result<(), ProxyError> {
-        let missing: Option<String> = sqlx::query_scalar(
+    pub(crate) async fn ensure_request_log_catalog_rollup_schema(
+        &self,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
             r#"
-            SELECT required.rel
-            FROM unnest($1::text[]) AS required(rel)
-            WHERE to_regclass(required.rel) IS NULL
-            ORDER BY required.rel
-            LIMIT 1
+            CREATE TABLE IF NOT EXISTS observability.request_log_catalog_rollups (
+                bucket_start INTEGER NOT NULL,
+                request_kind_key TEXT NOT NULL,
+                request_kind_label TEXT NOT NULL,
+                result_bucket TEXT NOT NULL,
+                key_effect_code TEXT NOT NULL,
+                binding_effect_code TEXT NOT NULL,
+                selection_effect_code TEXT NOT NULL,
+                auth_token_id TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
+                operational_class TEXT NOT NULL,
+                request_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (
+                    bucket_start,
+                    request_kind_key,
+                    request_kind_label,
+                    result_bucket,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    auth_token_id,
+                    api_key_id,
+                    operational_class
+                )
+            )
             "#,
         )
-        .bind(vec![
-            "observability.request_log_catalog_rollups",
-            "observability.idx_request_log_catalog_rollups_kind_time",
-            "observability.idx_request_log_catalog_rollups_result_time",
-            "observability.idx_request_log_catalog_rollups_token_time",
-            "observability.idx_request_log_catalog_rollups_key_time",
-            "observability.idx_request_log_catalog_rollups_operational_time",
-        ])
-        .fetch_optional(self.pg()?)
+        .execute(&self.pool)
         .await?;
-        match missing {
-            None => Ok(()),
-            Some(relation) => Err(ProxyError::Other(format!(
-                "postgresql baseline is missing {relation}; apply src/store/pg/migrations first"
-            ))),
+
+        for sql in [
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_kind_time
+               ON request_log_catalog_rollups(request_kind_key, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_result_time
+               ON request_log_catalog_rollups(result_bucket, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_token_time
+               ON request_log_catalog_rollups(auth_token_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_key_time
+               ON request_log_catalog_rollups(api_key_id, bucket_start DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS observability.idx_request_log_catalog_rollups_operational_time
+               ON request_log_catalog_rollups(operational_class, bucket_start DESC)"#,
+        ] {
+            sqlx::query(sql).execute(&self.pool).await?;
         }
+
+        let canonical_new_request_kind_sql =
+            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key");
+        let canonical_new_request_kind_label_sql =
+            canonical_request_kind_label_sql(&canonical_new_request_kind_sql);
+        let canonical_new_request_kind_detail_sql = format!(
+            "
+            CASE
+                WHEN LOWER(COALESCE(NEW.path, '')) LIKE '/mcp/%' THEN NEW.path
+                WHEN LOWER(TRIM(COALESCE(NEW.request_kind_key, ''))) LIKE 'mcp:tool:%'
+                    THEN SUBSTR(TRIM(NEW.request_kind_key), 10)
+                WHEN {canonical_new_request_kind_sql} = 'mcp:unknown-payload' THEN NEW.path
+                ELSE NULL
+            END
+            "
+        );
+        let legacy_new_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql("NEW.request_kind_key");
+        let legacy_row_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql("request_kind_key");
+        let canonical_insert_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS observability.trg_request_logs_canonical_request_kind_insert
+            AFTER INSERT ON request_logs
+            WHEN {legacy_new_request_kind_predicate_sql}
+            BEGIN
+                UPDATE request_logs
+                SET request_kind_key = COALESCE(NULLIF(TRIM({canonical_new_request_kind_sql}), ''), 'api:unknown-path'),
+                    request_kind_label = COALESCE(NULLIF(TRIM({canonical_new_request_kind_label_sql}), ''), 'Unknown'),
+                    request_kind_detail = COALESCE(NULLIF(TRIM(NEW.request_kind_detail), ''), {canonical_new_request_kind_detail_sql})
+                WHERE id = NEW.id
+                  AND {legacy_row_request_kind_predicate_sql};
+            END
+            "#
+        );
+        sqlx::query(&canonical_insert_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        let canonical_update_trigger = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS observability.trg_request_logs_canonical_request_kind_update
+            AFTER UPDATE OF path, request_body, request_kind_key ON request_logs
+            WHEN {legacy_new_request_kind_predicate_sql}
+            BEGIN
+                UPDATE request_logs
+                SET request_kind_key = COALESCE(NULLIF(TRIM({canonical_new_request_kind_sql}), ''), 'api:unknown-path'),
+                    request_kind_label = COALESCE(NULLIF(TRIM({canonical_new_request_kind_label_sql}), ''), 'Unknown'),
+                    request_kind_detail = COALESCE(NULLIF(TRIM(NEW.request_kind_detail), ''), {canonical_new_request_kind_detail_sql})
+                WHERE id = NEW.id
+                  AND {legacy_row_request_kind_predicate_sql};
+            END
+            "#
+        );
+        sqlx::query(&canonical_update_trigger)
+            .execute(&self.pool)
+            .await?;
+
+        for trigger in [
+            "trg_request_logs_catalog_rollup_insert",
+            "trg_request_logs_catalog_rollup_delete",
+            "trg_request_logs_catalog_rollup_update_old",
+            "trg_request_logs_catalog_rollup_update_new",
+        ] {
+            sqlx::query(&format!("DROP TRIGGER IF EXISTS observability.{trigger}"))
+                .execute(&self.pool)
+                .await?;
+            sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn rebuild_request_log_catalog_rollups(&self) -> Result<(), ProxyError> {
@@ -2067,16 +2000,16 @@ impl KeyStore {
             UPDATE observability.request_logs
             SET request_kind_key = request_kind_key
             WHERE visibility = 'visible'
-              AND created_at >= $1
+              AND created_at >= ?
               AND {legacy_request_kind_predicate_sql}
             "#
         );
         sqlx::query(&canonicalize_legacy_rows_sql)
             .bind(since)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         sqlx::query("DELETE FROM observability.request_log_catalog_rollups")
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         let rebuild_sql = format!(
             r#"
@@ -2088,10 +2021,10 @@ impl KeyStore {
             SELECT
                 {},
                 COUNT(*) AS request_count,
-                (EXTRACT(EPOCH FROM now()))::bigint AS updated_at
+                CAST(strftime('%s', 'now') AS INTEGER) AS updated_at
             FROM observability.request_logs
             WHERE visibility = 'visible'
-              AND created_at >= $1
+              AND created_at >= ?
               AND {canonical_request_kind_predicate_sql}
             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
             "#,
@@ -2100,7 +2033,7 @@ impl KeyStore {
         );
         sqlx::query(&rebuild_sql)
             .bind(since)
-            .execute(self.pg()?)
+            .execute(&self.pool)
             .await?;
         self.invalidate_request_logs_catalog_cache().await;
         Ok(())
@@ -2110,12 +2043,11 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<String>, ProxyError> {
-        let secret = sqlx::query_scalar::<_, String>(
-            "SELECT api_key FROM core.api_keys WHERE id = $1 LIMIT 1",
-        )
-        .bind(key_id)
-        .fetch_optional(self.pg()?)
-        .await?;
+        let secret =
+            sqlx::query_scalar::<_, String>("SELECT api_key FROM api_keys WHERE id = ? LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         Ok(secret.filter(|value| !value.trim().is_empty()))
     }
@@ -2125,10 +2057,10 @@ impl KeyStore {
         secret: &str,
     ) -> Result<Option<String>, ProxyError> {
         sqlx::query_scalar::<_, String>(
-            "SELECT id FROM core.api_keys WHERE api_key = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT id FROM api_keys WHERE api_key = ? AND deleted_at IS NULL LIMIT 1",
         )
         .bind(secret)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::from)
     }
@@ -2138,22 +2070,22 @@ impl KeyStore {
         key_id: &str,
     ) -> Result<KeyStateSnapshot, ProxyError> {
         let status = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT status FROM core.api_keys WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+            "SELECT status FROM api_keys WHERE id = ? AND deleted_at IS NULL LIMIT 1",
         )
         .bind(key_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .flatten();
         let quarantined = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT 1
-            FROM core.api_key_quarantines
-            WHERE key_id = $1 AND cleared_at IS NULL
+            FROM api_key_quarantines
+            WHERE key_id = ? AND cleared_at IS NULL
             LIMIT 1
             "#,
         )
         .bind(key_id)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&self.pool)
         .await?
         .is_some();
         Ok(KeyStateSnapshot {
@@ -2167,9 +2099,9 @@ impl KeyStore {
         record: ApiKeyMaintenanceRecord,
     ) -> Result<(), ProxyError> {
         let auth_token_id = if let Some(auth_token_id) = record.auth_token_id.as_deref() {
-            sqlx::query_scalar::<_, i64>("SELECT 1 FROM core.auth_tokens WHERE id = $1 LIMIT 1")
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM auth_tokens WHERE id = ? LIMIT 1")
                 .bind(auth_token_id)
-                .fetch_optional(self.pg()?)
+                .fetch_optional(&self.pool)
                 .await?
                 .map(|_| auth_token_id.to_string())
         } else {
@@ -2177,7 +2109,7 @@ impl KeyStore {
         };
         sqlx::query(
             r#"
-            INSERT INTO core.api_key_maintenance_records (
+            INSERT INTO api_key_maintenance_records (
                 id,
                 key_id,
                 source,
@@ -2196,7 +2128,7 @@ impl KeyStore {
                 quarantine_before,
                 quarantine_after,
                 created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id)
@@ -2217,7 +2149,7 @@ impl KeyStore {
         .bind(i64::from(record.quarantine_before))
         .bind(i64::from(record.quarantine_after))
         .bind(record.created_at)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -2231,19 +2163,17 @@ impl KeyStore {
         synced_at: i64,
     ) -> Result<(), ProxyError> {
         sqlx::query(
-            r#"UPDATE core.api_keys
-               SET quota_limit = $1, quota_remaining = $2, quota_synced_at = $3
-             WHERE id = $4"#,
+            r#"UPDATE api_keys
+               SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?
+             WHERE id = ?"#,
         )
         .bind(limit)
         .bind(remaining)
         .bind(synced_at)
         .bind(key_id)
-        .execute(self.pg()?)
+        .execute(&self.pool)
         .await?;
-        self.request_stats_coalescer
-            .mark_dashboard_read_dirty()
-            .await;
+        self.request_stats_coalescer.mark_dashboard_read_dirty().await;
         Ok(())
     }
 
@@ -2255,16 +2185,16 @@ impl KeyStore {
         synced_at: i64,
         source: &str,
     ) -> Result<(), ProxyError> {
-        let mut tx = self.pg()?.begin().await?;
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
-            INSERT INTO core.api_key_quota_sync_samples (
+            INSERT INTO api_key_quota_sync_samples (
                 key_id,
                 quota_limit,
                 quota_remaining,
                 captured_at,
                 source
-            ) VALUES ($1, $2, $3, $4, $5)
+            ) VALUES (?, ?, ?, ?, ?)
             "#,
         )
         .bind(key_id)
@@ -2275,9 +2205,9 @@ impl KeyStore {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            r#"UPDATE core.api_keys
-               SET quota_limit = $1, quota_remaining = $2, quota_synced_at = $3
-             WHERE id = $4"#,
+            r#"UPDATE api_keys
+               SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?
+             WHERE id = ?"#,
         )
         .bind(limit)
         .bind(remaining)
@@ -2286,9 +2216,7 @@ impl KeyStore {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.request_stats_coalescer
-            .mark_dashboard_read_dirty()
-            .await;
+        self.request_stats_coalescer.mark_dashboard_read_dirty().await;
         Ok(())
     }
 
@@ -2324,38 +2252,40 @@ impl KeyStore {
     async fn fetch_dashboard_quota_source_id(&self, today_end: i64) -> Result<i64, ProxyError> {
         let mut before_id = None;
         for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
+            let mut session = self
+                .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
+                .await?;
             let query_result = match before_id {
-                Some(before_id) => {
-                    sqlx::query(
-                        r#"
+                Some(before_id) => sqlx::query(
+                    r#"
                     SELECT id, captured_at
-                    FROM core.api_key_quota_sync_samples
-                    WHERE id > 0 AND id < $1
+                    FROM api_key_quota_sync_samples
+                    WHERE id > 0 AND id < ?
                     ORDER BY id DESC
-                    LIMIT $2
+                    LIMIT ?
                     "#,
-                    )
-                    .bind(before_id)
-                    .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
-                    .fetch_all(self.pg()?)
-                    .await
-                }
-                None => {
-                    sqlx::query(
-                        r#"
+                )
+                .bind(before_id)
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(&mut *session)
+                .await,
+                None => sqlx::query(
+                    r#"
                     SELECT id, captured_at
-                    FROM core.api_key_quota_sync_samples
+                    FROM api_key_quota_sync_samples
                     WHERE id > 0
                     ORDER BY id DESC
-                    LIMIT $1
+                    LIMIT ?
                     "#,
-                    )
-                    .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
-                    .fetch_all(self.pg()?)
-                    .await
-                }
+                )
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(&mut *session)
+                .await,
             };
-            let samples = query_result?
+            let rows = session.query(query_result).await;
+            let finish = session.finish().await;
+            finish?;
+            let samples = rows?
                 .into_iter()
                 .map(|row| Ok::<_, sqlx::Error>((row.try_get("id")?, row.try_get("captured_at")?)))
                 .collect::<Result<Vec<(i64, i64)>, _>>()?;
@@ -2382,20 +2312,26 @@ impl KeyStore {
         &self,
         today_end: i64,
     ) -> Result<i64, ProxyError> {
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
+            .await?;
         let query_result = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT captured_at
-            FROM core.api_key_quota_sync_samples
-            WHERE captured_at < $1
+            FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
+            WHERE captured_at < ?
             ORDER BY captured_at DESC, key_id ASC, id ASC
-            LIMIT $2
+            LIMIT ?
             "#,
         )
         .bind(today_end)
         .bind(1_i64)
-        .fetch_optional(self.pg()?)
+        .fetch_optional(&mut *session)
         .await;
-        Ok(query_result?.unwrap_or_default())
+        let source_captured_at = session.query(query_result).await;
+        let finish = session.finish().await;
+        finish?;
+        Ok(source_captured_at?.unwrap_or_default())
     }
 
     pub(crate) async fn fetch_dashboard_quota_incremental_samples(
@@ -2404,22 +2340,23 @@ impl KeyStore {
         today_end: i64,
         limit: i64,
     ) -> Result<(DashboardQuotaSampleWatermark, Vec<DashboardQuotaSample>), ProxyError> {
-        let watermark = self
-            .fetch_dashboard_quota_sample_watermark(today_end)
-            .await?;
+        let watermark = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
         if watermark == after || watermark.source_id <= after.source_id {
             return Ok((watermark, Vec::new()));
         }
 
+        let mut session = self
+            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
+            .await?;
         let query_result = sqlx::query(
             r#"
             WITH pending AS (
                 SELECT id, key_id, quota_remaining, captured_at
-                FROM core.api_key_quota_sync_samples
-                WHERE id > $1
-                  AND captured_at < $2
+                FROM api_key_quota_sync_samples
+                WHERE id > ?
+                  AND captured_at < ?
                 ORDER BY id ASC
-                LIMIT $3
+                LIMIT ?
             )
             SELECT
                 pending.id,
@@ -2428,13 +2365,13 @@ impl KeyStore {
                 pending.captured_at,
                 previous.quota_remaining AS previous_quota_remaining
             FROM pending
-            LEFT JOIN core.api_key_quota_sync_samples previous
+            LEFT JOIN api_key_quota_sync_samples previous
                 ON previous.id = (
                     SELECT id
-                    FROM core.api_key_quota_sync_samples candidate
+                    FROM api_key_quota_sync_samples candidate
                     WHERE candidate.key_id = pending.key_id
                       AND candidate.id < pending.id
-                      AND candidate.captured_at < $4
+                      AND candidate.captured_at < ?
                     ORDER BY candidate.captured_at DESC, candidate.id DESC
                     LIMIT 1
                 )
@@ -2445,9 +2382,12 @@ impl KeyStore {
         .bind(today_end)
         .bind(limit.max(1))
         .bind(today_end)
-        .fetch_all(self.pg()?)
+        .fetch_all(&mut *session)
         .await;
-        let samples = query_result?
+        let rows = session.query(query_result).await;
+        let finish = session.finish().await;
+        finish?;
+        let samples = rows?
             .into_iter()
             .map(|row| {
                 Ok::<_, sqlx::Error>(DashboardQuotaSample {
@@ -2470,13 +2410,13 @@ impl KeyStore {
             r#"
             SELECT MIN(created_at)
             FROM observability.request_logs
-            WHERE visibility = $1
-              AND created_at >= $2
+            WHERE visibility = ?
+              AND created_at >= ?
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(since)
-        .fetch_one(self.pg()?)
+        .fetch_one(&self.pool)
         .await
         .map_err(ProxyError::Database)
     }
@@ -2503,20 +2443,20 @@ impl KeyStore {
                     result_status,
                     ({request_value_bucket_case_sql}) AS request_value_bucket
                 FROM observability.request_logs
-                WHERE visibility = $1
-                  AND created_at >= $2
-                  AND created_at < $3
+                WHERE visibility = ?
+                  AND created_at >= ?
+                  AND created_at < ?
             )
             SELECT
                 COUNT(*) AS total_requests,
-                COALESCE(SUM(CASE WHEN result_status = $4 THEN 1 ELSE 0 END), 0)::bigint AS success_count,
-                COALESCE(SUM(CASE WHEN result_status = $5 THEN 1 ELSE 0 END), 0)::bigint AS error_count,
-                COALESCE(SUM(CASE WHEN result_status = $6 THEN 1 ELSE 0 END), 0)::bigint AS quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = $7 THEN 1 ELSE 0 END), 0)::bigint AS valuable_success_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN ($8, $9) THEN 1 ELSE 0 END), 0)::bigint AS valuable_failure_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = $10 THEN 1 ELSE 0 END), 0)::bigint AS other_success_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN ($11, $12) THEN 1 ELSE 0 END), 0)::bigint AS other_failure_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0)::bigint AS unknown_count
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS valuable_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS valuable_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS other_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS other_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count
             FROM scoped_logs
             "#,
         );
@@ -2533,7 +2473,7 @@ impl KeyStore {
             .bind(OUTCOME_SUCCESS)
             .bind(OUTCOME_ERROR)
             .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?;
 
         Ok(SummaryWindowMetrics {
@@ -2564,45 +2504,45 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT
-                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
-                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
-                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0)::bigint AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0)::bigint AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0)::bigint AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0)::bigint AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count
-                FROM observability.api_key_usage_buckets
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
                 WHERE bucket_secs = 86400
-                  AND bucket_start >= $1
-                  AND bucket_start < $2
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
                 "#,
             )
             .bind(bucket_start_at_least)
             .bind(bucket_start_before)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"
                 SELECT
-                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
-                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
-                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0)::bigint AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0)::bigint AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0)::bigint AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0)::bigint AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count
-                FROM observability.api_key_usage_buckets
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
                 WHERE bucket_secs = 86400
-                  AND bucket_start >= $1
+                  AND bucket_start >= ?
                 "#,
             )
             .bind(bucket_start_at_least)
-            .fetch_one(self.pg()?)
+            .fetch_one(&self.pool)
             .await?
         };
 
@@ -2623,8 +2563,9 @@ impl KeyStore {
         })
     }
 
+
     async fn fetch_dashboard_rollup_success_count_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut Transaction<'_, Sqlite>,
         bucket_secs: i64,
         bucket_start_at_least: i64,
         bucket_start_before: i64,
@@ -2635,11 +2576,11 @@ impl KeyStore {
 
         sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT COALESCE(SUM(success_count), 0)::bigint
-            FROM observability.dashboard_request_rollup_buckets
-            WHERE bucket_secs = $1
-              AND bucket_start >= $2
-              AND bucket_start < $3
+            SELECT COALESCE(SUM(success_count), 0)
+            FROM dashboard_request_rollup_buckets
+            WHERE bucket_secs = ?
+              AND bucket_start >= ?
+              AND bucket_start < ?
             "#,
         )
         .bind(bucket_secs)
@@ -2651,7 +2592,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_rollup_success_count_for_range_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut Transaction<'_, Sqlite>,
         start: i64,
         end: i64,
     ) -> Result<i64, ProxyError> {
@@ -2695,16 +2636,20 @@ impl KeyStore {
         }
 
         if cursor < end {
-            success_count +=
-                Self::fetch_dashboard_rollup_success_count_tx(tx, SECS_PER_MINUTE, cursor, end)
-                    .await?;
+            success_count += Self::fetch_dashboard_rollup_success_count_tx(
+                tx,
+                SECS_PER_MINUTE,
+                cursor,
+                end,
+            )
+            .await?;
         }
 
         Ok(success_count)
     }
 
     async fn fetch_visible_request_log_success_count_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut Transaction<'_, Sqlite>,
         start: i64,
         end: i64,
     ) -> Result<i64, ProxyError> {
@@ -2714,11 +2659,11 @@ impl KeyStore {
 
         sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT COALESCE(SUM(CASE WHEN result_status = $1 THEN 1 ELSE 0 END), 0)::bigint
+            SELECT COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0)
             FROM observability.request_logs
-            WHERE visibility = $2
-              AND created_at >= $3
-              AND created_at < $4
+            WHERE visibility = ?
+              AND created_at >= ?
+              AND created_at < ?
             "#,
         )
         .bind(OUTCOME_SUCCESS)
@@ -2743,27 +2688,27 @@ impl KeyStore {
         let historical_month_success = self
             .fetch_utc_month_gap_success_count(month_start, month_request_log_floor, now)
             .await?;
-        let mut tx = self.pg()?.begin().await?;
-        let (retained_partial_minute_success, dashboard_month_start) = match month_request_log_floor
-        {
-            Some(floor) if floor > month_start => {
-                let minute_start = floor.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
-                if floor == minute_start {
-                    (0, floor)
-                } else {
-                    let next_minute_start = minute_start.saturating_add(SECS_PER_MINUTE);
-                    let partial_minute_success = Self::fetch_visible_request_log_success_count_tx(
-                        &mut tx,
-                        floor,
-                        next_minute_start.min(now.saturating_add(1)),
-                    )
-                    .await?;
-                    (partial_minute_success, next_minute_start)
+        let mut tx = self.pool.begin().await?;
+        let (retained_partial_minute_success, dashboard_month_start) =
+            match month_request_log_floor {
+                Some(floor) if floor > month_start => {
+                    let minute_start = floor.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+                    if floor == minute_start {
+                        (0, floor)
+                    } else {
+                        let next_minute_start = minute_start.saturating_add(SECS_PER_MINUTE);
+                        let partial_minute_success = Self::fetch_visible_request_log_success_count_tx(
+                            &mut tx,
+                            floor,
+                            next_minute_start.min(now.saturating_add(1)),
+                        )
+                        .await?;
+                        (partial_minute_success, next_minute_start)
+                    }
                 }
-            }
-            Some(_) => (0, month_start),
-            None => (0, now.saturating_add(1)),
-        };
+                Some(_) => (0, month_start),
+                None => (0, now.saturating_add(1)),
+            };
         let dashboard_month_success = Self::fetch_dashboard_rollup_success_count_for_range_tx(
             &mut tx,
             dashboard_month_start,
@@ -2784,7 +2729,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_rollup_month_metrics_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut Transaction<'_, Sqlite>,
         month_start: i64,
         today_start: i64,
         today_end: i64,
@@ -2799,7 +2744,7 @@ impl KeyStore {
         if month_start < month_full_day_start.min(today_start) {
             add_summary_window_metrics(
                 &mut month_metrics,
-                &Self::fetch_dashboard_rollup_window_metrics_tx_pg(
+                &Self::fetch_dashboard_rollup_window_metrics_tx(
                     tx,
                     SECS_PER_MINUTE,
                     month_start,
@@ -2811,7 +2756,7 @@ impl KeyStore {
         if month_full_day_start < today_start {
             add_summary_window_metrics(
                 &mut month_metrics,
-                &Self::fetch_dashboard_rollup_window_metrics_tx_pg(
+                &Self::fetch_dashboard_rollup_window_metrics_tx(
                     tx,
                     SECS_PER_DAY,
                     month_full_day_start,
@@ -2822,7 +2767,7 @@ impl KeyStore {
         }
         add_summary_window_metrics(
             &mut month_metrics,
-            &Self::fetch_dashboard_rollup_window_metrics_tx_pg(
+            &Self::fetch_dashboard_rollup_window_metrics_tx(
                 tx,
                 SECS_PER_MINUTE,
                 today_start,
@@ -2833,4 +2778,5 @@ impl KeyStore {
 
         Ok(month_metrics)
     }
+
 }
