@@ -492,6 +492,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "LOW_QUOTA_DEPLETION_THRESHOLD",
         ),
         health_readiness_grace_period: std::time::Duration::from_secs(90),
+        database_url: cli.database_url.clone(),
     };
     let ha_mode = HaMode::parse(&cli.ha_mode);
     let proxy = TavilyProxy::with_options_in_ha_mode(

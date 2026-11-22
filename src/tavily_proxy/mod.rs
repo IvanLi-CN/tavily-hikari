@@ -978,6 +978,9 @@ pub struct TavilyProxyOptions {
     pub forward_proxy_trace_url: Url,
     pub low_quota_depletion_threshold: i64,
     pub health_readiness_grace_period: Duration,
+    /// PostgreSQL target for the already ported storage modules. `None` keeps the process
+    /// fully on SQLite, which is the default until the cutover wave.
+    pub database_url: Option<String>,
 }
 
 impl TavilyProxyOptions {
@@ -989,6 +992,7 @@ impl TavilyProxyOptions {
             forward_proxy_trace_url: default_forward_proxy_trace_url(),
             low_quota_depletion_threshold: low_quota_depletion_threshold_from_env(),
             health_readiness_grace_period: Duration::from_secs(90),
+            database_url: None,
         }
     }
 }
