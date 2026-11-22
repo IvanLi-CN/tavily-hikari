@@ -143,6 +143,9 @@ impl KeyStore {
         start_at: i64,
         end_at: i64,
     ) -> Result<Vec<UserRankingRow>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_user_unique_ip_ranking_rows_pg(start_at, end_at).await;
+        }
         if end_at <= start_at {
             return Ok(Vec::new());
         }
@@ -183,6 +186,51 @@ impl KeyStore {
         Ok(ranking_rows)
     }
 
+    async fn fetch_user_unique_ip_ranking_rows_pg(
+        &self,
+        start_at: i64,
+        end_at: i64,
+    ) -> Result<Vec<UserRankingRow>, ProxyError> {
+        if end_at <= start_at {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT request_user_id AS user_id, COUNT(DISTINCT client_ip) AS total
+            FROM observability.request_logs
+            WHERE visibility = $1
+              AND created_at >= $2
+              AND created_at < $3
+              AND request_user_id IS NOT NULL
+              AND client_ip IS NOT NULL
+              AND TRIM(client_ip) != ''
+            GROUP BY request_user_id
+            HAVING COUNT(DISTINCT client_ip) > 0
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(start_at)
+        .bind(end_at)
+        .fetch_all(self.pg()?)
+        .await?;
+
+        let totals = rows.into_iter().collect::<HashMap<_, _>>();
+        let mut ranking_rows = self.fetch_user_ranking_identities(&totals).await?;
+        ranking_rows.sort_by(|left, right| {
+            right
+                .value
+                .cmp(&left.value)
+                .then_with(|| left.user.user_id.cmp(&right.user.user_id))
+        });
+
+        for (index, row) in ranking_rows.iter_mut().enumerate() {
+            row.rank = (index + 1) as i64;
+        }
+        ranking_rows.truncate(20);
+        Ok(ranking_rows)
+    }
+
     async fn fetch_user_ranking_rollup_totals(
         &self,
         metric_kind: AccountUsageRollupMetricKind,
@@ -190,6 +238,9 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_user_ranking_rollup_totals_pg(metric_kind, bucket_kind, bucket_start_at_least, bucket_start_before).await;
+        }
         if bucket_start_before <= bucket_start_at_least {
             return Ok(HashMap::new());
         }
@@ -216,6 +267,39 @@ impl KeyStore {
         Ok(rows.into_iter().collect())
     }
 
+    async fn fetch_user_ranking_rollup_totals_pg(
+        &self,
+        metric_kind: AccountUsageRollupMetricKind,
+        bucket_kind: AccountUsageRollupBucketKind,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if bucket_start_before <= bucket_start_at_least {
+            return Ok(HashMap::new());
+        }
+
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT user_id, COALESCE(SUM(value), 0)::bigint AS total
+            FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start >= $3
+              AND bucket_start < $4
+            GROUP BY user_id
+            HAVING COALESCE(SUM(value), 0) > 0
+            "#,
+        )
+        .bind(metric_kind.as_str())
+        .bind(bucket_kind.as_str())
+        .bind(bucket_start_at_least)
+        .bind(bucket_start_before)
+        .fetch_all(self.pg()?)
+        .await?;
+
+        Ok(rows.into_iter().collect())
+    }
+
     async fn apply_user_ranking_partial_range(
         &self,
         totals: &mut HashMap<String, i64>,
@@ -223,6 +307,9 @@ impl KeyStore {
         start_at: i64,
         end_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.apply_user_ranking_partial_range_pg(totals, metric_kind, start_at, end_at).await;
+        }
         if end_at <= start_at {
             return Ok(());
         }
@@ -380,10 +467,177 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn apply_user_ranking_partial_range_pg(
+        &self,
+        totals: &mut HashMap<String, i64>,
+        metric_kind: AccountUsageRollupMetricKind,
+        start_at: i64,
+        end_at: i64,
+    ) -> Result<(), ProxyError> {
+        if end_at <= start_at {
+            return Ok(());
+        }
+
+        let request_body_expr = if self.table_exists("request_logs").await?
+            && self
+                .table_column_exists("request_logs", "request_body")
+                .await?
+        {
+            "rl.request_body"
+        } else {
+            "NULL"
+        };
+        let request_value_bucket_sql = request_value_bucket_for_stored_request_log_sql(
+            "atl.request_kind_key",
+            request_body_expr,
+            "atl.counts_business_quota",
+        );
+
+        match metric_kind {
+            AccountUsageRollupMetricKind::PrimarySuccess => {
+                let rows = sqlx::query_as::<_, (String, i64)>(&format!(
+                    r#"
+                    SELECT
+                        COALESCE(
+                            atl.request_user_id,
+                            CASE
+                                WHEN atl.billing_subject LIKE 'account:%' THEN SUBSTR(atl.billing_subject, 9)
+                                ELSE NULL
+                            END,
+                            b.user_id
+                        ) AS user_id,
+                        COUNT(*) AS total
+                    FROM core.auth_token_logs atl
+                    LEFT JOIN core.user_token_bindings b ON b.token_id = atl.token_id
+                    LEFT JOIN observability.request_logs rl ON rl.id = atl.request_log_id
+                    WHERE atl.created_at >= $1
+                      AND atl.created_at < $2
+                      AND atl.result_status = $3
+                      AND COALESCE(
+                            atl.request_user_id,
+                            CASE
+                                WHEN atl.billing_subject LIKE 'account:%' THEN SUBSTR(atl.billing_subject, 9)
+                                ELSE NULL
+                            END,
+                            b.user_id
+                        ) IS NOT NULL
+                      AND ({request_value_bucket_sql}) = 'valuable'
+                    GROUP BY user_id
+                    HAVING COUNT(*) > 0
+                    "#,
+                ))
+                .bind(start_at)
+                .bind(end_at)
+                .bind(OUTCOME_SUCCESS)
+                .fetch_all(self.pg()?)
+                .await?;
+
+                for (user_id, value) in rows {
+                    *totals.entry(user_id).or_default() += value;
+                }
+            }
+            AccountUsageRollupMetricKind::SecondarySuccess => {
+                let rows = sqlx::query_as::<_, (String, i64)>(&format!(
+                    r#"
+                    SELECT
+                        COALESCE(
+                            atl.request_user_id,
+                            CASE
+                                WHEN atl.billing_subject LIKE 'account:%' THEN SUBSTR(atl.billing_subject, 9)
+                                ELSE NULL
+                            END,
+                            b.user_id
+                        ) AS user_id,
+                        COUNT(*) AS total
+                    FROM core.auth_token_logs atl
+                    LEFT JOIN core.user_token_bindings b ON b.token_id = atl.token_id
+                    LEFT JOIN observability.request_logs rl ON rl.id = atl.request_log_id
+                    WHERE atl.created_at >= $1
+                      AND atl.created_at < $2
+                      AND atl.result_status = $3
+                      AND COALESCE(
+                            atl.request_user_id,
+                            CASE
+                                WHEN atl.billing_subject LIKE 'account:%' THEN SUBSTR(atl.billing_subject, 9)
+                                ELSE NULL
+                            END,
+                            b.user_id
+                        ) IS NOT NULL
+                      AND ({request_value_bucket_sql}) = 'other'
+                    GROUP BY user_id
+                    HAVING COUNT(*) > 0
+                    "#,
+                ))
+                .bind(start_at)
+                .bind(end_at)
+                .bind(OUTCOME_SUCCESS)
+                .fetch_all(self.pg()?)
+                .await?;
+
+                for (user_id, value) in rows {
+                    *totals.entry(user_id).or_default() += value;
+                }
+            }
+            AccountUsageRollupMetricKind::BusinessCredits => {
+                let rows = sqlx::query_as::<_, (String, i64)>(
+                    r#"
+                    WITH charged_rows AS (
+                        SELECT
+                            bl.billing_subject,
+                            bl.created_at,
+                            COALESCE(bl.business_credits, 0) AS business_credits
+                        FROM core.billing_ledger bl
+                        WHERE bl.billing_state = $1
+                          AND COALESCE(bl.business_credits, 0) > 0
+                          AND bl.billing_subject LIKE 'account:%'
+                          AND bl.created_at >= $2
+                          AND bl.created_at < $3
+                        UNION ALL
+                        SELECT
+                            atl.billing_subject,
+                            atl.created_at,
+                            COALESCE(atl.business_credits, 0) AS business_credits
+                        FROM core.auth_token_logs atl
+                        LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = atl.id
+                        WHERE bl.auth_token_log_id IS NULL
+                          AND atl.billing_state = $4
+                          AND COALESCE(atl.business_credits, 0) > 0
+                          AND atl.billing_subject LIKE 'account:%'
+                          AND atl.created_at >= $5
+                          AND atl.created_at < $6
+                    )
+                    SELECT SUBSTR(billing_subject, 9) AS user_id, SUM(business_credits)::bigint AS total
+                    FROM charged_rows
+                    GROUP BY user_id
+                    HAVING SUM(business_credits) > 0
+                    "#,
+                )
+                .bind(BILLING_STATE_CHARGED)
+                .bind(start_at)
+                .bind(end_at)
+                .bind(BILLING_STATE_CHARGED)
+                .bind(start_at)
+                .bind(end_at)
+                .fetch_all(self.pg()?)
+                .await?;
+
+                for (user_id, value) in rows {
+                    *totals.entry(user_id).or_default() += value;
+                }
+            }
+            AccountUsageRollupMetricKind::RequestCount => {}
+        }
+
+        Ok(())
+    }
+
     async fn fetch_user_ranking_identities(
         &self,
         totals: &HashMap<String, i64>,
     ) -> Result<Vec<UserRankingRow>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_user_ranking_identities_pg(totals).await;
+        }
         if totals.is_empty() {
             return Ok(Vec::new());
         }
@@ -428,6 +682,65 @@ impl KeyStore {
                 avatar_template: None,
             });
             ranking_rows.push(UserRankingRow { rank: 0, value, user });
+        }
+
+        Ok(ranking_rows)
+    }
+
+    async fn fetch_user_ranking_identities_pg(
+        &self,
+        totals: &HashMap<String, i64>,
+    ) -> Result<Vec<UserRankingRow>, ProxyError> {
+        if totals.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut user_ids: Vec<&String> = totals.keys().collect();
+        user_ids.sort();
+
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT id, display_name, username, avatar_template FROM core.users WHERE id IN (",
+        );
+        let mut separated = builder.separated(", ");
+        for user_id in &user_ids {
+            separated.push_bind(user_id.as_str());
+        }
+        separated.push_unseparated(")");
+
+        let rows = builder.build().fetch_all(self.pg()?).await?;
+        let mut by_id: HashMap<String, UserRankingIdentity> = HashMap::new();
+        for row in rows {
+            let user_id: String = row.try_get("id")?;
+            by_id.insert(
+                user_id.clone(),
+                UserRankingIdentity {
+                    user_id,
+                    display_name: row.try_get("display_name")?,
+                    username: row.try_get("username")?,
+                    avatar_template: row.try_get("avatar_template")?,
+                },
+            );
+        }
+
+        let mut ranking_rows = Vec::with_capacity(user_ids.len());
+        for user_id in user_ids {
+            let value = *totals.get(user_id).unwrap_or(&0);
+            if value <= 0 {
+                continue;
+            }
+            let user = by_id
+                .remove(user_id.as_str())
+                .unwrap_or(UserRankingIdentity {
+                    user_id: user_id.clone(),
+                    display_name: None,
+                    username: None,
+                    avatar_template: None,
+                });
+            ranking_rows.push(UserRankingRow {
+                rank: 0,
+                value,
+                user,
+            });
         }
 
         Ok(ranking_rows)

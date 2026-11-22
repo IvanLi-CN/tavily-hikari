@@ -21,18 +21,19 @@ impl KeyStore {
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
             .await?;
         let result: Result<UpstreamReconciliationLastRunStats, ProxyError> = async {
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT key, value FROM meta WHERE key IN (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1)
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1)
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1)
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1)
-            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
-            .fetch_all(&mut *conn)
-            .await?;
-            let values = rows.into_iter().collect::<std::collections::HashMap<_, _>>();
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT key, value FROM meta WHERE key IN (?, ?, ?, ?, ?, ?)")
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1)
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1)
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1)
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1)
+                    .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
+                    .fetch_all(&mut *conn)
+                    .await?;
+            let values = rows
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>();
             let value_i64 = |key: &str| {
                 values
                     .get(key)
@@ -59,9 +60,7 @@ impl KeyStore {
     }
 
     async fn begin_reconciliation_control(&self) -> Result<SqliteImmediateTransaction, ProxyError> {
-        self.sqlite_runtime
-            .begin_scheduled_job_control()
-            .await
+        self.sqlite_runtime.begin_scheduled_job_control().await
     }
 
     async fn sync_upstream_reconciliation_representative_locked<T>(

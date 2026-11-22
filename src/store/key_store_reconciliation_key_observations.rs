@@ -61,10 +61,8 @@ impl KeyStore {
             .reconciliation_key_observation_source_rows(&mut session, candidate)
             .await;
         let source_rows = session.query(source_rows_result).await?;
-        let source_identity = Self::reconciliation_key_observation_source_identity_from_rows(
-            candidate,
-            source_rows,
-        );
+        let source_identity =
+            Self::reconciliation_key_observation_source_identity_from_rows(candidate, source_rows);
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT key_id, upstream_usage, key_source_identity \
              FROM upstream_reconciliation_key_observations WHERE token_id = ",
@@ -112,10 +110,11 @@ impl KeyStore {
                 matching
             },
         );
-        self.sqlite_runtime.record_reconciliation_key_observation_identity(
-            matching.len() as u64,
-            key_ids.len().saturating_sub(matching.len()) as u64,
-        );
+        self.sqlite_runtime
+            .record_reconciliation_key_observation_identity(
+                matching.len() as u64,
+                key_ids.len().saturating_sub(matching.len()) as u64,
+            );
         Ok(matching)
     }
 
@@ -218,9 +217,7 @@ impl KeyStore {
             .reconciliation_key_observation_source_rows(&mut session, candidate)
             .await;
         let rows = session.complete_query_or_defer(rows_result).await?;
-        Ok(Self::reconciliation_key_observation_source_identity_from_rows(
-            candidate, rows,
-        ))
+        Ok(Self::reconciliation_key_observation_source_identity_from_rows(candidate, rows))
     }
 
     fn reconciliation_key_observation_source_identity_from_rows(
