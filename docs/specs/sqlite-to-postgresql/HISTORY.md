@@ -4,6 +4,10 @@
 
 - 2026-11-22: 建立主题，锁定需求与边界；进入 D2（登记与结构）。
 - 2026-11-22: 决策记录如下（含被否决的备选）。
+- 2026-11-22: 锁定 PG 结构基线 `src/store/pg/migrations/0001_baseline.sql`。基线由当前二进制创建的全新
+  SQLite 库导出后映射得到（不是历史 CREATE/ALTER 序列），已在 PostgreSQL 18 上以 `ON_ERROR_STOP` 完整加载：
+  85 张 core 表、38 张 observability 表、1090 列、39 个外键、144 个显式索引，列名与 SQLite 源逐表一致。
+  9 个触发器不进入结构基线，移植要求与需要替代的 SQLite 函数清单写在基线文件末尾。
 
 ## 已决策项（Decisions）
 

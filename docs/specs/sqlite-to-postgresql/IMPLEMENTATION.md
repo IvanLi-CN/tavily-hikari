@@ -25,6 +25,7 @@
 1. 逐模块登记 SQLite 专属调用：运行时、cooperative 读预算、contention 日志、WAL checkpoint、VACUUM/compaction、
    页与空闲页指标、`sqlite_master`/`PRAGMA` 探测、`ATTACH`、`BEGIN IMMEDIATE`、SQLite 触发器、HA 触发器与 outbox。
 2. `core` 与 `observability` 两份 schema 的定义、约束、索引与序列策略。
+   状态：已锁定 `src/store/pg/migrations/0001_baseline.sql`，并在 PostgreSQL 18 上完成加载验证。
 3. 触发器与规范化逻辑的承接方案清单。
 4. 迁移方案文档：快照边界、装载顺序、窗口内步骤、校验点、失败处置。
 
