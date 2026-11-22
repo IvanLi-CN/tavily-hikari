@@ -227,16 +227,15 @@ ARG APP_EFFECTIVE_VERSION
 LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
 
 ########## Stage 5: migrator runtime image ##########
-# Only the SQLite -> PostgreSQL migrator plus its TLS trust store and the SQLite
-# client library the binary links against (Cargo.toml pins libsqlite3-sys without
-# the `bundled` feature). No web payload, no runtime scripts, no release label.
-# libsqlite3-0 is intentional and must stay: the migrator reads SQLite sources at
-# runtime, so the zero-SQLite requirement applies to the server image only.
+# Only the SQLite -> PostgreSQL migrator plus its TLS trust store. SQLite itself is
+# linked statically: sqlx-sqlite enables libsqlite3-sys/bundled, so the binary needs
+# no libsqlite3.so at runtime (verified with ldd on the built image). No web payload,
+# no runtime scripts, no release label.
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS migrate
 ARG SOURCE_DATE_EPOCH=0
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=bind,from=migrator-payload-normalizer,source=/payload/bin/s2pg,target=/tmp/s2pg,ro \

@@ -107,9 +107,12 @@ class MigratorImageContractTests(unittest.TestCase):
         self.assertNotIn("org.opencontainers.image.version", migrate)
         self.assertNotIn("from=app-builder", migrate)
         self.assertNotIn("from=payload-normalizer", migrate)
-        self.assertIn("libsqlite3-0", migrate)
+        # SQLite is linked statically through libsqlite3-sys/bundled, so the migrator
+        # runtime stage must not pull a SQLite client library in.
+        self.assertNotIn("libsqlite3-0", migrate)
         self.assertNotIn("libsqlite3-dev", migrate)
         self.assertNotIn("pkg-config", migrate)
+        self.assertIn("ca-certificates", migrate)
 
         stages = re.findall(r"^FROM \S+ AS (\w[\w.-]*)", self.dockerfile, re.M)
         self.assertEqual(stages[-1], "migrate")
