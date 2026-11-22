@@ -20,7 +20,7 @@
 -- equivalents for SQLite-only functions (see the trigger port plan at the end of the file).
 --
 -- Validation: the file applies cleanly to PostgreSQL 18 with ON_ERROR_STOP; the loaded
--- database holds 85 core tables, 38 observability tables, 1090 columns, 39 foreign keys
+-- database holds 85 core tables, 38 observability tables, 1092 columns, 39 foreign keys
 -- and the same 144 explicit indexes as the SQLite source, with identical column names.
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS observability;
@@ -112,8 +112,8 @@ CREATE TABLE core.api_key_transient_backoffs (
 );
 CREATE TABLE core.auth_tokens (
     id text PRIMARY KEY,
-    -- text 4-char id code secret TEXT NOT NULL,
-    -- text 12-char secret enabled INTEGER NOT NULL DEFAULT 1,
+    secret text NOT NULL,
+    enabled bigint NOT NULL DEFAULT 1,
     note text,
     group_name text,
     total_requests bigint NOT NULL DEFAULT 0,
@@ -1626,7 +1626,6 @@ CREATE INDEX idx_dashboard_rollup_integrity_blocked_probe ON observability.dashb
 -- sqlite trigger trg_request_logs_canonical_request_kind_update (schema observability)
 -- sqlite trigger trg_dashboard_rollup_source_revision (schema observability)
 -- sqlite trigger trg_dashboard_rollup_source_revision_delete (schema observability)
-
 -- ########## trigger port plan (tracked by the migration spec, D2) ##########
 --
 -- The SQLite schema carries 9 triggers that keep derived state consistent. They are not

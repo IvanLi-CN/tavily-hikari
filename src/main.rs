@@ -36,10 +36,10 @@ use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use tavily_hikari::{
     AdminPasskeyScope, DEFAULT_UPSTREAM, HaConfig, HaMode, LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
-    RuntimeLogFormat, TavilyProxy, TavilyProxyOptions,
+    PgConfigError, PgStartupPlan, PgStore, RuntimeLogFormat, TavilyProxy, TavilyProxyOptions,
     create_admin_passkey_reset_token_for_database,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -75,6 +75,14 @@ struct Cli {
     /// SQLite 数据库存储路径
     #[arg(long, env = "PROXY_DB_PATH", default_value = "data/tavily_proxy.db")]
     db_path: String,
+
+    /// PostgreSQL 连接串；留空则完全走现有 SQLite 路径
+    #[arg(long, env = "PROXY_DATABASE_URL", hide_env_values = true)]
+    database_url: Option<String>,
+
+    /// 跳过启动时的 PostgreSQL 自动迁移，只校验结构（缺表即拒绝启动）
+    #[arg(long, default_value_t = false)]
+    no_auto_migrate: bool,
 
     /// Xray binary path used for share-link based forward proxies.
     #[arg(long, env = "XRAY_BINARY", default_value = "xray")]
@@ -449,6 +457,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // PostgreSQL plumbing is validated here while the request path still serves from
+    // SQLite in this wave (see docs/specs/sqlite-to-postgresql). The handle stays alive
+    // for the process lifetime so the next wave can take over the pool.
+    let _postgres_store = match start_postgres_gate_if_configured(&cli).await {
+        Ok(store) => store,
+        Err(err) => {
+            // Print the `Display` message (missing relations, connection cause) instead of
+            // the derived `Debug` that `main` would emit for a boxed error.
+            error!(
+                component = "startup",
+                event = "pg_startup_gate_failed",
+                err = %err,
+                "postgresql startup gate failed; refusing to start"
+            );
+            std::process::exit(1);
+        }
+    };
+
     let admin_passkey_rp_id =
         trim_optional(cli.admin_passkey_rp_id.clone()).or_else(|| infer_admin_passkey_rp_id(&cli));
     let admin_passkey_rp_origin = trim_optional(cli.admin_passkey_rp_origin.clone())
@@ -731,6 +757,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Resolves the startup storage mode from CLI/env inputs.
+///
+/// `--no-auto-migrate` only inverts the migration step; it never selects PostgreSQL.
+fn resolve_storage_plan(cli: &Cli) -> Result<PgStartupPlan, PgConfigError> {
+    PgStartupPlan::resolve(cli.database_url.as_deref(), !cli.no_auto_migrate)
+}
+
+/// Connects to PostgreSQL, applies migrations unless disabled, and asserts the baseline
+/// schema. Returns `None` when no database URL is configured.
+async fn start_postgres_gate_if_configured(
+    cli: &Cli,
+) -> Result<Option<PgStore>, Box<dyn std::error::Error>> {
+    let PgStartupPlan::Postgres(config) = resolve_storage_plan(cli)? else {
+        info!(
+            component = "startup",
+            event = "storage_backend_selected",
+            backend = "sqlite",
+            "no database URL configured; the SQLite path is unchanged"
+        );
+        return Ok(None);
+    };
+
+    let auto_migrate = config.auto_migrate();
+    let database = config.redacted_url();
+    let store = PgStore::connect_with(config).await?;
+    if auto_migrate {
+        let report = PgStore::run_migrations(store.pool()).await?;
+        info!(
+            component = "startup",
+            event = "pg_startup_gate",
+            database = %database,
+            applied_migrations = report.applied_count(),
+            applied_versions = ?report.applied_versions(),
+            "postgresql startup gate: migrations applied"
+        );
+    } else {
+        info!(
+            component = "startup",
+            event = "pg_auto_migrate_disabled",
+            database = %database,
+            "postgresql startup gate: skipping migrations because --no-auto-migrate was set"
+        );
+    }
+    PgStore::assert_schema_present(store.pool()).await?;
+    warn!(
+        component = "startup",
+        event = "pg_runtime_not_serving",
+        database = %database,
+        "postgresql plumbing validated at startup; the request path still uses sqlite in this wave"
+    );
+    Ok(Some(store))
+}
+
 async fn handle_cli_command(
     command: &CliCommand,
     cli: &Cli,
@@ -839,10 +918,11 @@ fn preferred_admin_passkey_rp_host(
 #[cfg(test)]
 mod main_tests {
     use super::{
-        AdminPasskeyRpHostSource, Cli, builtin_admin_requires_startup_secret,
-        effective_forward_auth_enabled, preferred_admin_passkey_rp_host,
+        AdminPasskeyRpHostSource, Cli, PgConfigError, PgStartupPlan,
+        builtin_admin_requires_startup_secret, effective_forward_auth_enabled,
+        preferred_admin_passkey_rp_host,
     };
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_version_uses_the_embedded_product_version() {
@@ -850,6 +930,64 @@ mod main_tests {
             Cli::command().get_version(),
             Some(env!("APP_EFFECTIVE_VERSION"))
         );
+    }
+
+    #[test]
+    fn startup_plan_without_database_url_keeps_the_sqlite_path() {
+        let cli = Cli::parse_from(["tavily-hikari"]);
+        assert_eq!(
+            super::resolve_storage_plan(&cli).expect("no database url"),
+            PgStartupPlan::Sqlite
+        );
+    }
+
+    #[test]
+    fn startup_plan_with_database_url_enables_auto_migration() {
+        let cli = Cli::parse_from([
+            "tavily-hikari",
+            "--database-url",
+            "postgres://app@db.internal:5432/hikari",
+        ]);
+        let PgStartupPlan::Postgres(config) =
+            super::resolve_storage_plan(&cli).expect("valid database url")
+        else {
+            panic!("expected the postgresql startup plan");
+        };
+        assert!(config.auto_migrate());
+    }
+
+    #[test]
+    fn startup_plan_with_no_auto_migrate_only_asserts_the_schema() {
+        let cli = Cli::parse_from([
+            "tavily-hikari",
+            "--database-url",
+            "postgres://app@db.internal:5432/hikari",
+            "--no-auto-migrate",
+        ]);
+        assert!(cli.no_auto_migrate);
+        let PgStartupPlan::Postgres(config) =
+            super::resolve_storage_plan(&cli).expect("valid database url")
+        else {
+            panic!("expected the postgresql startup plan");
+        };
+        assert!(!config.auto_migrate());
+    }
+
+    #[test]
+    fn startup_plan_rejects_a_non_postgresql_database_url() {
+        let cli = Cli::parse_from([
+            "tavily-hikari",
+            "--database-url",
+            "sqlite:///var/lib/hikari.db",
+        ]);
+        let err = super::resolve_storage_plan(&cli).expect_err("sqlite url must be rejected");
+        assert_eq!(
+            err,
+            PgConfigError::UnsupportedScheme {
+                scheme: "sqlite".to_owned()
+            }
+        );
+        assert!(err.to_string().contains("postgres://"));
     }
 
     #[test]

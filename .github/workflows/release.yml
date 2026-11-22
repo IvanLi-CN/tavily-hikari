@@ -239,6 +239,20 @@ jobs:
     permissions:
       contents: read
       packages: write
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: s2pg_smoke
+          POSTGRES_PASSWORD: s2pg_smoke
+          POSTGRES_DB: s2pg_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U s2pg_smoke -d s2pg_smoke"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -276,7 +290,8 @@ jobs:
 
           for helper_path in \
             ".github/scripts/release-mcp-billing-smoke.sh" \
-            ".github/scripts/release_smoke_sqlite_check.py"
+            ".github/scripts/release_smoke_sqlite_check.py" \
+            ".github/scripts/release-s2pg-smoke.sh"
           do
             if [[ "${force_restore}" != "1" && ( -x "${helper_path}" || -f "${helper_path}" ) ]]; then
               continue
@@ -303,10 +318,14 @@ jobs:
           lower="${GITHUB_REPOSITORY,,}"
           {
             echo "IMAGE_NAME_LOWER=${lower}"
+            echo "MIGRATOR_IMAGE_LOWER=${lower}-s2pg"
             echo "LOCAL_SMOKE_IMAGE=tavily-hikari-release-smoke:${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            echo "LOCAL_MIGRATOR_IMAGE=tavily-hikari-s2pg-release-smoke:${GITHUB_RUN_ID}-${{ matrix.arch }}"
             echo "DIGEST_FILE=${RUNNER_TEMP}/release-digests/${{ matrix.arch }}.txt"
+            echo "MIGRATOR_DIGEST_FILE=${RUNNER_TEMP}/release-digests/s2pg-${{ matrix.arch }}.txt"
           } >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
+          echo "migrator_image_lower=${lower}-s2pg" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -339,6 +358,25 @@ jobs:
           LOCAL_SMOKE_IMAGE: ${{ env.LOCAL_SMOKE_IMAGE }}
         run: |
           ./.github/scripts/release-mcp-billing-smoke.sh
+
+      - name: Build local migrator image for s2pg smoke
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: migrate
+          load: true
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.LOCAL_MIGRATOR_IMAGE }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.migrator_image_lower }}:buildcache-${{ matrix.arch }}
+
+      - name: s2pg migrator smoke gate
+        shell: bash
+        env:
+          LOCAL_MIGRATOR_IMAGE: ${{ env.LOCAL_MIGRATOR_IMAGE }}
+          S2PG_TEST_PG_URL: postgres://s2pg_smoke:s2pg_smoke@127.0.0.1:5432/s2pg_smoke
+        run: |
+          ./.github/scripts/release-s2pg-smoke.sh
 
       - name: Extract metadata labels
         id: meta
@@ -385,6 +423,39 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+      - name: Build and push migrator image by digest
+        id: build-push-migrator
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: migrate
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image-name.outputs.migrator_image_lower }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.migrator_image_lower }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.migrator_image_lower }}:buildcache-${{ matrix.arch }},mode=max
+
+      - name: Export migrator image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build-push-migrator.outputs.digest }}"
+          if [[ -z "${digest}" ]]; then
+            echo "missing pushed migrator digest for ${{ matrix.arch }}" >&2
+            exit 1
+          fi
+
+          mkdir -p "$(dirname "${MIGRATOR_DIGEST_FILE}")"
+          printf '%s\n' "${digest}" > "${MIGRATOR_DIGEST_FILE}"
+
+      - name: Upload migrator image digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-digest-s2pg-${{ matrix.arch }}
+          path: ${{ env.MIGRATOR_DIGEST_FILE }}
+          if-no-files-found: error
+          overwrite: true
+
       - name: Summary
         if: always()
         shell: bash
@@ -395,6 +466,7 @@ jobs:
             echo "- platform: ${{ matrix.platform }}"
             echo "- version: ${{ env.APP_EFFECTIVE_VERSION }}"
             echo "- digest: ${{ steps.build-push.outputs.digest || '<none>' }}"
+            echo "- migrator_digest: ${{ steps.build-push-migrator.outputs.digest || '<none>' }}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   binary-native:
@@ -742,7 +814,10 @@ jobs:
         run: |
           set -euo pipefail
           lower="${GITHUB_REPOSITORY,,}"
-          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
+          {
+            echo "IMAGE_NAME_LOWER=${lower}"
+            echo "MIGRATOR_IMAGE_LOWER=${lower}-s2pg"
+          } >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
 
       - name: Download image digests
@@ -771,62 +846,121 @@ jobs:
             type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel == 'stable' }}
             type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
 
-      - name: Create multi-arch manifest
+      - name: Extract migrator metadata (version tag only)
+        id: meta-migrator
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}-s2pg
+          tags: |
+            type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
+
+      - name: Create multi-arch manifests
         shell: bash
+        env:
+          SERVER_TAGS: ${{ steps.meta.outputs.tags }}
+          MIGRATOR_TAGS: ${{ steps.meta-migrator.outputs.tags }}
         run: |
           set -euo pipefail
 
-          image="${REGISTRY}/${IMAGE_NAME_LOWER}"
-          refs=()
-          while IFS= read -r digest_file; do
-            digest="$(tr -d '\n' < "${digest_file}")"
-            [[ -n "${digest}" ]] || continue
-            refs+=("${image}@${digest}")
-          done < <(find "${RUNNER_TEMP}/release-digests" -type f -name '*.txt' | sort)
-
-          if [[ "${#refs[@]}" -ne 2 ]]; then
-            echo "expected exactly 2 architecture digests, got ${#refs[@]}" >&2
-            printf 'refs=%s\n' "${refs[*]}" >&2
+          digest_root="${RUNNER_TEMP}/release-digests"
+          mapfile -t digest_files < <(find "${digest_root}" -type f -name '*.txt' | sort)
+          if [[ "${#digest_files[@]}" -ne 4 ]]; then
+            echo "expected 4 digests (2 images x 2 architectures), got ${#digest_files[@]}" >&2
+            printf '%s\n' "${digest_files[@]}" >&2
             exit 1
           fi
 
-          tag_args=()
-          while IFS= read -r tag; do
-            [[ -n "${tag}" ]] || continue
-            tag_args+=("-t" "${tag}")
-          done <<< "${{ steps.meta.outputs.tags }}"
+          create_manifest() {
+            local label="$1"
+            local image="$2"
+            local digest_prefix="$3"
+            local tags="$4"
+            local arch digest_file digest tag
+            local -a refs=()
+            local -a tag_args=()
 
-          if [[ "${#tag_args[@]}" -eq 0 ]]; then
-            echo "metadata-action produced no tags" >&2
-            exit 1
-          fi
+            for arch in amd64 arm64; do
+              digest_file="${digest_root}/${digest_prefix}${arch}.txt"
+              if [[ ! -f "${digest_file}" ]]; then
+                echo "${label}: missing architecture digest for ${arch}: ${digest_file}" >&2
+                exit 1
+              fi
+              digest="$(tr -d '\n' < "${digest_file}")"
+              if [[ -z "${digest}" ]]; then
+                echo "${label}: empty digest for ${arch}" >&2
+                exit 1
+              fi
+              refs+=("${image}@${digest}")
+            done
 
-          docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] || continue
+              tag_args+=("-t" "${tag}")
+            done <<< "${tags}"
+
+            if [[ "${#tag_args[@]}" -eq 0 ]]; then
+              echo "${label}: metadata-action produced no tags" >&2
+              exit 1
+            fi
+
+            echo "${label}: creating manifest from ${#refs[@]} digests"
+            docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
+          }
+
+          create_manifest "server" "${REGISTRY}/${IMAGE_NAME_LOWER}" "" "${SERVER_TAGS}"
+          create_manifest "s2pg" "${REGISTRY}/${MIGRATOR_IMAGE_LOWER}" "s2pg-" "${MIGRATOR_TAGS}"
 
       - name: Validate manifest platforms
         shell: bash
+        env:
+          SERVER_TAGS: ${{ steps.meta.outputs.tags }}
+          MIGRATOR_TAGS: ${{ steps.meta-migrator.outputs.tags }}
         run: |
           set -euo pipefail
-          while IFS= read -r tag; do
-            [[ -n "${tag}" ]] || continue
-            inspect_output="$(docker buildx imagetools inspect "${tag}")"
-            printf '%s\n' "${inspect_output}"
-            grep -q 'linux/amd64' <<< "${inspect_output}"
-            grep -q 'linux/arm64' <<< "${inspect_output}"
-          done <<< "${{ steps.meta.outputs.tags }}"
+
+          validate_platforms() {
+            local label="$1"
+            local tags="$2"
+            local tag inspect_output
+
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] || continue
+              inspect_output="$(docker buildx imagetools inspect "${tag}")"
+              printf '%s\n' "${inspect_output}"
+              if ! grep -q 'linux/amd64' <<< "${inspect_output}"; then
+                echo "${label}: ${tag} is missing linux/amd64" >&2
+                exit 1
+              fi
+              if ! grep -q 'linux/arm64' <<< "${inspect_output}"; then
+                echo "${label}: ${tag} is missing linux/arm64" >&2
+                exit 1
+              fi
+            done <<< "${tags}"
+          }
+
+          validate_platforms "server" "${SERVER_TAGS}"
+          validate_platforms "s2pg" "${MIGRATOR_TAGS}"
 
       - name: Summary
         if: always()
         shell: bash
+        env:
+          SERVER_TAGS: ${{ steps.meta.outputs.tags }}
+          MIGRATOR_TAGS: ${{ steps.meta-migrator.outputs.tags }}
         run: |
           {
-            echo "### Multi-arch manifest"
+            echo "### Multi-arch manifests"
             echo "- version: ${{ env.APP_EFFECTIVE_VERSION }}"
-            echo "- tags:"
+            echo "- server: ${REGISTRY}/${IMAGE_NAME_LOWER}"
             while IFS= read -r tag; do
               [[ -n "${tag}" ]] || continue
               echo "  - ${tag}"
-            done <<< "${{ steps.meta.outputs.tags }}"
+            done <<< "${SERVER_TAGS}"
+            echo "- s2pg migrator: ${REGISTRY}/${MIGRATOR_IMAGE_LOWER}"
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] || continue
+              echo "  - ${tag}"
+            done <<< "${MIGRATOR_TAGS}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   github-release:

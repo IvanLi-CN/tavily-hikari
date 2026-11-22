@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 
 mod immediate_transaction;
 mod key_store_alert_event_projection;
+pub mod pg;
 mod sqlite_runtime;
 pub(crate) use immediate_transaction::{
     ImmediateSqliteTransaction, SavepointSqliteTransaction, SqliteTransaction,

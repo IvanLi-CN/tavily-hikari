@@ -35,6 +35,13 @@ ARG APP_EFFECTIVE_VERSION
 RUN test -n "${APP_EFFECTIVE_VERSION}" \
     && APP_EFFECTIVE_VERSION="${APP_EFFECTIVE_VERSION}" cargo build --release --locked --bin tavily-hikari
 
+# The migrator reads SQLite and writes PostgreSQL, and its releases are versioned by
+# image tag only: ADR 0007 keeps version-dependent layers at two, so this stage must
+# stay independent of APP_EFFECTIVE_VERSION. It reuses the maintenance target
+# directory so only the migrator crate itself is compiled here.
+FROM maintenance-builder AS migrator-builder
+RUN cargo build --release --locked --bin s2pg
+
 ########## Stage 1b: audit the allowlisted build context ##########
 FROM builder AS context-audit
 COPY . /context
@@ -110,6 +117,22 @@ RUN set -eux; \
       /payload/runtime-scripts/docker-entrypoint.sh \
       /payload/runtime-scripts/docker-healthcheck.sh \
       /payload/xray/bin/xray; \
+    find /payload -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
+########## Stage 3b: normalize the migrator payload ##########
+FROM builder AS migrator-payload-normalizer
+ARG SOURCE_DATE_EPOCH=0
+
+RUN mkdir -p /payload/bin
+
+COPY --from=migrator-builder /app/target/release/s2pg /payload/bin/s2pg
+
+RUN set -eux; \
+    find /payload -type d -exec chown 0:0 {} +; \
+    find /payload -type f -exec chown 0:0 {} +; \
+    find /payload -type d -exec chmod 0755 {} +; \
+    find /payload -type f -exec chmod 0644 {} +; \
+    chmod 0755 /payload/bin/s2pg; \
     find /payload -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ########## Stage 4: final runtime image ##########
@@ -202,3 +225,22 @@ ENV PROXY_DB_PATH=/srv/app/data/tavily_proxy.db \
 
 ARG APP_EFFECTIVE_VERSION
 LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
+
+########## Stage 5: migrator runtime image ##########
+# Only the SQLite -> PostgreSQL migrator plus its TLS trust store. SQLite itself is
+# linked statically: sqlx-sqlite enables libsqlite3-sys/bundled, so the binary needs
+# no libsqlite3.so at runtime (verified with ldd on the built image). No web payload,
+# no runtime scripts, no release label.
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS migrate
+ARG SOURCE_DATE_EPOCH=0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=bind,from=migrator-payload-normalizer,source=/payload/bin/s2pg,target=/tmp/s2pg,ro \
+    install -m 0755 -o 0 -g 0 /tmp/s2pg /usr/local/bin/s2pg \
+    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/s2pg /usr/local/bin /etc /tmp
+
+ENTRYPOINT ["/usr/local/bin/s2pg"]
+CMD ["--help"]
