@@ -40,9 +40,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, i64>("SELECT created_at FROM users WHERE id = ? LIMIT 1")
+        sqlx::query_scalar::<_, i64>("SELECT created_at FROM core.users WHERE id = $1 LIMIT 1")
             .bind(user_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.pg()?)
             .await
             .map_err(ProxyError::Database)
     }
@@ -53,12 +53,12 @@ impl KeyStore {
         sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT changed_at, limit_value
-            FROM request_rate_limit_snapshots
+            FROM core.request_rate_limit_snapshots
             ORDER BY changed_at DESC, id DESC
             LIMIT 1
             "#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await
         .map(|row| {
             row.map(|(changed_at, limit_value)| RequestRateLimitSnapshotRecord {
@@ -79,14 +79,14 @@ impl KeyStore {
         if let Some((changed_at, limit_value)) = sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT changed_at, limit_value
-            FROM request_rate_limit_snapshots
-            WHERE changed_at < ?
+            FROM core.request_rate_limit_snapshots
+            WHERE changed_at < $1
             ORDER BY changed_at DESC, id DESC
             LIMIT 1
             "#,
         )
         .bind(window_start)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await?
         {
             snapshots.push(RequestRateLimitSnapshotRecord {
@@ -98,15 +98,15 @@ impl KeyStore {
         let window_rows = sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT changed_at, limit_value
-            FROM request_rate_limit_snapshots
-            WHERE changed_at >= ?
-              AND changed_at < ?
+            FROM core.request_rate_limit_snapshots
+            WHERE changed_at >= $1
+              AND changed_at < $2
             ORDER BY changed_at ASC, id ASC
             "#,
         )
         .bind(window_start)
         .bind(changed_before)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         snapshots.extend(window_rows.into_iter().map(|(changed_at, limit_value)| {
@@ -133,13 +133,13 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO request_rate_limit_snapshots (changed_at, limit_value)
-            VALUES (?, ?)
+            INSERT INTO core.request_rate_limit_snapshots (changed_at, limit_value)
+            VALUES ($1, $2)
             "#,
         )
         .bind(changed_at)
         .bind(limit_value)
-        .execute(&self.pool)
+        .execute(self.pg()?)
         .await?;
         Ok(())
     }
@@ -151,14 +151,14 @@ impl KeyStore {
         sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
             SELECT changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit
-            FROM account_quota_limit_snapshots
-            WHERE user_id = ?
+            FROM core.account_quota_limit_snapshots
+            WHERE user_id = $1
             ORDER BY changed_at DESC, id DESC
             LIMIT 1
             "#,
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await
         .map(|row| {
             row.map(
@@ -186,16 +186,16 @@ impl KeyStore {
         sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
             SELECT changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit
-            FROM account_quota_limit_snapshots
-            WHERE user_id = ?
-              AND changed_at <= ?
+            FROM core.account_quota_limit_snapshots
+            WHERE user_id = $1
+              AND changed_at <= $2
             ORDER BY changed_at DESC, id DESC
             LIMIT 1
             "#,
         )
         .bind(user_id)
         .bind(changed_at)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await
         .map(|row| {
             row.map(
@@ -231,16 +231,16 @@ impl KeyStore {
         )) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
                 r#"
                 SELECT changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit
-                FROM account_quota_limit_snapshots
-                WHERE user_id = ?
-                  AND changed_at < ?
+                FROM core.account_quota_limit_snapshots
+                WHERE user_id = $1
+                  AND changed_at < $2
                 ORDER BY changed_at DESC, id DESC
                 LIMIT 1
                 "#,
             )
             .bind(user_id)
             .bind(window_start)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.pg()?)
             .await?
         {
             snapshots.push(AccountQuotaLimitSnapshotRecord {
@@ -254,26 +254,21 @@ impl KeyStore {
         let window_rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
             SELECT changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit
-            FROM account_quota_limit_snapshots
-            WHERE user_id = ?
-              AND changed_at >= ?
-              AND changed_at < ?
+            FROM core.account_quota_limit_snapshots
+            WHERE user_id = $1
+              AND changed_at >= $2
+              AND changed_at < $3
             ORDER BY changed_at ASC, id ASC
             "#,
         )
         .bind(user_id)
         .bind(window_start)
         .bind(changed_before)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         snapshots.extend(window_rows.into_iter().map(
-            |(
-                changed_at,
-                business_calls_1h_limit,
-                daily_credits_limit,
-                monthly_credits_limit,
-            )| {
+            |(changed_at, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit)| {
                 AccountQuotaLimitSnapshotRecord {
                     changed_at,
                     business_calls_1h_limit,
@@ -303,14 +298,14 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO account_quota_limit_snapshots (
+            INSERT INTO core.account_quota_limit_snapshots (
                 user_id,
                 changed_at,
                 business_calls_1h_limit,
                 daily_credits_limit,
                 monthly_credits_limit
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(user_id)
@@ -318,7 +313,7 @@ impl KeyStore {
         .bind(limits.business_calls_1h_limit)
         .bind(limits.daily_credits_limit)
         .bind(limits.monthly_credits_limit)
-        .execute(&self.pool)
+        .execute(self.pg()?)
         .await?;
         Ok(())
     }
@@ -374,17 +369,17 @@ impl KeyStore {
         let changed_ats = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT DISTINCT changed_at
-            FROM account_quota_limit_snapshots
-            WHERE user_id = ?
-              AND changed_at >= ?
-              AND changed_at < ?
+            FROM core.account_quota_limit_snapshots
+            WHERE user_id = $1
+              AND changed_at >= $2
+              AND changed_at < $3
             ORDER BY changed_at ASC
             "#,
         )
         .bind(user_id)
         .bind(month_start)
         .bind(window_end)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         for changed_at in changed_ats {
@@ -448,13 +443,13 @@ impl KeyStore {
                 COALESCE(inherits_defaults, 1),
                 created_at,
                 updated_at
-            FROM account_quota_limits
-            WHERE user_id = ?
+            FROM core.account_quota_limits
+            WHERE user_id = $1
             LIMIT 1
             "#,
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await?
         {
             known_since = Some(created_at.max(updated_at));
@@ -475,16 +470,18 @@ impl KeyStore {
             sqlx::query_as::<_, (i64, i64, i64)>(
                 r#"
                 SELECT b.created_at, b.updated_at, t.updated_at
-                FROM user_tag_bindings b
-                JOIN user_tags t ON t.id = b.tag_id
-                WHERE b.user_id = ?
+                FROM core.user_tag_bindings b
+                JOIN core.user_tags t ON t.id = b.tag_id
+                WHERE b.user_id = $1
                 "#,
             )
             .bind(user_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?
         {
-            let evidence_at = binding_created_at.max(binding_updated_at).max(tag_updated_at);
+            let evidence_at = binding_created_at
+                .max(binding_updated_at)
+                .max(tag_updated_at);
             known_since = Some(match known_since {
                 Some(previous) => previous.max(evidence_at),
                 None => evidence_at,
@@ -521,7 +518,11 @@ impl KeyStore {
         }
 
         let now = self.backend_time.now_ts();
-        if self.fetch_latest_request_rate_limit_snapshot().await?.is_none() {
+        if self
+            .fetch_latest_request_rate_limit_snapshot()
+            .await?
+            .is_none()
+        {
             let configured_limit = self.get_meta_i64(META_KEY_REQUEST_RATE_LIMIT_V1).await?;
             let coverage_start = self
                 .get_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START)
@@ -535,8 +536,8 @@ impl KeyStore {
             .await?;
         }
 
-        let user_ids = sqlx::query_scalar::<_, String>("SELECT id FROM users ORDER BY id ASC")
-            .fetch_all(&self.pool)
+        let user_ids = sqlx::query_scalar::<_, String>("SELECT id FROM core.users ORDER BY id ASC")
+            .fetch_all(self.pg()?)
             .await?;
         for user_id in user_ids {
             if self

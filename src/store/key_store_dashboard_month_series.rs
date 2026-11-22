@@ -1,6 +1,6 @@
 impl KeyStore {
     async fn dashboard_month_series_has_retained_data_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         range_start: i64,
         range_end: i64,
     ) -> Result<bool, ProxyError> {
@@ -13,30 +13,30 @@ impl KeyStore {
             SELECT CASE
                 WHEN EXISTS(
                     SELECT 1
-                    FROM dashboard_request_rollup_buckets
-                    WHERE bucket_start >= ?
-                      AND bucket_start < ?
+                    FROM observability.dashboard_request_rollup_buckets
+                    WHERE bucket_start >= $1
+                      AND bucket_start < $2
                 ) THEN 1
                 WHEN EXISTS(
                     SELECT 1
-                    FROM api_keys
-                    WHERE created_at >= ?
-                      AND created_at < ?
+                    FROM core.api_keys
+                    WHERE created_at >= $3
+                      AND created_at < $4
                 ) THEN 1
                 WHEN EXISTS(
                     SELECT 1
-                    FROM api_key_quarantines
-                    WHERE created_at >= ?
-                      AND created_at < ?
+                    FROM core.api_key_quarantines
+                    WHERE created_at >= $5
+                      AND created_at < $6
                 ) THEN 1
                 WHEN EXISTS(
                     SELECT 1
-                    FROM api_key_maintenance_records
-                    WHERE source = ?
-                      AND operation_code = ?
-                      AND reason_code = ?
-                      AND created_at >= ?
-                      AND created_at < ?
+                    FROM core.api_key_maintenance_records
+                    WHERE source = $7
+                      AND operation_code = $8
+                      AND reason_code = $9
+                      AND created_at >= $10
+                      AND created_at < $11
                 ) THEN 1
                 ELSE 0
             END
@@ -97,7 +97,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_month_lifecycle_daily_counts_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         range_start: i64,
         range_end: i64,
     ) -> Result<
@@ -129,9 +129,9 @@ impl KeyStore {
         let new_keys_created_at = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT created_at
-            FROM api_keys
-            WHERE created_at >= ?
-              AND created_at < ?
+            FROM core.api_keys
+            WHERE created_at >= $1
+              AND created_at < $2
             "#,
         )
         .bind(range_start)
@@ -142,9 +142,9 @@ impl KeyStore {
         let new_quarantines_created_at = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT created_at
-            FROM api_key_quarantines
-            WHERE created_at >= ?
-              AND created_at < ?
+            FROM core.api_key_quarantines
+            WHERE created_at >= $1
+              AND created_at < $2
             "#,
         )
         .bind(range_start)
@@ -155,12 +155,12 @@ impl KeyStore {
         let upstream_exhausted_first_created_at = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT MIN(created_at) AS first_created_at
-            FROM api_key_maintenance_records
-            WHERE source = ?
-              AND operation_code = ?
-              AND reason_code = ?
-              AND created_at >= ?
-              AND created_at < ?
+            FROM core.api_key_maintenance_records
+            WHERE source = $1
+              AND operation_code = $2
+              AND reason_code = $3
+              AND created_at >= $4
+              AND created_at < $5
             GROUP BY key_id
             "#,
         )
@@ -180,7 +180,7 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_month_series_points_tx(
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         range_start: i64,
         range_end: i64,
         now_cutoff: i64,
@@ -219,7 +219,7 @@ impl KeyStore {
                 }
             } else {
                 let bucket_metrics = if bucket_start == current_local_day_start {
-                    Self::fetch_dashboard_rollup_window_metrics_tx(
+                    Self::fetch_dashboard_rollup_window_metrics_tx_pg(
                         tx,
                         SECS_PER_MINUTE,
                         bucket_start,
@@ -227,7 +227,7 @@ impl KeyStore {
                     )
                     .await?
                 } else {
-                    Self::fetch_dashboard_rollup_bucket_metrics_in_range_tx(
+                    Self::fetch_dashboard_rollup_bucket_metrics_in_range_tx_pg(
                         tx,
                         SECS_PER_DAY,
                         bucket_start,
@@ -269,7 +269,7 @@ impl KeyStore {
         &self,
         summary_windows: &SummaryWindows,
     ) -> Result<DashboardMonthSeries, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pg()?.begin().await?;
 
         let current = Self::fetch_dashboard_month_series_points_tx(
             &mut tx,

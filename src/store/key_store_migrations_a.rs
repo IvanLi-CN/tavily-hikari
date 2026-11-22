@@ -659,6 +659,83 @@ impl KeyStore {
         Ok(())
     }
 
+    /// PostgreSQL twin of [`Self::upsert_dashboard_request_rollup_bucket`].
+    async fn upsert_dashboard_request_rollup_bucket_pg(
+        tx: &mut sqlx::PgConnection,
+        bucket_start: i64,
+        bucket_secs: i64,
+        counts: DashboardRequestRollupCounts,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        if counts.total_requests <= 0 && counts.local_estimated_credits <= 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO observability.dashboard_request_rollup_buckets (
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                valuable_failure_429_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                mcp_non_billable,
+                mcp_billable,
+                api_non_billable,
+                api_billable,
+                local_estimated_credits,
+                updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (bucket_start, bucket_secs)
+            DO UPDATE SET
+                total_requests = observability.dashboard_request_rollup_buckets.total_requests + excluded.total_requests,
+                success_count = observability.dashboard_request_rollup_buckets.success_count + excluded.success_count,
+                error_count = observability.dashboard_request_rollup_buckets.error_count + excluded.error_count,
+                quota_exhausted_count = observability.dashboard_request_rollup_buckets.quota_exhausted_count + excluded.quota_exhausted_count,
+                valuable_success_count = observability.dashboard_request_rollup_buckets.valuable_success_count + excluded.valuable_success_count,
+                valuable_failure_count = observability.dashboard_request_rollup_buckets.valuable_failure_count + excluded.valuable_failure_count,
+                valuable_failure_429_count = observability.dashboard_request_rollup_buckets.valuable_failure_429_count + excluded.valuable_failure_429_count,
+                other_success_count = observability.dashboard_request_rollup_buckets.other_success_count + excluded.other_success_count,
+                other_failure_count = observability.dashboard_request_rollup_buckets.other_failure_count + excluded.other_failure_count,
+                unknown_count = observability.dashboard_request_rollup_buckets.unknown_count + excluded.unknown_count,
+                mcp_non_billable = observability.dashboard_request_rollup_buckets.mcp_non_billable + excluded.mcp_non_billable,
+                mcp_billable = observability.dashboard_request_rollup_buckets.mcp_billable + excluded.mcp_billable,
+                api_non_billable = observability.dashboard_request_rollup_buckets.api_non_billable + excluded.api_non_billable,
+                api_billable = observability.dashboard_request_rollup_buckets.api_billable + excluded.api_billable,
+                local_estimated_credits = observability.dashboard_request_rollup_buckets.local_estimated_credits + excluded.local_estimated_credits,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(bucket_start)
+        .bind(bucket_secs)
+        .bind(counts.total_requests)
+        .bind(counts.success_count)
+        .bind(counts.error_count)
+        .bind(counts.quota_exhausted_count)
+        .bind(counts.valuable_success_count)
+        .bind(counts.valuable_failure_count)
+        .bind(counts.valuable_failure_429_count)
+        .bind(counts.other_success_count)
+        .bind(counts.other_failure_count)
+        .bind(counts.unknown_count)
+        .bind(counts.mcp_non_billable)
+        .bind(counts.mcp_billable)
+        .bind(counts.api_non_billable)
+        .bind(counts.api_billable)
+        .bind(counts.local_estimated_credits)
+        .bind(updated_at)
+        .execute(tx)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn rebuild_dashboard_request_rollup_buckets(&self) -> Result<(), ProxyError> {
         self.rebuild_dashboard_request_rollup_buckets_window(None, None)
             .await
@@ -1245,6 +1322,7 @@ impl KeyStore {
             .await
     }
 
+    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) async fn increment_api_key_user_usage_bucket(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -1294,6 +1372,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) async fn refresh_user_api_key_binding(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -1350,6 +1429,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) async fn refresh_token_api_key_binding(
         &self,
         tx: &mut Transaction<'_, Sqlite>,

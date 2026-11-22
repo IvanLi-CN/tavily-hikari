@@ -19,8 +19,8 @@ async fn dashboard_quota_recovery_store_with_time(
     );
     sqlx::query(
         r#"
-        INSERT INTO api_keys (id, api_key, status, created_at, status_changed_at)
-        VALUES (?, ?, 'active', 0, 0)
+        INSERT INTO core.api_keys (id, api_key, status, created_at, status_changed_at)
+        VALUES ($1, $2, 'active', 0, 0)
         "#,
     )
     .bind(DASHBOARD_QUOTA_RECOVERY_TEST_KEY_ID)
@@ -66,9 +66,9 @@ async fn insert_dashboard_quota_recovery_sample_for_key(
 ) {
     sqlx::query(
         r#"
-        INSERT INTO api_key_quota_sync_samples (
+        INSERT INTO core.api_key_quota_sync_samples (
             key_id, quota_limit, quota_remaining, captured_at, source
-        ) VALUES (?, 1000, ?, ?, 'test')
+        ) VALUES ($1, 1000, $2, $3, 'test')
         "#,
     )
     .bind(key_id)
@@ -82,8 +82,8 @@ async fn insert_dashboard_quota_recovery_sample_for_key(
 async fn insert_dashboard_quota_recovery_key(store: &KeyStore, key_id: &str) {
     sqlx::query(
         r#"
-        INSERT INTO api_keys (id, api_key, status, created_at, status_changed_at)
-        VALUES (?, ?, 'active', 0, 0)
+        INSERT INTO core.api_keys (id, api_key, status, created_at, status_changed_at)
+        VALUES ($1, $2, 'active', 0, 0)
         "#,
     )
     .bind(key_id)
@@ -439,11 +439,11 @@ async fn dashboard_quota_recovery_queries_use_existing_indexes() {
 
     let source_id_plan = explain_dashboard_quota_recovery_source_id_query(&store).await;
     assert!(
-        source_id_plan.contains("INTEGER PRIMARY KEY"),
-        "source revision keyset missed rowid access: {source_id_plan}"
+        source_id_plan.contains("api_key_quota_sync_samples_pkey"),
+        "source revision keyset missed primary key access: {source_id_plan}"
     );
     assert!(
-        !source_id_plan.contains("SCAN api_key_quota_sync_samples"),
+        !source_id_plan.contains("Seq Scan on api_key_quota_sync_samples"),
         "source revision keyset scanned quota samples: {source_id_plan}"
     );
 
@@ -459,12 +459,12 @@ async fn dashboard_quota_recovery_queries_use_existing_indexes() {
 async fn explain_dashboard_quota_recovery_window_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT id, key_id, quota_remaining, captured_at
-        FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-        WHERE captured_at >= ? AND captured_at < ? AND id <= ?
+        FROM core.api_key_quota_sync_samples
+        WHERE captured_at >= $1 AND captured_at < $2 AND id <= $3
         ORDER BY captured_at DESC, key_id ASC, id ASC
-        LIMIT ?
+        LIMIT $4
         "#,
     )
     .bind(500_i64)
@@ -475,7 +475,7 @@ async fn explain_dashboard_quota_recovery_window_query(store: &KeyStore) -> Stri
     .await
     .expect("explain quota recovery window query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -483,21 +483,21 @@ async fn explain_dashboard_quota_recovery_window_query(store: &KeyStore) -> Stri
 async fn explain_dashboard_quota_recovery_window_cursor_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT id, key_id, quota_remaining, captured_at
-        FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-        WHERE captured_at >= ?
-          AND captured_at < ?
-          AND id <= ?
+        FROM core.api_key_quota_sync_samples
+        WHERE captured_at >= $1
+          AND captured_at < $2
+          AND id <= $3
           AND (
-            captured_at < ?
+            captured_at < $4
             OR (
-                captured_at = ?
-                AND (key_id > ? OR (key_id = ? AND id > ?))
+                captured_at = $5
+                AND (key_id > $6 OR (key_id = $7 AND id > $8))
             )
           )
         ORDER BY captured_at DESC, key_id ASC, id ASC
-        LIMIT ?
+        LIMIT $9
         "#,
     )
     .bind(500_i64)
@@ -513,7 +513,7 @@ async fn explain_dashboard_quota_recovery_window_cursor_query(store: &KeyStore) 
     .await
     .expect("explain quota recovery window cursor query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -521,12 +521,12 @@ async fn explain_dashboard_quota_recovery_window_cursor_query(store: &KeyStore) 
 async fn explain_dashboard_quota_recovery_baseline_timestamp_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT captured_at
-        FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
-        WHERE key_id = ? AND captured_at < ? AND id <= ?
+        FROM core.api_key_quota_sync_samples
+        WHERE key_id = $1 AND captured_at < $2 AND id <= $3
         ORDER BY captured_at DESC
-        LIMIT ?
+        LIMIT $4
         "#,
     )
     .bind(DASHBOARD_QUOTA_RECOVERY_TEST_KEY_ID)
@@ -537,7 +537,7 @@ async fn explain_dashboard_quota_recovery_baseline_timestamp_query(store: &KeySt
     .await
     .expect("explain quota recovery baseline timestamp query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -545,12 +545,12 @@ async fn explain_dashboard_quota_recovery_baseline_timestamp_query(store: &KeySt
 async fn explain_dashboard_quota_recovery_baseline_page_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT id, key_id, quota_remaining, captured_at
-        FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
-        WHERE key_id = ? AND captured_at = ? AND id > ? AND id <= ?
+        FROM core.api_key_quota_sync_samples
+        WHERE key_id = $1 AND captured_at = $2 AND id > $3 AND id <= $4
         ORDER BY id ASC
-        LIMIT ?
+        LIMIT $5
         "#,
     )
     .bind(DASHBOARD_QUOTA_RECOVERY_TEST_KEY_ID)
@@ -562,7 +562,7 @@ async fn explain_dashboard_quota_recovery_baseline_page_query(store: &KeyStore) 
     .await
     .expect("explain quota recovery baseline page query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -570,12 +570,12 @@ async fn explain_dashboard_quota_recovery_baseline_page_query(store: &KeyStore) 
 async fn explain_dashboard_quota_recovery_source_id_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT id, captured_at
-        FROM api_key_quota_sync_samples
+        FROM core.api_key_quota_sync_samples
         WHERE id > 0
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT $1
         "#,
     )
     .bind(32_i64)
@@ -583,7 +583,7 @@ async fn explain_dashboard_quota_recovery_source_id_query(store: &KeyStore) -> S
     .await
     .expect("explain quota recovery source id query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -591,12 +591,12 @@ async fn explain_dashboard_quota_recovery_source_id_query(store: &KeyStore) -> S
 async fn explain_dashboard_quota_recovery_source_timestamp_query(store: &KeyStore) -> String {
     sqlx::query(
         r#"
-        EXPLAIN QUERY PLAN
+        EXPLAIN (FORMAT TEXT)
         SELECT captured_at
-        FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-        WHERE captured_at < ?
+        FROM core.api_key_quota_sync_samples
+        WHERE captured_at < $1
         ORDER BY captured_at DESC, key_id ASC, id ASC
-        LIMIT ?
+        LIMIT $2
         "#,
     )
     .bind(1_000_i64)
@@ -605,7 +605,7 @@ async fn explain_dashboard_quota_recovery_source_timestamp_query(store: &KeyStor
     .await
     .expect("explain quota recovery source timestamp query")
     .iter()
-    .map(|row| row.get::<String, _>("detail"))
+    .map(|row| row.get::<String, _>(0))
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -613,11 +613,11 @@ async fn explain_dashboard_quota_recovery_source_timestamp_query(store: &KeyStor
 fn assert_dashboard_quota_recovery_index_plan(plan: &str, index: &str, label: &str) {
     assert!(plan.contains(index), "{label} missed {index}: {plan}");
     assert!(
-        !plan.contains("SCAN api_key_quota_sync_samples"),
+        !plan.contains("Seq Scan on api_key_quota_sync_samples"),
         "{label} scanned quota samples: {plan}"
     );
     assert!(
-        !plan.contains("USE TEMP B-TREE"),
+        !plan.contains("Sort"),
         "{label} sorted outside its keyset index: {plan}"
     );
 }

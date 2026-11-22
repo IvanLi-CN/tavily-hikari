@@ -1,6 +1,6 @@
 impl KeyStore {
     fn push_admin_token_filters<'a>(
-        builder: &mut QueryBuilder<'a, Sqlite>,
+        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
         filters: &'a AdminTokenListFilters,
         search_like: Option<&'a str>,
     ) {
@@ -27,26 +27,26 @@ impl KeyStore {
             AdminTokenOwnerFilter::All => {}
             AdminTokenOwnerFilter::Bound => {
                 builder.push(
-                    " AND EXISTS (SELECT 1 FROM user_token_bindings b WHERE b.token_id = auth_tokens.id)",
+                    " AND EXISTS (SELECT 1 FROM core.user_token_bindings b WHERE b.token_id = auth_tokens.id)",
                 );
             }
             AdminTokenOwnerFilter::Unbound => {
                 builder.push(
-                    " AND NOT EXISTS (SELECT 1 FROM user_token_bindings b WHERE b.token_id = auth_tokens.id)",
+                    " AND NOT EXISTS (SELECT 1 FROM core.user_token_bindings b WHERE b.token_id = auth_tokens.id)",
                 );
             }
         }
 
         if let Some(search) = search_like {
-            builder.push(" AND (id LIKE ");
+            builder.push(" AND (id ILIKE ");
             builder.push_bind(search);
-            builder.push(" OR COALESCE(note, '') LIKE ");
+            builder.push(" OR COALESCE(note, '') ILIKE ");
             builder.push_bind(search);
-            builder.push(" OR EXISTS (SELECT 1 FROM user_token_bindings b_search JOIN users u_search ON u_search.id = b_search.user_id WHERE b_search.token_id = auth_tokens.id AND (u_search.id LIKE ");
+            builder.push(" OR EXISTS (SELECT 1 FROM core.user_token_bindings b_search JOIN core.users u_search ON u_search.id = b_search.user_id WHERE b_search.token_id = auth_tokens.id AND (u_search.id ILIKE ");
             builder.push_bind(search);
-            builder.push(" OR COALESCE(u_search.display_name, '') LIKE ");
+            builder.push(" OR COALESCE(u_search.display_name, '') ILIKE ");
             builder.push_bind(search);
-            builder.push(" OR COALESCE(u_search.username, '') LIKE ");
+            builder.push(" OR COALESCE(u_search.username, '') ILIKE ");
             builder.push_bind(search);
             builder.push(")))");
         }
@@ -96,13 +96,16 @@ impl KeyStore {
         let search_like = filters.search.as_ref().map(|value| format!("%{value}%"));
 
         let mut count_builder =
-            QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM auth_tokens WHERE ");
+            QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM core.auth_tokens WHERE ");
         Self::push_admin_token_filters(&mut count_builder, filters, search_like.as_deref());
-        let total: i64 = count_builder.build_query_scalar().fetch_one(&self.pool).await?;
+        let total: i64 = count_builder
+            .build_query_scalar()
+            .fetch_one(self.pg()?)
+            .await?;
 
-        let mut rows_builder = QueryBuilder::<Sqlite>::new(
+        let mut rows_builder = QueryBuilder::<sqlx::Postgres>::new(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
-               FROM auth_tokens
+               FROM core.auth_tokens
                WHERE "#,
         );
         Self::push_admin_token_filters(&mut rows_builder, filters, search_like.as_deref());
@@ -121,9 +124,12 @@ impl KeyStore {
                 i64,
                 Option<i64>,
             )>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?;
-        Ok((rows.into_iter().map(Self::auth_token_from_row).collect(), total))
+        Ok((
+            rows.into_iter().map(Self::auth_token_from_row).collect(),
+            total,
+        ))
     }
 
     pub(crate) async fn list_access_tokens_for_filters(
@@ -136,9 +142,9 @@ impl KeyStore {
             .await
             .expect("admin heavy read semaphore is never closed");
         let search_like = filters.search.as_ref().map(|value| format!("%{value}%"));
-        let mut builder = QueryBuilder::<Sqlite>::new(
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
-               FROM auth_tokens
+               FROM core.auth_tokens
                WHERE "#,
         );
         Self::push_admin_token_filters(&mut builder, filters, search_like.as_deref());
@@ -153,7 +159,7 @@ impl KeyStore {
                 i64,
                 Option<i64>,
             )>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?;
         Ok(rows.into_iter().map(Self::auth_token_from_row).collect())
     }
@@ -183,7 +189,8 @@ impl KeyStore {
             });
         }
 
-        let mut builder = QueryBuilder::<Sqlite>::new("UPDATE auth_tokens SET enabled = ");
+        let mut builder =
+            QueryBuilder::<sqlx::Postgres>::new("UPDATE core.auth_tokens SET enabled = ");
         builder.push_bind(if enabled { 1 } else { 0 });
         builder.push(" WHERE deleted_at IS NULL AND id IN (");
         let mut separated = builder.separated(", ");
@@ -191,7 +198,7 @@ impl KeyStore {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let result = builder.build().execute(&self.pool).await?;
+        let result = builder.build().execute(self.pg()?).await?;
         Ok(AdminTokenBatchMutationResult {
             updated: result.rows_affected() as i64,
             missing,
@@ -223,8 +230,9 @@ impl KeyStore {
         }
 
         let now = self.backend_time.now_ts();
-        let mut builder =
-            QueryBuilder::<Sqlite>::new("UPDATE auth_tokens SET enabled = 0, deleted_at = ");
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+            "UPDATE core.auth_tokens SET enabled = 0, deleted_at = ",
+        );
         builder.push_bind(now);
         builder.push(" WHERE deleted_at IS NULL AND id IN (");
         let mut separated = builder.separated(", ");
@@ -232,7 +240,7 @@ impl KeyStore {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let result = builder.build().execute(&self.pool).await?;
+        let result = builder.build().execute(self.pg()?).await?;
         Ok(AdminTokenBatchMutationResult {
             updated: result.rows_affected() as i64,
             missing,
@@ -243,8 +251,8 @@ impl KeyStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT id FROM auth_tokens WHERE deleted_at IS NULL AND id IN (",
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT id FROM core.auth_tokens WHERE deleted_at IS NULL AND id IN (",
         );
         let mut separated = builder.separated(", ");
         for id in ids {
@@ -253,7 +261,7 @@ impl KeyStore {
         separated.push_unseparated(")");
         let existing = builder
             .build_query_scalar::<String>()
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?;
         Ok(ids
             .iter()

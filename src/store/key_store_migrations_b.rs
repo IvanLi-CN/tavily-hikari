@@ -1211,6 +1211,26 @@ impl KeyStore {
         }
     }
 
+    /// PostgreSQL twin of [`Self::generate_unique_key_id`].
+    #[allow(dead_code)] // reachable only when the PostgreSQL pool is attached
+    pub(crate) async fn generate_unique_key_id_pg(
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<String, ProxyError> {
+        loop {
+            let candidate = nanoid!(4);
+            let exists = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT id FROM core.api_keys WHERE id = $1 LIMIT 1",
+            )
+            .bind(&candidate)
+            .fetch_optional(&mut *conn)
+            .await?;
+
+            if exists.is_none() {
+                return Ok(candidate);
+            }
+        }
+    }
+
     pub(crate) async fn api_keys_column_exists(&self, column: &str) -> Result<bool, ProxyError> {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM pragma_table_info('api_keys') WHERE name = ? LIMIT 1",

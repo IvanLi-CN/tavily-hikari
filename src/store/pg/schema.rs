@@ -59,7 +59,7 @@ pub enum PgSchemaError {
         missing: String,
     },
     #[error("postgresql schema probe failed: {0}")]
-    Probe(#[from] sqlx::Error),
+    Probe(#[source] sqlx::Error),
 }
 
 impl PgSchemaError {
@@ -85,7 +85,9 @@ pub async fn missing_required_relations(pool: &PgPool) -> Result<Vec<String>, sq
 }
 
 pub async fn assert_schema_present(pool: &PgPool) -> Result<(), PgSchemaError> {
-    let missing = missing_required_relations(pool).await?;
+    let missing = missing_required_relations(pool)
+        .await
+        .map_err(PgSchemaError::Probe)?;
     if !missing.is_empty() {
         return Err(PgSchemaError::from_missing(missing));
     }

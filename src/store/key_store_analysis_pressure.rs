@@ -38,10 +38,11 @@ impl KeyStore {
             return Ok(());
         }
         let updated_at = self.backend_time.now_ts();
-        let mut tx = self
-            .sqlite_runtime
-            .begin_immediate(SqliteOperation::ObservabilityDeferredWrite)
-            .await?;
+        // The active generation read and the delta upserts must observe one stable
+        // generation. The SQLite immediate-write lock used to guarantee that; in PostgreSQL
+        // the pressure-lane advisory lock serializes them against rebuild publish.
+        let mut tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane(&mut tx).await?;
         let generation = sqlx::query_scalar::<_, i64>(
             "SELECT active_generation FROM observability.server_pressure_rebuild_state WHERE singleton = 1",
         )
@@ -52,7 +53,7 @@ impl KeyStore {
                 r#"
                 INSERT INTO observability.server_pressure_buckets (
                     bucket_kind, bucket_start, bucket_secs, success_count, failure_count, updated_at, generation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT(bucket_kind, bucket_start) DO UPDATE SET
                     success_count = server_pressure_buckets.success_count + excluded.success_count,
                     failure_count = server_pressure_buckets.failure_count + excluded.failure_count,
@@ -70,29 +71,44 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
         }
-        tx.finish(Ok(())).await
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Serializes the server-pressure lane: delta upserts, rebuild staging, and publish.
+    ///
+    /// The key is derived inside PostgreSQL from a fixed lane name, so every process and
+    /// every connection computes the same value.
+    async fn lock_server_pressure_lane(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), ProxyError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('tavily_hikari.server_pressure'))")
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     async fn request_logs_support_server_pressure_rebuild(&self) -> Result<bool, ProxyError> {
-        for column in [
+        let column_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM information_schema.columns
+            WHERE table_schema = 'observability'
+              AND table_name = 'request_logs'
+              AND column_name = ANY($1)
+            "#,
+        )
+        .bind(vec![
             "request_user_id",
             "counts_business_quota",
             "upstream_operation",
             "result_status",
             "visibility",
             "created_at",
-        ] {
-            let exists = sqlx::query_scalar::<_, i64>(
-                "SELECT 1 FROM observability.pragma_table_info('request_logs') WHERE name = ? LIMIT 1",
-            )
-            .bind(column)
-            .fetch_optional(&self.pool)
-            .await?;
-            if exists.is_none() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        ])
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok(column_count == 6)
     }
 
     pub(crate) async fn fetch_server_pressure_event_for_request_log(
@@ -103,19 +119,19 @@ impl KeyStore {
             r#"
             SELECT id, request_user_id, created_at, result_status
             FROM observability.request_logs
-            WHERE id = ?
-              AND visibility = ?
+            WHERE id = $1
+              AND visibility = $2
               AND request_user_id IS NOT NULL
               AND counts_business_quota = 1
               AND upstream_operation IS NOT NULL
-              AND result_status != ?
+              AND result_status != $3
             LIMIT 1
             "#,
         )
         .bind(request_log_id)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pg()?)
         .await
         .map(|row| {
             row.map(
@@ -132,64 +148,37 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    /// Asserts the pressure relations/indexes and seeds the singleton rebuild state.
+    ///
+    /// `src/store/pg/migrations/0001_baseline.sql` owns the three tables and three indexes;
+    /// this path only asserts them. Seeding `server_pressure_rebuild_state` stays here
+    /// because it is data, not schema, and readers require the singleton row.
     pub(crate) async fn ensure_server_pressure_bucket_schema(&self) -> Result<(), ProxyError> {
-        sqlx::query(
+        let missing: Option<String> = sqlx::query_scalar(
             r#"
-            CREATE TABLE IF NOT EXISTS observability.server_pressure_buckets (
-                bucket_kind TEXT NOT NULL,
-                bucket_start INTEGER NOT NULL,
-                bucket_secs INTEGER NOT NULL,
-                success_count INTEGER NOT NULL,
-                failure_count INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (bucket_kind, bucket_start)
-            )
+            SELECT required.rel
+            FROM unnest($1::text[]) AS required(rel)
+            WHERE to_regclass(required.rel) IS NULL
+            ORDER BY required.rel
+            LIMIT 1
             "#,
         )
-        .execute(&self.pool)
+        .bind(vec![
+            "observability.server_pressure_buckets",
+            "observability.server_pressure_bucket_staging",
+            "observability.server_pressure_rebuild_state",
+            "observability.idx_server_pressure_buckets_kind_time",
+            "observability.idx_server_pressure_buckets_time",
+            "observability.idx_server_pressure_buckets_generation_kind_time",
+        ])
+        .fetch_optional(self.pg()?)
         .await?;
-
-        let has_generation = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM observability.pragma_table_info('server_pressure_buckets') WHERE name = 'generation' LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .is_some();
-        if !has_generation {
-            sqlx::query(
-                "ALTER TABLE observability.server_pressure_buckets ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
+        if let Some(relation) = missing {
+            return Err(ProxyError::Other(format!(
+                "postgresql baseline is missing {relation}; apply src/store/pg/migrations first"
+            )));
         }
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS observability.server_pressure_bucket_staging (
-                generation INTEGER NOT NULL,
-                bucket_kind TEXT NOT NULL,
-                bucket_start INTEGER NOT NULL,
-                bucket_secs INTEGER NOT NULL,
-                success_count INTEGER NOT NULL,
-                failure_count INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (generation, bucket_kind, bucket_start)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS observability.server_pressure_rebuild_state (
-                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                active_generation INTEGER NOT NULL,
-                last_allocated_generation INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
         sqlx::query(
             r#"
             INSERT INTO observability.server_pressure_rebuild_state (
@@ -198,19 +187,8 @@ impl KeyStore {
             ON CONFLICT(singleton) DO NOTHING
             "#,
         )
-        .execute(&self.pool)
+        .execute(self.pg()?)
         .await?;
-
-        for sql in [
-            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_kind_time
-               ON server_pressure_buckets(bucket_kind, bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_time
-               ON server_pressure_buckets(bucket_start DESC)"#,
-            r#"CREATE INDEX IF NOT EXISTS observability.idx_server_pressure_buckets_generation_kind_time
-               ON server_pressure_buckets(generation, bucket_kind, bucket_start DESC)"#,
-        ] {
-            sqlx::query(sql).execute(&self.pool).await?;
-        }
 
         Ok(())
     }
@@ -241,18 +219,18 @@ impl KeyStore {
             r#"
             SELECT COALESCE(MAX(id), 0)
             FROM observability.request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
+            WHERE visibility = $1
+              AND created_at >= $2
               AND request_user_id IS NOT NULL
               AND counts_business_quota = 1
               AND upstream_operation IS NOT NULL
-              AND result_status != ?
+              AND result_status != $3
             "#,
         )
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(hour_since)
         .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pg()?)
         .await?;
         if !should_continue() {
             return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
@@ -260,10 +238,8 @@ impl KeyStore {
 
         // Allocate a private staging generation before scanning. The active
         // generation remains visible until the final short publish transaction.
-        let mut generation_tx = self
-            .sqlite_runtime
-            .begin_immediate(SqliteOperation::ServerPressureRebuild)
-            .await?;
+        let mut generation_tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane(&mut generation_tx).await?;
         let generation = sqlx::query_scalar::<_, i64>(
             r#"
             UPDATE observability.server_pressure_rebuild_state
@@ -274,7 +250,7 @@ impl KeyStore {
         )
         .fetch_one(&mut *generation_tx)
         .await?;
-        generation_tx.finish(Ok(())).await?;
+        generation_tx.commit().await?;
 
         // Advance in the same order as the time index. The source fence still
         // excludes rows inserted after the upper id was captured, while the
@@ -290,15 +266,15 @@ impl KeyStore {
             let rows = sqlx::query_as::<_, (i64, i64, String)>(
                 r#"
                 SELECT id, created_at, result_status
-                FROM observability.request_logs INDEXED BY idx_request_logs_time
-                WHERE created_at >= ?
-                  AND (created_at > ? OR (created_at = ? AND id > ?))
-                  AND id <= ?
-                  AND visibility = ?
+                FROM observability.request_logs
+                WHERE created_at >= $1
+                  AND (created_at > $2 OR (created_at = $3 AND id > $4))
+                  AND id <= $5
+                  AND visibility = $6
                   AND request_user_id IS NOT NULL
                   AND counts_business_quota = 1
                   AND upstream_operation IS NOT NULL
-                  AND result_status != ?
+                  AND result_status != $7
                 ORDER BY created_at ASC, id ASC
                 LIMIT 500
                 "#,
@@ -310,7 +286,7 @@ impl KeyStore {
             .bind(upper_bound_request_log_id)
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?;
             if rows.is_empty() {
                 break;
@@ -345,17 +321,15 @@ impl KeyStore {
                 counts.0 += success;
                 counts.1 += failure;
             }
-            let mut stage_tx = self
-                .sqlite_runtime
-                .begin_immediate(SqliteOperation::ServerPressureRebuild)
-                .await?;
+            let mut stage_tx = self.pg()?.begin().await?;
+            Self::lock_server_pressure_lane(&mut stage_tx).await?;
             for ((bucket_kind, bucket_start, bucket_secs), (success_count, failure_count)) in buckets {
                 sqlx::query(
                     r#"
                     INSERT INTO observability.server_pressure_bucket_staging (
                         generation, bucket_kind, bucket_start, bucket_secs,
                         success_count, failure_count, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ON CONFLICT(generation, bucket_kind, bucket_start) DO UPDATE SET
                         success_count = server_pressure_bucket_staging.success_count + excluded.success_count,
                         failure_count = server_pressure_bucket_staging.failure_count + excluded.failure_count,
@@ -372,16 +346,14 @@ impl KeyStore {
                 .execute(&mut *stage_tx)
                 .await?;
             }
-            stage_tx.finish(Ok(())).await?;
+            stage_tx.commit().await?;
         }
 
         if !should_continue() {
             return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
         }
-        let mut publish_tx = self
-            .sqlite_runtime
-            .begin_immediate(SqliteOperation::ServerPressureRebuild)
-            .await?;
+        let mut publish_tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane(&mut publish_tx).await?;
         let publish = async {
             sqlx::query(
                 r#"
@@ -392,7 +364,7 @@ impl KeyStore {
                 SELECT bucket_kind, bucket_start, bucket_secs, success_count,
                        failure_count, updated_at, generation
                 FROM observability.server_pressure_bucket_staging
-                WHERE generation = ?
+                WHERE generation = $1
                 ON CONFLICT(bucket_kind, bucket_start) DO UPDATE SET
                     bucket_secs = excluded.bucket_secs,
                     success_count = excluded.success_count,
@@ -407,7 +379,7 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 UPDATE observability.server_pressure_rebuild_state
-                SET active_generation = ?
+                SET active_generation = $1
                 WHERE singleton = 1
                 "#,
             )
@@ -419,9 +391,9 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 DELETE FROM observability.server_pressure_buckets
-                WHERE rowid IN (
-                    SELECT rowid FROM observability.server_pressure_buckets
-                    WHERE generation <> ?
+                WHERE (bucket_kind, bucket_start) IN (
+                    SELECT bucket_kind, bucket_start FROM observability.server_pressure_buckets
+                    WHERE generation <> $1
                     LIMIT 25
                 )
                 "#,
@@ -432,9 +404,10 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 DELETE FROM observability.server_pressure_bucket_staging
-                WHERE rowid IN (
-                    SELECT rowid FROM observability.server_pressure_bucket_staging
-                    WHERE generation <> ?
+                WHERE (generation, bucket_kind, bucket_start) IN (
+                    SELECT generation, bucket_kind, bucket_start
+                    FROM observability.server_pressure_bucket_staging
+                    WHERE generation <> $1
                     LIMIT 25
                 )
                 "#,
@@ -447,7 +420,7 @@ impl KeyStore {
         .await;
         match publish {
             Ok(()) => {
-                publish_tx.finish(Ok(())).await?;
+                publish_tx.commit().await?;
                 Ok(ServerPressureBucketsRebuildOutcome::Completed {
                     upper_bound_request_log_id,
                 })
@@ -503,9 +476,9 @@ impl KeyStore {
             r#"
             SELECT bucket_start, success_count, failure_count, bucket_secs
             FROM observability.server_pressure_buckets
-            WHERE bucket_kind = ?
-              AND bucket_start >= ?
-              AND bucket_start < ?
+            WHERE bucket_kind = $1
+              AND bucket_start >= $2
+              AND bucket_start < $3
               AND generation = (
                   SELECT active_generation
                   FROM observability.server_pressure_rebuild_state
@@ -517,7 +490,7 @@ impl KeyStore {
         .bind(bucket_kind)
         .bind(since)
         .bind(until)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         Ok(rows

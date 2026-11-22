@@ -8,23 +8,23 @@ impl KeyStore {
         let rows = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
-            FROM api_keys
+            FROM core.api_keys
             WHERE deleted_at IS NULL
-              AND status <> ?
+              AND status <> $1
               AND NOT EXISTS (
                   SELECT 1
-                  FROM api_key_quarantines aq
+                  FROM core.api_key_quarantines aq
                   WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
               )
               AND (
-                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $2
             )
             ORDER BY CASE WHEN quota_synced_at IS NULL OR quota_synced_at = 0 THEN 0 ELSE 1 END, quota_synced_at ASC
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(threshold)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
         Ok(rows)
     }
@@ -40,25 +40,25 @@ impl KeyStore {
         let rows = sqlx::query_scalar::<_, String>(
             r#"
             SELECT id
-            FROM api_keys
+            FROM core.api_keys
             WHERE deleted_at IS NULL
-              AND status <> ?
-              AND last_used_at >= ?
+              AND status <> $1
+              AND last_used_at >= $2
               AND NOT EXISTS (
                   SELECT 1
-                  FROM api_key_quarantines aq
+                  FROM core.api_key_quarantines aq
                   WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
               )
               AND (
-                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
-              )
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $3
+            )
             ORDER BY last_used_at DESC, quota_synced_at ASC, id ASC
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(active_since)
         .bind(stale_before)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
         Ok(rows)
     }
@@ -79,13 +79,13 @@ impl KeyStore {
                     j.started_at,
                     j.finished_at,
                     j.claim_generation
-                FROM scheduled_jobs j
-                LEFT JOIN api_keys k ON k.id = j.key_id
+                FROM core.scheduled_jobs j
+                LEFT JOIN core.api_keys k ON k.id = j.key_id
                 ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
-                LIMIT ?"#,
+                LIMIT $1"#,
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
         let items = rows
             .into_iter()
@@ -117,13 +117,13 @@ impl KeyStore {
         sqlx::query_as::<_, (i64, String, Option<i64>)>(
             r#"
             SELECT id, status, finished_at
-            FROM scheduled_jobs
+            FROM core.scheduled_jobs
             ORDER BY COALESCE(started_at, queued_at) DESC, id DESC
-            LIMIT ?
+            LIMIT $1
             "#,
         )
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await
         .map_err(ProxyError::from)
     }
@@ -141,9 +141,12 @@ impl KeyStore {
         let where_clause = Self::scheduled_job_group_filter_clause(group, "j.job_type");
         let count_where_clause = Self::scheduled_job_group_filter_clause(group, "job_type");
 
-        let count_query = format!("SELECT COUNT(*) FROM scheduled_jobs {}", count_where_clause);
+        let count_query = format!(
+            "SELECT COUNT(*) FROM core.scheduled_jobs {}",
+            count_where_clause
+        );
         let total: i64 = sqlx::query_scalar(&count_query)
-            .fetch_one(&self.pool)
+            .fetch_one(self.pg()?)
             .await?;
         let group_counts = self.fetch_recent_job_group_counts().await?;
 
@@ -162,11 +165,11 @@ impl KeyStore {
                 j.started_at,
                 j.finished_at,
                 j.claim_generation
-            FROM scheduled_jobs j
-            LEFT JOIN api_keys k ON k.id = j.key_id
+            FROM core.scheduled_jobs j
+            LEFT JOIN core.api_keys k ON k.id = j.key_id
             {}
             ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
-            LIMIT ? OFFSET ?
+            LIMIT $1 OFFSET $2
             "#,
             where_clause
         );
@@ -174,7 +177,7 @@ impl KeyStore {
         let rows = sqlx::query(&select_query)
             .bind(per_page)
             .bind(offset)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pg()?)
             .await?;
 
         let items = rows
@@ -224,16 +227,16 @@ impl KeyStore {
             r#"
             SELECT
                 COUNT(*) AS all_count,
-                COALESCE(SUM(CASE WHEN job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot' THEN 1 ELSE 0 END), 0) AS quota_count,
-                COALESCE(SUM(CASE WHEN job_type = 'token_usage_rollup' OR job_type = 'usage_aggregation' THEN 1 ELSE 0 END), 0) AS usage_count,
-                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'ha_outbox_gc' OR job_type = 'request_logs_gc' OR job_type = 'mcp_sessions_gc' OR job_type = 'mcp_session_init_backoffs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0) AS logs_count,
-                COALESCE(SUM(CASE WHEN job_type = 'db_compaction' THEN 1 ELSE 0 END), 0) AS db_count,
-                COALESCE(SUM(CASE WHEN job_type = 'forward_proxy_geo_refresh' THEN 1 ELSE 0 END), 0) AS geo_count,
-                COALESCE(SUM(CASE WHEN job_type = 'linuxdo_user_status_sync' OR job_type = 'linuxdo_user_tag_binding_refresh' THEN 1 ELSE 0 END), 0) AS linuxdo_count
-            FROM scheduled_jobs
+                COALESCE(SUM(CASE WHEN job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot' THEN 1 ELSE 0 END), 0)::bigint AS quota_count,
+                COALESCE(SUM(CASE WHEN job_type = 'token_usage_rollup' OR job_type = 'usage_aggregation' THEN 1 ELSE 0 END), 0)::bigint AS usage_count,
+                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'ha_outbox_gc' OR job_type = 'request_logs_gc' OR job_type = 'mcp_sessions_gc' OR job_type = 'mcp_session_init_backoffs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0)::bigint AS logs_count,
+                COALESCE(SUM(CASE WHEN job_type = 'db_compaction' THEN 1 ELSE 0 END), 0)::bigint AS db_count,
+                COALESCE(SUM(CASE WHEN job_type = 'forward_proxy_geo_refresh' THEN 1 ELSE 0 END), 0)::bigint AS geo_count,
+                COALESCE(SUM(CASE WHEN job_type = 'linuxdo_user_status_sync' OR job_type = 'linuxdo_user_tag_binding_refresh' THEN 1 ELSE 0 END), 0)::bigint AS linuxdo_count
+            FROM core.scheduled_jobs
             "#,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pg()?)
         .await?;
 
         Ok(JobGroupCounts {
@@ -248,16 +251,16 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary_without_flush_tx(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<ProxySummary, ProxyError> {
         let totals_row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(total_requests), 0) AS total_requests,
-                COALESCE(SUM(success_count), 0) AS success_count,
-                COALESCE(SUM(error_count), 0) AS error_count,
-                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
-            FROM api_key_usage_buckets
+                COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
+                COALESCE(SUM(success_count), 0)::bigint AS success_count,
+                COALESCE(SUM(error_count), 0)::bigint AS error_count,
+                COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count
+            FROM observability.api_key_usage_buckets
             WHERE bucket_secs = 86400
             "#,
         )
@@ -267,17 +270,17 @@ impl KeyStore {
         let key_counts_row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL AND tb.key_id IS NULL THEN 1 ELSE 0 END), 0) AS active_keys,
-                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0) AS exhausted_keys,
-                COALESCE(SUM(CASE WHEN aq.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS quarantined_keys,
-                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL AND tb.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS temporary_isolated_keys
-            FROM api_keys ak
-            LEFT JOIN api_key_quarantines aq
+                COALESCE(SUM(CASE WHEN ak.status = $1 AND aq.key_id IS NULL AND tb.key_id IS NULL THEN 1 ELSE 0 END), 0)::bigint AS active_keys,
+                COALESCE(SUM(CASE WHEN ak.status = $2 AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0)::bigint AS exhausted_keys,
+                COALESCE(SUM(CASE WHEN aq.key_id IS NOT NULL THEN 1 ELSE 0 END), 0)::bigint AS quarantined_keys,
+                COALESCE(SUM(CASE WHEN ak.status = $3 AND aq.key_id IS NULL AND tb.key_id IS NOT NULL THEN 1 ELSE 0 END), 0)::bigint AS temporary_isolated_keys
+            FROM core.api_keys ak
+            LEFT JOIN core.api_key_quarantines aq
               ON aq.key_id = ak.id AND aq.cleared_at IS NULL
             LEFT JOIN (
                 SELECT key_id, MAX(cooldown_until) AS cooldown_until
-                FROM api_key_transient_backoffs
-                WHERE cooldown_until > strftime('%s', 'now')
+                FROM core.api_key_transient_backoffs
+                WHERE cooldown_until > EXTRACT(EPOCH FROM now())::bigint
                   AND reason_code = 'upstream_unknown_403'
                 GROUP BY key_id
             ) AS tb
@@ -292,7 +295,7 @@ impl KeyStore {
         .await?;
 
         let last_activity = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(last_used_at) FROM api_keys WHERE deleted_at IS NULL",
+            "SELECT MAX(last_used_at) FROM core.api_keys WHERE deleted_at IS NULL",
         )
         .fetch_one(&mut **tx)
         .await?
@@ -301,10 +304,10 @@ impl KeyStore {
         // Aggregate quotas for overview
         let quotas_row = sqlx::query(
             r#"
-            SELECT COALESCE(SUM(quota_limit), 0) AS total_quota_limit,
-                   COALESCE(SUM(quota_remaining), 0) AS total_quota_remaining
-            FROM api_keys ak
-            LEFT JOIN api_key_quarantines aq
+            SELECT COALESCE(SUM(quota_limit), 0)::bigint AS total_quota_limit,
+                   COALESCE(SUM(quota_remaining), 0)::bigint AS total_quota_remaining
+            FROM core.api_keys ak
+            LEFT JOIN core.api_key_quarantines aq
               ON aq.key_id = ak.id AND aq.cleared_at IS NULL
             WHERE ak.deleted_at IS NULL
               AND aq.key_id IS NULL
@@ -329,7 +332,7 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pg()?.begin().await?;
         let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
         tx.commit().await?;
         Ok(summary)

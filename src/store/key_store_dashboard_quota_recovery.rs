@@ -539,47 +539,34 @@ impl KeyStore {
             if !budget.start_select() {
                 return Ok(DashboardQuotaRecoveryQuery::Continue);
             }
-            let mut session = match self
-                .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
-                .await
-            {
-                Ok(session) => session,
-                Err(error) if dashboard_quota_read_was_deferred(&error) => {
-                    return Ok(DashboardQuotaRecoveryQuery::Deferred);
-                }
-                Err(error) => return Err(error),
-            };
             let query_result = match before_id {
                 Some(before_id) => sqlx::query(
                     r#"
                     SELECT id, captured_at
-                    FROM api_key_quota_sync_samples
-                    WHERE id > 0 AND id < ?
+                    FROM core.api_key_quota_sync_samples
+                    WHERE id > 0 AND id < $1
                     ORDER BY id DESC
-                    LIMIT ?
+                    LIMIT $2
                     "#,
                 )
                 .bind(before_id)
                 .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
-                .fetch_all(&mut *session)
+                .fetch_all(self.pg()?)
                 .await,
                 None => sqlx::query(
                     r#"
                     SELECT id, captured_at
-                    FROM api_key_quota_sync_samples
+                    FROM core.api_key_quota_sync_samples
                     WHERE id > 0
                     ORDER BY id DESC
-                    LIMIT ?
+                    LIMIT $1
                     "#,
                 )
                 .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
-                .fetch_all(&mut *session)
+                .fetch_all(self.pg()?)
                 .await,
             };
-            let rows = session.query(query_result).await;
-            let finish = session.finish().await;
-            finish?;
-            let rows = match rows {
+            let rows = match query_result.map_err(ProxyError::Database) {
                 Ok(rows) => rows,
                 Err(error) if dashboard_quota_read_was_deferred(&error) => {
                     return Ok(DashboardQuotaRecoveryQuery::Deferred);
@@ -616,32 +603,20 @@ impl KeyStore {
         if !budget.start_select() {
             return Ok(DashboardQuotaRecoveryQuery::Continue);
         }
-        let mut session = match self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
-            .await
-        {
-            Ok(session) => session,
-            Err(error) if dashboard_quota_read_was_deferred(&error) => {
-                return Ok(DashboardQuotaRecoveryQuery::Deferred);
-            }
-            Err(error) => return Err(error),
-        };
         let query_result = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT captured_at
-            FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-            WHERE captured_at < ?
+            FROM core.api_key_quota_sync_samples
+            WHERE captured_at < $1
             ORDER BY captured_at DESC, key_id ASC, id ASC
-            LIMIT ?
+            LIMIT $2
             "#,
         )
         .bind(today_end)
         .bind(1_i64)
-        .fetch_optional(&mut *session)
+        .fetch_optional(self.pg()?)
         .await;
-        let source_captured_at = session.query(query_result).await;
-        let finish = session.finish().await;
-        finish?;
+        let source_captured_at = query_result.map_err(ProxyError::Database);
         match source_captured_at {
             Ok(source_captured_at) => Ok(DashboardQuotaRecoveryQuery::Complete(
                 source_captured_at.unwrap_or_default(),
@@ -664,37 +639,27 @@ impl KeyStore {
         if !budget.start_select() {
             return Ok(DashboardQuotaRecoveryQuery::Continue);
         }
-        let mut session = match self
-            .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
-            .await
-        {
-            Ok(session) => session,
-            Err(error) if dashboard_quota_read_was_deferred(&error) => {
-                return Ok(DashboardQuotaRecoveryQuery::Deferred);
-            }
-            Err(error) => return Err(error),
-        };
         let page_size = DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE;
         let query_result = match cursor {
             Some(cursor) => sqlx::query(
                 r#"
                 SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-                  AND id <= ?
+                FROM core.api_key_quota_sync_samples
+                WHERE captured_at >= $1
+                  AND captured_at < $2
+                  AND id <= $3
                   AND (
-                    captured_at < ?
+                    captured_at < $4
                     OR (
-                        captured_at = ?
+                        captured_at = $5
                         AND (
-                            key_id > ?
-                            OR (key_id = ? AND id > ?)
+                            key_id > $6
+                            OR (key_id = $7 AND id > $8)
                         )
                     )
                   )
                 ORDER BY captured_at DESC, key_id ASC, id ASC
-                LIMIT ?
+                LIMIT $9
                 "#,
             )
             .bind(sample_window_start)
@@ -706,30 +671,27 @@ impl KeyStore {
             .bind(&cursor.key_id)
             .bind(cursor.id)
             .bind(page_size)
-            .fetch_all(&mut *session)
+            .fetch_all(self.pg()?)
             .await,
             None => sqlx::query(
                 r#"
                 SELECT id, key_id, quota_remaining, captured_at
-                FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_captured
-                WHERE captured_at >= ?
-                  AND captured_at < ?
-                  AND id <= ?
+                FROM core.api_key_quota_sync_samples
+                WHERE captured_at >= $1
+                  AND captured_at < $2
+                  AND id <= $3
                 ORDER BY captured_at DESC, key_id ASC, id ASC
-                LIMIT ?
+                LIMIT $4
                 "#,
             )
             .bind(sample_window_start)
             .bind(today_end)
             .bind(target_source_id)
             .bind(page_size)
-            .fetch_all(&mut *session)
+            .fetch_all(self.pg()?)
             .await,
         };
-        let rows = session.query(query_result).await;
-        let finish = session.finish().await;
-        finish?;
-        let rows = match rows {
+        let rows = match query_result.map_err(ProxyError::Database) {
             Ok(rows) => rows,
             Err(error) if dashboard_quota_read_was_deferred(&error) => {
                 return Ok(DashboardQuotaRecoveryQuery::Deferred);
@@ -770,26 +732,16 @@ impl KeyStore {
                     DashboardQuotaRecoveryBaselinePhase::HistoricalTimestamp => i64::MIN,
                     DashboardQuotaRecoveryBaselinePhase::Samples => unreachable!(),
                 };
-                let mut session = match self
-                    .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
-                    .await
-                {
-                    Ok(session) => session,
-                    Err(error) if dashboard_quota_read_was_deferred(&error) => {
-                        return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);
-                    }
-                    Err(error) => return Err(error),
-                };
                 let query_result = sqlx::query_scalar::<_, i64>(
                     r#"
                     SELECT captured_at
-                    FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
-                    WHERE key_id = ?
-                      AND captured_at >= ?
-                      AND captured_at < ?
-                      AND id <= ?
+                    FROM core.api_key_quota_sync_samples
+                    WHERE key_id = $1
+                      AND captured_at >= $2
+                      AND captured_at < $3
+                      AND id <= $4
                     ORDER BY captured_at DESC
-                    LIMIT ?
+                    LIMIT $5
                     "#,
                 )
                 .bind(&baseline.key_id)
@@ -797,11 +749,9 @@ impl KeyStore {
                 .bind(sample_window_start)
                 .bind(target_source_id)
                 .bind(1_i64)
-                .fetch_optional(&mut *session)
+                .fetch_optional(self.pg()?)
                 .await;
-                let captured_at = session.query(query_result).await;
-                let finish = session.finish().await;
-                finish?;
+                let captured_at = query_result.map_err(ProxyError::Database);
                 let captured_at = match captured_at {
                     Ok(captured_at) => captured_at,
                     Err(error) if dashboard_quota_read_was_deferred(&error) => {
@@ -830,26 +780,16 @@ impl KeyStore {
                 let captured_at = baseline
                     .captured_at
                     .expect("sample baseline phase has a timestamp");
-                let mut session = match self
-                    .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
-                    .await
-                {
-                    Ok(session) => session,
-                    Err(error) if dashboard_quota_read_was_deferred(&error) => {
-                        return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);
-                    }
-                    Err(error) => return Err(error),
-                };
                 let query_result = sqlx::query(
                     r#"
                     SELECT id, key_id, quota_remaining, captured_at
-                    FROM api_key_quota_sync_samples INDEXED BY idx_api_key_quota_sync_samples_key_captured
-                    WHERE key_id = ?
-                      AND captured_at = ?
-                      AND id > ?
-                      AND id <= ?
+                    FROM core.api_key_quota_sync_samples
+                    WHERE key_id = $1
+                      AND captured_at = $2
+                      AND id > $3
+                      AND id <= $4
                     ORDER BY id ASC
-                    LIMIT ?
+                    LIMIT $5
                     "#,
                 )
                 .bind(&baseline.key_id)
@@ -857,12 +797,9 @@ impl KeyStore {
                 .bind(baseline.after_id)
                 .bind(target_source_id)
                 .bind(DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE)
-                .fetch_all(&mut *session)
+                .fetch_all(self.pg()?)
                 .await;
-                let rows = session.query(query_result).await;
-                let finish = session.finish().await;
-                finish?;
-                let rows = match rows {
+                let rows = match query_result.map_err(ProxyError::Database) {
                     Ok(rows) => rows,
                     Err(error) if dashboard_quota_read_was_deferred(&error) => {
                         return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);

@@ -1,3 +1,7 @@
+/// Advisory-lock key that serializes the legacy semantic-column rebuild across instances.
+/// Registered in this module because all three rebuild entry points live here.
+const SEMANTIC_COLUMN_REBUILD_LOCK_KEY: &str = "core:quota_schema_semantic_columns:rebuild";
+
 impl KeyStore {
     async fn table_columns_set(
         &self,
@@ -7,10 +11,16 @@ impl KeyStore {
             return Ok(std::collections::HashSet::new());
         }
 
-        sqlx::query_scalar::<_, String>(&format!(
-            "SELECT name FROM pragma_table_info('{table}', 'main')"
-        ))
-        .fetch_all(&self.pool)
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema = 'core'
+               AND table_name = $1
+            "#,
+        )
+        .bind(table)
+        .fetch_all(self.pg()?)
         .await
         .map(|rows| rows.into_iter().collect())
         .map_err(ProxyError::Database)
@@ -41,8 +51,7 @@ impl KeyStore {
             }
         };
 
-        let business_calls_1h_limit =
-            select_expr("business_calls_1h_limit", "hourly_limit", "0");
+        let business_calls_1h_limit = select_expr("business_calls_1h_limit", "hourly_limit", "0");
         let daily_credits_limit = select_expr("daily_credits_limit", "daily_limit", "0");
         let monthly_credits_limit = select_expr("monthly_credits_limit", "monthly_limit", "0");
         let monthly_broken_limit = if has("monthly_broken_limit") {
@@ -75,80 +84,72 @@ impl KeyStore {
         } else if has("created_at") {
             source("created_at")
         } else {
-            "CAST(strftime('%s', 'now') AS INTEGER)".to_string()
+            "EXTRACT(EPOCH FROM now())::bigint".to_string()
         };
 
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
+        // PostgreSQL cannot disable foreign keys per session, so the rebuild runs as one
+        // DDL transaction guarded by an advisory lock: concurrent instances serialize on
+        // the lock, and a failure rolls the whole swap back.
+        let mut tx = self.pg()?.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(SEMANTIC_COLUMN_REBUILD_LOCK_KEY)
+            .execute(&mut *tx)
             .await?;
-        let rebuild_result = async {
-            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE IF EXISTS account_quota_limits_new")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE account_quota_limits_new (
-                    user_id TEXT PRIMARY KEY,
-                    business_calls_1h_limit INTEGER NOT NULL,
-                    daily_credits_limit INTEGER NOT NULL,
-                    monthly_credits_limit INTEGER NOT NULL,
-                    monthly_broken_limit INTEGER NOT NULL DEFAULT 5,
-                    monthly_blocked_key_limit_delta INTEGER NOT NULL DEFAULT 0,
-                    inherits_defaults INTEGER NOT NULL DEFAULT 1,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                "#,
+        sqlx::query("DROP TABLE IF EXISTS core.account_quota_limits_new")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE core.account_quota_limits_new (
+                user_id text PRIMARY KEY,
+                business_calls_1h_limit bigint NOT NULL,
+                daily_credits_limit bigint NOT NULL,
+                monthly_credits_limit bigint NOT NULL,
+                monthly_broken_limit bigint NOT NULL DEFAULT 5,
+                monthly_blocked_key_limit_delta bigint NOT NULL DEFAULT 0,
+                inherits_defaults bigint NOT NULL DEFAULT 1,
+                created_at bigint NOT NULL,
+                updated_at bigint NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES core.users (id)
             )
-            .execute(&mut *conn)
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let copy_sql = format!(
+            r#"
+            INSERT INTO core.account_quota_limits_new (
+                user_id,
+                business_calls_1h_limit,
+                daily_credits_limit,
+                monthly_credits_limit,
+                monthly_broken_limit,
+                monthly_blocked_key_limit_delta,
+                inherits_defaults,
+                created_at,
+                updated_at
+            )
+            SELECT
+                legacy.user_id,
+                {business_calls_1h_limit},
+                {daily_credits_limit},
+                {monthly_credits_limit},
+                {monthly_broken_limit},
+                {monthly_blocked_key_limit_delta},
+                {inherits_defaults},
+                {created_at},
+                {updated_at}
+            FROM core.account_quota_limits AS legacy
+            "#
+        );
+        sqlx::query(&copy_sql).execute(&mut *tx).await?;
+        sqlx::query("DROP TABLE core.account_quota_limits")
+            .execute(&mut *tx)
             .await?;
-            let copy_sql = format!(
-                r#"
-                INSERT INTO account_quota_limits_new (
-                    user_id,
-                    business_calls_1h_limit,
-                    daily_credits_limit,
-                    monthly_credits_limit,
-                    monthly_broken_limit,
-                    monthly_blocked_key_limit_delta,
-                    inherits_defaults,
-                    created_at,
-                    updated_at
-                )
-                SELECT
-                    legacy.user_id,
-                    {business_calls_1h_limit},
-                    {daily_credits_limit},
-                    {monthly_credits_limit},
-                    {monthly_broken_limit},
-                    {monthly_blocked_key_limit_delta},
-                    {inherits_defaults},
-                    {created_at},
-                    {updated_at}
-                FROM account_quota_limits AS legacy
-                "#
-            );
-            sqlx::query(&copy_sql).execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE account_quota_limits")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query("ALTER TABLE account_quota_limits_new RENAME TO account_quota_limits")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
-            Ok::<(), sqlx::Error>(())
-        }
-        .await;
-        if rebuild_result.is_err() {
-            sqlx::query("ROLLBACK").execute(&mut *conn).await.ok();
-        }
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
+        sqlx::query("ALTER TABLE core.account_quota_limits_new RENAME TO account_quota_limits")
+            .execute(&mut *tx)
             .await?;
-        rebuild_result.map_err(ProxyError::Database)
+        tx.commit().await.map_err(ProxyError::Database)
     }
 
     async fn rebuild_user_tags_with_semantic_columns(&self) -> Result<(), ProxyError> {
@@ -180,86 +181,95 @@ impl KeyStore {
         let daily_credits_delta = select_expr("daily_credits_delta", "daily_delta");
         let monthly_credits_delta = select_expr("monthly_credits_delta", "monthly_delta");
 
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
+        // `core.user_tag_bindings.tag_id` references this table, and PostgreSQL cannot
+        // suspend foreign keys, so the dependent constraint is dropped and re-added inside
+        // the same DDL transaction. The advisory lock serializes concurrent rebuilds.
+        let mut tx = self.pg()?.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(SEMANTIC_COLUMN_REBUILD_LOCK_KEY)
+            .execute(&mut *tx)
             .await?;
-        let rebuild_result = async {
-            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE IF EXISTS user_tags_new")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE user_tags_new (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE,
-                    display_name TEXT NOT NULL,
-                    icon TEXT,
-                    system_key TEXT UNIQUE,
-                    effect_kind TEXT NOT NULL DEFAULT 'quota_delta',
-                    business_calls_1h_delta INTEGER NOT NULL DEFAULT 0,
-                    daily_credits_delta INTEGER NOT NULL DEFAULT 0,
-                    monthly_credits_delta INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                )
-                "#,
+        sqlx::query("DROP TABLE IF EXISTS core.user_tags_new")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE core.user_tags_new (
+                id text PRIMARY KEY,
+                name text NOT NULL UNIQUE,
+                display_name text NOT NULL,
+                icon text,
+                system_key text UNIQUE,
+                effect_kind text NOT NULL DEFAULT 'quota_delta',
+                business_calls_1h_delta bigint NOT NULL DEFAULT 0,
+                daily_credits_delta bigint NOT NULL DEFAULT 0,
+                monthly_credits_delta bigint NOT NULL DEFAULT 0,
+                created_at bigint NOT NULL,
+                updated_at bigint NOT NULL
             )
-            .execute(&mut *conn)
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let copy_sql = format!(
+            r#"
+            INSERT INTO core.user_tags_new (
+                id,
+                name,
+                display_name,
+                icon,
+                system_key,
+                effect_kind,
+                business_calls_1h_delta,
+                daily_credits_delta,
+                monthly_credits_delta,
+                created_at,
+                updated_at
+            )
+            SELECT
+                legacy.id,
+                legacy.name,
+                legacy.display_name,
+                legacy.icon,
+                legacy.system_key,
+                COALESCE(legacy.effect_kind, 'quota_delta'),
+                {business_calls_1h_delta},
+                {daily_credits_delta},
+                {monthly_credits_delta},
+                legacy.created_at,
+                legacy.updated_at
+            FROM core.user_tags AS legacy
+            "#
+        );
+        sqlx::query(&copy_sql).execute(&mut *tx).await?;
+        sqlx::query(
+            "ALTER TABLE core.user_tag_bindings \
+             DROP CONSTRAINT IF EXISTS user_tag_bindings_tag_id_fkey",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE core.user_tags")
+            .execute(&mut *tx)
             .await?;
-            let copy_sql = format!(
-                r#"
-                INSERT INTO user_tags_new (
-                    id,
-                    name,
-                    display_name,
-                    icon,
-                    system_key,
-                    effect_kind,
-                    business_calls_1h_delta,
-                    daily_credits_delta,
-                    monthly_credits_delta,
-                    created_at,
-                    updated_at
-                )
-                SELECT
-                    legacy.id,
-                    legacy.name,
-                    legacy.display_name,
-                    legacy.icon,
-                    legacy.system_key,
-                    COALESCE(legacy.effect_kind, 'quota_delta'),
-                    {business_calls_1h_delta},
-                    {daily_credits_delta},
-                    {monthly_credits_delta},
-                    legacy.created_at,
-                    legacy.updated_at
-                FROM user_tags AS legacy
-                "#
-            );
-            sqlx::query(&copy_sql).execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE user_tags").execute(&mut *conn).await?;
-            sqlx::query("ALTER TABLE user_tags_new RENAME TO user_tags")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
-            Ok::<(), sqlx::Error>(())
-        }
-        .await;
-        if rebuild_result.is_err() {
-            sqlx::query("ROLLBACK").execute(&mut *conn).await.ok();
-        }
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
+        sqlx::query("ALTER TABLE core.user_tags_new RENAME TO user_tags")
+            .execute(&mut *tx)
             .await?;
-        rebuild_result.map_err(ProxyError::Database)
+        sqlx::query(
+            "ALTER TABLE core.user_tag_bindings \
+             ADD CONSTRAINT user_tag_bindings_tag_id_fkey \
+             FOREIGN KEY (tag_id) REFERENCES core.user_tags (id)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await.map_err(ProxyError::Database)
     }
 
     async fn rebuild_account_quota_limit_snapshots_with_semantic_columns(
         &self,
     ) -> Result<(), ProxyError> {
-        let source_columns = self.table_columns_set("account_quota_limit_snapshots").await?;
+        let source_columns = self
+            .table_columns_set("account_quota_limit_snapshots")
+            .await?;
         let has_legacy = source_columns.contains("hourly_any_limit")
             || source_columns.contains("hourly_limit")
             || source_columns.contains("daily_limit")
@@ -283,75 +293,74 @@ impl KeyStore {
             }
         };
 
-        let business_calls_1h_limit =
-            select_expr("business_calls_1h_limit", "hourly_limit");
+        let business_calls_1h_limit = select_expr("business_calls_1h_limit", "hourly_limit");
         let daily_credits_limit = select_expr("daily_credits_limit", "daily_limit");
         let monthly_credits_limit = select_expr("monthly_credits_limit", "monthly_limit");
 
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
+        let mut tx = self.pg()?.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(SEMANTIC_COLUMN_REBUILD_LOCK_KEY)
+            .execute(&mut *tx)
             .await?;
-        let rebuild_result = async {
-            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE IF EXISTS account_quota_limit_snapshots_new")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE account_quota_limit_snapshots_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    changed_at INTEGER NOT NULL,
-                    business_calls_1h_limit INTEGER NOT NULL,
-                    daily_credits_limit INTEGER NOT NULL,
-                    monthly_credits_limit INTEGER NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-                "#,
+        sqlx::query("DROP TABLE IF EXISTS core.account_quota_limit_snapshots_new")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE core.account_quota_limit_snapshots_new (
+                id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                user_id text NOT NULL,
+                changed_at bigint NOT NULL,
+                business_calls_1h_limit bigint NOT NULL,
+                daily_credits_limit bigint NOT NULL,
+                monthly_credits_limit bigint NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES core.users (id)
             )
-            .execute(&mut *conn)
-            .await?;
-            let copy_sql = format!(
-                r#"
-                INSERT INTO account_quota_limit_snapshots_new (
-                    id,
-                    user_id,
-                    changed_at,
-                    business_calls_1h_limit,
-                    daily_credits_limit,
-                    monthly_credits_limit
-                )
-                SELECT
-                    legacy.id,
-                    legacy.user_id,
-                    legacy.changed_at,
-                    {business_calls_1h_limit},
-                    {daily_credits_limit},
-                    {monthly_credits_limit}
-                FROM account_quota_limit_snapshots AS legacy
-                "#
-            );
-            sqlx::query(&copy_sql).execute(&mut *conn).await?;
-            sqlx::query("DROP TABLE account_quota_limit_snapshots")
-                .execute(&mut *conn)
-                .await?;
-            sqlx::query(
-                "ALTER TABLE account_quota_limit_snapshots_new RENAME TO account_quota_limit_snapshots",
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let copy_sql = format!(
+            r#"
+            INSERT INTO core.account_quota_limit_snapshots_new (
+                id,
+                user_id,
+                changed_at,
+                business_calls_1h_limit,
+                daily_credits_limit,
+                monthly_credits_limit
             )
-            .execute(&mut *conn)
+            SELECT
+                legacy.id,
+                legacy.user_id,
+                legacy.changed_at,
+                {business_calls_1h_limit},
+                {daily_credits_limit},
+                {monthly_credits_limit}
+            FROM core.account_quota_limit_snapshots AS legacy
+            "#
+        );
+        sqlx::query(&copy_sql).execute(&mut *tx).await?;
+        sqlx::query("DROP TABLE core.account_quota_limit_snapshots")
+            .execute(&mut *tx)
             .await?;
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
-            Ok::<(), sqlx::Error>(())
-        }
-        .await;
-        if rebuild_result.is_err() {
-            sqlx::query("ROLLBACK").execute(&mut *conn).await.ok();
-        }
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
-            .await?;
-        rebuild_result.map_err(ProxyError::Database)
+        sqlx::query(
+            "ALTER TABLE core.account_quota_limit_snapshots_new RENAME TO account_quota_limit_snapshots",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            SELECT setval(
+                pg_get_serial_sequence('core.account_quota_limit_snapshots', 'id'),
+                COALESCE((SELECT MAX(id) FROM core.account_quota_limit_snapshots), 0) + 1,
+                false
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await.map_err(ProxyError::Database)
     }
 
     async fn migrate_quota_schema_to_semantic_columns(&self) -> Result<(), ProxyError> {

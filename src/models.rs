@@ -2469,6 +2469,30 @@ where
     Ok(())
 }
 
+/// PostgreSQL twin of [`set_meta_i64_executor`]; the two coexist until the cutover wave.
+#[allow(dead_code)] // reachable only when the PostgreSQL pool is attached
+pub(crate) async fn set_meta_i64_executor_pg<'e, E>(
+    executor: E,
+    key: &str,
+    value: i64,
+) -> Result<(), ProxyError>
+where
+    E: Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        r#"
+        INSERT INTO core.meta (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value.to_string())
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn ensure_charged_subjects_are_valid<'e, E>(
     executor: E,
     window_start: i64,

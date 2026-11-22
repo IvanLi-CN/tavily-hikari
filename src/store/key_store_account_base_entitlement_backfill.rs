@@ -11,13 +11,13 @@ impl KeyStore {
                 aql.monthly_credits_limit,
                 COALESCE(aql.updated_at, aql.created_at),
                 u.created_at
-            FROM account_quota_limits aql
-            JOIN users u ON u.id = aql.user_id
+            FROM core.account_quota_limits aql
+            JOIN core.users u ON u.id = aql.user_id
             WHERE COALESCE(aql.inherits_defaults, 1) = 0
             ORDER BY aql.user_id ASC
             "#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
         if rows.is_empty() {
             return Ok(());
@@ -26,7 +26,7 @@ impl KeyStore {
         let cutover_at = self.account_quota_zero_base_cutover_at().await?;
         let now = self.backend_time.now_ts();
         let mut touched_user_ids = Vec::new();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pg()?.begin().await?;
         for (
             user_id,
             business_calls_1h_limit,
@@ -44,7 +44,7 @@ impl KeyStore {
             if business_delta != 0 || daily_delta != 0 || monthly_delta != 0 {
                 sqlx::query(
                     r#"
-                    INSERT INTO account_entitlements (
+                    INSERT INTO core.account_entitlements (
                         user_id,
                         scope_kind,
                         month_start,
@@ -59,7 +59,7 @@ impl KeyStore {
                         actor_display_name,
                         created_at
                     )
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    VALUES ($1, $2, 0, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11)
                     "#,
                 )
                 .bind(&user_id)
@@ -79,13 +79,13 @@ impl KeyStore {
 
             sqlx::query(
                 r#"
-                UPDATE account_quota_limits
-                SET business_calls_1h_limit = ?,
-                    daily_credits_limit = ?,
-                    monthly_credits_limit = ?,
+                UPDATE core.account_quota_limits
+                SET business_calls_1h_limit = $1,
+                    daily_credits_limit = $2,
+                    monthly_credits_limit = $3,
                     inherits_defaults = 0,
-                    updated_at = ?
-                WHERE user_id = ?
+                    updated_at = $4
+                WHERE user_id = $5
                 "#,
             )
             .bind(defaults.business_calls_1h_limit)

@@ -1,4 +1,5 @@
 impl KeyStore {
+    #[allow(dead_code)] // SQLite path keeps using it until the cutover wave
     pub(crate) async fn fetch_dashboard_rollup_bucket_metrics_in_range_tx(
         tx: &mut Transaction<'_, Sqlite>,
         bucket_secs: i64,
@@ -14,6 +15,7 @@ impl KeyStore {
         .await
     }
 
+    #[allow(dead_code)]
     async fn fetch_dashboard_rollup_window_metrics_tx(
         tx: &mut Transaction<'_, Sqlite>,
         bucket_secs: i64,
@@ -60,6 +62,7 @@ impl KeyStore {
         .await
     }
 
+    #[allow(dead_code)]
     async fn fetch_dashboard_rollup_aligned_window_metrics_tx(
         tx: &mut Transaction<'_, Sqlite>,
         bucket_secs: i64,
@@ -136,6 +139,7 @@ impl KeyStore {
         })
     }
 
+    #[allow(dead_code)]
     async fn fetch_dashboard_request_log_window_metrics_tx(
         tx: &mut Transaction<'_, Sqlite>,
         start: i64,

@@ -1,5 +1,29 @@
 use crate::analysis::request_value_bucket_for_stored_request_log_sql;
 
+/// PostgreSQL twin of `set_meta_i64_executor`; the SQLite version stays in `models.rs` for
+/// the still-SQLite serving path. Both write the same row shape.
+async fn set_meta_i64_executor_pg<'e, E>(
+    executor: E,
+    key: &str,
+    value: i64,
+) -> Result<(), ProxyError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        r#"
+        INSERT INTO core.meta (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value.to_string())
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 const ACCOUNT_USAGE_ROLLUP_METRIC_REQUEST_COUNT: &str = "request_count";
 const ACCOUNT_USAGE_ROLLUP_METRIC_PRIMARY_SUCCESS: &str = "primary_success";
 const ACCOUNT_USAGE_ROLLUP_METRIC_SECONDARY_SUCCESS: &str = "secondary_success";
@@ -82,11 +106,13 @@ fn collect_account_usage_rollup_records(
 ) -> Vec<AccountUsageRollupRecord> {
     let mut records = rollups
         .into_iter()
-        .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-            user_id,
-            bucket_start,
-            value,
-        })
+        .map(
+            |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                user_id,
+                bucket_start,
+                value,
+            },
+        )
         .collect::<Vec<_>>();
     sort_account_usage_rollup_records(&mut records);
     records
@@ -144,8 +170,12 @@ fn fold_request_rollup_rows(
         primary_success_records: collect_account_usage_rollup_records(primary_success_rollups),
         secondary_success_records: collect_account_usage_rollup_records(secondary_success_rollups),
         request_day_records: collect_account_usage_rollup_records(request_day_rollups),
-        primary_success_day_records: collect_account_usage_rollup_records(primary_success_day_rollups),
-        secondary_success_day_records: collect_account_usage_rollup_records(secondary_success_day_rollups),
+        primary_success_day_records: collect_account_usage_rollup_records(
+            primary_success_day_rollups,
+        ),
+        secondary_success_day_records: collect_account_usage_rollup_records(
+            secondary_success_day_rollups,
+        ),
     }
 }
 
@@ -159,7 +189,7 @@ async fn upsert_account_usage_rollup_executor<'e, E>(
     updated_at: i64,
 ) -> Result<(), ProxyError>
 where
-    E: Executor<'e, Database = Sqlite>,
+    E: Executor<'e, Database = sqlx::Postgres>,
 {
     if delta <= 0 {
         return Ok(());
@@ -167,7 +197,7 @@ where
 
     sqlx::query(
         r#"
-        INSERT INTO account_usage_rollup_buckets (
+        INSERT INTO core.account_usage_rollup_buckets (
             user_id,
             metric_kind,
             bucket_kind,
@@ -175,8 +205,8 @@ where
             value,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (user_id, metric_kind, bucket_kind, bucket_start)
         DO UPDATE SET
             value = account_usage_rollup_buckets.value + excluded.value,
             updated_at = excluded.updated_at
@@ -195,7 +225,7 @@ where
 }
 
 async fn replace_account_usage_rollup_records(
-    tx: &mut Transaction<'_, Sqlite>,
+    tx: &mut Transaction<'_, sqlx::Postgres>,
     metric_kind: AccountUsageRollupMetricKind,
     bucket_kind: AccountUsageRollupBucketKind,
     records: &[AccountUsageRollupRecord],
@@ -206,8 +236,8 @@ async fn replace_account_usage_rollup_records(
     }
 
     for chunk in records.chunks(ACCOUNT_USAGE_ROLLUP_INSERT_CHUNK_SIZE) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO account_usage_rollup_buckets (user_id, metric_kind, bucket_kind, bucket_start, value, updated_at) ",
+        let mut query = QueryBuilder::<sqlx::Postgres>::new(
+            "INSERT INTO core.account_usage_rollup_buckets (user_id, metric_kind, bucket_kind, bucket_start, value, updated_at) ",
         );
         query.push_values(chunk, |mut row, record| {
             row.push_bind(&record.user_id)
@@ -218,7 +248,7 @@ async fn replace_account_usage_rollup_records(
                 .push_bind(updated_at);
         });
         query.push(
-            " ON CONFLICT(user_id, metric_kind, bucket_kind, bucket_start) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            " ON CONFLICT (user_id, metric_kind, bucket_kind, bucket_start) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         );
         query.build().execute(&mut **tx).await?;
     }
@@ -234,12 +264,12 @@ impl KeyStore {
         let oldest_request_created_at = sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT MIN(created_at)
-            FROM auth_token_logs
-            WHERE created_at >= ?
+            FROM core.auth_token_logs
+            WHERE created_at >= $1
             "#,
         )
         .bind(request_day_backfill_start)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pg()?)
         .await?;
 
         Ok(oldest_request_created_at
@@ -247,10 +277,13 @@ impl KeyStore {
             .map(|value| value.max(request_day_backfill_start)))
     }
 
-    pub(crate) async fn account_usage_rollup_request_day_rebuild_needed(&self) -> Result<bool, ProxyError> {
+    pub(crate) async fn account_usage_rollup_request_day_rebuild_needed(
+        &self,
+    ) -> Result<bool, ProxyError> {
         let now_ts = self.backend_time.now_ts();
-        let request_day_backfill_start =
-            local_day_bucket_start_utc_ts(now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_BACKFILL_SECS));
+        let request_day_backfill_start = local_day_bucket_start_utc_ts(
+            now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_BACKFILL_SECS),
+        );
         let request_day_source_start = self
             .request_day_rebuild_source_start(request_day_backfill_start)
             .await?;
@@ -266,15 +299,19 @@ impl KeyStore {
         })
     }
 
+    /// Local-day bucket start in epoch seconds, computed by PostgreSQL from the session
+    /// `TimeZone`, which the deployment pins to the backend's local zone.
     fn request_local_day_bucket_start_sql(created_at_sql: &str) -> String {
         format!(
-            "CAST(strftime('%s', date({created_at_sql}, 'unixepoch', 'localtime'), 'utc') AS INTEGER)"
+            "CAST(EXTRACT(EPOCH FROM (date_trunc('day', to_timestamp({created_at_sql}) \
+             AT TIME ZONE current_setting('TimeZone')) \
+             AT TIME ZONE current_setting('TimeZone'))) AS bigint)"
         )
     }
 
     pub(crate) async fn record_account_business_credit_rollups(
         &self,
-        tx: &mut Transaction<'_, Sqlite>,
+        tx: &mut Transaction<'_, sqlx::Postgres>,
         user_id: &str,
         created_at: i64,
         credits: i64,
@@ -327,12 +364,12 @@ impl KeyStore {
         let rows = sqlx::query_as::<_, (i64, i64)>(
             r#"
             SELECT bucket_start, value
-            FROM account_usage_rollup_buckets
-            WHERE user_id = ?
-              AND metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start >= ?
-              AND bucket_start < ?
+            FROM core.account_usage_rollup_buckets
+            WHERE user_id = $1
+              AND metric_kind = $2
+              AND bucket_kind = $3
+              AND bucket_start >= $4
+              AND bucket_start < $5
             ORDER BY bucket_start ASC
             "#,
         )
@@ -341,7 +378,7 @@ impl KeyStore {
         .bind(bucket_kind.as_str())
         .bind(bucket_start_at_least)
         .bind(bucket_start_before)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         Ok(rows.into_iter().collect())
@@ -355,16 +392,16 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
-            DELETE FROM account_usage_rollup_buckets
-            WHERE metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start < ?
+            DELETE FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start < $3
             "#,
         )
         .bind(metric_kind.as_str())
         .bind(bucket_kind.as_str())
         .bind(threshold)
-        .execute(&self.pool)
+        .execute(self.pg()?)
         .await?;
         Ok(())
     }
@@ -372,17 +409,22 @@ impl KeyStore {
     pub(crate) async fn rebuild_account_usage_rollup_buckets_v1(&self) -> Result<(), ProxyError> {
         let now = self.backend_time.now_utc();
         let now_ts = now.timestamp();
-        let request_backfill_start = now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_BACKFILL_SECS);
-        let request_day_backfill_start =
-            local_day_bucket_start_utc_ts(now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_BACKFILL_SECS));
+        let request_backfill_start =
+            now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_BACKFILL_SECS);
+        let request_day_backfill_start = local_day_bucket_start_utc_ts(
+            now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_BACKFILL_SECS),
+        );
         let request_day_source_start = self
             .request_day_rebuild_source_start(request_day_backfill_start)
             .await?;
         let request_day_query_start =
             request_day_source_start.unwrap_or(request_day_backfill_start);
-        let business_backfill_start = now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_BUSINESS_BACKFILL_SECS);
-        let monthly_coverage_start =
-            shift_month_start_utc_ts(start_of_month(now).timestamp(), -(ACCOUNT_USAGE_ROLLUP_MONTH_CHART_MONTHS - 1));
+        let business_backfill_start =
+            now_ts.saturating_sub(ACCOUNT_USAGE_ROLLUP_BUSINESS_BACKFILL_SECS);
+        let monthly_coverage_start = shift_month_start_utc_ts(
+            start_of_month(now).timestamp(),
+            -(ACCOUNT_USAGE_ROLLUP_MONTH_CHART_MONTHS - 1),
+        );
 
         let existing_request_day_coverage = self
             .get_meta_i64(META_KEY_ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_COVERAGE_START)
@@ -423,7 +465,7 @@ impl KeyStore {
                     END,
                     b.user_id
                 ) AS user_id,
-                (l.created_at / ?) * ? AS bucket_start,
+                (l.created_at / $1::bigint) * $2::bigint AS bucket_start,
                 {request_day_bucket_sql} AS day_bucket_start,
                 COUNT(*) AS total,
                 SUM(
@@ -441,10 +483,10 @@ impl KeyStore {
                         ELSE 0
                     END
                 ) AS secondary_success
-            FROM auth_token_logs l
-            LEFT JOIN user_token_bindings b ON b.token_id = l.token_id
-            LEFT JOIN request_logs rl ON rl.id = l.request_log_id
-            WHERE l.created_at >= ?
+            FROM core.auth_token_logs l
+            LEFT JOIN core.user_token_bindings b ON b.token_id = l.token_id
+            LEFT JOIN observability.request_logs rl ON rl.id = l.request_log_id
+            WHERE l.created_at >= $3
               AND COALESCE(
                     l.request_user_id,
                     CASE
@@ -460,7 +502,7 @@ impl KeyStore {
         .bind(SECS_PER_FIVE_MINUTES)
         .bind(SECS_PER_FIVE_MINUTES)
         .bind(request_day_query_start)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
         let FoldedRequestRollupRecords {
             request_records,
@@ -483,24 +525,24 @@ impl KeyStore {
                     bl.billing_subject,
                     bl.created_at,
                     COALESCE(bl.business_credits, 0) AS business_credits
-                FROM billing_ledger bl
-                WHERE bl.billing_state = ?
+                FROM core.billing_ledger bl
+                WHERE bl.billing_state = $1
                   AND COALESCE(bl.business_credits, 0) > 0
                   AND bl.billing_subject LIKE 'account:%'
-                  AND bl.created_at >= ?
+                  AND bl.created_at >= $2
                 UNION ALL
                 SELECT
                     atl.id AS source_log_id,
                     atl.billing_subject,
                     atl.created_at,
                     COALESCE(atl.business_credits, 0) AS business_credits
-                FROM auth_token_logs atl
-                LEFT JOIN billing_ledger bl ON bl.auth_token_log_id = atl.id
+                FROM core.auth_token_logs atl
+                LEFT JOIN core.billing_ledger bl ON bl.auth_token_log_id = atl.id
                 WHERE bl.auth_token_log_id IS NULL
-                  AND atl.billing_state = ?
+                  AND atl.billing_state = $3
                   AND COALESCE(atl.business_credits, 0) > 0
                   AND atl.billing_subject LIKE 'account:%'
-                  AND atl.created_at >= ?
+                  AND atl.created_at >= $4
             )
             SELECT billing_subject, created_at, business_credits
             FROM charged_rows
@@ -511,7 +553,7 @@ impl KeyStore {
         .bind(monthly_coverage_start.min(business_backfill_start))
         .bind(BILLING_STATE_CHARGED)
         .bind(monthly_coverage_start.min(business_backfill_start))
-        .fetch_all(&self.pool)
+        .fetch_all(self.pg()?)
         .await?;
 
         let mut five_minute_rollups: HashMap<(String, i64), i64> = HashMap::new();
@@ -535,10 +577,14 @@ impl KeyStore {
                     .or_default() += credits;
 
                 let hour_bucket = created_at - created_at.rem_euclid(SECS_PER_HOUR);
-                *hourly_rollups.entry((user_id.clone(), hour_bucket)).or_default() += credits;
+                *hourly_rollups
+                    .entry((user_id.clone(), hour_bucket))
+                    .or_default() += credits;
 
                 let day_bucket = local_day_bucket_start_utc_ts(created_at);
-                *daily_rollups.entry((user_id.clone(), day_bucket)).or_default() += credits;
+                *daily_rollups
+                    .entry((user_id.clone(), day_bucket))
+                    .or_default() += credits;
 
                 let utc_day_bucket = utc_day_bucket_start_utc_ts(created_at);
                 *utc_daily_rollups
@@ -559,11 +605,13 @@ impl KeyStore {
 
         let mut five_minute_records: Vec<AccountUsageRollupRecord> = five_minute_rollups
             .into_iter()
-            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-                user_id,
-                bucket_start,
-                value,
-            })
+            .map(
+                |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value,
+                },
+            )
             .collect();
         five_minute_records.sort_by(|left, right| {
             left.user_id
@@ -573,11 +621,13 @@ impl KeyStore {
 
         let mut hourly_records: Vec<AccountUsageRollupRecord> = hourly_rollups
             .into_iter()
-            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-                user_id,
-                bucket_start,
-                value,
-            })
+            .map(
+                |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value,
+                },
+            )
             .collect();
         hourly_records.sort_by(|left, right| {
             left.user_id
@@ -587,11 +637,13 @@ impl KeyStore {
 
         let mut daily_records: Vec<AccountUsageRollupRecord> = daily_rollups
             .into_iter()
-            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-                user_id,
-                bucket_start,
-                value,
-            })
+            .map(
+                |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value,
+                },
+            )
             .collect();
         daily_records.sort_by(|left, right| {
             left.user_id
@@ -601,11 +653,13 @@ impl KeyStore {
 
         let mut utc_daily_records: Vec<AccountUsageRollupRecord> = utc_daily_rollups
             .into_iter()
-            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-                user_id,
-                bucket_start,
-                value,
-            })
+            .map(
+                |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value,
+                },
+            )
             .collect();
         utc_daily_records.sort_by(|left, right| {
             left.user_id
@@ -615,11 +669,13 @@ impl KeyStore {
 
         let mut monthly_records: Vec<AccountUsageRollupRecord> = monthly_rollups
             .into_iter()
-            .map(|((user_id, bucket_start), value)| AccountUsageRollupRecord {
-                user_id,
-                bucket_start,
-                value,
-            })
+            .map(
+                |((user_id, bucket_start), value)| AccountUsageRollupRecord {
+                    user_id,
+                    bucket_start,
+                    value,
+                },
+            )
             .collect();
         monthly_records.sort_by(|left, right| {
             left.user_id
@@ -627,14 +683,14 @@ impl KeyStore {
                 .then_with(|| left.bucket_start.cmp(&right.bucket_start))
         });
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pg()?.begin().await?;
 
         sqlx::query(
             r#"
-            DELETE FROM account_usage_rollup_buckets
-            WHERE metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start >= ?
+            DELETE FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start >= $3
             "#,
         )
         .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
@@ -644,10 +700,10 @@ impl KeyStore {
         .await?;
         sqlx::query(
             r#"
-            DELETE FROM account_usage_rollup_buckets
-            WHERE metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start >= ?
+            DELETE FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start >= $3
             "#,
         )
         .bind(AccountUsageRollupMetricKind::PrimarySuccess.as_str())
@@ -657,10 +713,10 @@ impl KeyStore {
         .await?;
         sqlx::query(
             r#"
-            DELETE FROM account_usage_rollup_buckets
-            WHERE metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start >= ?
+            DELETE FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start >= $3
             "#,
         )
         .bind(AccountUsageRollupMetricKind::SecondarySuccess.as_str())
@@ -676,10 +732,10 @@ impl KeyStore {
             ] {
                 sqlx::query(
                     r#"
-                    DELETE FROM account_usage_rollup_buckets
-                    WHERE metric_kind = ?
-                      AND bucket_kind = ?
-                      AND bucket_start >= ?
+                    DELETE FROM core.account_usage_rollup_buckets
+                    WHERE metric_kind = $1
+                      AND bucket_kind = $2
+                      AND bucket_start >= $3
                     "#,
                 )
                 .bind(metric_kind.as_str())
@@ -698,10 +754,10 @@ impl KeyStore {
         ] {
             sqlx::query(
                 r#"
-                DELETE FROM account_usage_rollup_buckets
-                WHERE metric_kind = ?
-                  AND bucket_kind = ?
-                  AND bucket_start >= ?
+                DELETE FROM core.account_usage_rollup_buckets
+                WHERE metric_kind = $1
+                  AND bucket_kind = $2
+                  AND bucket_start >= $3
                 "#,
             )
             .bind(AccountUsageRollupMetricKind::BusinessCredits.as_str())
@@ -713,10 +769,10 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            DELETE FROM account_usage_rollup_buckets
-            WHERE metric_kind = ?
-              AND bucket_kind = ?
-              AND bucket_start >= ?
+            DELETE FROM core.account_usage_rollup_buckets
+            WHERE metric_kind = $1
+              AND bucket_kind = $2
+              AND bucket_start >= $3
             "#,
         )
         .bind(AccountUsageRollupMetricKind::BusinessCredits.as_str())
@@ -833,17 +889,37 @@ impl KeyStore {
             .map(|value| value.min(monthly_coverage_start))
             .unwrap_or(monthly_coverage_start);
 
-        set_meta_i64_executor(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START, rate5m_coverage).await?;
-        set_meta_i64_executor(
+        set_meta_i64_executor_pg(
+            &mut *tx,
+            META_KEY_ACCOUNT_USAGE_ROLLUP_RATE5M_COVERAGE_START,
+            rate5m_coverage,
+        )
+        .await?;
+        set_meta_i64_executor_pg(
             &mut *tx,
             META_KEY_ACCOUNT_USAGE_ROLLUP_REQUEST_DAY_COVERAGE_START,
             request_day_coverage,
         )
         .await?;
-        set_meta_i64_executor(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START, quota1h_coverage).await?;
-        set_meta_i64_executor(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA24H_COVERAGE_START, quota24h_coverage).await?;
-        set_meta_i64_executor(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA_MONTH_COVERAGE_START, quota_month_coverage).await?;
-        set_meta_i64_executor(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_V1_DONE, now_ts).await?;
+        set_meta_i64_executor_pg(
+            &mut *tx,
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA1H_COVERAGE_START,
+            quota1h_coverage,
+        )
+        .await?;
+        set_meta_i64_executor_pg(
+            &mut *tx,
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA24H_COVERAGE_START,
+            quota24h_coverage,
+        )
+        .await?;
+        set_meta_i64_executor_pg(
+            &mut *tx,
+            META_KEY_ACCOUNT_USAGE_ROLLUP_QUOTA_MONTH_COVERAGE_START,
+            quota_month_coverage,
+        )
+        .await?;
+        set_meta_i64_executor_pg(&mut *tx, META_KEY_ACCOUNT_USAGE_ROLLUP_V1_DONE, now_ts).await?;
 
         tx.commit().await?;
         Ok(())
