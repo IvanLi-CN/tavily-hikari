@@ -54,6 +54,7 @@ pub use runtime_logging::{
     LegacyStdIoLevel, RuntimeLogFormat, RuntimeMemorySnapshot, RuntimePerfScope,
     capture_runtime_memory_snapshot, emit_legacy_stdio_event, init_runtime_logging,
 };
+pub use store::pg::{PgConfigError, PgStartupPlan, PgStore};
 pub use store::{
     DbLogStatus, HaApplyResult, HaBaselineApplyMode, HaBaselineApplySession, HaEventsApplySession,
     HaEventsReadSession, PerfLogScope, emit_low_memory_protection_decision, emit_perf_log,
