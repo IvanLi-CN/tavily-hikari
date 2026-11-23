@@ -233,6 +233,7 @@
     },
     {
       "id": "lib-pg-write-paths",
+      "kind": "lib",
       "name": "Lib PostgreSQL Write Paths",
       "estimated_seconds": 15,
       "coverage_target": "lib",
