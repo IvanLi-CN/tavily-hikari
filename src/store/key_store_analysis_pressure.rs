@@ -34,6 +34,9 @@ impl KeyStore {
         &self,
         deltas: &[ServerPressureBucketDelta],
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.upsert_server_pressure_bucket_deltas_pg(deltas).await;
+        }
         if deltas.is_empty() {
             return Ok(());
         }
@@ -73,7 +76,55 @@ impl KeyStore {
         tx.finish(Ok(())).await
     }
 
+    pub(crate) async fn upsert_server_pressure_bucket_deltas_pg(
+        &self,
+        deltas: &[ServerPressureBucketDelta],
+    ) -> Result<(), ProxyError> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let updated_at = self.backend_time.now_ts();
+        // The active generation read and the delta upserts must observe one stable
+        // generation. The SQLite immediate-write lock used to guarantee that; in PostgreSQL
+        // the pressure-lane advisory lock serializes them against rebuild publish.
+        let mut tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane_pg(&mut tx).await?;
+        let generation = sqlx::query_scalar::<_, i64>(
+            "SELECT active_generation FROM observability.server_pressure_rebuild_state WHERE singleton = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        for delta in deltas {
+            sqlx::query(
+                r#"
+                INSERT INTO observability.server_pressure_buckets (
+                    bucket_kind, bucket_start, bucket_secs, success_count, failure_count, updated_at, generation
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT(bucket_kind, bucket_start) DO UPDATE SET
+                    success_count = server_pressure_buckets.success_count + excluded.success_count,
+                    failure_count = server_pressure_buckets.failure_count + excluded.failure_count,
+                    updated_at = excluded.updated_at,
+                    generation = excluded.generation
+                "#,
+            )
+            .bind(delta.bucket_kind)
+            .bind(delta.bucket_start)
+            .bind(delta.bucket_secs)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(updated_at)
+            .bind(generation)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn request_logs_support_server_pressure_rebuild(&self) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.request_logs_support_server_pressure_rebuild_pg().await;
+        }
         for column in [
             "request_user_id",
             "counts_business_quota",
@@ -95,10 +146,36 @@ impl KeyStore {
         Ok(true)
     }
 
+    async fn request_logs_support_server_pressure_rebuild_pg(&self) -> Result<bool, ProxyError> {
+        let column_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM information_schema.columns
+            WHERE table_schema = 'observability'
+              AND table_name = 'request_logs'
+              AND column_name = ANY($1)
+            "#,
+        )
+        .bind(vec![
+            "request_user_id",
+            "counts_business_quota",
+            "upstream_operation",
+            "result_status",
+            "visibility",
+            "created_at",
+        ])
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok(column_count == 6)
+    }
+
     pub(crate) async fn fetch_server_pressure_event_for_request_log(
         &self,
         request_log_id: i64,
     ) -> Result<Option<UserBusinessCallEventWrite>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_server_pressure_event_for_request_log_pg(request_log_id).await;
+        }
         sqlx::query_as::<_, (i64, String, i64, String)>(
             r#"
             SELECT id, request_user_id, created_at, result_status
@@ -132,7 +209,47 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    pub(crate) async fn fetch_server_pressure_event_for_request_log_pg(
+        &self,
+        request_log_id: i64,
+    ) -> Result<Option<UserBusinessCallEventWrite>, ProxyError> {
+        sqlx::query_as::<_, (i64, String, i64, String)>(
+            r#"
+            SELECT id, request_user_id, created_at, result_status
+            FROM observability.request_logs
+            WHERE id = $1
+              AND visibility = $2
+              AND request_user_id IS NOT NULL
+              AND counts_business_quota = 1
+              AND upstream_operation IS NOT NULL
+              AND result_status != $3
+            LIMIT 1
+            "#,
+        )
+        .bind(request_log_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_optional(self.pg()?)
+        .await
+        .map(|row| {
+            row.map(
+                |(request_log_id, user_id, created_at, result_status)| {
+                    UserBusinessCallEventWrite {
+                        user_id,
+                        request_log_id: Some(request_log_id),
+                        created_at,
+                        result_status,
+                    }
+                },
+            )
+        })
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn ensure_server_pressure_bucket_schema(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_server_pressure_bucket_schema_pg().await;
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS observability.server_pressure_buckets (
@@ -215,6 +332,46 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn ensure_server_pressure_bucket_schema_pg(&self) -> Result<(), ProxyError> {
+        let missing: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT required.rel
+            FROM unnest($1::text[]) AS required(rel)
+            WHERE to_regclass(required.rel) IS NULL
+            ORDER BY required.rel
+            LIMIT 1
+            "#,
+        )
+        .bind(vec![
+            "observability.server_pressure_buckets",
+            "observability.server_pressure_bucket_staging",
+            "observability.server_pressure_rebuild_state",
+            "observability.idx_server_pressure_buckets_kind_time",
+            "observability.idx_server_pressure_buckets_time",
+            "observability.idx_server_pressure_buckets_generation_kind_time",
+        ])
+        .fetch_optional(self.pg()?)
+        .await?;
+        if let Some(relation) = missing {
+            return Err(ProxyError::Other(format!(
+                "postgresql baseline is missing {relation}; apply src/store/pg/migrations first"
+            )));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO observability.server_pressure_rebuild_state (
+                singleton, active_generation, last_allocated_generation
+            ) VALUES (1, 0, 0)
+            ON CONFLICT(singleton) DO NOTHING
+            "#,
+        )
+        .execute(self.pg()?)
+        .await?;
+
+        Ok(())
+    }
+
     pub(crate) async fn rebuild_server_pressure_buckets_with_cancel<F>(
         &self,
         should_continue: F,
@@ -222,6 +379,9 @@ impl KeyStore {
     where
         F: Fn() -> bool,
     {
+        if self.pg_pool.is_some() {
+            return self.rebuild_server_pressure_buckets_with_cancel_pg(should_continue).await;
+        }
         self.ensure_server_pressure_bucket_schema().await?;
         if self.uses_legacy_single_db_observability_compatibility() {
             return Ok(ServerPressureBucketsRebuildOutcome::Completed {
@@ -459,6 +619,245 @@ impl KeyStore {
         }
     }
 
+    pub(crate) async fn rebuild_server_pressure_buckets_with_cancel_pg<F>(
+        &self,
+        should_continue: F,
+    ) -> Result<ServerPressureBucketsRebuildOutcome, ProxyError>
+    where
+        F: Fn() -> bool,
+    {
+        self.ensure_server_pressure_bucket_schema().await?;
+        if self.uses_legacy_single_db_observability_compatibility() {
+            return Ok(ServerPressureBucketsRebuildOutcome::Completed {
+                upper_bound_request_log_id: 0,
+            });
+        }
+        if !self.request_logs_support_server_pressure_rebuild().await? {
+            return Ok(ServerPressureBucketsRebuildOutcome::Completed {
+                upper_bound_request_log_id: 0,
+            });
+        }
+
+        let updated_at = self.backend_time.now_ts();
+        let five_minute_since = updated_at.saturating_sub(48 * SECS_PER_HOUR);
+        let hour_since = updated_at.saturating_sub(8 * SECS_PER_DAY);
+        let upper_bound_request_log_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COALESCE(MAX(id), 0)
+            FROM observability.request_logs
+            WHERE visibility = $1
+              AND created_at >= $2
+              AND request_user_id IS NOT NULL
+              AND counts_business_quota = 1
+              AND upstream_operation IS NOT NULL
+              AND result_status != $3
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(hour_since)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_one(self.pg()?)
+        .await?;
+        if !should_continue() {
+            return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
+        }
+
+        // Allocate a private staging generation before scanning. The active
+        // generation remains visible until the final short publish transaction.
+        let mut generation_tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane_pg(&mut generation_tx).await?;
+        let generation = sqlx::query_scalar::<_, i64>(
+            r#"
+            UPDATE observability.server_pressure_rebuild_state
+            SET last_allocated_generation = last_allocated_generation + 1
+            WHERE singleton = 1
+            RETURNING last_allocated_generation
+            "#,
+        )
+        .fetch_one(&mut *generation_tx)
+        .await?;
+        generation_tx.commit().await?;
+
+        // Advance in the same order as the time index. The source fence still
+        // excludes rows inserted after the upper id was captured, while the
+        // time predicate prevents a historical id scan on long-lived nodes.
+        let mut cursor_created_at = hour_since;
+        let mut cursor_id = 0_i64;
+        loop {
+            if !should_continue() {
+                return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
+            }
+            // Keyset slices bound source work and fence every read to the
+            // generation's observed upper request-log id.
+            let rows = sqlx::query_as::<_, (i64, i64, String)>(
+                r#"
+                SELECT id, created_at, result_status
+                FROM observability.request_logs
+                WHERE created_at >= $1
+                  AND (created_at > $2 OR (created_at = $3 AND id > $4))
+                  AND id <= $5
+                  AND visibility = $6
+                  AND request_user_id IS NOT NULL
+                  AND counts_business_quota = 1
+                  AND upstream_operation IS NOT NULL
+                  AND result_status != $7
+                ORDER BY created_at ASC, id ASC
+                LIMIT 500
+                "#,
+            )
+            .bind(hour_since)
+            .bind(cursor_created_at)
+            .bind(cursor_created_at)
+            .bind(cursor_id)
+            .bind(upper_bound_request_log_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .fetch_all(self.pg()?)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            if let Some((id, created_at, _)) = rows.last() {
+                cursor_created_at = *created_at;
+                cursor_id = *id;
+            }
+            let mut buckets = std::collections::BTreeMap::<
+                (&'static str, i64, i64),
+                (i64, i64),
+            >::new();
+            for (_, created_at, result_status) in rows {
+                let (success, failure) = if result_status == OUTCOME_SUCCESS {
+                    (1, 0)
+                } else {
+                    (0, 1)
+                };
+                if created_at >= five_minute_since {
+                    let bucket_start = created_at - created_at.rem_euclid(SECS_PER_FIVE_MINUTES);
+                    let counts = buckets
+                        .entry(("five_minute", bucket_start, SECS_PER_FIVE_MINUTES))
+                        .or_default();
+                    counts.0 += success;
+                    counts.1 += failure;
+                }
+                let Some(utc_dt) = chrono::Utc.timestamp_opt(created_at, 0).single() else {
+                    continue;
+                };
+                let bucket_start = start_of_local_hour_utc_ts(utc_dt.with_timezone(&chrono::Local));
+                let counts = buckets.entry(("hour", bucket_start, SECS_PER_HOUR)).or_default();
+                counts.0 += success;
+                counts.1 += failure;
+            }
+            let mut stage_tx = self.pg()?.begin().await?;
+            Self::lock_server_pressure_lane_pg(&mut stage_tx).await?;
+            for ((bucket_kind, bucket_start, bucket_secs), (success_count, failure_count)) in buckets {
+                sqlx::query(
+                    r#"
+                    INSERT INTO observability.server_pressure_bucket_staging (
+                        generation, bucket_kind, bucket_start, bucket_secs,
+                        success_count, failure_count, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT(generation, bucket_kind, bucket_start) DO UPDATE SET
+                        success_count = server_pressure_bucket_staging.success_count + excluded.success_count,
+                        failure_count = server_pressure_bucket_staging.failure_count + excluded.failure_count,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(generation)
+                .bind(bucket_kind)
+                .bind(bucket_start)
+                .bind(bucket_secs)
+                .bind(success_count)
+                .bind(failure_count)
+                .bind(updated_at)
+                .execute(&mut *stage_tx)
+                .await?;
+            }
+            stage_tx.commit().await?;
+        }
+
+        if !should_continue() {
+            return Ok(ServerPressureBucketsRebuildOutcome::Cancelled);
+        }
+        let mut publish_tx = self.pg()?.begin().await?;
+        Self::lock_server_pressure_lane_pg(&mut publish_tx).await?;
+        let publish = async {
+            sqlx::query(
+                r#"
+                INSERT INTO observability.server_pressure_buckets (
+                    bucket_kind, bucket_start, bucket_secs, success_count,
+                    failure_count, updated_at, generation
+                )
+                SELECT bucket_kind, bucket_start, bucket_secs, success_count,
+                       failure_count, updated_at, generation
+                FROM observability.server_pressure_bucket_staging
+                WHERE generation = $1
+                ON CONFLICT(bucket_kind, bucket_start) DO UPDATE SET
+                    bucket_secs = excluded.bucket_secs,
+                    success_count = excluded.success_count,
+                    failure_count = excluded.failure_count,
+                    updated_at = excluded.updated_at,
+                    generation = excluded.generation
+                "#,
+            )
+            .bind(generation)
+            .execute(&mut *publish_tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE observability.server_pressure_rebuild_state
+                SET active_generation = $1
+                WHERE singleton = 1
+                "#,
+            )
+            .bind(generation)
+            .execute(&mut *publish_tx)
+            .await?;
+            // Retire only a bounded slice of old data. Readers select the
+            // active generation, so this cleanup cannot expose mixed results.
+            sqlx::query(
+                r#"
+                DELETE FROM observability.server_pressure_buckets
+                WHERE (bucket_kind, bucket_start) IN (
+                    SELECT bucket_kind, bucket_start FROM observability.server_pressure_buckets
+                    WHERE generation <> $1
+                    LIMIT 25
+                )
+                "#,
+            )
+            .bind(generation)
+            .execute(&mut *publish_tx)
+            .await?;
+            sqlx::query(
+                r#"
+                DELETE FROM observability.server_pressure_bucket_staging
+                WHERE (generation, bucket_kind, bucket_start) IN (
+                    SELECT generation, bucket_kind, bucket_start
+                    FROM observability.server_pressure_bucket_staging
+                    WHERE generation <> $1
+                    LIMIT 25
+                )
+                "#,
+            )
+            .bind(generation)
+            .execute(&mut *publish_tx)
+            .await?;
+            Ok::<_, ProxyError>(())
+        }
+        .await;
+        match publish {
+            Ok(()) => {
+                publish_tx.commit().await?;
+                Ok(ServerPressureBucketsRebuildOutcome::Completed {
+                    upper_bound_request_log_id,
+                })
+            }
+            Err(error) => {
+                let _ = publish_tx.rollback().await;
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) async fn upsert_server_pressure_event(
         &self,
         created_at: i64,
@@ -498,6 +897,9 @@ impl KeyStore {
         since: i64,
         until: i64,
     ) -> Result<Vec<AnalysisPressurePoint>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_server_pressure_points_pg(bucket_kind, since, until).await;
+        }
         self.ensure_server_pressure_bucket_schema().await?;
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
@@ -518,6 +920,46 @@ impl KeyStore {
         .bind(since)
         .bind(until)
         .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(bucket_start, success_count, failure_count, _bucket_secs)| AnalysisPressurePoint {
+                bucket_start,
+                display_bucket_start: bucket_start,
+                pressure: success_count + failure_count,
+                success_count,
+                failure_count,
+            })
+            .collect())
+    }
+
+    pub(crate) async fn fetch_server_pressure_points_pg(
+        &self,
+        bucket_kind: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<AnalysisPressurePoint>, ProxyError> {
+        self.ensure_server_pressure_bucket_schema().await?;
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            r#"
+            SELECT bucket_start, success_count, failure_count, bucket_secs
+            FROM observability.server_pressure_buckets
+            WHERE bucket_kind = $1
+              AND bucket_start >= $2
+              AND bucket_start < $3
+              AND generation = (
+                  SELECT active_generation
+                  FROM observability.server_pressure_rebuild_state
+                  WHERE singleton = 1
+              )
+            ORDER BY bucket_start ASC
+            "#,
+        )
+        .bind(bucket_kind)
+        .bind(since)
+        .bind(until)
+        .fetch_all(self.pg()?)
         .await?;
 
         Ok(rows

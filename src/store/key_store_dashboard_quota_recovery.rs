@@ -534,6 +534,9 @@ impl KeyStore {
         today_end: i64,
         budget: &mut DashboardQuotaRecoveryRoundBudget,
     ) -> Result<DashboardQuotaRecoveryQuery<i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_source_id_for_recovery_pg(today_end, budget).await;
+        }
         let mut before_id = None;
         for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
             if !budget.start_select() {
@@ -608,11 +611,80 @@ impl KeyStore {
         Ok(DashboardQuotaRecoveryQuery::Deferred)
     }
 
+    async fn fetch_dashboard_quota_source_id_for_recovery_pg(
+        &self,
+        today_end: i64,
+        budget: &mut DashboardQuotaRecoveryRoundBudget,
+    ) -> Result<DashboardQuotaRecoveryQuery<i64>, ProxyError> {
+        let mut before_id = None;
+        for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
+            if !budget.start_select() {
+                return Ok(DashboardQuotaRecoveryQuery::Continue);
+            }
+            let query_result = match before_id {
+                Some(before_id) => sqlx::query(
+                    r#"
+                    SELECT id, captured_at
+                    FROM core.api_key_quota_sync_samples
+                    WHERE id > 0 AND id < $1
+                    ORDER BY id DESC
+                    LIMIT $2
+                    "#,
+                )
+                .bind(before_id)
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(self.pg()?)
+                .await,
+                None => sqlx::query(
+                    r#"
+                    SELECT id, captured_at
+                    FROM core.api_key_quota_sync_samples
+                    WHERE id > 0
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                )
+                .bind(DASHBOARD_QUOTA_SOURCE_PAGE_SIZE)
+                .fetch_all(self.pg()?)
+                .await,
+            };
+            let rows = match query_result.map_err(ProxyError::Database) {
+                Ok(rows) => rows,
+                Err(error) if dashboard_quota_read_was_deferred(&error) => {
+                    return Ok(DashboardQuotaRecoveryQuery::Deferred);
+                }
+                Err(error) => return Err(error),
+            };
+            let samples = rows
+                .into_iter()
+                .map(|row| Ok::<_, sqlx::Error>((row.try_get("id")?, row.try_get("captured_at")?)))
+                .collect::<Result<Vec<(i64, i64)>, _>>()?;
+            if let Some((id, _)) = samples
+                .iter()
+                .copied()
+                .find(|(_, captured_at)| *captured_at < today_end)
+            {
+                return Ok(DashboardQuotaRecoveryQuery::Complete(id));
+            }
+            let Some((last_id, _)) = samples.last().copied() else {
+                return Ok(DashboardQuotaRecoveryQuery::Complete(0));
+            };
+            if samples.len() < DASHBOARD_QUOTA_SOURCE_PAGE_SIZE as usize {
+                return Ok(DashboardQuotaRecoveryQuery::Complete(0));
+            }
+            before_id = Some(last_id);
+        }
+        Ok(DashboardQuotaRecoveryQuery::Deferred)
+    }
+
     async fn fetch_dashboard_quota_source_captured_at_for_recovery(
         &self,
         today_end: i64,
         budget: &mut DashboardQuotaRecoveryRoundBudget,
     ) -> Result<DashboardQuotaRecoveryQuery<i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_source_captured_at_for_recovery_pg(today_end, budget).await;
+        }
         if !budget.start_select() {
             return Ok(DashboardQuotaRecoveryQuery::Continue);
         }
@@ -653,6 +725,39 @@ impl KeyStore {
         }
     }
 
+    async fn fetch_dashboard_quota_source_captured_at_for_recovery_pg(
+        &self,
+        today_end: i64,
+        budget: &mut DashboardQuotaRecoveryRoundBudget,
+    ) -> Result<DashboardQuotaRecoveryQuery<i64>, ProxyError> {
+        if !budget.start_select() {
+            return Ok(DashboardQuotaRecoveryQuery::Continue);
+        }
+        let query_result = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT captured_at
+            FROM core.api_key_quota_sync_samples
+            WHERE captured_at < $1
+            ORDER BY captured_at DESC, key_id ASC, id ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(today_end)
+        .bind(1_i64)
+        .fetch_optional(self.pg()?)
+        .await;
+        let source_captured_at = query_result.map_err(ProxyError::Database);
+        match source_captured_at {
+            Ok(source_captured_at) => Ok(DashboardQuotaRecoveryQuery::Complete(
+                source_captured_at.unwrap_or_default(),
+            )),
+            Err(error) if dashboard_quota_read_was_deferred(&error) => {
+                Ok(DashboardQuotaRecoveryQuery::Deferred)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn fetch_dashboard_quota_recovery_page_for_recovery(
         &self,
         sample_window_start: i64,
@@ -661,6 +766,9 @@ impl KeyStore {
         cursor: Option<&DashboardQuotaRecoveryCursor>,
         budget: &mut DashboardQuotaRecoveryRoundBudget,
     ) -> Result<DashboardQuotaRecoveryQuery<Vec<DashboardQuotaSample>>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_recovery_page_for_recovery_pg(sample_window_start, today_end, target_source_id, cursor, budget).await;
+        }
         if !budget.start_select() {
             return Ok(DashboardQuotaRecoveryQuery::Continue);
         }
@@ -751,6 +859,91 @@ impl KeyStore {
             .map_err(ProxyError::Database)
     }
 
+    async fn fetch_dashboard_quota_recovery_page_for_recovery_pg(
+        &self,
+        sample_window_start: i64,
+        today_end: i64,
+        target_source_id: i64,
+        cursor: Option<&DashboardQuotaRecoveryCursor>,
+        budget: &mut DashboardQuotaRecoveryRoundBudget,
+    ) -> Result<DashboardQuotaRecoveryQuery<Vec<DashboardQuotaSample>>, ProxyError> {
+        if !budget.start_select() {
+            return Ok(DashboardQuotaRecoveryQuery::Continue);
+        }
+        let page_size = DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE;
+        let query_result = match cursor {
+            Some(cursor) => sqlx::query(
+                r#"
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM core.api_key_quota_sync_samples
+                WHERE captured_at >= $1
+                  AND captured_at < $2
+                  AND id <= $3
+                  AND (
+                    captured_at < $4
+                    OR (
+                        captured_at = $5
+                        AND (
+                            key_id > $6
+                            OR (key_id = $7 AND id > $8)
+                        )
+                    )
+                  )
+                ORDER BY captured_at DESC, key_id ASC, id ASC
+                LIMIT $9
+                "#,
+            )
+            .bind(sample_window_start)
+            .bind(today_end)
+            .bind(target_source_id)
+            .bind(cursor.captured_at)
+            .bind(cursor.captured_at)
+            .bind(&cursor.key_id)
+            .bind(&cursor.key_id)
+            .bind(cursor.id)
+            .bind(page_size)
+            .fetch_all(self.pg()?)
+            .await,
+            None => sqlx::query(
+                r#"
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM core.api_key_quota_sync_samples
+                WHERE captured_at >= $1
+                  AND captured_at < $2
+                  AND id <= $3
+                ORDER BY captured_at DESC, key_id ASC, id ASC
+                LIMIT $4
+                "#,
+            )
+            .bind(sample_window_start)
+            .bind(today_end)
+            .bind(target_source_id)
+            .bind(page_size)
+            .fetch_all(self.pg()?)
+            .await,
+        };
+        let rows = match query_result.map_err(ProxyError::Database) {
+            Ok(rows) => rows,
+            Err(error) if dashboard_quota_read_was_deferred(&error) => {
+                return Ok(DashboardQuotaRecoveryQuery::Deferred);
+            }
+            Err(error) => return Err(error),
+        };
+        rows.into_iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("key_id")?,
+                    quota_remaining: row.try_get("quota_remaining")?,
+                    captured_at: row.try_get("captured_at")?,
+                    previous_quota_remaining: None,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(DashboardQuotaRecoveryQuery::Complete)
+            .map_err(ProxyError::Database)
+    }
+
     async fn fetch_dashboard_quota_recovery_baseline_step(
         &self,
         sample_window_start: i64,
@@ -758,6 +951,9 @@ impl KeyStore {
         baseline: &mut DashboardQuotaRecoveryBaselineDraft,
         budget: &mut DashboardQuotaRecoveryRoundBudget,
     ) -> Result<DashboardQuotaRecoveryBaselineStep, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_recovery_baseline_step_pg(sample_window_start, target_source_id, baseline, budget).await;
+        }
         match baseline.phase {
             DashboardQuotaRecoveryBaselinePhase::PreWindowTimestamp
             | DashboardQuotaRecoveryBaselinePhase::HistoricalTimestamp => {
@@ -863,6 +1059,128 @@ impl KeyStore {
                 let finish = session.finish().await;
                 finish?;
                 let rows = match rows {
+                    Ok(rows) => rows,
+                    Err(error) if dashboard_quota_read_was_deferred(&error) => {
+                        return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);
+                    }
+                    Err(error) => return Err(error),
+                };
+                let samples = rows
+                    .into_iter()
+                    .map(|row| {
+                        Ok::<_, sqlx::Error>(DashboardQuotaSample {
+                            id: row.try_get("id")?,
+                            key_id: row.try_get("key_id")?,
+                            quota_remaining: row.try_get("quota_remaining")?,
+                            captured_at: row.try_get("captured_at")?,
+                            previous_quota_remaining: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let Some(last_sample) = samples.last().cloned() else {
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Complete(
+                        baseline.latest_sample.take(),
+                    ));
+                };
+                baseline.after_id = last_sample.id;
+                baseline.latest_sample = Some(last_sample);
+                if samples.len() < DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE as usize {
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Complete(
+                        baseline.latest_sample.take(),
+                    ));
+                }
+                Ok(DashboardQuotaRecoveryBaselineStep::Advance)
+            }
+        }
+    }
+
+    async fn fetch_dashboard_quota_recovery_baseline_step_pg(
+        &self,
+        sample_window_start: i64,
+        target_source_id: i64,
+        baseline: &mut DashboardQuotaRecoveryBaselineDraft,
+        budget: &mut DashboardQuotaRecoveryRoundBudget,
+    ) -> Result<DashboardQuotaRecoveryBaselineStep, ProxyError> {
+        match baseline.phase {
+            DashboardQuotaRecoveryBaselinePhase::PreWindowTimestamp
+            | DashboardQuotaRecoveryBaselinePhase::HistoricalTimestamp => {
+                if !budget.start_select() {
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Continue);
+                }
+                let lower_bound = match baseline.phase {
+                    DashboardQuotaRecoveryBaselinePhase::PreWindowTimestamp => sample_window_start
+                        .saturating_sub(DASHBOARD_QUOTA_RECOVERY_PRE_WINDOW_SECS),
+                    DashboardQuotaRecoveryBaselinePhase::HistoricalTimestamp => i64::MIN,
+                    DashboardQuotaRecoveryBaselinePhase::Samples => unreachable!(),
+                };
+                let query_result = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT captured_at
+                    FROM core.api_key_quota_sync_samples
+                    WHERE key_id = $1
+                      AND captured_at >= $2
+                      AND captured_at < $3
+                      AND id <= $4
+                    ORDER BY captured_at DESC
+                    LIMIT $5
+                    "#,
+                )
+                .bind(&baseline.key_id)
+                .bind(lower_bound)
+                .bind(sample_window_start)
+                .bind(target_source_id)
+                .bind(1_i64)
+                .fetch_optional(self.pg()?)
+                .await;
+                let captured_at = query_result.map_err(ProxyError::Database);
+                let captured_at = match captured_at {
+                    Ok(captured_at) => captured_at,
+                    Err(error) if dashboard_quota_read_was_deferred(&error) => {
+                        return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);
+                    }
+                    Err(error) => return Err(error),
+                };
+                if let Some(captured_at) = captured_at {
+                    baseline.captured_at = Some(captured_at);
+                    baseline.after_id = 0;
+                    baseline.phase = DashboardQuotaRecoveryBaselinePhase::Samples;
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Advance);
+                }
+                if baseline.phase == DashboardQuotaRecoveryBaselinePhase::PreWindowTimestamp {
+                    baseline.phase = DashboardQuotaRecoveryBaselinePhase::HistoricalTimestamp;
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Advance);
+                }
+                Ok(DashboardQuotaRecoveryBaselineStep::Complete(
+                    baseline.latest_sample.take(),
+                ))
+            }
+            DashboardQuotaRecoveryBaselinePhase::Samples => {
+                if !budget.start_select() {
+                    return Ok(DashboardQuotaRecoveryBaselineStep::Continue);
+                }
+                let captured_at = baseline
+                    .captured_at
+                    .expect("sample baseline phase has a timestamp");
+                let query_result = sqlx::query(
+                    r#"
+                    SELECT id, key_id, quota_remaining, captured_at
+                    FROM core.api_key_quota_sync_samples
+                    WHERE key_id = $1
+                      AND captured_at = $2
+                      AND id > $3
+                      AND id <= $4
+                    ORDER BY id ASC
+                    LIMIT $5
+                    "#,
+                )
+                .bind(&baseline.key_id)
+                .bind(captured_at)
+                .bind(baseline.after_id)
+                .bind(target_source_id)
+                .bind(DASHBOARD_QUOTA_RECOVERY_PAGE_SIZE)
+                .fetch_all(self.pg()?)
+                .await;
+                let rows = match query_result.map_err(ProxyError::Database) {
                     Ok(rows) => rows,
                     Err(error) if dashboard_quota_read_was_deferred(&error) => {
                         return Ok(DashboardQuotaRecoveryBaselineStep::Deferred);

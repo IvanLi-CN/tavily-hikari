@@ -138,6 +138,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn ensure_request_logs_gc_support_indexes(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_request_logs_gc_support_indexes_pg().await;
+        }
         for (table, sql) in [
             (
                 "auth_token_logs",
@@ -169,12 +172,41 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn ensure_request_logs_gc_support_indexes_pg(&self) -> Result<(), ProxyError> {
+        let missing: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT required.rel
+            FROM unnest($1::text[]) AS required(rel)
+            WHERE to_regclass(required.rel) IS NULL
+            ORDER BY required.rel
+            LIMIT 1
+            "#,
+        )
+        .bind(vec![
+            "core.idx_token_logs_request_log_id",
+            "core.idx_api_key_maintenance_records_request_log",
+            "core.idx_api_key_transient_backoffs_source_request_log",
+            "observability.idx_request_logs_time",
+        ])
+        .fetch_optional(self.pg()?)
+        .await?;
+        match missing {
+            None => Ok(()),
+            Some(relation) => Err(ProxyError::Other(format!(
+                "postgresql baseline is missing {relation}; apply src/store/pg/migrations first"
+            ))),
+        }
+    }
+
     async fn delete_old_request_logs_batch_fenced(
         &self,
         guard: DashboardRollupRequestLogGcGuard,
         batch_size: i64,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<FencedRequestLogDelete, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.delete_old_request_logs_batch_fenced_pg(guard, batch_size, deadline).await;
+        }
         let has_auth_token_logs = self.table_exists("auth_token_logs").await?;
         let has_maintenance_records = self.table_exists("api_key_maintenance_records").await?;
         let has_transient_backoffs = self.table_exists("api_key_transient_backoffs").await?;
@@ -408,12 +440,240 @@ impl KeyStore {
         }
     }
 
+    async fn delete_old_request_logs_batch_fenced_pg(
+        &self,
+        guard: DashboardRollupRequestLogGcGuard,
+        batch_size: i64,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<FencedRequestLogDelete, ProxyError> {
+        // SQLite relied on its immediate-write lock (a database-wide lock) to keep the
+        // fence check and the delete in one serialized critical section. In PostgreSQL
+        // this batch takes the request-log GC advisory lock for the whole transaction,
+        // so concurrent GC passes serialize, and the fence/version equality checks below
+        // still prove the day was sealed before any row is removed.
+        let mut tx = self.pg()?.begin().await?;
+        if let Some(deadline) = deadline {
+            Self::set_gc_statement_budget_pg(&mut tx, deadline).await?;
+        }
+        Self::lock_request_log_gc_batch_pg(&mut tx).await?;
+        let result = async {
+            sqlx::query(
+                "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 1 WHERE id = 1",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let current_fence: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(id), 0) FROM observability.request_logs WHERE visibility = $1 AND created_at >= $2 AND created_at < $3",
+            )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(guard.day_start)
+            .bind(guard.day_end)
+            .fetch_one(&mut *tx)
+            .await?;
+            let current_durable_source_version: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(revision), 0)::bigint FROM observability.dashboard_rollup_source_revisions WHERE bucket_start >= $1 AND bucket_start < $2",
+            )
+            .bind(guard.day_start)
+            .bind(guard.day_end)
+                .fetch_one(&mut *tx)
+                .await?;
+            let current_source_version = current_durable_source_version.saturating_add(
+                self.request_stats_coalescer
+                    .dashboard_rollup_source_version(guard.day_start, guard.day_end)
+                    .await,
+            );
+            if current_fence != guard.source_fence
+                || current_source_version != guard.source_version
+                || current_durable_source_version != guard.durable_source_version
+                || !self
+                    .request_stats_coalescer
+                    .dashboard_rollup_source_mutations_are_stable(guard.day_start, guard.day_end)
+            {
+                sqlx::query(
+                    "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 0 WHERE id = 1",
+                )
+                .execute(&mut *tx)
+                .await?;
+                return Ok(FencedRequestLogDelete::SourceChanged);
+            }
+
+            let selected_rows = sqlx::query(
+                r#"
+                SELECT created_at, visibility, result_status, failure_kind, request_kind_key,
+                       request_body, path, business_credits, counts_business_quota
+                FROM observability.request_logs
+                WHERE created_at >= $1 AND created_at < $2
+                ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC
+                LIMIT $3
+                "#,
+            )
+            .bind(guard.day_start)
+            .bind(guard.day_end)
+            .bind(batch_size)
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut deleted_source_counts:
+                std::collections::BTreeMap<i64, DashboardRequestRollupCounts> =
+                std::collections::BTreeMap::new();
+            for row in selected_rows {
+                let visibility: String = row.try_get("visibility")?;
+                if visibility != REQUEST_LOG_VISIBILITY_VISIBLE {
+                    continue;
+                }
+                let created_at: i64 = row.try_get("created_at")?;
+                let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                let path: String = row.try_get("path")?;
+                let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
+                let request_kind_key = canonicalize_request_log_request_kind(
+                    &path,
+                    request_body.as_deref(),
+                    stored_request_kind_key,
+                    None,
+                    None,
+                )
+                .key;
+                let stored_counts_business_quota: Option<i64> =
+                    row.try_get("counts_business_quota")?;
+                let counts_business_quota = stored_counts_business_quota
+                    .map(|value| value != 0)
+                    .unwrap_or_else(|| {
+                        request_log_counts_business_quota(&request_kind_key, request_body.as_deref())
+                    });
+                let result_status: String = row.try_get("result_status")?;
+                let failure_kind: Option<String> = row.try_get("failure_kind")?;
+                let business_credits: Option<i64> = row.try_get("business_credits")?;
+                let minute_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+                deleted_source_counts
+                    .entry(minute_start)
+                    .or_default()
+                    .add(Self::dashboard_rollup_counts_for_request(
+                        &request_kind_key,
+                        request_body.as_deref(),
+                        &result_status,
+                        failure_kind.as_deref(),
+                        business_credits.unwrap_or_default(),
+                        counts_business_quota,
+                    ));
+            }
+            for (bucket_start, counts) in deleted_source_counts {
+                let existing_json: Option<String> = sqlx::query_scalar(
+                    "SELECT counts_json FROM observability.dashboard_rollup_gc_deleted_source_contributions WHERE bucket_start = $1",
+                )
+                .bind(bucket_start)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let mut total = match existing_json {
+                    Some(existing_json) => serde_json::from_str(&existing_json).map_err(|err| {
+                        ProxyError::Other(format!(
+                            "invalid deleted dashboard source contribution: {err}"
+                        ))
+                    })?,
+                    None => DashboardRequestRollupCounts::default(),
+                };
+                total.add(counts);
+                let counts_json = serde_json::to_string(&total).map_err(|err| {
+                    ProxyError::Other(format!("serialize deleted dashboard source contribution: {err}"))
+                })?;
+                sqlx::query(
+                    r#"
+                    INSERT INTO observability.dashboard_rollup_gc_deleted_source_contributions (
+                        bucket_start, counts_json, updated_at
+                    ) VALUES ($1, $2, $3)
+                    ON CONFLICT(bucket_start) DO UPDATE SET
+                        counts_json = excluded.counts_json,
+                        updated_at = excluded.updated_at
+                    "#,
+                )
+                .bind(bucket_start)
+                .bind(counts_json)
+                .bind(self.backend_time.now_ts())
+                .execute(&mut *tx)
+                .await?;
+            }
+            for sql in [
+                r#"
+                    UPDATE core.auth_token_logs
+                    SET request_log_id = NULL
+                    WHERE request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE created_at >= $1 AND created_at < $2
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                    )
+                    "#,
+                r#"
+                    UPDATE core.api_key_maintenance_records
+                    SET request_log_id = NULL
+                    WHERE request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE created_at >= $1 AND created_at < $2
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                    )
+                    "#,
+                r#"
+                    UPDATE core.api_key_transient_backoffs
+                    SET source_request_log_id = NULL
+                    WHERE source_request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE created_at >= $1 AND created_at < $2
+                        ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC LIMIT $3
+                    )
+                    "#,
+            ] {
+                sqlx::query(sql)
+                    .bind(guard.day_start)
+                    .bind(guard.day_end)
+                    .bind(batch_size)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            let deleted = sqlx::query(
+                r#"
+                DELETE FROM observability.request_logs
+                WHERE id IN (
+                    SELECT id
+                    FROM observability.request_logs
+                    WHERE created_at >= $1 AND created_at < $2
+                    ORDER BY CASE WHEN visibility = 'visible' THEN 1 ELSE 0 END ASC, id ASC
+                    LIMIT $3
+                )
+                "#,
+            )
+            .bind(guard.day_start)
+            .bind(guard.day_end)
+            .bind(batch_size)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 0 WHERE id = 1",
+            )
+            .execute(&mut *tx)
+            .await?;
+            Ok::<_, ProxyError>(FencedRequestLogDelete::Deleted(
+                deleted.rows_affected() as i64,
+            ))
+        }
+        .await;
+        match result {
+            Ok(result) => {
+                tx.commit().await?;
+                Ok(result)
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(err)
+            }
+        }
+    }
+
     async fn delete_old_request_logs_batch_hidden_only(
         &self,
         threshold: i64,
         batch_size: i64,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.delete_old_request_logs_batch_hidden_only_pg(threshold, batch_size, deadline).await;
+        }
         let has_auth_token_logs = self.table_exists("auth_token_logs").await?;
         let has_maintenance_records = self.table_exists("api_key_maintenance_records").await?;
         let has_transient_backoffs = self.table_exists("api_key_transient_backoffs").await?;
@@ -512,12 +772,106 @@ impl KeyStore {
         }
     }
 
+    async fn delete_old_request_logs_batch_hidden_only_pg(
+        &self,
+        threshold: i64,
+        batch_size: i64,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<i64, ProxyError> {
+        // Same serialization contract as the sealed-day batch: the GC advisory lock holds
+        // the unlink + delete critical section that the SQLite immediate-write lock used to
+        // provide.
+        let mut tx = self.pg()?.begin().await?;
+        if let Some(deadline) = deadline {
+            Self::set_gc_statement_budget_pg(&mut tx, deadline).await?;
+        }
+        Self::lock_request_log_gc_batch_pg(&mut tx).await?;
+        let result = async {
+            sqlx::query(
+                "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 1 WHERE id = 1",
+            )
+            .execute(&mut *tx)
+            .await?;
+            for sql in [
+                r#"
+                    UPDATE core.auth_token_logs
+                    SET request_log_id = NULL
+                    WHERE request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE visibility <> 'visible' AND created_at < $1
+                        ORDER BY id ASC LIMIT $2
+                    )
+                    "#,
+                r#"
+                    UPDATE core.api_key_maintenance_records
+                    SET request_log_id = NULL
+                    WHERE request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE visibility <> 'visible' AND created_at < $1
+                        ORDER BY id ASC LIMIT $2
+                    )
+                    "#,
+                r#"
+                    UPDATE core.api_key_transient_backoffs
+                    SET source_request_log_id = NULL
+                    WHERE source_request_log_id IN (
+                        SELECT id FROM observability.request_logs
+                        WHERE visibility <> 'visible' AND created_at < $1
+                        ORDER BY id ASC LIMIT $2
+                    )
+                    "#,
+            ] {
+                sqlx::query(sql)
+                    .bind(threshold)
+                    .bind(batch_size)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            let deleted = sqlx::query(
+                r#"
+                DELETE FROM observability.request_logs
+                WHERE id IN (
+                    SELECT id
+                    FROM observability.request_logs
+                    WHERE visibility <> 'visible' AND created_at < $1
+                    ORDER BY id ASC
+                    LIMIT $2
+                )
+                "#,
+            )
+            .bind(threshold)
+            .bind(batch_size)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE observability.dashboard_rollup_gc_delete_state SET active = 0 WHERE id = 1",
+            )
+            .execute(&mut *tx)
+            .await?;
+            Ok::<_, ProxyError>(deleted.rows_affected() as i64)
+        }
+        .await;
+        match result {
+            Ok(deleted) => {
+                tx.commit().await?;
+                Ok(deleted)
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(err)
+            }
+        }
+    }
+
     async fn delete_old_request_log_rollups_batch(
         &self,
         threshold: i64,
         batch_size: i64,
         target_day: Option<(i64, i64)>,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.delete_old_request_log_rollups_batch_pg(threshold, batch_size, target_day).await;
+        }
         if !self.table_exists("request_log_catalog_rollups").await? {
             return Ok(0);
         }
@@ -559,6 +913,136 @@ impl KeyStore {
                             WHERE bucket_start < ?
                             ORDER BY bucket_start ASC
                             LIMIT ?
+                        )
+                        "#,
+                    )
+                    .bind(threshold)
+                    .bind(batch_size)
+                    .execute(&mut *conn)
+                    .await
+                }
+            };
+            match result
+            {
+                Ok(result) => {
+                    conn.close().await?;
+                    return Ok(result.rows_affected() as i64);
+                }
+                Err(err) => {
+                    drop(conn);
+                    let err = ProxyError::Database(err);
+                    if sleep_before_sqlite_transient_write_retry(
+                        &self.backend_time,
+                        "request log rollups gc batch delete",
+                        retry_attempt,
+                        deadline,
+                        &err,
+                    )
+                    .await
+                    {
+                        retry_attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    async fn delete_old_request_log_rollups_batch_pg(
+        &self,
+        threshold: i64,
+        batch_size: i64,
+        target_day: Option<(i64, i64)>,
+    ) -> Result<i64, ProxyError> {
+        let rollup_table_exists: bool = sqlx::query_scalar(
+            "SELECT to_regclass('observability.request_log_catalog_rollups') IS NOT NULL",
+        )
+        .fetch_one(self.pg()?)
+        .await?;
+        if !rollup_table_exists {
+            return Ok(0);
+        }
+        let deadline = self.backend_time.deadline_after(Duration::from_secs(10));
+        let mut retry_attempt = 0usize;
+        loop {
+            let mut conn = self
+                .sqlite_runtime
+                .acquire_operation_connection(SqliteOperation::RequestLogsGc)
+                .await?;
+            let result = match target_day {
+                Some((day_start, day_end)) => {
+                    sqlx::query(
+                        r#"
+                        DELETE FROM observability.request_log_catalog_rollups
+                        WHERE (
+                            bucket_start,
+                            request_kind_key,
+                            request_kind_label,
+                            result_bucket,
+                            key_effect_code,
+                            binding_effect_code,
+                            selection_effect_code,
+                            auth_token_id,
+                            api_key_id,
+                            operational_class
+                        ) IN (
+                            SELECT
+                                bucket_start,
+                                request_kind_key,
+                                request_kind_label,
+                                result_bucket,
+                                key_effect_code,
+                                binding_effect_code,
+                                selection_effect_code,
+                                auth_token_id,
+                                api_key_id,
+                                operational_class
+                            FROM observability.request_log_catalog_rollups
+                            WHERE bucket_start >= $1 AND bucket_start < $2 AND bucket_start < $3
+                            ORDER BY bucket_start ASC
+                            LIMIT $4
+                        )
+                        "#,
+                    )
+                    .bind(day_start)
+                    .bind(day_end)
+                    .bind(threshold)
+                    .bind(batch_size)
+                    .execute(&mut *conn)
+                    .await
+                }
+                None => {
+                    sqlx::query(
+                        r#"
+                        DELETE FROM observability.request_log_catalog_rollups
+                        WHERE (
+                            bucket_start,
+                            request_kind_key,
+                            request_kind_label,
+                            result_bucket,
+                            key_effect_code,
+                            binding_effect_code,
+                            selection_effect_code,
+                            auth_token_id,
+                            api_key_id,
+                            operational_class
+                        ) IN (
+                            SELECT
+                                bucket_start,
+                                request_kind_key,
+                                request_kind_label,
+                                result_bucket,
+                                key_effect_code,
+                                binding_effect_code,
+                                selection_effect_code,
+                                auth_token_id,
+                                api_key_id,
+                                operational_class
+                            FROM observability.request_log_catalog_rollups
+                            WHERE bucket_start < $1
+                            ORDER BY bucket_start ASC
+                            LIMIT $2
                         )
                         "#,
                     )
@@ -859,6 +1343,9 @@ impl KeyStore {
         &self,
         cursor: Option<RequestLogBodyGcCursor>,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.set_request_log_body_gc_cursor_pg(cursor).await;
+        }
         let mut tx = self
             .sqlite_runtime
             .begin_immediate(SqliteOperation::RequestLogsGc)
@@ -890,6 +1377,49 @@ impl KeyStore {
         match result {
             Ok(_) => tx.finish_in_place(Ok(())).await,
             Err(err) => tx.finish_in_place(Err(ProxyError::Database(err))).await,
+        }
+    }
+
+    async fn set_request_log_body_gc_cursor_pg(
+        &self,
+        cursor: Option<RequestLogBodyGcCursor>,
+    ) -> Result<(), ProxyError> {
+        // The cursor row is the only durable fence for the body scan; the GC advisory
+        // lock serializes concurrent GC passes now that there is no database-wide writer.
+        let mut tx = self.pg()?.begin().await?;
+        Self::lock_request_log_gc_batch_pg(&mut tx).await?;
+        let result = if let Some(cursor) = cursor {
+            let value = if let Some(restart_at) = cursor.restart_at {
+                format!("{}:{}:{}", cursor.created_at, cursor.id, restart_at)
+            } else {
+                format!("{}:{}", cursor.created_at, cursor.id)
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO core.meta (key, value)
+                VALUES ($1, $2)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+            )
+            .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+        } else {
+            sqlx::query("DELETE FROM core.meta WHERE key = $1")
+                .bind(META_KEY_REQUEST_LOG_BODY_GC_CURSOR_V1)
+                .execute(&mut *tx)
+                .await
+        };
+        match result {
+            Ok(_) => {
+                tx.commit().await?;
+                Ok(())
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(ProxyError::Database(err))
+            }
         }
     }
 
