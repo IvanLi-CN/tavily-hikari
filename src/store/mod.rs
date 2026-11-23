@@ -2765,90 +2765,17 @@ pub(crate) struct KeyStore {
     pub(crate) forced_quota_subject_lock_loss_subjects: std::sync::Mutex<HashSet<String>>,
 }
 
-#[cfg(any(test, debug_assertions))]
-fn new_request_stats_test_pause() -> RequestStatsPostFlushPause {
-    RequestStatsPostFlushPause {
-        arrived: Arc::new(Notify::new()),
-        arrival_observed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        release: Arc::new(Notify::new()),
-        released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    }
-}
-
-#[cfg(any(test, debug_assertions))]
-async fn wait_for_request_stats_test_pause_if_installed(
-    slot: &Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
-) {
-    if let Some(pause) = slot.lock().await.take() {
-        // Retain the arrival signal when the request returns before the test waits.
-        pause
-            .arrival_observed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        pause.arrived.notify_one();
-        while !pause.released.load(std::sync::atomic::Ordering::SeqCst) {
-            pause.release.notified().await;
-        }
-    }
-}
-
 impl KeyStore {
-    /// PostgreSQL pool for the storage modules that have already been ported from the
-    /// SQLite dialect. Absent when the process runs without a PostgreSQL target.
-    #[allow(dead_code)] // consumed by the modules converted in this wave
-    pub(crate) fn pg(&self) -> Result<&sqlx::PgPool, ProxyError> {
-        self.pg_pool.as_ref().ok_or_else(|| {
-            ProxyError::Other("postgresql store is not configured for this process".to_string())
-        })
-    }
-
-    /// Attach a PostgreSQL pool to an existing store. Converted modules use it through
-    /// [`KeyStore::pg`]; unconverted modules keep serving from SQLite until the cutover.
-    pub(crate) async fn attach_postgres(&mut self, database_url: &str) -> Result<(), ProxyError> {
-        let pg_store = crate::store::pg::PgStore::connect(database_url)
-            .await
-            .map_err(|err| ProxyError::Other(format!("failed to connect to postgresql: {err}")))?;
-        self.pg_pool = Some(pg_store.pool().clone());
-        Ok(())
-    }
-
     pub(crate) fn reconciliation_maintenance_hint(
         &self,
     ) -> Arc<UpstreamReconciliationMaintenanceHint> {
         self.reconciliation_maintenance_hint.clone()
     }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPostFlushPause {
-        let pause = new_request_stats_test_pause();
-        let mut slot = self.dashboard_overview_read_pause.lock().await;
-        *slot = Some(pause.clone());
-        pause
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn wait_for_dashboard_overview_read_pause_if_installed(&self) {
-        wait_for_request_stats_test_pause_if_installed(&self.dashboard_overview_read_pause).await;
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn install_admin_privacy_read_pause(&self) -> RequestStatsPostFlushPause {
-        let pause = new_request_stats_test_pause();
-        let mut slot = self.admin_privacy_read_pause.lock().await;
-        *slot = Some(pause.clone());
-        pause
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn wait_for_admin_privacy_read_pause_if_installed(&self) {
-        wait_for_request_stats_test_pause_if_installed(&self.admin_privacy_read_pause).await;
-    }
 }
 
 include!("key_store_bootstrap.rs");
+include!("key_store_pg_plumbing.rs");
+include!("key_store_request_pause_failpoints.rs");
 include!("key_store_schema_migrations.rs");
 include!("key_store_schema_migrations_convergence.rs");
 include!("key_store_bootstrap_legacy.rs");
@@ -2864,6 +2791,7 @@ include!("key_store_migrations_b.rs");
 include!("key_store_admin_user_listing.rs");
 include!("key_store_admin_tokens.rs");
 include!("key_store_keys.rs");
+include!("key_store_keys_pg.rs");
 include!("key_store_account_base_entitlement_backfill.rs");
 include!("key_store_admin_passkey_schema.rs");
 include!("key_store_admin_passkeys.rs");
@@ -2881,9 +2809,12 @@ include!("key_store_reconciliation_progress.rs");
 include!("reconciliation_observation_store.rs");
 include!("key_store_upstream_reconciliation_admission.rs");
 include!("key_store_users_and_oauth.rs");
+include!("key_store_users_and_oauth_pg.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
+include!("key_store_linuxdo_credit_recharge_pg.rs");
 include!("key_store_request_log_body_retention.rs");
 include!("key_store_token_logs.rs");
+include!("key_store_token_logs_pg.rs");
 include!("key_store_alert_models.rs");
 include!("key_store_alerts.rs");
 include!("key_store_alert_canonical_catalog.rs");
