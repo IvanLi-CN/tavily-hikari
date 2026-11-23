@@ -1236,6 +1236,14 @@ impl KeyStore {
     }
 
     async fn alert_projection_recent_generation(&self) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(SUM(generation), 0)::bigint FROM observability.dashboard_alert_projection_state",
+            )
+            .fetch_one(self.pg()?)
+            .await
+            .map_err(ProxyError::from);
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -1252,6 +1260,17 @@ impl KeyStore {
         &self,
         window_hours: i64,
     ) -> Result<Option<(i64, i64)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query_as::<_, (i64, i64)>(
+                r#"SELECT source_generation, computed_at
+                     FROM observability.dashboard_alert_projection_recent_summaries
+                    WHERE window_hours = $1"#,
+            )
+            .bind(window_hours)
+            .fetch_optional(self.pg()?)
+            .await
+            .map_err(ProxyError::from);
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
