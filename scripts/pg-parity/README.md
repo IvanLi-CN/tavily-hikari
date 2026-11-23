@@ -7,9 +7,12 @@
 
 ## 前置条件
 
-- `--binary` 必须支持用 `PROXY_PG_BACKEND=1` 让请求路径真正走 PostgreSQL。当前仓库快照只有 PG 启动门禁
-  （启动日志含 `pg_runtime_not_serving`，请求仍写 SQLite），夹具会把它判为环境错误并以 `2` 退出，不会把
-  “PG 库为空”误报成“两边一致”。
+- `--binary` 必须支持用 `PROXY_PG_BACKEND=1` 让请求路径真正走 PostgreSQL。夹具不依赖启动日志措辞：它会在
+  PostgreSQL 后端上创建一个 token，再用 `psql` 回查 `core.auth_tokens`；查不到就把这次运行判为环境错误并
+  以 `2` 退出，不会把“PG 库为空”误报成“两边一致”。
+- 手工配额同步（`POST /api/keys/{id}/sync-usage`）要求键创建与配额同步落在同一个后端。迁移未完成时这是
+  跨后端的，会以 SQLite 外键错误失败；此时用 `--skip-manual-quota-sync` 跳过该探针，键池余额事实会被标记
+  为“未断言”，其余事实照常比较。cutover 完成后不要带这个开关。
 - 需要 `psql` 客户端；PostgreSQL 事实通过 `psql -c` 导出，不引入 Python 驱动依赖。
 - `--pg-url` 必须指向专用测试库。默认会先删除 `core`、`observability` schema 以及 `public._sqlx_migrations`
   迁移台账，让服务端重新迁移出全新结构；不要指向生产库。
@@ -132,3 +135,20 @@ writer。夹具在停止实例前用 `/api/logs` 总数做落盘屏障，避免�
 真实双后端回放待 VM 执行：当前快照的二进制未实现 `PROXY_PG_BACKEND` 的请求路径切换，本地只验证了
 SQLite 流量、SQLite 事实导出、PG 事实 SQL、确定性比较与门禁识别。夹具不 push、不建 PR，也不替代
 `tests/performance_recovery` 的长时间恢复验证。
+
+## 何时可以跑这个门禁
+
+这是 **cutover 之后** 的门禁，不是迁移中间态的工具。判定标准是行为而非配置：夹具写一个 token，再用
+`psql` 回查 `core.auth_tokens`；同时在 PostgreSQL 阶段的 SQLite sidecar 里统计 `request_logs`。只要还有
+记账行落在 sidecar，说明存储仍是"半个 port"——此时配额与计费在两个后端各写一半，PostgreSQL 侧会**少执行**
+配额，比较结果没有意义。夹具在这种情况下直接以 `2` 退出并说明原因，不会给出"看起来通过"的报告。
+
+证据示例（部分 port，该次运行）：
+
+- PostgreSQL 后端：`/api/tavily/search` 180/180 返回 200
+- SQLite 后端：100 次 200 后返回 `429 {"error":"quota_exhausted"}`
+- 原因：token 配额与计费明细仍在 SQLite lane 写入，PostgreSQL 侧读不到，于是不执行配额
+
+另有两个真实缺陷是在这个过程中被找出来的，已修复：`resolve_token_log_request_kind_pg` 与
+`resolve_request_log_diagnostic_metadata_pg` 从 SQLite 版本复制时保留了 `?` 占位符，PostgreSQL 报
+`syntax error at or near "LIMIT"`，导致待计费记录写不进去。
