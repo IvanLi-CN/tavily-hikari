@@ -2240,7 +2240,7 @@ impl KeyStore {
                   AND gateway_mode <> $2
                   AND revoked_at IS NULL
                   AND expires_at > $3
-            )
+            )::int::bigint
             "#,
         )
         .bind(token_id)

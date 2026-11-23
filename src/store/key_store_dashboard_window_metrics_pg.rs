@@ -60,16 +60,16 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
-                    COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits
+                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
+                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
+                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0)::bigint AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0)::bigint AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0)::bigint AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0)::bigint AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count,
+                    COALESCE(SUM(local_estimated_credits), 0)::bigint AS local_estimated_credits
                 FROM observability.dashboard_request_rollup_buckets
                 WHERE bucket_secs = $1
                   AND bucket_start >= $2
@@ -85,16 +85,16 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
-                    COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits
+                    COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
+                    COALESCE(SUM(success_count), 0)::bigint AS success_count,
+                    COALESCE(SUM(error_count), 0)::bigint AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0)::bigint AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0)::bigint AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0)::bigint AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0)::bigint AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0)::bigint AS unknown_count,
+                    COALESCE(SUM(local_estimated_credits), 0)::bigint AS local_estimated_credits
                 FROM observability.dashboard_request_rollup_buckets
                 WHERE bucket_secs = $1
                   AND bucket_start >= $2

@@ -598,6 +598,7 @@ impl KeyStore {
             "l.request_kind_key",
             request_body_expr,
             "l.counts_business_quota",
+            crate::analysis::SqlDialect::Sqlite,
         );
         let request_day_bucket_sql = Self::request_local_day_bucket_start_sql("l.created_at");
         let request_rows = sqlx::query_as::<_, (String, i64, i64, i64, i64, i64)>(&format!(
@@ -1119,6 +1120,7 @@ impl KeyStore {
             "l.request_kind_key",
             request_body_expr,
             "l.counts_business_quota",
+            crate::analysis::SqlDialect::Postgres,
         );
         let request_day_bucket_sql = Self::request_local_day_bucket_start_sql_pg("l.created_at");
         let request_rows = sqlx::query_as::<_, (String, i64, i64, i64, i64, i64)>(&format!(

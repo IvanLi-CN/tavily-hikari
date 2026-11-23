@@ -1267,6 +1267,49 @@ pub(crate) fn canonical_request_kind_label_sql(kind_expr: &str) -> String {
     )
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SqlDialect {
+    Sqlite,
+    Postgres,
+}
+
+fn json_document_sql(payload_expr: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("CAST({payload_expr} AS TEXT)"),
+        SqlDialect::Postgres => format!("observability.request_body_text({payload_expr})"),
+    }
+}
+
+fn json_array_element_document_sql(element_expr: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("CAST({element_expr} AS TEXT)"),
+        SqlDialect::Postgres => element_expr.to_string(),
+    }
+}
+
+fn json_valid_sql(document_sql: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("json_valid({document_sql})"),
+        SqlDialect::Postgres => format!("pg_input_is_valid({document_sql}, 'jsonb')"),
+    }
+}
+
+fn json_type_sql(document_sql: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("json_type({document_sql})"),
+        SqlDialect::Postgres => format!("jsonb_typeof(({document_sql})::jsonb)"),
+    }
+}
+
+fn json_array_elements_sql(document_sql: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::Sqlite => format!("json_each({document_sql}) AS items"),
+        SqlDialect::Postgres => {
+            format!("jsonb_array_elements(({document_sql})::jsonb) AS items(value)")
+        }
+    }
+}
+
 fn token_log_stored_kind_sql(path_expr: &str, key_expr: &str) -> String {
     let path = format!("LOWER(COALESCE({path_expr}, ''))");
     let key = format!("LOWER(TRIM(COALESCE({key_expr}, '')))");
@@ -1320,9 +1363,9 @@ fn token_log_stored_kind_sql(path_expr: &str, key_expr: &str) -> String {
     )
 }
 
-fn mcp_message_request_kind_sql(value_expr: &str) -> String {
-    let method = request_body_json_text_sql(value_expr, "$.method");
-    let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
+fn mcp_message_request_kind_sql(document_sql: &str, dialect: SqlDialect) -> String {
+    let method = request_body_json_text_sql(document_sql, "$.method", dialect);
+    let tool_name = request_body_json_text_sql(document_sql, "$.params.name", dialect);
     format!(
         "
         CASE
@@ -1368,31 +1411,38 @@ pub(crate) fn request_log_request_kind_key_sql(
     path_expr: &str,
     body_expr: &str,
     key_expr: &str,
+    dialect: SqlDialect,
 ) -> String {
     let path = format!("LOWER(COALESCE({path_expr}, ''))");
-    let body_json = format!("CAST({body_expr} AS TEXT)");
-    let object_kind = mcp_message_request_kind_sql(body_expr);
-    let array_item_kind = mcp_message_request_kind_sql("items.value");
+    let body_json = json_document_sql(body_expr, dialect);
+    let body_valid = json_valid_sql(&body_json, dialect);
+    let body_type = json_type_sql(&body_json, dialect);
+    let body_array = json_array_elements_sql(&body_json, dialect);
+    let object_kind = mcp_message_request_kind_sql(&body_json, dialect);
+    let array_item_kind = mcp_message_request_kind_sql(
+        &json_array_element_document_sql("items.value", dialect),
+        dialect,
+    );
     let token_fallback = token_log_stored_kind_sql(path_expr, key_expr);
     format!(
         "
         CASE
-            WHEN {path} = '/mcp' AND json_valid({body_json}) AND json_type({body_json}) = 'object'
+            WHEN {path} = '/mcp' AND {body_valid} AND {body_type} = 'object'
                 THEN COALESCE({object_kind}, 'mcp:unknown-payload')
-            WHEN {path} = '/mcp' AND json_valid({body_json}) AND json_type({body_json}) = 'array'
+            WHEN {path} = '/mcp' AND {body_valid} AND {body_type} = 'array'
                 THEN CASE
-                    WHEN NOT EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+                    WHEN NOT EXISTS (SELECT 1 FROM {body_array})
                         THEN 'mcp:unknown-payload'
                     WHEN EXISTS (
-                        SELECT 1 FROM json_each({body_json}) AS items
+                        SELECT 1 FROM {body_array}
                         WHERE ({array_item_kind}) IS NULL
                     ) THEN 'mcp:unknown-payload'
                     WHEN (
                         SELECT COUNT(DISTINCT {array_item_kind})
-                        FROM json_each({body_json}) AS items
+                        FROM {body_array}
                     ) = 1 THEN (
                         SELECT MIN({array_item_kind})
-                        FROM json_each({body_json}) AS items
+                        FROM {body_array}
                     )
                     ELSE 'mcp:batch'
                 END
@@ -1725,13 +1775,20 @@ pub(crate) fn token_request_kind_non_billable_mcp_sql(expr: &str) -> String {
     )
 }
 
-fn request_body_json_text_sql(expr: &str, path: &str) -> String {
-    format!("LOWER(COALESCE(NULLIF(json_extract(CAST({expr} AS TEXT), '{path}'), ''), ''))")
+fn request_body_json_text_sql(document_sql: &str, path: &str, dialect: SqlDialect) -> String {
+    let extracted = match dialect {
+        SqlDialect::Sqlite => format!("json_extract({document_sql}, '{path}')"),
+        SqlDialect::Postgres => {
+            let json_path = path.trim_start_matches("$.").replace('.', ",");
+            format!("(({document_sql})::jsonb #>> '{{{json_path}}}')")
+        }
+    };
+    format!("LOWER(COALESCE(NULLIF({extracted}, ''), ''))")
 }
 
-fn mcp_message_non_billable_kind_sql(value_expr: &str) -> String {
-    let method = request_body_json_text_sql(value_expr, "$.method");
-    let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
+fn mcp_message_non_billable_kind_sql(document_sql: &str, dialect: SqlDialect) -> String {
+    let method = request_body_json_text_sql(document_sql, "$.method", dialect);
+    let tool_name = request_body_json_text_sql(document_sql, "$.params.name", dialect);
     format!(
         "
         CASE
@@ -1773,18 +1830,24 @@ fn mcp_message_non_billable_kind_sql(value_expr: &str) -> String {
     )
 }
 
-fn mcp_request_body_all_non_billable_sql(body_expr: &str) -> String {
-    let body_json = format!("CAST({body_expr} AS TEXT)");
-    let array_item_kind = mcp_message_non_billable_kind_sql("items.value");
+fn mcp_request_body_all_non_billable_sql(body_expr: &str, dialect: SqlDialect) -> String {
+    let body_json = json_document_sql(body_expr, dialect);
+    let body_valid = json_valid_sql(&body_json, dialect);
+    let body_type = json_type_sql(&body_json, dialect);
+    let body_array = json_array_elements_sql(&body_json, dialect);
+    let array_item_kind = mcp_message_non_billable_kind_sql(
+        &json_array_element_document_sql("items.value", dialect),
+        dialect,
+    );
     format!(
         "
         (
-            json_valid({body_json})
-            AND json_type({body_json}) = 'array'
-            AND EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+            {body_valid}
+            AND {body_type} = 'array'
+            AND EXISTS (SELECT 1 FROM {body_array})
             AND NOT EXISTS (
                 SELECT 1
-                FROM json_each({body_json}) AS items
+                FROM {body_array}
                 WHERE ({array_item_kind}) IS NULL
             )
         )
@@ -1849,26 +1912,32 @@ fn request_value_bucket_from_kind_sql(expr: &str) -> String {
     )
 }
 
-fn request_value_bucket_for_batch_body_sql(body_expr: &str) -> String {
-    let body_json = format!("CAST({body_expr} AS TEXT)");
-    let array_item_kind = mcp_message_request_kind_sql("items.value");
+fn request_value_bucket_for_batch_body_sql(body_expr: &str, dialect: SqlDialect) -> String {
+    let body_json = json_document_sql(body_expr, dialect);
+    let body_valid = json_valid_sql(&body_json, dialect);
+    let body_type = json_type_sql(&body_json, dialect);
+    let body_array = json_array_elements_sql(&body_json, dialect);
+    let array_item_kind = mcp_message_request_kind_sql(
+        &json_array_element_document_sql("items.value", dialect),
+        dialect,
+    );
     let array_item_bucket = request_value_bucket_from_kind_sql(&array_item_kind);
     format!(
         "
         CASE
-            WHEN NOT json_valid({body_json}) OR json_type({body_json}) <> 'array'
+            WHEN NOT {body_valid} OR {body_type} <> 'array'
                 THEN 'unknown'
-            WHEN NOT EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+            WHEN NOT EXISTS (SELECT 1 FROM {body_array})
                 THEN 'unknown'
             WHEN EXISTS (
                 SELECT 1
-                FROM json_each({body_json}) AS items
+                FROM {body_array}
                 WHERE ({array_item_kind}) IS NULL
                    OR ({array_item_bucket}) = 'unknown'
             ) THEN 'unknown'
             WHEN EXISTS (
                 SELECT 1
-                FROM json_each({body_json}) AS items
+                FROM {body_array}
                 WHERE ({array_item_bucket}) = 'valuable'
             ) THEN 'valuable'
             ELSE 'other'
@@ -1877,9 +1946,13 @@ fn request_value_bucket_for_batch_body_sql(body_expr: &str) -> String {
     )
 }
 
-pub(crate) fn request_value_bucket_sql(request_kind_expr: &str, body_expr: &str) -> String {
+pub(crate) fn request_value_bucket_sql(
+    request_kind_expr: &str,
+    body_expr: &str,
+    dialect: SqlDialect,
+) -> String {
     let normalized = format!("LOWER(TRIM(COALESCE({request_kind_expr}, '')))");
-    let batch_bucket = request_value_bucket_for_batch_body_sql(body_expr);
+    let batch_bucket = request_value_bucket_for_batch_body_sql(body_expr, dialect);
     let single_bucket = request_value_bucket_from_kind_sql(request_kind_expr);
     format!(
         "
@@ -1895,9 +1968,10 @@ pub(crate) fn request_value_bucket_for_stored_request_log_sql(
     request_kind_expr: &str,
     body_expr: &str,
     counts_business_quota_expr: &str,
+    dialect: SqlDialect,
 ) -> String {
     let normalized = format!("LOWER(TRIM(COALESCE({request_kind_expr}, '')))");
-    let live_bucket = request_value_bucket_sql(request_kind_expr, body_expr);
+    let live_bucket = request_value_bucket_sql(request_kind_expr, body_expr, dialect);
     format!(
         "
         CASE
@@ -1988,9 +2062,10 @@ pub(crate) fn request_log_operational_class_case_sql(
 pub(crate) fn request_log_counts_business_quota_sql(
     request_kind_expr: &str,
     body_expr: &str,
+    dialect: SqlDialect,
 ) -> String {
     let normalized = format!("LOWER(TRIM(COALESCE({request_kind_expr}, '')))");
-    let batch_non_billable = mcp_request_body_all_non_billable_sql(body_expr);
+    let batch_non_billable = mcp_request_body_all_non_billable_sql(body_expr, dialect);
     format!(
         "
         CASE

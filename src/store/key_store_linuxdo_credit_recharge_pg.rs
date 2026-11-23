@@ -730,7 +730,7 @@ impl KeyStore {
                         OR refund_retry_after_at <= $8
                     )
                 )
-            )
+            )::int::bigint
             "#,
         )
         .bind(LINUXDO_CREDIT_RECHARGE_STATUS_PENDING)
@@ -1293,7 +1293,7 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
         let mut builder = QueryBuilder::new(
-            "SELECT user_id, COALESCE(SUM(business_calls_1h_delta), 0) AS hourly_delta, COALESCE(SUM(daily_credits_delta), 0) AS daily_delta, COALESCE(SUM(monthly_credits_delta), 0) AS monthly_delta FROM core.account_entitlements WHERE scope_kind = ",
+            "SELECT user_id, COALESCE(SUM(business_calls_1h_delta), 0)::bigint AS hourly_delta, COALESCE(SUM(daily_credits_delta), 0)::bigint AS daily_delta, COALESCE(SUM(monthly_credits_delta), 0)::bigint AS monthly_delta FROM core.account_entitlements WHERE scope_kind = ",
         );
         builder.push_bind(ACCOUNT_ENTITLEMENT_SCOPE_MONTH);
         builder.push(" AND source_kind = ");

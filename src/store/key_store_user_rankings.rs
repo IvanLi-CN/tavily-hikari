@@ -297,7 +297,7 @@ impl KeyStore {
               AND bucket_kind = $2
               AND bucket_start >= $3
               AND bucket_start < $4
-            GROUP BY user_id
+            GROUP BY 1
             HAVING COALESCE(SUM(value), 0) > 0
             "#,
         )
@@ -340,6 +340,7 @@ impl KeyStore {
             "atl.request_kind_key",
             request_body_expr,
             "atl.counts_business_quota",
+            crate::analysis::SqlDialect::Sqlite,
         );
 
         match metric_kind {
@@ -504,6 +505,7 @@ impl KeyStore {
             "atl.request_kind_key",
             request_body_expr,
             "atl.counts_business_quota",
+            crate::analysis::SqlDialect::Postgres,
         );
 
         match metric_kind {
@@ -535,7 +537,7 @@ impl KeyStore {
                             b.user_id
                         ) IS NOT NULL
                       AND ({request_value_bucket_sql}) = 'valuable'
-                    GROUP BY user_id
+                    GROUP BY 1
                     HAVING COUNT(*) > 0
                     "#,
                 ))
@@ -577,7 +579,7 @@ impl KeyStore {
                             b.user_id
                         ) IS NOT NULL
                       AND ({request_value_bucket_sql}) = 'other'
-                    GROUP BY user_id
+                    GROUP BY 1
                     HAVING COUNT(*) > 0
                     "#,
                 ))
@@ -621,7 +623,7 @@ impl KeyStore {
                     )
                     SELECT SUBSTR(billing_subject, 9) AS user_id, SUM(business_credits)::bigint AS total
                     FROM charged_rows
-                    GROUP BY user_id
+                    GROUP BY 1
                     HAVING SUM(business_credits) > 0
                     "#,
                 )

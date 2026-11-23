@@ -507,16 +507,16 @@ impl KeyStore {
             let legacy_request_kind_predicate_sql =
                 legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
             let legacy_request_kind_sql =
-                request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+                request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
             let effective_request_kind_sql = format!(
                 "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
             );
             let stored_counts_business_quota_sql = format!(
                 "COALESCE(counts_business_quota, {})",
-                request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+                request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
             );
             let legacy_counts_business_quota_sql =
-                request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+                request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
             let effective_counts_business_quota_sql = format!(
                 "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
             );
@@ -562,16 +562,16 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let effective_counts_business_quota_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
         );
