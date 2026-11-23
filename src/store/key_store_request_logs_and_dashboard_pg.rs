@@ -1735,7 +1735,7 @@ impl KeyStore {
         .flatten();
         let quarantined = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT 1
+            SELECT 1::bigint
             FROM core.api_key_quarantines
             WHERE key_id = $1 AND cleared_at IS NULL
             LIMIT 1

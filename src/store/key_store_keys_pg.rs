@@ -75,7 +75,7 @@ impl KeyStore {
 
         let quarantined = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT 1
+            SELECT 1::bigint
             FROM core.api_key_quarantines
             WHERE key_id = $1 AND cleared_at IS NULL
             LIMIT 1
@@ -761,7 +761,7 @@ impl KeyStore {
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
         let exists = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT 1
+            SELECT 1::bigint
             FROM core.api_key_low_quota_depletions
             WHERE key_id = $1 AND month_start = $2
             LIMIT 1

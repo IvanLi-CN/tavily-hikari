@@ -361,7 +361,7 @@ impl KeyStore {
         provider_user_id: &str,
     ) -> Result<bool, ProxyError> {
         let row = sqlx::query_scalar::<_, i64>(
-            r#"SELECT 1
+            r#"SELECT 1::bigint
                FROM core.oauth_accounts
                WHERE provider = $1 AND provider_user_id = $2
                LIMIT 1"#,
