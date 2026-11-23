@@ -1510,6 +1510,21 @@ impl KeyStore {
         granularity: &str,
         bucket_start_at_least: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let sum = sqlx::query_scalar::<_, Option<i64>>(
+                r#"
+                SELECT SUM(count)::bigint
+                FROM core.token_usage_buckets
+                WHERE token_id = $1 AND granularity = $2 AND bucket_start >= $3
+                "#,
+            )
+            .bind(token_id)
+            .bind(granularity)
+            .bind(bucket_start_at_least)
+            .fetch_one(self.pg()?)
+            .await?;
+            return Ok(sum.unwrap_or(0));
+        }
         let sum = sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT SUM(count)
@@ -1532,6 +1547,25 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let sum = sqlx::query_scalar::<_, Option<i64>>(
+                r#"
+                SELECT SUM(count)::bigint
+                FROM core.token_usage_buckets
+                WHERE token_id = $1
+                  AND granularity = $2
+                  AND bucket_start >= $3
+                  AND bucket_start < $4
+                "#,
+            )
+            .bind(token_id)
+            .bind(granularity)
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(self.pg()?)
+            .await?;
+            return Ok(sum.unwrap_or(0));
+        }
         let sum = sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT SUM(count)
@@ -1557,6 +1591,21 @@ impl KeyStore {
         granularity: &str,
         bucket_start_at_least: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let sum = sqlx::query_scalar::<_, Option<i64>>(
+                r#"
+                SELECT SUM(count)::bigint
+                FROM core.account_usage_buckets
+                WHERE user_id = $1 AND granularity = $2 AND bucket_start >= $3
+                "#,
+            )
+            .bind(user_id)
+            .bind(granularity)
+            .bind(bucket_start_at_least)
+            .fetch_one(self.pg()?)
+            .await?;
+            return Ok(sum.unwrap_or(0));
+        }
         let sum = sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT SUM(count)
@@ -1579,6 +1628,25 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let sum = sqlx::query_scalar::<_, Option<i64>>(
+                r#"
+                SELECT SUM(count)::bigint
+                FROM core.account_usage_buckets
+                WHERE user_id = $1
+                  AND granularity = $2
+                  AND bucket_start >= $3
+                  AND bucket_start < $4
+                "#,
+            )
+            .bind(user_id)
+            .bind(granularity)
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(self.pg()?)
+            .await?;
+            return Ok(sum.unwrap_or(0));
+        }
         let sum = sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT SUM(count)
@@ -1606,6 +1674,27 @@ impl KeyStore {
     ) -> Result<HashMap<String, i64>, ProxyError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
+        }
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT user_id, SUM(count)::bigint AS total FROM core.account_usage_buckets WHERE granularity = ",
+            );
+            builder.push_bind(granularity);
+            builder.push(" AND bucket_start >= ");
+            builder.push_bind(bucket_start_at_least);
+            builder.push(" AND user_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(") GROUP BY user_id");
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows.into_iter().collect());
         }
         let mut builder = QueryBuilder::new(
             "SELECT user_id, SUM(count) as total FROM account_usage_buckets WHERE granularity = ",
@@ -1641,6 +1730,29 @@ impl KeyStore {
     ) -> Result<HashMap<String, i64>, ProxyError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
+        }
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT user_id, SUM(count)::bigint AS total FROM core.account_usage_buckets WHERE granularity = ",
+            );
+            builder.push_bind(granularity);
+            builder.push(" AND bucket_start >= ");
+            builder.push_bind(bucket_start_at_least);
+            builder.push(" AND bucket_start < ");
+            builder.push_bind(bucket_start_before);
+            builder.push(" AND user_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(") GROUP BY user_id");
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows.into_iter().collect());
         }
         let mut builder = QueryBuilder::new(
             "SELECT user_id, SUM(count) as total FROM account_usage_buckets WHERE granularity = ",
@@ -1819,6 +1931,42 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT token_id, month_start, month_count FROM core.auth_token_quota WHERE token_id IN (",
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for token_id in token_ids {
+                    separated.push_bind(token_id);
+                }
+            }
+            builder.push(")");
+            let rows = builder
+                .build_query_as::<(String, i64, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            let mut map = HashMap::new();
+            let mut stale_ids = Vec::new();
+            for (token_id, stored_start, stored_count) in rows {
+                if stored_start < current_month_start {
+                    map.insert(token_id.clone(), 0);
+                    stale_ids.push(token_id);
+                } else {
+                    map.insert(token_id, stored_count);
+                }
+            }
+            for token_id in stale_ids {
+                sqlx::query(
+                    "UPDATE core.auth_token_quota SET month_start = $1, month_count = 0 WHERE token_id = $2",
+                )
+                .bind(current_month_start)
+                .bind(&token_id)
+                .execute(self.pg()?)
+                .await?;
+            }
+            return Ok(map);
+        }
         let mut builder = QueryBuilder::new(
             "SELECT token_id, month_start, month_count FROM auth_token_quota WHERE token_id IN (",
         );
@@ -1864,6 +2012,28 @@ impl KeyStore {
         token_id: &str,
         current_month_start: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let row = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT month_start, month_count FROM core.auth_token_quota WHERE token_id = $1",
+            )
+            .bind(token_id)
+            .fetch_optional(self.pg()?)
+            .await?;
+            let Some((stored_start, stored_count)) = row else {
+                return Ok(0);
+            };
+            if stored_start < current_month_start {
+                sqlx::query(
+                    "UPDATE core.auth_token_quota SET month_start = $1, month_count = 0 WHERE token_id = $2",
+                )
+                .bind(current_month_start)
+                .bind(token_id)
+                .execute(self.pg()?)
+                .await?;
+                return Ok(0);
+            }
+            return Ok(stored_count);
+        }
         let row = sqlx::query_as::<_, (i64, i64)>(
             "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
         )
@@ -1891,6 +2061,28 @@ impl KeyStore {
         user_id: &str,
         current_month_start: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let row = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT month_start, month_count FROM core.account_monthly_quota WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .fetch_optional(self.pg()?)
+            .await?;
+            let Some((stored_start, stored_count)) = row else {
+                return Ok(0);
+            };
+            if stored_start < current_month_start {
+                sqlx::query(
+                    "UPDATE core.account_monthly_quota SET month_start = $1, month_count = 0 WHERE user_id = $2",
+                )
+                .bind(current_month_start)
+                .bind(user_id)
+                .execute(self.pg()?)
+                .await?;
+                return Ok(0);
+            }
+            return Ok(stored_count);
+        }
         let row = sqlx::query_as::<_, (i64, i64)>(
             "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ?",
         )
@@ -1922,6 +2114,42 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT user_id, month_start, month_count FROM core.account_monthly_quota WHERE user_id IN (",
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(")");
+            let rows = builder
+                .build_query_as::<(String, i64, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            let mut map = HashMap::new();
+            let mut stale_ids = Vec::new();
+            for (user_id, stored_start, stored_count) in rows {
+                if stored_start < current_month_start {
+                    map.insert(user_id.clone(), 0);
+                    stale_ids.push(user_id);
+                } else {
+                    map.insert(user_id, stored_count);
+                }
+            }
+            for user_id in stale_ids {
+                sqlx::query(
+                    "UPDATE core.account_monthly_quota SET month_start = $1, month_count = 0 WHERE user_id = $2",
+                )
+                .bind(current_month_start)
+                .bind(&user_id)
+                .execute(self.pg()?)
+                .await?;
+            }
+            return Ok(map);
+        }
         let mut builder = QueryBuilder::new(
             "SELECT user_id, month_start, month_count FROM account_monthly_quota WHERE user_id IN (",
         );
