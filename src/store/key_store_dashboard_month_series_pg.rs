@@ -212,7 +212,7 @@ impl KeyStore {
                       AND created_at < $11
                 ) THEN 1
                 ELSE 0
-            END
+            END::bigint
             "#,
         )
         .bind(range_start)

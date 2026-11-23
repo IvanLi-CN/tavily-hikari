@@ -2481,6 +2481,13 @@ async fn refresh_dashboard_overview_snapshot_with_reason(
                 ..Default::default()
             },
         );
+    } else if let Err(error) = result.as_ref() {
+        tracing::warn!(
+            component = "admin_read",
+            event = "dashboard_overview_build_failed",
+            err = %error,
+            "dashboard overview rebuild failed and no snapshot was published"
+        );
     }
     cache.notify.notify_waiters();
     load_guard.disarm();

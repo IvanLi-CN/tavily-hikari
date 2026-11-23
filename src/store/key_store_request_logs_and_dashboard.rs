@@ -688,7 +688,7 @@ impl KeyStore {
         let stored_request_kind_sql = col("request_kind_key");
         let effective_request_kind_sql = stored_request_kind_sql.clone();
         let fallback_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"));
+            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"), crate::analysis::SqlDialect::Sqlite);
         let counts_business_quota_sql = format!(
             "COALESCE({}, {fallback_counts_business_quota_sql})",
             col("counts_business_quota")
@@ -832,13 +832,13 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -847,7 +847,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -1315,7 +1315,7 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
@@ -1323,7 +1323,7 @@ impl KeyStore {
             canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -1332,7 +1332,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -1611,7 +1611,7 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
@@ -1619,7 +1619,7 @@ impl KeyStore {
             canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -1628,7 +1628,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -1937,7 +1937,7 @@ impl KeyStore {
         }
 
         let canonical_new_request_kind_sql =
-            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key");
+            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let canonical_new_request_kind_label_sql =
             canonical_request_kind_label_sql(&canonical_new_request_kind_sql);
         let canonical_new_request_kind_detail_sql = format!(
@@ -2499,9 +2499,9 @@ impl KeyStore {
         }
 
         let request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
+            request_value_bucket_sql(&request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let query = format!(
             r#"
             WITH scoped_logs AS (

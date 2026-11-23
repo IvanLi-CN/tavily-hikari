@@ -108,7 +108,12 @@ fn extract_usage_credits_from_json_bytes_finds_nested_usage_and_rounds_up() {
 
 #[test]
 fn request_log_request_kind_key_sql_avoids_extra_parentheses_in_mcp_batch_aggregates() {
-    let sql = request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+    let sql = request_log_request_kind_key_sql(
+        "path",
+        "request_body",
+        "request_kind_key",
+        crate::analysis::SqlDialect::Sqlite,
+    );
 
     assert!(!sql.contains("COUNT(DISTINCT ("));
     assert!(!sql.contains("MIN(("));

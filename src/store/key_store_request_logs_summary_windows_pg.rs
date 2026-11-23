@@ -384,6 +384,7 @@ impl KeyStore {
             JOIN observability.request_logs AS log
                 ON log.visibility = $7 AND log.created_at < state.history_cursor
             WHERE state.history_cursor > $8 AND log.created_at < $9
+            GROUP BY state.history_cursor
             UNION
             SELECT bucket_start AS range_start, bucket_end AS range_end
             FROM observability.dashboard_rollup_integrity_day_reaudits

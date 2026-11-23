@@ -232,6 +232,21 @@
       ]
     },
     {
+      "id": "lib-pg-write-paths",
+      "kind": "lib",
+      "name": "Lib PostgreSQL Write Paths",
+      "estimated_seconds": 15,
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "filtered_test_threads": 1,
+      "serial_prefixes": [
+        "tests::pg_write_paths::"
+      ],
+      "include_prefixes": [
+        "tests::pg_write_paths::"
+      ]
+    },
+    {
       "id": "lib-request-rollup-integrity",
       "kind": "lib",
       "name": "Lib Request Rollup Integrity",

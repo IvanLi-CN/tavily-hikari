@@ -361,7 +361,7 @@ impl KeyStore {
         provider_user_id: &str,
     ) -> Result<bool, ProxyError> {
         let row = sqlx::query_scalar::<_, i64>(
-            r#"SELECT 1
+            r#"SELECT 1::bigint
                FROM core.oauth_accounts
                WHERE provider = $1 AND provider_user_id = $2
                LIMIT 1"#,
@@ -1490,7 +1490,7 @@ impl KeyStore {
             r#"
             SELECT created_at, request_user_id, gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
             FROM observability.request_logs
-            WHERE id = ?
+            WHERE id = $1
             LIMIT 1
             "#,
         )
@@ -1536,7 +1536,7 @@ impl KeyStore {
             r#"
             SELECT request_kind_key, request_kind_label, request_kind_detail
             FROM observability.request_logs
-            WHERE id = ?
+            WHERE id = $1
             LIMIT 1
             "#,
         )
