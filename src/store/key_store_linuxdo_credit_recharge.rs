@@ -4,9 +4,7 @@ struct LinuxDoCreditRechargeQuoteSnapshot {
     quote: LinuxDoCreditRechargeQuote,
 }
 
-fn parse_linuxdo_credit_recharge_quote_snapshot(
-    raw: &str,
-) -> Option<LinuxDoCreditRechargeQuote> {
+fn parse_linuxdo_credit_recharge_quote_snapshot(raw: &str) -> Option<LinuxDoCreditRechargeQuote> {
     serde_json::from_str::<LinuxDoCreditRechargeQuoteSnapshot>(raw)
         .map(|snapshot| snapshot.quote)
         .or_else(|_| serde_json::from_str::<LinuxDoCreditRechargeQuote>(raw))
@@ -37,6 +35,9 @@ fn recharge_order_cancel_after_at(order: &LinuxDoCreditRechargeOrder) -> i64 {
 
 impl KeyStore {
     pub(crate) async fn ensure_linuxdo_credit_recharge_schema(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_linuxdo_credit_recharge_schema_pg().await;
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS linuxdo_credit_recharge_orders (
@@ -214,7 +215,8 @@ impl KeyStore {
         }
         self.backfill_linuxdo_credit_recharge_orders_v1().await?;
         self.backfill_linuxdo_credit_recharge_orders_v2().await?;
-        self.backfill_linuxdo_credit_recharge_entitlements_v1().await?;
+        self.backfill_linuxdo_credit_recharge_entitlements_v1()
+            .await?;
         sqlx::query(
             r#"
             INSERT OR IGNORE INTO account_entitlements (
@@ -246,6 +248,9 @@ impl KeyStore {
     }
 
     async fn backfill_linuxdo_credit_recharge_orders_v1(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.backfill_linuxdo_credit_recharge_orders_v1_pg().await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT out_trade_no, credits, months, money_cents, status, created_at, paid_at
@@ -308,6 +313,9 @@ impl KeyStore {
     }
 
     async fn backfill_linuxdo_credit_recharge_orders_v2(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.backfill_linuxdo_credit_recharge_orders_v2_pg().await;
+        }
         sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -324,6 +332,11 @@ impl KeyStore {
     }
 
     async fn backfill_linuxdo_credit_recharge_entitlements_v1(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .backfill_linuxdo_credit_recharge_entitlements_v1_pg()
+                .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT id, credits, hourly_delta, daily_delta, monthly_delta
@@ -424,6 +437,9 @@ impl KeyStore {
         &self,
         order: &LinuxDoCreditRechargeOrder,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_linuxdo_credit_recharge_order_pg(order).await;
+        }
         sqlx::query(
             r#"
             INSERT INTO linuxdo_credit_recharge_orders (
@@ -479,6 +495,15 @@ impl KeyStore {
         payment_url: &str,
         updated_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .update_linuxdo_credit_recharge_order_payment_url_pg(
+                    out_trade_no,
+                    payment_url,
+                    updated_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -500,6 +525,11 @@ impl KeyStore {
         message: &str,
         updated_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .mark_linuxdo_credit_recharge_order_failed_pg(out_trade_no, message, updated_at)
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -521,6 +551,11 @@ impl KeyStore {
         &self,
         out_trade_no: &str,
     ) -> Result<Option<LinuxDoCreditRechargeOrder>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_linuxdo_credit_recharge_order_pg(out_trade_no)
+                .await;
+        }
         let row = sqlx::query(
             r#"
             SELECT *
@@ -542,6 +577,11 @@ impl KeyStore {
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<LinuxDoCreditRechargeOrder>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_linuxdo_credit_recharge_orders_for_user_pg(user_id, limit)
+                .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT *
@@ -561,6 +601,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn has_linuxdo_credit_recharge_orders(&self) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.has_linuxdo_credit_recharge_orders_pg().await;
+        }
         let count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM linuxdo_credit_recharge_orders LIMIT 1",
         )
@@ -573,6 +616,11 @@ impl KeyStore {
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .count_admin_linuxdo_credit_recharge_orders_pg(query)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT COUNT(*) FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
         );
@@ -594,6 +642,11 @@ impl KeyStore {
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .count_admin_linuxdo_credit_recharge_user_groups_pg(query)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT COUNT(DISTINCT o.user_id) FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
         );
@@ -615,6 +668,11 @@ impl KeyStore {
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,
     ) -> Result<Vec<LinuxDoCreditRechargeAdminOrder>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_admin_linuxdo_credit_recharge_orders_pg(query)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT o.*, u.display_name AS user_display_name, u.username AS user_username, u.avatar_template AS user_avatar_template FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
         );
@@ -658,6 +716,11 @@ impl KeyStore {
         &self,
         query: &LinuxDoCreditRechargeAdminListQuery,
     ) -> Result<Vec<LinuxDoCreditRechargeAdminUserGroup>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_admin_linuxdo_credit_recharge_user_groups_pg(query)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT o.user_id, u.display_name AS user_display_name, u.username AS user_username, u.avatar_template AS user_avatar_template, COUNT(*) AS order_count, SUM(CASE WHEN o.status = 'paid' THEN 1 ELSE 0 END) AS paid_order_count, SUM(CASE WHEN o.status IN ('refunded', 'refundOnly') THEN 1 ELSE 0 END) AS refunded_order_count, COALESCE(SUM(o.credits * o.months), 0) AS total_credits, COALESCE(SUM(o.final_money_cents), 0) AS total_money_cents, MAX(o.created_at) AS latest_order_created_at, MAX(o.paid_at) AS latest_paid_at, MAX(o.refunded_at) AS latest_refunded_at FROM linuxdo_credit_recharge_orders o LEFT JOIN users u ON u.id = o.user_id WHERE 1 = 1",
         );
@@ -668,7 +731,8 @@ impl KeyStore {
             query.start_at,
             query.end_at,
         );
-        builder.push(" GROUP BY o.user_id, u.display_name, u.username, u.avatar_template ORDER BY ");
+        builder
+            .push(" GROUP BY o.user_id, u.display_name, u.username, u.avatar_template ORDER BY ");
         match query.sort.as_str() {
             "paidAt" => builder.push("latest_paid_at"),
             "refundedAt" => builder.push("latest_refunded_at"),
@@ -710,6 +774,11 @@ impl KeyStore {
         expired_at: i64,
         limit: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .expire_due_linuxdo_credit_recharge_orders_pg(expired_at, limit)
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let rows = sqlx::query(
             r#"
@@ -756,6 +825,11 @@ impl KeyStore {
         cancelled_at: i64,
         limit: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .cancel_due_linuxdo_credit_recharge_orders_pg(cancelled_at, limit)
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let rows = sqlx::query(
             r#"
@@ -803,6 +877,9 @@ impl KeyStore {
         &self,
         now: i64,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.linuxdo_credit_recharge_lifecycle_due_pg(now).await;
+        }
         let due = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT EXISTS(
@@ -847,6 +924,11 @@ impl KeyStore {
         now: i64,
         limit: i64,
     ) -> Result<Vec<LinuxDoCreditRechargeOrder>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_linuxdo_credit_recharge_system_refund_candidates_pg(now, limit)
+                .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT *
@@ -888,6 +970,17 @@ impl KeyStore {
         message: &str,
         updated_at: i64,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .mark_linuxdo_credit_recharge_order_system_refund_failure_pg(
+                    out_trade_no,
+                    attempts,
+                    retry_after_at,
+                    message,
+                    updated_at,
+                )
+                .await;
+        }
         let result = sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -924,6 +1017,16 @@ impl KeyStore {
         notify_payload: &str,
         paid_at: i64,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .apply_linuxdo_credit_recharge_payment_pg(
+                    out_trade_no,
+                    trade_no,
+                    notify_payload,
+                    paid_at,
+                )
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
@@ -948,7 +1051,8 @@ impl KeyStore {
                 .with_timezone(&Local),
         );
         let cancel_after_at = recharge_order_cancel_after_at(&order);
-        let same_quote_month = order.quote_month_start <= 0 || order.quote_month_start == paid_month_start;
+        let same_quote_month =
+            order.quote_month_start <= 0 || order.quote_month_start == paid_month_start;
         let within_cancel_window = paid_at <= cancel_after_at;
         let mut entitlement_month_starts = Vec::new();
         if matches!(
@@ -1123,7 +1227,8 @@ impl KeyStore {
             }
         }
         tx.commit().await?;
-        self.invalidate_account_quota_resolution(&order.user_id).await;
+        self.invalidate_account_quota_resolution(&order.user_id)
+            .await;
         let current_month_start = start_of_local_month_utc_ts(self.backend_time.local_now());
         for month_start in entitlement_month_starts {
             if month_start <= current_month_start {
@@ -1151,6 +1256,18 @@ impl KeyStore {
         refunded_at: i64,
         revoke_entitlements: bool,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .refund_linuxdo_credit_recharge_order_pg(
+                    out_trade_no,
+                    next_status,
+                    refund_actor,
+                    refund_payload,
+                    refunded_at,
+                    revoke_entitlements,
+                )
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
@@ -1205,7 +1322,8 @@ impl KeyStore {
                 .await?;
         }
         tx.commit().await?;
-        self.invalidate_account_quota_resolution(&order.user_id).await;
+        self.invalidate_account_quota_resolution(&order.user_id)
+            .await;
         self.record_effective_account_quota_snapshot_at(&order.user_id, refunded_at)
             .await?;
         self.fetch_linuxdo_credit_recharge_order(out_trade_no)
@@ -1220,6 +1338,16 @@ impl KeyStore {
         refund_payload: &str,
         updated_at: i64,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .mark_linuxdo_credit_recharge_order_refund_external_succeeded_pg(
+                    out_trade_no,
+                    refund_actor,
+                    refund_payload,
+                    updated_at,
+                )
+                .await;
+        }
         let result = sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -1252,6 +1380,11 @@ impl KeyStore {
         out_trade_no: &str,
         reserved_at: i64,
     ) -> Result<LinuxDoCreditRechargeOrder, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .reserve_linuxdo_credit_recharge_order_refund_pg(out_trade_no, reserved_at)
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
@@ -1321,6 +1454,15 @@ impl KeyStore {
         message: &str,
         updated_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .release_linuxdo_credit_recharge_order_refund_reservation_pg(
+                    out_trade_no,
+                    message,
+                    updated_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE linuxdo_credit_recharge_orders
@@ -1345,6 +1487,11 @@ impl KeyStore {
         user_id: &str,
         month_start: i64,
     ) -> Result<LinuxDoCreditRechargeQuotaDelta, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .sum_linuxdo_credit_recharge_entitlements_for_month_pg(user_id, month_start)
+                .await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -1376,6 +1523,11 @@ impl KeyStore {
         user_ids: &[String],
         month_start: i64,
     ) -> Result<HashMap<String, LinuxDoCreditRechargeQuotaDelta>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .sum_linuxdo_credit_recharge_entitlements_for_users_pg(user_ids, month_start)
+                .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1415,6 +1567,11 @@ impl KeyStore {
         user_id: &str,
         current_month_start: i64,
     ) -> Result<AccountEntitlementSummary, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .account_entitlement_summary_for_user_pg(user_id, current_month_start)
+                .await;
+        }
         let current_base_delta = self
             .sum_account_entitlement_deltas_for_scope(user_id, ACCOUNT_ENTITLEMENT_SCOPE_BASE)
             .await?;
@@ -1449,6 +1606,11 @@ impl KeyStore {
         user_id: &str,
         current_month_start: i64,
     ) -> Result<LinuxDoCreditRechargeSummary, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .linuxdo_credit_recharge_summary_for_user_pg(user_id, current_month_start)
+                .await;
+        }
         let current_month_entitlement = self
             .sum_linuxdo_credit_recharge_entitlements_for_month(user_id, current_month_start)
             .await?;
@@ -1482,7 +1644,19 @@ impl KeyStore {
         end_month_before: Option<i64>,
         limit: i64,
     ) -> Result<Vec<AccountEntitlementRecord>, ProxyError> {
-        let mut builder = QueryBuilder::<Sqlite>::new("SELECT * FROM account_entitlements WHERE user_id = ");
+        if self.pg_pool.is_some() {
+            return self
+                .list_account_entitlements_for_user_pg(
+                    user_id,
+                    scope_kind,
+                    start_month,
+                    end_month_before,
+                    limit,
+                )
+                .await;
+        }
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT * FROM account_entitlements WHERE user_id = ");
         builder.push_bind(user_id);
         if let Some(scope_kind) = scope_kind {
             builder.push(" AND scope_kind = ");
@@ -1515,6 +1689,11 @@ impl KeyStore {
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<LinuxDoCreditRechargeEntitlement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_linuxdo_credit_recharge_entitlements_for_user_pg(user_id, limit)
+                .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT
@@ -1567,6 +1746,11 @@ impl KeyStore {
         start_month: i64,
         end_month: i64,
     ) -> Result<Vec<UserBillingMonthSummary>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_user_billing_month_summaries_for_user_pg(user_id, start_month, end_month)
+                .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT
@@ -1657,7 +1841,8 @@ impl KeyStore {
             current_month_entitlement_credits: summary.current_month_entitlement_credits,
             current_month_entitlement_hourly_delta: summary.current_month_entitlement_hourly_delta,
             current_month_entitlement_daily_delta: summary.current_month_entitlement_daily_delta,
-            current_month_entitlement_monthly_delta: summary.current_month_entitlement_monthly_delta,
+            current_month_entitlement_monthly_delta: summary
+                .current_month_entitlement_monthly_delta,
             effective_until_month_start: summary.effective_until_month_start,
             orders: self
                 .list_linuxdo_credit_recharge_orders_for_user(user_id, 10)
@@ -1672,6 +1857,9 @@ impl KeyStore {
         &self,
         record: &AccountEntitlementRecord,
     ) -> Result<AccountEntitlementRecord, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_account_entitlement_pg(record).await;
+        }
         let insert = sqlx::query(
             r#"
             INSERT INTO account_entitlements (
@@ -1721,6 +1909,11 @@ impl KeyStore {
         user_id: &str,
         month_start: i64,
     ) -> Result<LinuxDoCreditRechargeQuotaDelta, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .sum_account_entitlement_deltas_for_month_pg(user_id, month_start)
+                .await;
+        }
         let row = sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
             SELECT
@@ -1758,6 +1951,11 @@ impl KeyStore {
         >,
         ProxyError,
     > {
+        if self.pg_pool.is_some() {
+            return self
+                .sum_account_entitlement_deltas_for_users_pg(user_ids, current_month_start)
+                .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1824,6 +2022,11 @@ impl KeyStore {
         user_id: &str,
         scope_kind: &str,
     ) -> Result<LinuxDoCreditRechargeQuotaDelta, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .sum_account_entitlement_deltas_for_scope_pg(user_id, scope_kind)
+                .await;
+        }
         let row = sqlx::query_as::<_, (i64, i64, i64)>(
             r#"
             SELECT
@@ -1844,6 +2047,7 @@ impl KeyStore {
             monthly_delta: row.2,
         })
     }
+
 }
 
 fn push_admin_recharge_filters<'a>(
@@ -1867,7 +2071,10 @@ fn push_admin_recharge_filters<'a>(
         builder.push_bind(like);
         builder.push(")");
     }
-    if let Some(status) = status.map(str::trim).filter(|s| !s.is_empty() && *s != "all") {
+    if let Some(status) = status
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all")
+    {
         builder.push(" AND o.status = ");
         builder.push_bind(status.to_string());
     }
@@ -1880,3 +2087,4 @@ fn push_admin_recharge_filters<'a>(
         builder.push_bind(end_at);
     }
 }
+

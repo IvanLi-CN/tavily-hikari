@@ -238,6 +238,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.log_attempt_pg(entry).await;
+        }
         let created_at = self.backend_time.now_ts();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
         let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
@@ -453,6 +456,256 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         let request_log_id = insert.last_insert_rowid();
+        if entry.auth_token_id.is_some() {
+            self.request_log_diagnostic_handoff.lock().await.insert(
+                request_log_id,
+                RequestLogDiagnosticMetadata {
+                    created_at: Some(created_at),
+                    request_user_id: request_user_id.clone(),
+                    gateway_mode: entry.gateway_mode.map(str::to_string),
+                    experiment_variant: entry.experiment_variant.map(str::to_string),
+                    proxy_session_id: entry.proxy_session_id.map(str::to_string),
+                    routing_subject_hash: entry.routing_subject_hash.map(str::to_string),
+                    upstream_operation: entry.upstream_operation.map(str::to_string),
+                    fallback_reason: entry.fallback_reason.map(str::to_string),
+                },
+            );
+        }
+        self.request_stats_coalescer
+            .enqueue_request_log_rollups(RequestLogRollupInput {
+                api_key_id: entry.key_id,
+                auth_token_id: entry.auth_token_id.unwrap_or_default(),
+                request_user_id: request_user_id.as_deref(),
+                request_log_id: Some(request_log_id),
+                created_at,
+                dashboard_counts: dashboard_rollup_counts,
+                request_log_catalog_key,
+            })
+            .await;
+        // Keep the source mutation live until the corresponding incremental
+        // rollup is visible. An integrity slice must never replace from the
+        // new source row and then receive this original delta afterward.
+        source_mutation.commit().await;
+        Ok(request_log_id)
+    }
+
+    pub(crate) async fn log_attempt_pg(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
+        let created_at = self.backend_time.now_ts();
+        let status_code = entry.status.map(|code| code.as_u16() as i64);
+        let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
+            if entry.outcome == OUTCOME_ERROR {
+                classify_failure_kind(
+                    entry.path,
+                    status_code,
+                    entry.tavily_status_code,
+                    entry.error,
+                    entry.response_body,
+                )
+            } else {
+                None
+            }
+        });
+        let key_effect_summary = entry.key_effect_summary.map(str::to_string);
+        let binding_effect_summary = entry.binding_effect_summary.map(str::to_string);
+        let selection_effect_summary = entry.selection_effect_summary.map(str::to_string);
+        let request_kind = normalize_request_kind_for_response_context(
+            classify_token_request_kind(entry.path, Some(entry.request_body)),
+            ResponseRequestKindContext {
+                method: entry.method.as_str(),
+                path: entry.path,
+                http_status: status_code,
+                tavily_status: entry.tavily_status_code,
+                failure_kind: failure_kind.as_deref(),
+                error_message: entry.error,
+                response_body: entry.response_body,
+            },
+        );
+
+        let forwarded_json =
+            serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
+        let dropped_json =
+            serde_json::to_string(entry.dropped_headers).unwrap_or_else(|_| "[]".to_string());
+        let request_user_id = if let Some(token_id) = entry.auth_token_id {
+            self.resolve_request_rollup_user_id(token_id, None).await?
+        } else {
+            None
+        };
+        let remote_addr = entry.client_ip.and_then(|info| info.remote_addr.as_deref());
+        let client_ip = entry.client_ip.and_then(|info| info.client_ip.as_deref());
+        let client_ip_source = entry
+            .client_ip
+            .and_then(|info| info.client_ip_source.as_deref());
+        let client_ip_trusted = entry
+            .client_ip
+            .map(|info| i64::from(info.client_ip_trusted))
+            .unwrap_or(0);
+        let ip_headers_json = entry
+            .client_ip
+            .map(|info| serde_json::to_string(&info.ip_headers))
+            .transpose()
+            .unwrap_or_else(|_| Some("[]".to_string()));
+
+        let request_value_bucket =
+            request_value_bucket_for_request_log(&request_kind.key, Some(entry.request_body));
+        let counts_business_quota =
+            request_log_counts_business_quota(&request_kind.key, Some(entry.request_body));
+        let retention_usage_delta =
+            i64::from(counts_business_quota && entry.outcome == OUTCOME_SUCCESS);
+        let request_log_retention = self.get_request_log_retention_settings_cached().await?;
+        let retention_decision = self
+            .request_log_body_retention_decision(
+                &request_log_retention,
+                request_user_id.as_deref(),
+                entry.outcome,
+                request_value_bucket,
+                retention_usage_delta,
+                RequestLogBodyRetentionDecisionMode {
+                    include_debug_shared: true,
+                    include_heavy_usage: false,
+                },
+            )
+            .await?;
+        let body_storage = Self::request_log_body_storage_decision(
+            retention_decision.days,
+            retention_decision.profile,
+            RequestLogBodyStorageInput {
+                request_body: entry.request_body,
+                response_body: entry.response_body,
+                created_at,
+            },
+        );
+        let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
+            &request_kind.key,
+            Some(entry.request_body),
+            entry.outcome,
+            failure_kind.as_deref(),
+            0,
+            counts_business_quota,
+        );
+        let request_log_catalog_key = (entry.outcome != OUTCOME_UNKNOWN
+            && request_kind.key.trim() != "api:unknown-path")
+            .then(|| {
+                Self::request_log_catalog_rollup_key_for_request(
+                    created_at,
+                    &request_kind.key,
+                    &request_kind.label,
+                    counts_business_quota,
+                    entry.outcome,
+                    failure_kind.as_deref(),
+                    entry.key_effect_code,
+                    entry.binding_effect_code,
+                    entry.selection_effect_code,
+                    entry.auth_token_id,
+                    entry.key_id,
+                )
+            });
+        let source_mutation = self
+            .request_stats_coalescer
+            .begin_dashboard_rollup_source_mutation(created_at);
+        // Finalize the write before the pooled connection is reused; an
+        // INSERT ... RETURNING statement can retain a stale sidecar snapshot.
+        let insert = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO observability.request_logs (
+                api_key_id,
+                auth_token_id,
+                request_user_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                counts_business_quota,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
+                request_body,
+                response_body,
+                request_body_bytes,
+                response_body_bytes,
+                request_body_sha256,
+                response_body_sha256,
+                body_retention_days,
+                body_retention_profile,
+                body_cleaned_reason,
+                body_cleaned_at,
+                forwarded_headers,
+                dropped_headers,
+                remote_addr,
+                client_ip,
+                client_ip_source,
+                client_ip_trusted,
+                ip_headers,
+                created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46)
+            RETURNING id
+            "#,
+        )
+        .bind(entry.key_id)
+        .bind(entry.auth_token_id)
+        .bind(request_user_id.as_deref())
+        .bind(entry.method.as_str())
+        .bind(entry.path)
+        .bind(entry.query)
+        .bind(status_code)
+        .bind(entry.tavily_status_code)
+        .bind(entry.error)
+        .bind(entry.outcome)
+        .bind(&request_kind.key)
+        .bind(&request_kind.label)
+        .bind(request_kind.detail.as_deref())
+        .bind(i64::from(counts_business_quota))
+        .bind(None::<i64>)
+        .bind(failure_kind)
+        .bind(entry.key_effect_code)
+        .bind(key_effect_summary)
+        .bind(entry.binding_effect_code)
+        .bind(binding_effect_summary)
+        .bind(entry.selection_effect_code)
+        .bind(selection_effect_summary)
+        .bind(entry.gateway_mode)
+        .bind(entry.experiment_variant)
+        .bind(entry.proxy_session_id)
+        .bind(entry.routing_subject_hash)
+        .bind(entry.upstream_operation)
+        .bind(entry.fallback_reason)
+        .bind(body_storage.request_body)
+        .bind(body_storage.response_body)
+        .bind(body_storage.request_body_bytes)
+        .bind(body_storage.response_body_bytes)
+        .bind(body_storage.request_body_sha256)
+        .bind(body_storage.response_body_sha256)
+        .bind(body_storage.body_retention_days)
+        .bind(body_storage.body_retention_profile)
+        .bind(body_storage.body_cleaned_reason)
+        .bind(body_storage.body_cleaned_at)
+        .bind(forwarded_json)
+        .bind(dropped_json)
+        .bind(remote_addr)
+        .bind(client_ip)
+        .bind(client_ip_source)
+        .bind(client_ip_trusted)
+        .bind(ip_headers_json)
+        .bind(created_at)
+        .fetch_one(self.pg()?)
+        .await?;
+        let request_log_id = insert;
         if entry.auth_token_id.is_some() {
             self.request_log_diagnostic_handoff.lock().await.insert(
                 request_log_id,

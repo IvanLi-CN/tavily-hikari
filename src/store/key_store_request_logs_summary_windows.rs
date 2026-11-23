@@ -59,6 +59,9 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 19], ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_rollup_freshness_signature_without_flush_pg(range_start).await;
+        }
         let mut tx = self.pool.begin().await?;
         let signature =
             Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx(&mut tx, range_start)
@@ -67,13 +70,39 @@ impl KeyStore {
         Ok(signature)
     }
 
+    pub(crate) async fn fetch_dashboard_rollup_freshness_signature_without_flush_pg(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 19], ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+        let signature =
+            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx_pg(&mut tx, range_start)
+                .await?;
+        tx.commit().await?;
+        Ok(signature)
+    }
+
     pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at(
         &self,
     ) -> Result<Option<i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_latest_dashboard_quota_sync_sample_at_pg().await;
+        }
         sqlx::query_scalar::<_, Option<i64>>(
             "SELECT MAX(captured_at) FROM api_key_quota_sync_samples",
         )
         .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn fetch_latest_dashboard_quota_sync_sample_at_pg(
+        &self,
+    ) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(captured_at) FROM core.api_key_quota_sync_samples",
+        )
+        .fetch_one(self.pg()?)
         .await
         .map_err(ProxyError::Database)
     }
@@ -90,6 +119,9 @@ impl KeyStore {
         &self,
         range_start: i64,
     ) -> Result<[i64; 3], ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_api_key_lifecycle_signature_pg(range_start).await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -110,10 +142,37 @@ impl KeyStore {
         ])
     }
 
+    pub(crate) async fn fetch_dashboard_api_key_lifecycle_signature_pg(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS key_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
+            FROM core.api_keys
+            WHERE created_at >= $1
+            "#,
+        )
+        .bind(range_start)
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok([
+            row.try_get("key_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
     pub(crate) async fn fetch_dashboard_quarantine_lifecycle_signature(
         &self,
         range_start: i64,
     ) -> Result<[i64; 3], ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quarantine_lifecycle_signature_pg(range_start).await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -134,11 +193,38 @@ impl KeyStore {
         ])
     }
 
+    pub(crate) async fn fetch_dashboard_quarantine_lifecycle_signature_pg(
+        &self,
+        range_start: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS quarantine_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
+            FROM core.api_key_quarantines
+            WHERE created_at >= $1
+            "#,
+        )
+        .bind(range_start)
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok([
+            row.try_get("quarantine_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
     pub(crate) async fn fetch_dashboard_exhausted_lifecycle_signature(
         &self,
         range_start: i64,
         range_end: i64,
     ) -> Result<[i64; 3], ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_exhausted_lifecycle_signature_pg(range_start, range_end).await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -167,11 +253,47 @@ impl KeyStore {
         ])
     }
 
+    pub(crate) async fn fetch_dashboard_exhausted_lifecycle_signature_pg(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Result<[i64; 3], ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(COUNT(*), 0) AS exhausted_count,
+                COALESCE(MAX(created_at), 0) AS max_created_at,
+                COALESCE(SUM(created_at), 0)::bigint AS created_at_sum
+            FROM core.api_key_maintenance_records
+            WHERE source = $1
+              AND operation_code = $2
+              AND reason_code = $3
+              AND created_at >= $4
+              AND created_at < $5
+            "#,
+        )
+        .bind(MAINTENANCE_SOURCE_SYSTEM)
+        .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(range_start)
+        .bind(range_end)
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok([
+            row.try_get("exhausted_count")?,
+            row.try_get("max_created_at")?,
+            row.try_get("created_at_sum")?,
+        ])
+    }
+
     pub(crate) async fn fetch_dashboard_quota_sample_signature(
         &self,
         window_start: i64,
         window_end: i64,
     ) -> Result<[i64; 4], ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_sample_signature_pg(window_start, window_end).await;
+        }
         if window_end <= window_start {
             return Ok([0, 0, 0, 0]);
         }
@@ -227,12 +349,75 @@ impl KeyStore {
         ])
     }
 
+    pub(crate) async fn fetch_dashboard_quota_sample_signature_pg(
+        &self,
+        window_start: i64,
+        window_end: i64,
+    ) -> Result<[i64; 4], ProxyError> {
+        if window_end <= window_start {
+            return Ok([0, 0, 0, 0]);
+        }
+        let row = sqlx::query(
+            r#"
+            WITH window_rows AS (
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM core.api_key_quota_sync_samples
+                WHERE captured_at >= $1
+                  AND captured_at < $2
+            ),
+            sampled_keys AS (
+                SELECT DISTINCT key_id FROM window_rows
+            ),
+            baseline_rows AS (
+                SELECT s.id, s.key_id, s.quota_remaining, s.captured_at
+                FROM core.api_key_quota_sync_samples s
+                INNER JOIN (
+                    SELECT key_id, MAX(captured_at) AS captured_at
+                    FROM core.api_key_quota_sync_samples
+                    WHERE captured_at < $3
+                      AND key_id IN (SELECT key_id FROM sampled_keys)
+                    GROUP BY key_id
+                ) latest
+                    ON latest.key_id = s.key_id
+                   AND latest.captured_at = s.captured_at
+            ),
+            signature_rows AS (
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM window_rows
+                UNION ALL
+                SELECT id, key_id, quota_remaining, captured_at
+                FROM baseline_rows
+            )
+            SELECT
+                COALESCE(COUNT(*), 0) AS sample_count,
+                COALESCE(MAX(captured_at), 0) AS max_captured_at,
+                COALESCE(SUM(captured_at), 0)::bigint AS captured_at_sum,
+                COALESCE(SUM(quota_remaining), 0)::bigint AS remaining_sum
+            FROM signature_rows
+            "#,
+        )
+        .bind(window_start)
+        .bind(window_end)
+        .bind(window_start)
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok([
+            row.try_get("sample_count")?,
+            row.try_get("max_captured_at")?,
+            row.try_get("captured_at_sum")?,
+            row.try_get("remaining_sum")?,
+        ])
+    }
+
     pub(crate) async fn fetch_dashboard_stale_key_count(
         &self,
         hot_active_since: i64,
         hot_stale_before: i64,
         cold_stale_before: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_stale_key_count_pg(hot_active_since, hot_stale_before, cold_stale_before).await;
+        }
         sqlx::query_scalar(
             r#"
             SELECT COALESCE(COUNT(*), 0)
@@ -259,6 +444,42 @@ impl KeyStore {
         .bind(hot_stale_before)
         .bind(cold_stale_before)
         .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_dashboard_stale_key_count_pg(
+        &self,
+        hot_active_since: i64,
+        hot_stale_before: i64,
+        cold_stale_before: i64,
+    ) -> Result<i64, ProxyError> {
+        sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(COUNT(*), 0)
+            FROM core.api_keys
+            WHERE deleted_at IS NULL
+              AND status <> $1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND CASE
+                  WHEN last_used_at >= $2 THEN (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $3
+                  )
+                  ELSE (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $4
+                  )
+              END
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(hot_active_since)
+        .bind(hot_stale_before)
+        .bind(cold_stale_before)
+        .fetch_one(self.pg()?)
         .await
         .map_err(ProxyError::from)
     }
@@ -397,8 +618,21 @@ impl KeyStore {
         &self,
         bounds: SummaryWindowBounds,
     ) -> Result<SummaryWindows, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_summary_windows_pg(bounds).await;
+        }
         let mut tx = self.pool.begin().await?;
         let windows = Self::fetch_summary_windows_tx(&mut tx, bounds).await?;
+        tx.commit().await?;
+        Ok(windows)
+    }
+
+    pub(crate) async fn fetch_summary_windows_pg(
+        &self,
+        bounds: SummaryWindowBounds,
+    ) -> Result<SummaryWindows, ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+        let windows = Self::fetch_summary_windows_tx_pg(&mut tx, bounds).await?;
         tx.commit().await?;
         Ok(windows)
     }
@@ -651,8 +885,31 @@ impl KeyStore {
         visible_buckets: i64,
         retained_buckets: i64,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_hourly_request_window_pg(current_bucket_start, bucket_seconds, visible_buckets, retained_buckets).await;
+        }
         let mut tx = self.pool.begin().await?;
         let window = Self::fetch_dashboard_hourly_request_window_tx(
+            &mut tx,
+            current_bucket_start,
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(window)
+    }
+
+    pub(crate) async fn fetch_dashboard_hourly_request_window_pg(
+        &self,
+        current_bucket_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+        let window = Self::fetch_dashboard_hourly_request_window_tx_pg(
             &mut tx,
             current_bucket_start,
             bucket_seconds,
@@ -682,6 +939,9 @@ impl KeyStore {
         ),
         ProxyError,
     > {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_overview_consistent_read_pg(bounds, current_bucket_start, bucket_seconds, visible_buckets, retained_buckets).await;
+        }
         let pending_dashboard_rollup_signature =
             self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
         let mut tx = self.pool.begin().await?;
@@ -713,6 +973,54 @@ impl KeyStore {
         ))
     }
 
+    pub(crate) async fn fetch_dashboard_overview_consistent_read_pg(
+        &self,
+        bounds: SummaryWindowBounds,
+        current_bucket_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<
+        (
+            SummaryWindows,
+            ProxySummary,
+            DashboardHourlyRequestWindow,
+            [i64; 19],
+            [i64; 10],
+        ),
+        ProxyError,
+    > {
+        let pending_dashboard_rollup_signature =
+            self.request_stats_coalescer.pending_dashboard_freshness_signature().await;
+        let mut tx = self.pg()?.begin().await?;
+        let summary_windows = Self::fetch_summary_windows_tx_pg(&mut tx, bounds).await?;
+        #[cfg(debug_assertions)]
+        self.wait_for_dashboard_overview_read_pause_if_installed().await;
+        let summary = Self::fetch_summary_without_flush_tx_pg(&mut tx).await?;
+        let dashboard_rollup_signature =
+            Self::fetch_dashboard_rollup_freshness_signature_without_flush_tx_pg(
+                &mut tx,
+                summary_windows.previous_month_start,
+            )
+            .await?;
+        let hourly_request_window = Self::fetch_dashboard_hourly_request_window_tx_pg(
+            &mut tx,
+            current_bucket_start,
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((
+            summary_windows,
+            summary,
+            hourly_request_window,
+            dashboard_rollup_signature,
+            pending_dashboard_rollup_signature,
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) async fn fetch_success_breakdown(
         &self,
@@ -720,6 +1028,9 @@ impl KeyStore {
         day_start: i64,
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_success_breakdown_pg(month_since, day_start, day_end).await;
+        }
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_since)
             .await?;
@@ -750,6 +1061,51 @@ impl KeyStore {
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(scan_floor)
         .fetch_one(&self.pool)
+        .await?;
+
+        Ok(SuccessBreakdown {
+            monthly_success: bucket_month_success + row.try_get::<i64, _>("monthly_success")?,
+            daily_success: row.try_get("daily_success")?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fetch_success_breakdown_pg(
+        &self,
+        month_since: i64,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<SuccessBreakdown, ProxyError> {
+        let month_request_log_floor = self
+            .fetch_visible_request_log_floor_since(month_since)
+            .await?;
+        let bucket_month_success = self
+            .fetch_utc_month_gap_bucket_metrics(
+                month_since,
+                month_request_log_floor,
+                self.backend_time.now_ts(),
+            )
+            .await?
+            .success_count;
+        let scan_floor = month_since.min(day_start);
+        let row = sqlx::query(
+            r#"
+            SELECT
+              COALESCE(SUM(CASE WHEN created_at >= $1 AND result_status = $2 THEN 1 ELSE 0 END), 0)::bigint AS monthly_success,
+              COALESCE(SUM(CASE WHEN created_at >= $3 AND created_at < $4 AND result_status = $5 THEN 1 ELSE 0 END), 0)::bigint AS daily_success
+            FROM observability.request_logs
+            WHERE visibility = $6
+              AND created_at >= $7
+            "#,
+        )
+        .bind(month_since)
+        .bind(OUTCOME_SUCCESS)
+        .bind(day_start)
+        .bind(day_end)
+        .bind(OUTCOME_SUCCESS)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(scan_floor)
+        .fetch_one(self.pg()?)
         .await?;
 
         Ok(SuccessBreakdown {

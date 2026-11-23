@@ -5,6 +5,7 @@
 //! from SQLite until the storage-migration waves port each module.
 
 mod config;
+pub(crate) mod locks;
 mod runtime;
 mod schema;
 

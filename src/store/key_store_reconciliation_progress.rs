@@ -2,12 +2,16 @@ impl KeyStore {
     #[allow(dead_code)]
     pub(crate) async fn daily_reconciliation_progress(
         &self,
-    ) -> Result<(
-        DailyReconciliationProgress,
-        Vec<DailyReconciliationKeyProgress>,
-    ), ProxyError> {
+    ) -> Result<
+        (
+            DailyReconciliationProgress,
+            Vec<DailyReconciliationKeyProgress>,
+        ),
+        ProxyError,
+    > {
         let now = self.backend_time.now_ts();
-        let day_window = server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
+        let day_window =
+            server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
         let (observed_accounts, accounts_with_settled_period, fully_terminal_accounts, observed_periods, settled_periods, degraded_periods, pending_periods) =
             sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64)>(
                 r#"
@@ -111,9 +115,7 @@ impl KeyStore {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(|(key_id, cooldown_until, reason_code)| {
-            (key_id, (cooldown_until, reason_code))
-        })
+        .map(|(key_id, cooldown_until, reason_code)| (key_id, (cooldown_until, reason_code)))
         .collect::<HashMap<_, _>>();
         let progress = DailyReconciliationProgress {
             observed_accounts,
@@ -131,17 +133,19 @@ impl KeyStore {
         };
         let by_key = key_rows
             .into_iter()
-            .map(|(key_id, terminal_research, pending_research, pending_project_ids)| {
-                let cooldown = backoffs.get(&key_id);
-                DailyReconciliationKeyProgress {
-                    key_id_hint: key_id.chars().take(12).collect(),
-                    terminal_research,
-                    pending_research,
-                    pending_project_ids,
-                    cooldown_until: cooldown.map(|(until, _)| *until),
-                    cooldown_reason: cooldown.and_then(|(_, reason)| reason.clone()),
-                }
-            })
+            .map(
+                |(key_id, terminal_research, pending_research, pending_project_ids)| {
+                    let cooldown = backoffs.get(&key_id);
+                    DailyReconciliationKeyProgress {
+                        key_id_hint: key_id.chars().take(12).collect(),
+                        terminal_research,
+                        pending_research,
+                        pending_project_ids,
+                        cooldown_until: cooldown.map(|(until, _)| *until),
+                        cooldown_reason: cooldown.and_then(|(_, reason)| reason.clone()),
+                    }
+                },
+            )
             .collect();
         Ok((progress, by_key))
     }

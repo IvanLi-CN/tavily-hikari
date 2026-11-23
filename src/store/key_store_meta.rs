@@ -29,6 +29,54 @@ impl KeyStore {
         token_id: &str,
         period_code: &str,
     ) -> Result<String, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+            use ring::rand::{SecureRandom as _, SystemRandom};
+
+            let secret = if let Some(encoded) = self
+                .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1)
+                .await?
+            {
+                URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+                    ProxyError::Other("invalid upstream project id HMAC secret".to_string())
+                })?
+            } else {
+                let mut generated = [0_u8; 32];
+                SystemRandom::new()
+                    .fill(&mut generated)
+                    .map_err(|_| ProxyError::Other("failed to generate HMAC secret".to_string()))?;
+                let encoded = URL_SAFE_NO_PAD.encode(generated);
+                sqlx::query(
+                    "INSERT INTO core.meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+                )
+                .bind(META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1)
+                .bind(encoded)
+                .execute(pool)
+                .await?;
+                let stored = self
+                    .get_meta_string(META_KEY_UPSTREAM_PROJECT_ID_HMAC_SECRET_V1)
+                    .await?
+                    .ok_or_else(|| ProxyError::Other("missing generated HMAC secret".to_string()))?;
+                URL_SAFE_NO_PAD.decode(stored).map_err(|_| {
+                    ProxyError::Other("invalid upstream project id HMAC secret".to_string())
+                })?
+            };
+            if secret.len() != 32 {
+                return Err(ProxyError::Other(
+                    "invalid upstream project id HMAC secret length".to_string(),
+                ));
+            }
+            Ok(derive_access_token_project_id(
+                &secret,
+                token_id,
+                period_code,
+            ))
+            }
+            .await;
+        }
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         use ring::rand::{SecureRandom as _, SystemRandom};
 
@@ -71,6 +119,21 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                #[cfg(debug_assertions)]
+                record_meta_select();
+                sqlx::query_scalar::<_, String>(
+                    "SELECT value FROM core.meta WHERE key = $1 LIMIT 1",
+                )
+                .bind(key)
+                .fetch_optional(pool)
+                .await
+                .map_err(ProxyError::Database)
+            }
+            .await;
+        }
         #[cfg(debug_assertions)]
         record_meta_select();
         sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
@@ -84,13 +147,41 @@ impl KeyStore {
         &self,
         keys: &[&str],
     ) -> Result<StdHashMap<String, String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if keys.is_empty() {
+                    return Ok(StdHashMap::new());
+                }
+
+                let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                    "SELECT key, value FROM core.meta WHERE key IN (",
+                );
+                {
+                    let mut separated = query.separated(", ");
+                    for key in keys {
+                        separated.push_bind(*key);
+                    }
+                }
+                query.push(")");
+
+                #[cfg(debug_assertions)]
+                record_meta_select();
+                let rows = query
+                    .build_query_as::<(String, String)>()
+                    .fetch_all(pool)
+                    .await
+                    .map_err(ProxyError::Database)?;
+                Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if keys.is_empty() {
             return Ok(StdHashMap::new());
         }
 
-        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT key, value FROM meta WHERE key IN (",
-        );
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT key, value FROM meta WHERE key IN (");
         {
             let mut separated = query.separated(", ");
             for key in keys {
@@ -123,6 +214,24 @@ impl KeyStore {
     }
 
     pub(crate) async fn set_meta_string(&self, key: &str, value: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                sqlx::query(
+                    r#"
+                INSERT INTO core.meta (key, value)
+                VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = excluded.value
+                "#,
+                )
+                .bind(key)
+                .bind(value)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+            .await;
+        }
         sqlx::query(
             r#"
             INSERT INTO meta (key, value)
@@ -143,7 +252,8 @@ impl KeyStore {
     }
 
     pub(crate) async fn get_ha_full_master_node_id(&self) -> Result<Option<String>, ProxyError> {
-        self.get_meta_string(META_KEY_HA_FULL_MASTER_NODE_ID_V1).await
+        self.get_meta_string(META_KEY_HA_FULL_MASTER_NODE_ID_V1)
+            .await
     }
 
     pub(crate) async fn set_ha_full_master_node_id(&self, node_id: &str) -> Result<(), ProxyError> {

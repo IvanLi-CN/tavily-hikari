@@ -1746,6 +1746,7 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: None,
+            pg_pool: None,
             sqlite_runtime: SqliteRuntime::new(pool.clone()),
             pool,
             backend_time: BackendTime::system(),

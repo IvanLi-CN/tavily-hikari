@@ -501,7 +501,10 @@ impl TavilyProxy {
             .collect();
 
         let key_store_started = Instant::now();
-        let key_store = KeyStore::new_with_time(database_path, backend_time.clone()).await?;
+        let mut key_store = KeyStore::new_with_time(database_path, backend_time.clone()).await?;
+        if let Some(database_url) = options.database_url.as_deref() {
+            key_store.attach_postgres(database_url).await?;
+        }
         key_store.configure_ha_event_writes(ha_mode).await?;
         tracing::debug!(
             component = "forward_proxy",

@@ -2734,6 +2734,9 @@ pub(crate) struct KeyStore {
     pub(crate) observability_database_path: Option<String>,
     pub(crate) _observability_lock: Option<File>,
     pub(crate) pool: SqlitePool,
+    /// PostgreSQL pool used by the storage modules that have already been ported. The
+    /// SQLite pool keeps serving until the cutover wave; see the migration spec.
+    pub(crate) pg_pool: Option<sqlx::PgPool>,
     pub(crate) sqlite_runtime: SqliteRuntime,
     pub(crate) backend_time: BackendTime,
     pub(crate) token_binding_cache: RwLock<HashMap<String, TokenBindingCacheEntry>>,
@@ -2762,71 +2765,17 @@ pub(crate) struct KeyStore {
     pub(crate) forced_quota_subject_lock_loss_subjects: std::sync::Mutex<HashSet<String>>,
 }
 
-#[cfg(any(test, debug_assertions))]
-fn new_request_stats_test_pause() -> RequestStatsPostFlushPause {
-    RequestStatsPostFlushPause {
-        arrived: Arc::new(Notify::new()),
-        arrival_observed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        release: Arc::new(Notify::new()),
-        released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    }
-}
-
-#[cfg(any(test, debug_assertions))]
-async fn wait_for_request_stats_test_pause_if_installed(
-    slot: &Arc<Mutex<Option<RequestStatsPostFlushPause>>>,
-) {
-    if let Some(pause) = slot.lock().await.take() {
-        // Retain the arrival signal when the request returns before the test waits.
-        pause
-            .arrival_observed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        pause.arrived.notify_one();
-        while !pause.released.load(std::sync::atomic::Ordering::SeqCst) {
-            pause.release.notified().await;
-        }
-    }
-}
-
 impl KeyStore {
     pub(crate) fn reconciliation_maintenance_hint(
         &self,
     ) -> Arc<UpstreamReconciliationMaintenanceHint> {
         self.reconciliation_maintenance_hint.clone()
     }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn install_dashboard_overview_read_pause(&self) -> RequestStatsPostFlushPause {
-        let pause = new_request_stats_test_pause();
-        let mut slot = self.dashboard_overview_read_pause.lock().await;
-        *slot = Some(pause.clone());
-        pause
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn wait_for_dashboard_overview_read_pause_if_installed(&self) {
-        wait_for_request_stats_test_pause_if_installed(&self.dashboard_overview_read_pause).await;
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn install_admin_privacy_read_pause(&self) -> RequestStatsPostFlushPause {
-        let pause = new_request_stats_test_pause();
-        let mut slot = self.admin_privacy_read_pause.lock().await;
-        *slot = Some(pause.clone());
-        pause
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    pub(crate) async fn wait_for_admin_privacy_read_pause_if_installed(&self) {
-        wait_for_request_stats_test_pause_if_installed(&self.admin_privacy_read_pause).await;
-    }
 }
 
 include!("key_store_bootstrap.rs");
+include!("key_store_pg_plumbing.rs");
+include!("key_store_request_pause_failpoints.rs");
 include!("key_store_schema_migrations.rs");
 include!("key_store_schema_migrations_convergence.rs");
 include!("key_store_bootstrap_legacy.rs");
@@ -2836,11 +2785,13 @@ include!("key_store_observability_sidecar.rs");
 include!("key_store_public_metrics_freshness.rs");
 include!("key_store_blog_runtime.rs");
 include!("key_store_request_logs_gc.rs");
+include!("key_store_request_logs_gc_pg.rs");
 include!("key_store_migrations_a.rs");
 include!("key_store_migrations_b.rs");
 include!("key_store_admin_user_listing.rs");
 include!("key_store_admin_tokens.rs");
 include!("key_store_keys.rs");
+include!("key_store_keys_pg.rs");
 include!("key_store_account_base_entitlement_backfill.rs");
 include!("key_store_admin_passkey_schema.rs");
 include!("key_store_admin_passkeys.rs");
@@ -2858,9 +2809,12 @@ include!("key_store_reconciliation_progress.rs");
 include!("reconciliation_observation_store.rs");
 include!("key_store_upstream_reconciliation_admission.rs");
 include!("key_store_users_and_oauth.rs");
+include!("key_store_users_and_oauth_pg.rs");
 include!("key_store_linuxdo_credit_recharge.rs");
+include!("key_store_linuxdo_credit_recharge_pg.rs");
 include!("key_store_request_log_body_retention.rs");
 include!("key_store_token_logs.rs");
+include!("key_store_token_logs_pg.rs");
 include!("key_store_alert_models.rs");
 include!("key_store_alerts.rs");
 include!("key_store_alert_canonical_catalog.rs");
@@ -2871,15 +2825,22 @@ include!("key_store_alert_events_cte.rs");
 include!("key_store_alert_projection.rs");
 include!("key_store_announcements.rs");
 include!("key_store_dashboard_window_metrics.rs");
+include!("key_store_dashboard_window_metrics_pg.rs");
 include!("key_store_dashboard_month_series.rs");
+include!("key_store_dashboard_month_series_pg.rs");
 include!("key_store_dashboard_rollup_integrity.rs");
 include!("key_store_dashboard_and_job_read_models.rs");
+include!("key_store_dashboard_and_job_read_models_pg.rs");
 include!("key_store_request_stats_flush_and_public_metrics.rs");
+include!("key_store_request_stats_flush_and_public_metrics_pg.rs");
 include!("key_store_request_logs_and_dashboard.rs");
+include!("key_store_request_logs_and_dashboard_pg.rs");
 include!("key_store_dashboard_quota_recovery.rs");
 include!("key_store_request_logs_summary_windows.rs");
+include!("key_store_request_logs_summary_windows_pg.rs");
 include!("key_store_user_rankings.rs");
 include!("key_store_analysis_pressure.rs");
+include!("key_store_analysis_pressure_pg.rs");
 include!("key_store_meta.rs");
 include!("key_store_token_success_metrics.rs");
 include!("key_store_jobs.rs");

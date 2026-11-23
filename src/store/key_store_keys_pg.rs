@@ -1,0 +1,2528 @@
+/// PostgreSQL twins of the modules in `key_store_keys.rs`.
+///
+/// The SQLite implementations stay in the source module; these variants are reachable
+/// only through the attached PostgreSQL pool.
+impl KeyStore {
+    pub(crate) async fn count_total_users_pg(&self) -> Result<i64, ProxyError> {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core.users")
+            .fetch_one(self.pg()?)
+            .await
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn count_active_users_since_bucket_pg(
+        &self,
+        since_bucket_start: i64,
+    ) -> Result<i64, ProxyError> {
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(DISTINCT user_id)
+               FROM core.account_usage_rollup_buckets
+               WHERE metric_kind = $1
+                 AND bucket_kind = $2
+                 AND bucket_start >= $3
+                 AND value > 0"#,
+        )
+        .bind(AccountUsageRollupMetricKind::RequestCount.as_str())
+        .bind(AccountUsageRollupBucketKind::Day.as_str())
+        .bind(since_bucket_start)
+        .fetch_one(self.pg()?)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    pub async fn fetch_key_summary_since_pg(
+        &self,
+        key_id: &str,
+        since: i64,
+    ) -> Result<ProxySummary, ProxyError> {
+        // `api_key_usage_buckets.bucket_start` is aligned to *server-local midnight* (stored as UTC ts).
+        // Callers might pass `since` aligned to UTC midnight (e.g. from browser). Normalize so daily
+        // bucket queries remain correct under non-UTC server timezones.
+        let since_bucket_start = local_day_bucket_start_utc_ts(since);
+
+        let totals_row = sqlx::query(
+            r#"
+            SELECT
+              COALESCE(SUM(total_requests), 0)::bigint AS total_requests,
+              COALESCE(SUM(success_count), 0)::bigint AS success_count,
+              COALESCE(SUM(error_count), 0)::bigint AS error_count,
+              COALESCE(SUM(quota_exhausted_count), 0)::bigint AS quota_exhausted_count
+            FROM observability.api_key_usage_buckets
+            WHERE api_key_id = $1 AND bucket_secs = 86400 AND bucket_start >= $2
+            "#,
+        )
+        .bind(key_id)
+        .bind(since_bucket_start)
+        .fetch_one(self.pg()?)
+        .await?;
+
+        // Active/exhausted counts in this scope are not meaningful per single key; expose 1/0 for convenience
+        // We will compute based on current key status
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM core.api_keys WHERE id = $1 LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(self.pg()?)
+                .await?;
+
+        let key_last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM core.api_keys WHERE id = $1 LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(self.pg()?)
+                .await?;
+        let last_activity = key_last_used_at
+            .and_then(normalize_timestamp)
+            .filter(|ts| *ts >= since_bucket_start);
+
+        let quarantined = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM core.api_key_quarantines
+            WHERE key_id = $1 AND cleared_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .fetch_optional(self.pg()?)
+        .await?
+        .is_some();
+
+        let (active_keys, exhausted_keys, quarantined_keys) = if quarantined {
+            (0, 0, 1)
+        } else {
+            match status.as_deref() {
+                Some(STATUS_EXHAUSTED) => (0, 1, 0),
+                _ => (1, 0, 0),
+            }
+        };
+
+        Ok(ProxySummary {
+            total_requests: totals_row.try_get("total_requests")?,
+            success_count: totals_row.try_get("success_count")?,
+            error_count: totals_row.try_get("error_count")?,
+            quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
+            active_keys,
+            exhausted_keys,
+            quarantined_keys,
+            temporary_isolated_keys: 0,
+            last_activity,
+            total_quota_limit: 0,
+            total_quota_remaining: 0,
+        })
+    }
+
+    pub async fn fetch_key_logs_pg(
+        &self,
+        key_id: &str,
+        limit: usize,
+        since: Option<i64>,
+    ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = if let Some(since_ts) = since {
+            sqlx::query(
+                r#"
+                SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
+                       result_status, request_kind_key, request_kind_label, request_kind_detail,
+                       counts_business_quota,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
+                binding_effect_code, binding_effect_summary,
+                selection_effect_code, selection_effect_summary,
+                gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                upstream_operation, fallback_reason,
+                       request_body, response_body,
+                       request_body_bytes, response_body_bytes,
+                       request_body_sha256, response_body_sha256,
+                       body_cleaned_reason, body_cleaned_at,
+                       created_at, forwarded_headers, dropped_headers,
+                       remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
+                FROM observability.request_logs
+                WHERE api_key_id = $1 AND visibility = $2 AND created_at >= $3
+                ORDER BY created_at DESC
+                LIMIT $4
+                "#,
+            )
+            .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(since_ts)
+            .bind(limit)
+            .fetch_all(self.pg()?)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
+                       result_status, request_kind_key, request_kind_label, request_kind_detail,
+                       counts_business_quota,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
+                binding_effect_code, binding_effect_summary,
+                selection_effect_code, selection_effect_summary,
+                gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                upstream_operation, fallback_reason,
+                       request_body, response_body,
+                       request_body_bytes, response_body_bytes,
+                       request_body_sha256, response_body_sha256,
+                       body_cleaned_reason, body_cleaned_at,
+                       created_at, forwarded_headers, dropped_headers,
+                       remote_addr, client_ip, client_ip_source, client_ip_trusted, ip_headers
+                FROM observability.request_logs
+                WHERE api_key_id = $1 AND visibility = $2
+                ORDER BY created_at DESC
+                LIMIT $3
+                "#,
+            )
+            .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(limit)
+            .fetch_all(self.pg()?)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(Self::map_request_log_row)
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub(crate) async fn sync_keys_pg(&self, keys: &[String]) -> Result<(), ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+
+        let now = self.backend_time.now_ts();
+
+        for key in keys {
+            // If key exists, undelete by clearing deleted_at
+            if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
+                "SELECT id, deleted_at FROM core.api_keys WHERE api_key = $1 LIMIT 1",
+            )
+            .bind(key)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                if deleted_at.is_some() {
+                    sqlx::query("UPDATE core.api_keys SET deleted_at = NULL WHERE id = $1")
+                        .bind(&id)
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query(
+                        "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+                    )
+                    .bind(&id)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                continue;
+            }
+
+            // The SQLite helper takes a SQLite connection; the PostgreSQL twin probes
+            // core.api_keys through the same transaction.
+            let id = Self::generate_unique_key_id_pg(&mut tx).await?;
+            sqlx::query(
+                r#"
+                INSERT INTO core.api_keys (id, api_key, status, created_at, status_changed_at)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(&id)
+            .bind(key)
+            .bind(STATUS_ACTIVE)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO core.api_key_membership_intervals (key_id, active_from) VALUES ($1, $2)",
+            )
+            .bind(&id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Soft delete any keys not present in the provided set
+        if keys.is_empty() {
+            sqlx::query(
+                r#"
+                UPDATE core.api_key_membership_intervals
+                SET active_until = $1
+                WHERE active_until IS NULL
+                  AND key_id IN (SELECT id FROM core.api_keys WHERE deleted_at IS NULL)
+                "#,
+            )
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("UPDATE core.api_keys SET deleted_at = $1 WHERE deleted_at IS NULL")
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            let mut interval_builder =
+                QueryBuilder::new("UPDATE core.api_key_membership_intervals SET active_until = ");
+            interval_builder.push_bind(now);
+            interval_builder.push(
+                " WHERE active_until IS NULL AND key_id IN (SELECT id FROM core.api_keys WHERE deleted_at IS NULL AND api_key NOT IN (",
+            );
+            {
+                let mut separated = interval_builder.separated(", ");
+                for key in keys {
+                    separated.push_bind(key);
+                }
+            }
+            interval_builder.push("))");
+            interval_builder.build().execute(&mut *tx).await?;
+
+            let mut builder = QueryBuilder::new("UPDATE core.api_keys SET deleted_at = ");
+            builder.push_bind(now);
+            builder.push(" WHERE deleted_at IS NULL AND api_key NOT IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for key in keys {
+                    separated.push_bind(key);
+                }
+            }
+            builder.push(")");
+            builder.build().execute(&mut *tx).await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn acquire_key_pg(&self) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY last_used_at ASC, id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .bind(month_start)
+        .fetch_optional(self.pg()?)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY
+                CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                status_changed_at ASC,
+                id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_optional(self.pg()?)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY
+                CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                status_changed_at ASC,
+                id ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_optional(self.pg()?)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        Err(ProxyError::NoAvailableKeys)
+    }
+
+    pub(crate) async fn acquire_key_avoiding_transient_backoff_excluding_pg(
+        &self,
+        scope: &str,
+        excluded_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+            r#"
+            SELECT id, api_key
+            FROM core.api_keys
+            WHERE status = "#,
+        );
+        builder.push_bind(STATUS_ACTIVE);
+        builder.push(" AND deleted_at IS NULL");
+        if let Some(excluded_key_id) = excluded_key_id {
+            builder.push(" AND id != ");
+            builder.push_bind(excluded_key_id);
+        }
+        builder.push(
+            r#"
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = "#,
+        );
+        builder.push_bind(month_start);
+        builder.push(
+            r#"
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_transient_backoffs b
+                  WHERE b.key_id = core.api_keys.id
+                    AND b.scope = "#,
+        );
+        builder.push_bind(scope);
+        builder.push(" AND b.cooldown_until > ");
+        builder.push_bind(now);
+        builder.push(
+            r#"
+              )
+            ORDER BY last_used_at ASC, id ASC
+            LIMIT 1
+            "#,
+        );
+
+        if let Some((id, api_key)) = builder
+            .build_query_as::<(String, String)>()
+            .fetch_optional(self.pg()?)
+            .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
+        }
+
+        match excluded_key_id {
+            Some(key_id) => self.acquire_active_key_excluding(Some(key_id)).await,
+            None => self.acquire_key().await,
+        }
+    }
+
+    pub(crate) async fn list_mcp_session_candidate_key_ids_pg(
+        &self,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.reset_monthly().await?;
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let active = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .bind(month_start)
+        .fetch_all(self.pg()?)
+        .await?;
+        if !active.is_empty() {
+            return Ok(active);
+        }
+
+        let exhausted = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_all(self.pg()?)
+        .await?;
+        if !exhausted.is_empty() {
+            return Ok(exhausted);
+        }
+
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM core.api_keys
+            WHERE status = $1 AND deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM core.api_key_low_quota_depletions d
+                  WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines q
+                  WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(month_start)
+        .fetch_all(self.pg()?)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    async fn try_acquire_specific_key_with_status_pg(
+        &self,
+        key_id: &str,
+        status: &str,
+        allow_low_quota_depleted: bool,
+        transient_backoff_scope: Option<&str>,
+    ) -> Result<SpecificKeySelection, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let lease_with_cooldown = if let Some(scope) = transient_backoff_scope {
+            sqlx::query_as::<_, (String, String, bool)>(
+                r#"
+                SELECT id, api_key, EXISTS (
+                    SELECT 1
+                    FROM core.api_key_transient_backoffs b
+                    WHERE b.key_id = core.api_keys.id AND b.scope = $1 AND b.cooldown_until > $2
+                ) AS is_cooled_down
+                FROM core.api_keys
+                WHERE id = $3 AND status = $4 AND deleted_at IS NULL
+                  AND (
+                      $5 = 1
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM core.api_key_low_quota_depletions d
+                          WHERE d.key_id = core.api_keys.id AND d.month_start = $6
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                LIMIT 1
+                "#,
+            )
+            .bind(scope)
+            .bind(now)
+            .bind(key_id)
+            .bind(status)
+            .bind(if allow_low_quota_depleted { 1 } else { 0 })
+            .bind(month_start)
+            .fetch_optional(self.pg()?)
+            .await?
+        } else {
+            let lease = sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM core.api_keys
+                WHERE id = $1 AND status = $2 AND deleted_at IS NULL
+                  AND (
+                      $3 = 1
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM core.api_key_low_quota_depletions d
+                          WHERE d.key_id = core.api_keys.id AND d.month_start = $4
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                LIMIT 1
+                "#,
+            )
+            .bind(key_id)
+            .bind(status)
+            .bind(if allow_low_quota_depleted { 1 } else { 0 })
+            .bind(month_start)
+            .fetch_optional(self.pg()?)
+            .await?;
+            lease.map(|(id, api_key)| (id, api_key, false))
+        };
+
+        let Some((id, api_key, is_cooled_down)) = lease_with_cooldown else {
+            return Ok(SpecificKeySelection::Unavailable);
+        };
+
+        if is_cooled_down {
+            return Ok(SpecificKeySelection::CooledDown);
+        }
+        self.touch_key(&api_key, now).await?;
+        Ok(SpecificKeySelection::Lease(ApiKeyLease {
+            id,
+            secret: api_key,
+        }))
+    }
+
+    pub(crate) async fn has_available_active_key_excluding_pg(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        self.reset_monthly().await?;
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM core.api_keys
+                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_ACTIVE)
+            .bind(month_start)
+            .fetch_one(self.pg()?)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM core.api_keys
+                WHERE status = $1 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(STATUS_ACTIVE)
+            .bind(month_start)
+            .fetch_one(self.pg()?)
+            .await?
+        };
+
+        Ok(count > 0)
+    }
+
+    pub(crate) async fn has_available_regular_exhausted_key_excluding_pg(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        self.reset_monthly().await?;
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let count: i64 = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM core.api_keys
+                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_EXHAUSTED)
+            .bind(month_start)
+            .fetch_one(self.pg()?)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM core.api_keys
+                WHERE status = $1 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .bind(month_start)
+            .fetch_one(self.pg()?)
+            .await?
+        };
+
+        Ok(count > 0)
+    }
+
+    pub(crate) async fn is_low_quota_depleted_this_month_pg(
+        &self,
+        key_id: &str,
+    ) -> Result<bool, ProxyError> {
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+        let exists = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM core.api_key_low_quota_depletions
+            WHERE key_id = $1 AND month_start = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .bind(month_start)
+        .fetch_optional(self.pg()?)
+        .await?
+        .is_some();
+        Ok(exists)
+    }
+
+    pub(crate) async fn record_low_quota_depletion_if_needed_pg(
+        &self,
+        key_id: &str,
+        threshold: i64,
+    ) -> Result<bool, ProxyError> {
+        let Some(quota_remaining) = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT quota_remaining FROM core.api_keys WHERE id = $1",
+        )
+        .bind(key_id)
+        .fetch_optional(self.pg()?)
+        .await?
+        .flatten() else {
+            return Ok(false);
+        };
+
+        if quota_remaining > threshold {
+            return Ok(false);
+        }
+
+        let now = self.backend_time.now_utc();
+        let month_start = start_of_month(now).timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO core.api_key_low_quota_depletions (
+                key_id,
+                month_start,
+                threshold,
+                quota_remaining,
+                created_at
+            ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (key_id, month_start) DO UPDATE SET
+                threshold = excluded.threshold,
+                quota_remaining = LEAST(api_key_low_quota_depletions.quota_remaining, excluded.quota_remaining)
+            "#,
+        )
+        .bind(key_id)
+        .bind(month_start)
+        .bind(threshold)
+        .bind(quota_remaining)
+        .bind(now.timestamp())
+        .execute(self.pg()?)
+        .await?;
+
+        Ok(true)
+    }
+
+    pub(crate) async fn acquire_active_key_excluding_pg(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = self.backend_time.now_ts();
+        let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
+
+        let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM core.api_keys
+                WHERE id != $1 AND status = $2 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $3
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_ACTIVE)
+            .bind(month_start)
+            .fetch_optional(self.pg()?)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM core.api_keys
+                WHERE status = $1 AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_low_quota_depletions d
+                      WHERE d.key_id = core.api_keys.id AND d.month_start = $2
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM core.api_key_quarantines q
+                      WHERE q.key_id = core.api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+            "#,
+            )
+            .bind(STATUS_ACTIVE)
+            .bind(month_start)
+            .fetch_optional(self.pg()?)
+            .await?
+        };
+
+        let Some((id, api_key)) = active_candidate else {
+            return Err(ProxyError::NoAvailableKeys);
+        };
+
+        self.touch_key(&api_key, now).await?;
+        Ok(ApiKeyLease {
+            id,
+            secret: api_key,
+        })
+    }
+
+    pub(crate) async fn save_research_request_affinity_pg(
+        &self,
+        request_id: &str,
+        key_id: &str,
+        token_id: &str,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            INSERT INTO core.research_requests (
+                request_id,
+                key_id,
+                token_id,
+                expires_at,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (request_id) DO UPDATE SET
+                key_id = excluded.key_id,
+                token_id = excluded.token_id,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(request_id)
+        .bind(key_id)
+        .bind(token_id)
+        .bind(expires_at)
+        .bind(now)
+        .bind(now)
+        .execute(self.pg()?)
+        .await?;
+
+        // Opportunistic cleanup to keep this small over time.
+        sqlx::query("DELETE FROM core.research_requests WHERE expires_at <= $1")
+            .bind(now)
+            .execute(self.pg()?)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_api_key_maintenance_records_schema_pg(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS core.api_key_maintenance_records (
+                id text PRIMARY KEY,
+                key_id text NOT NULL,
+                source text NOT NULL,
+                operation_code text NOT NULL,
+                operation_summary text NOT NULL,
+                reason_code text,
+                reason_summary text,
+                reason_detail text,
+                request_log_id bigint,
+                auth_token_log_id bigint,
+                auth_token_id text,
+                actor_user_id text,
+                actor_display_name text,
+                status_before text,
+                status_after text,
+                quarantine_before bigint NOT NULL DEFAULT 0,
+                quarantine_after bigint NOT NULL DEFAULT 0,
+                created_at bigint NOT NULL,
+                FOREIGN KEY (key_id) REFERENCES core.api_keys (id),
+                FOREIGN KEY (auth_token_id) REFERENCES core.auth_tokens (id),
+                FOREIGN KEY (auth_token_log_id) REFERENCES core.auth_token_logs (id)
+            )
+            "#,
+        )
+        .execute(self.pg()?)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_key_created
+               ON api_key_maintenance_records(key_id, created_at DESC)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_request_log
+               ON api_key_maintenance_records(request_log_id)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auth_token_log
+               ON api_key_maintenance_records(auth_token_log_id)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auto_exhausted_window
+               ON api_key_maintenance_records(created_at, key_id)
+               WHERE source = 'system'
+                 AND operation_code = 'auto_mark_exhausted'
+                 AND reason_code = 'quota_exhausted'"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_api_key_transient_backoffs_schema_pg(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS core.api_key_transient_backoffs (
+                key_id text NOT NULL,
+                scope text NOT NULL,
+                cooldown_until bigint NOT NULL,
+                retry_after_secs bigint NOT NULL,
+                reason_code text,
+                source_request_log_id bigint,
+                created_at bigint NOT NULL,
+                updated_at bigint NOT NULL,
+                PRIMARY KEY (key_id, scope),
+                FOREIGN KEY (key_id) REFERENCES core.api_keys (id)
+            )
+            "#,
+        )
+        .execute(self.pg()?)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_scope_cooldown
+               ON core.api_key_transient_backoffs(scope, cooldown_until)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_key_scope
+               ON core.api_key_transient_backoffs(key_id, scope)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_source_request_log
+               ON core.api_key_transient_backoffs(source_request_log_id)"#,
+        )
+        .execute(self.pg()?)
+        .await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn get_research_request_affinity_pg(
+        &self,
+        request_id: &str,
+        now: i64,
+    ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, i64)>(
+            r#"
+            SELECT key_id, token_id, expires_at
+            FROM core.research_requests
+            WHERE request_id = $1 AND expires_at > $2
+            LIMIT 1
+            "#,
+        )
+        .bind(request_id)
+        .bind(now)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        if row.is_none() {
+            sqlx::query(
+                r#"
+                DELETE FROM core.research_requests
+                WHERE request_id = $1 AND expires_at <= $2
+                "#,
+            )
+            .bind(request_id)
+            .bind(now)
+            .execute(self.pg()?)
+            .await?;
+        }
+
+        Ok(row)
+    }
+
+    pub(crate) async fn validate_access_token_pg(&self, token: &str) -> Result<bool, ProxyError> {
+        // Expect format th-<id>-<secret>
+        let Some(rest) = token.strip_prefix("th-") else {
+            return Ok(false);
+        };
+        let parts: Vec<&str> = rest.splitn(2, '-').collect();
+        if parts.len() != 2 {
+            return Ok(false);
+        }
+        let id = parts[0];
+        let secret = parts[1];
+        // Keep short, human-friendly id; strengthen total entropy by lengthening secret.
+        // Backward-compatible: accept legacy 12-char secrets and new longer secrets.
+        const LEGACY_SECRET_LEN: usize = 12;
+        const NEW_SECRET_LEN: usize = 24; // chosen to significantly raise entropy
+        let secret_len_ok = secret.len() == LEGACY_SECRET_LEN || secret.len() == NEW_SECRET_LEN;
+        if id.len() != 4 || !secret_len_ok {
+            return Ok(false);
+        }
+
+        // Validation should be a pure check. Do NOT mutate usage counters here,
+        // otherwise the token's total_requests will be double-counted (once here,
+        // and once when we actually record the attempt). Only return whether the
+        // token exists and is enabled.
+        let row = sqlx::query_as::<_, (i64, i64)>(
+            r#"SELECT t.enabled, COALESCE(u.active, 1) AS user_active
+               FROM core.auth_tokens t
+               LEFT JOIN core.user_token_bindings b ON b.token_id = t.id
+               LEFT JOIN core.users u ON u.id = b.user_id
+               WHERE t.id = $1 AND t.secret = $2 AND t.deleted_at IS NULL
+               LIMIT 1"#,
+        )
+        .bind(id)
+        .bind(secret)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(matches!(row, Some((enabled, user_active)) if enabled == 1 && user_active == 1))
+    }
+
+    pub(crate) async fn create_access_token_pg(
+        &self,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let deadline = self.backend_time.instant_now() + ACCESS_TOKEN_CREATE_RETRY_BUDGET;
+        let mut retry_attempt = 0usize;
+        let deferred = || ProxyError::Deferred {
+            operation: "admin_access_token_mutation",
+            reason: "sqlite_contention".to_string(),
+        };
+
+        loop {
+            // PostgreSQL has no exclusive writer lock to take here: the `auth_tokens`
+            // primary key still rejects the rare id collision, and the retry loop below
+            // keeps its existing budget for serialization/deadlock failures.
+            let mut tx = match self.pg()?.begin().await {
+                Ok(tx) => tx,
+                Err(err) => return Err(ProxyError::Database(err)),
+            };
+            let id = random_string(ALPHABET, 4);
+            // Increase secret length to strengthen token entropy while keeping id short.
+            let secret = random_string(ALPHABET, 24);
+            let res = sqlx::query(
+                r#"INSERT INTO core.auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                   VALUES ($1, $2, 1, $3, NULL, 0, $4, NULL, NULL)"#,
+            )
+            .bind(&id)
+            .bind(&secret)
+            .bind(note.unwrap_or(""))
+            .bind(self.backend_time.now_ts())
+            .execute(&mut *tx)
+            .await;
+
+            match res {
+                Ok(_) => {
+                    match tx.commit().await.map_err(ProxyError::Database) {
+                        Ok(()) => {}
+                        Err(err) if is_transient_sqlite_write_error(&err) => {
+                            if sleep_before_sqlite_transient_write_retry(
+                                &self.backend_time,
+                                "create access token",
+                                retry_attempt,
+                                deadline,
+                                &err,
+                            )
+                            .await
+                            {
+                                retry_attempt += 1;
+                                continue;
+                            }
+                            return Err(deferred());
+                        }
+                        Err(err) => return Err(err),
+                    }
+                    let token_str = Self::compose_full_token(&id, &secret);
+                    return Ok(AuthTokenSecret {
+                        id,
+                        token: token_str,
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    // Retry on rare id collision
+                    tx.rollback().await?;
+                    continue;
+                }
+                Err(e) => {
+                    let err = match tx.rollback().await {
+                        Ok(()) => ProxyError::Database(e),
+                        Err(rollback_error) => ProxyError::Database(rollback_error),
+                    };
+                    if is_transient_sqlite_write_error(&err) {
+                        if sleep_before_sqlite_transient_write_retry(
+                            &self.backend_time,
+                            "create access token",
+                            retry_attempt,
+                            deadline,
+                            &err,
+                        )
+                        .await
+                        {
+                            retry_attempt += 1;
+                            continue;
+                        }
+                        return Err(deferred());
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    /// Batch-create access tokens with required group name. Optional note applied to each row.
+    pub(crate) async fn create_access_tokens_batch_pg(
+        &self,
+        group: &str,
+        count: usize,
+        note: Option<&str>,
+    ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut tx = self.pg()?.begin().await?;
+        let mut out: Vec<AuthTokenSecret> = Vec::with_capacity(count);
+        for _ in 0..count {
+            loop {
+                let id = random_string(ALPHABET, 4);
+                let secret = random_string(ALPHABET, 24);
+                let res = sqlx::query(
+                    r#"INSERT INTO core.auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                       VALUES ($1, $2, 1, $3, $4, 0, $5, NULL, NULL)"#,
+                )
+                .bind(&id)
+                .bind(&secret)
+                .bind(note.unwrap_or(""))
+                .bind(group)
+                .bind(self.backend_time.now_ts())
+                .execute(&mut *tx)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        let token = Self::compose_full_token(&id, &secret);
+                        out.push(AuthTokenSecret { id, token });
+                        break;
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                        continue;
+                    }
+                    Err(e) => {
+                        tx.rollback().await.ok();
+                        return Err(ProxyError::Database(e));
+                    }
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    pub(crate) async fn list_access_tokens_pg(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
+               FROM core.auth_tokens
+               WHERE deleted_at IS NULL
+               ORDER BY created_at DESC, id DESC"#,
+        )
+        .fetch_all(self.pg()?)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at: last_used,
+                    quota: None,
+                    quota_hourly_reset_at: None,
+                    quota_daily_reset_at: None,
+                    quota_monthly_reset_at: None,
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn list_disabled_access_tokens_pg(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AuthToken>, ProxyError> {
+        let limit = limit.clamp(1, 100) as i64;
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
+               FROM core.auth_tokens
+               WHERE deleted_at IS NULL AND enabled = 0
+               ORDER BY created_at DESC, id DESC
+               LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(self.pg()?)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at: last_used,
+                    quota: None,
+                    quota_hourly_reset_at: None,
+                    quota_daily_reset_at: None,
+                    quota_monthly_reset_at: None,
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn list_disabled_access_token_ids_pg(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        let limit = limit.clamp(1, 100) as i64;
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT id
+               FROM core.auth_tokens
+               WHERE deleted_at IS NULL AND enabled = 0
+               ORDER BY created_at DESC, id DESC
+               LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(self.pg()?)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn delete_access_token_pg(&self, id: &str) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query("UPDATE core.auth_tokens SET enabled = 0, deleted_at = $1 WHERE id = $2")
+            .bind(now)
+            .bind(id)
+            .execute(self.pg()?)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn set_access_token_enabled_pg(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            "UPDATE core.auth_tokens SET enabled = $1 WHERE id = $2 AND deleted_at IS NULL",
+        )
+        .bind(if enabled { 1 } else { 0 })
+        .bind(id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_access_token_note_pg(
+        &self,
+        id: &str,
+        note: &str,
+    ) -> Result<(), ProxyError> {
+        sqlx::query("UPDATE core.auth_tokens SET note = $1 WHERE id = $2 AND deleted_at IS NULL")
+            .bind(note)
+            .bind(id)
+            .execute(self.pg()?)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_access_token_secret_pg(
+        &self,
+        id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT secret FROM core.auth_tokens WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(self.pg()?)
+        .await?;
+        Ok(row.map(|(secret,)| AuthTokenSecret {
+            id: id.to_string(),
+            token: Self::compose_full_token(id, &secret),
+        }))
+    }
+
+    /// Update the secret for an existing token id and return the new full token string.
+    pub(crate) async fn rotate_access_token_secret_pg(
+        &self,
+        id: &str,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        // Ensure token exists first to provide a clearer error on missing id
+        let exists = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM core.auth_tokens WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(self.pg()?)
+        .await?;
+        if exists.is_none() {
+            return Err(ProxyError::Database(sqlx::Error::RowNotFound));
+        }
+
+        // Generate a new secret with the current strong length
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let new_secret = random_string(ALPHABET, 24);
+
+        sqlx::query("UPDATE core.auth_tokens SET secret = $1 WHERE id = $2 AND deleted_at IS NULL")
+            .bind(&new_secret)
+            .bind(id)
+            .execute(self.pg()?)
+            .await?;
+
+        Ok(AuthTokenSecret {
+            id: id.to_string(),
+            token: Self::compose_full_token(id, &new_secret),
+        })
+    }
+
+    pub(crate) async fn list_user_tokens_pg(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<AuthToken>, ProxyError> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT t.id, t.enabled, t.note, t.group_name, t.total_requests, t.created_at, t.last_used_at
+               FROM core.user_token_bindings b
+               JOIN core.auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = $1 AND t.deleted_at IS NULL
+               ORDER BY b.updated_at DESC, b.created_at DESC, t.id DESC"#,
+        )
+        .bind(user_id)
+        .fetch_all(self.pg()?)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used_at)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at,
+                    quota: None,
+                    quota_hourly_reset_at: None,
+                    quota_daily_reset_at: None,
+                    quota_monthly_reset_at: None,
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn is_user_token_bound_pg(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, Option<i64>>(
+            r#"SELECT 1
+               FROM core.user_token_bindings
+               WHERE user_id = $1 AND token_id = $2
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .fetch_optional(self.pg()?)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    pub(crate) async fn list_user_bindings_for_tokens_pg(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, String>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT token_id, user_id FROM core.user_token_bindings WHERE token_id IN (",
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(")");
+        let rows = builder
+            .build_query_as::<(String, String)>()
+            .fetch_all(self.pg()?)
+            .await?;
+        let mut map = HashMap::new();
+        for (token_id, user_id) in rows {
+            map.insert(token_id, user_id);
+        }
+        Ok(map)
+    }
+
+    pub(crate) async fn get_user_token_secret_pg(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        let row = sqlx::query_as::<_, (String,)>(
+            r#"SELECT t.secret
+               FROM core.user_token_bindings b
+               JOIN core.auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = $1 AND b.token_id = $2 AND t.deleted_at IS NULL AND t.enabled = 1
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .fetch_optional(self.pg()?)
+        .await?;
+        Ok(row.map(|(secret,)| AuthTokenSecret {
+            id: token_id.to_string(),
+            token: Self::compose_full_token(token_id, &secret),
+        }))
+    }
+
+    pub(crate) async fn find_user_id_by_token_fresh_pg(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        let row = sqlx::query_as::<_, (String,)>(
+            r#"SELECT user_id FROM core.user_token_bindings WHERE token_id = $1 LIMIT 1"#,
+        )
+        .bind(token_id)
+        .fetch_optional(self.pg()?)
+        .await?;
+        let user_id = row.map(|(id,)| id);
+        self.cache_token_binding(token_id, user_id.as_deref()).await;
+        Ok(user_id)
+    }
+
+    pub(crate) async fn list_user_ids_for_tag_pg(
+        &self,
+        tag_id: &str,
+    ) -> Result<Vec<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT user_id FROM core.user_tag_bindings WHERE tag_id = $1",
+        )
+        .bind(tag_id)
+        .fetch_all(self.pg()?)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn list_admin_users_paged_pg(
+        &self,
+        page: i64,
+        per_page: i64,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+        activity_scope: AdminUserActivityScope,
+    ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+        let search = query
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{value}%"));
+        let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
+        let active_since = self.admin_user_activity_since(activity_scope);
+
+        let mut count_builder =
+            QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM core.users u WHERE ");
+        Self::push_admin_user_filters_pg(
+            &mut count_builder,
+            tag_id,
+            search.as_deref(),
+            active_since,
+        );
+        let total = count_builder
+            .build_query_scalar::<i64>()
+            .fetch_one(self.pg()?)
+            .await?;
+
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new("");
+        Self::push_admin_user_listing_select_pg(&mut builder);
+        Self::push_admin_user_filters_pg(&mut builder, tag_id, search.as_deref(), active_since);
+        Self::push_admin_user_listing_group_order_pg(&mut builder);
+        builder.push(" LIMIT ");
+        builder.push_bind(per_page);
+        builder.push(" OFFSET ");
+        builder.push_bind(offset);
+        let rows = builder
+            .build_query_as::<(
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                Option<i64>,
+                i64,
+            )>()
+            .fetch_all(self.pg()?)
+            .await?;
+
+        let items = rows
+            .into_iter()
+            .map(Self::map_admin_user_identity_row)
+            .collect();
+        Ok((items, total))
+    }
+
+    pub(crate) async fn list_admin_users_filtered_pg(
+        &self,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+        activity_scope: AdminUserActivityScope,
+    ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        let _permit = self
+            .admin_heavy_read_semaphore
+            .acquire()
+            .await
+            .expect("admin heavy read semaphore is never closed");
+        let search = query
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{value}%"));
+        let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
+        let active_since = self.admin_user_activity_since(activity_scope);
+        let mut builder = QueryBuilder::<sqlx::Postgres>::new("");
+        Self::push_admin_user_listing_select_pg(&mut builder);
+        Self::push_admin_user_filters_pg(&mut builder, tag_id, search.as_deref(), active_since);
+        Self::push_admin_user_listing_group_order_pg(&mut builder);
+        let rows = builder
+            .build_query_as::<(
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                Option<i64>,
+                i64,
+            )>()
+            .fetch_all(self.pg()?)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(Self::map_admin_user_identity_row)
+            .collect())
+    }
+
+    pub(crate) async fn get_admin_user_identity_pg(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<AdminUserIdentity>, ProxyError> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                Option<i64>,
+                i64,
+            ),
+        >(
+            r#"SELECT
+                 u.id,
+                 u.display_name,
+                 u.username,
+                 u.active,
+                 u.last_login_at,
+                 COALESCE(COUNT(b.token_id), 0) AS token_count
+               FROM core.users u
+               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
+               WHERE u.id = $1
+               GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(
+            |(user_id, display_name, username, active, last_login_at, token_count)| {
+                AdminUserIdentity {
+                    user_id,
+                    display_name,
+                    username,
+                    active: active == 1,
+                    last_login_at,
+                    token_count,
+                }
+            },
+        ))
+    }
+
+    pub(crate) async fn get_admin_user_identities_pg(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, AdminUserIdentity>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT
+                 u.id,
+                 u.display_name,
+                 u.username,
+                 u.active,
+                 u.last_login_at,
+                 COALESCE(COUNT(b.token_id), 0) AS token_count
+               FROM core.users u
+               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
+               WHERE u.id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at");
+
+        let rows = builder
+            .build_query_as::<(
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                Option<i64>,
+                i64,
+            )>()
+            .fetch_all(self.pg()?)
+            .await?;
+
+        let mut items = HashMap::with_capacity(rows.len());
+        for (user_id, display_name, username, active, last_login_at, token_count) in rows {
+            items.insert(
+                user_id.clone(),
+                AdminUserIdentity {
+                    user_id,
+                    display_name,
+                    username,
+                    active: active == 1,
+                    last_login_at,
+                    token_count,
+                },
+            );
+        }
+        Ok(items)
+    }
+
+    pub(crate) async fn get_user_primary_api_key_affinity_pg(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT api_key_id
+               FROM core.user_primary_api_key_affinity
+               WHERE user_id = $1
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(self.pg()?)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn get_token_primary_api_key_affinity_pg(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<TokenPrimaryApiKeyAffinity>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, String)>(
+            r#"SELECT token_id, user_id, api_key_id
+               FROM core.token_primary_api_key_affinity
+               WHERE token_id = $1
+               LIMIT 1"#,
+        )
+        .bind(token_id)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(
+            |(token_id, user_id, api_key_id)| TokenPrimaryApiKeyAffinity {
+                token_id,
+                user_id,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn find_recent_primary_candidate_for_user_pg(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT api_key_id
+            FROM core.user_api_key_bindings
+            WHERE user_id = $1
+            ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(self.pg()?)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn sync_user_primary_api_key_affinity_pg(
+        &self,
+        user_id: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        let mut tx = self.pg()?.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO core.user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO core.token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            SELECT token_id, user_id, $1, $2, $3
+            FROM core.user_token_bindings
+            WHERE user_id = $4
+            ON CONFLICT (token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn set_token_primary_api_key_affinity_pg(
+        &self,
+        token_id: &str,
+        user_id: Option<&str>,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            INSERT INTO core.token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn get_http_project_api_key_affinity_pg(
+        &self,
+        owner_subject: &str,
+        project_id_hash: &str,
+    ) -> Result<Option<HttpProjectAffinityBinding>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT owner_subject, project_id_hash, api_key_id
+               FROM core.http_project_api_key_affinity
+               WHERE owner_subject = $1 AND project_id_hash = $2
+               LIMIT 1"#,
+        )
+        .bind(owner_subject)
+        .bind(project_id_hash)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(
+            |(owner_subject, project_id_hash, api_key_id)| HttpProjectAffinityBinding {
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn set_http_project_api_key_affinity_pg(
+        &self,
+        owner_subject: &str,
+        project_id_hash: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            INSERT INTO core.http_project_api_key_affinity (
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (owner_subject, project_id_hash) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(owner_subject)
+        .bind(project_id_hash)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_api_route_api_key_affinity_pg(
+        &self,
+        owner_subject: &str,
+        route_key_hash: &str,
+    ) -> Result<Option<ApiRouteAffinityBinding>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT owner_subject, project_id_hash, api_key_id
+               FROM core.http_project_api_key_affinity
+               WHERE owner_subject = $1 AND project_id_hash = $2
+               LIMIT 1"#,
+        )
+        .bind(owner_subject)
+        .bind(route_key_hash)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(
+            |(owner_subject, route_key_hash, api_key_id)| ApiRouteAffinityBinding {
+                owner_subject,
+                route_key_hash,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn create_or_replace_mcp_session_pg(
+        &self,
+        binding: &McpSessionBinding,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO core.mcp_sessions (
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+            ON CONFLICT (proxy_session_id) DO UPDATE SET
+                upstream_session_id = excluded.upstream_session_id,
+                upstream_key_id = excluded.upstream_key_id,
+                auth_token_id = excluded.auth_token_id,
+                user_id = excluded.user_id,
+                protocol_version = excluded.protocol_version,
+                last_event_id = excluded.last_event_id,
+                gateway_mode = excluded.gateway_mode,
+                experiment_variant = excluded.experiment_variant,
+                ab_bucket = excluded.ab_bucket,
+                routing_subject_hash = excluded.routing_subject_hash,
+                fallback_reason = excluded.fallback_reason,
+                rate_limited_until = excluded.rate_limited_until,
+                last_rate_limited_at = excluded.last_rate_limited_at,
+                last_rate_limit_reason = excluded.last_rate_limit_reason,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at,
+                revoked_at = excluded.revoked_at,
+                revoke_reason = excluded.revoke_reason
+            "#,
+        )
+        .bind(&binding.proxy_session_id)
+        .bind(binding.upstream_session_id.as_deref())
+        .bind(binding.upstream_key_id.as_deref())
+        .bind(binding.auth_token_id.as_deref())
+        .bind(binding.user_id.as_deref())
+        .bind(binding.protocol_version.as_deref())
+        .bind(binding.last_event_id.as_deref())
+        .bind(&binding.gateway_mode)
+        .bind(&binding.experiment_variant)
+        .bind(binding.ab_bucket)
+        .bind(binding.routing_subject_hash.as_deref())
+        .bind(binding.fallback_reason.as_deref())
+        .bind(binding.rate_limited_until)
+        .bind(binding.last_rate_limited_at)
+        .bind(binding.last_rate_limit_reason.as_deref())
+        .bind(binding.created_at)
+        .bind(binding.updated_at)
+        .bind(binding.expires_at)
+        .bind(binding.revoked_at)
+        .bind(binding.revoke_reason.as_deref())
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_active_mcp_session_pg(
+        &self,
+        proxy_session_id: &str,
+        now: i64,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            FROM core.mcp_sessions
+            WHERE proxy_session_id = $1
+              AND revoked_at IS NULL
+              AND expires_at > $2
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_session_id)
+        .bind(now)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(|row| McpSessionBinding {
+            proxy_session_id: row.get("proxy_session_id"),
+            upstream_session_id: row.get("upstream_session_id"),
+            upstream_key_id: row.get("upstream_key_id"),
+            auth_token_id: row.get("auth_token_id"),
+            user_id: row.get("user_id"),
+            protocol_version: row.get("protocol_version"),
+            last_event_id: row.get("last_event_id"),
+            gateway_mode: row.get("gateway_mode"),
+            experiment_variant: row.get("experiment_variant"),
+            ab_bucket: row.get("ab_bucket"),
+            routing_subject_hash: row.get("routing_subject_hash"),
+            fallback_reason: row.get("fallback_reason"),
+            rate_limited_until: row.get("rate_limited_until"),
+            last_rate_limited_at: row.get("last_rate_limited_at"),
+            last_rate_limit_reason: row.get("last_rate_limit_reason"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+            revoke_reason: row.get("revoke_reason"),
+        }))
+    }
+
+    pub(crate) async fn get_latest_active_mcp_session_for_token_pg(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            FROM core.mcp_sessions
+            WHERE auth_token_id = $1
+              AND revoked_at IS NULL
+              AND expires_at > $2
+            ORDER BY updated_at DESC, expires_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(token_id)
+        .bind(now)
+        .fetch_optional(self.pg()?)
+        .await?;
+
+        Ok(row.map(|row| McpSessionBinding {
+            proxy_session_id: row.get("proxy_session_id"),
+            upstream_session_id: row.get("upstream_session_id"),
+            upstream_key_id: row.get("upstream_key_id"),
+            auth_token_id: row.get("auth_token_id"),
+            user_id: row.get("user_id"),
+            protocol_version: row.get("protocol_version"),
+            last_event_id: row.get("last_event_id"),
+            gateway_mode: row.get("gateway_mode"),
+            experiment_variant: row.get("experiment_variant"),
+            ab_bucket: row.get("ab_bucket"),
+            routing_subject_hash: row.get("routing_subject_hash"),
+            fallback_reason: row.get("fallback_reason"),
+            rate_limited_until: row.get("rate_limited_until"),
+            last_rate_limited_at: row.get("last_rate_limited_at"),
+            last_rate_limit_reason: row.get("last_rate_limit_reason"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+            revoke_reason: row.get("revoke_reason"),
+        }))
+    }
+
+    pub(crate) async fn has_active_non_rebalance_mcp_session_for_token_pg(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        let exists: i64 = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM core.mcp_sessions
+                WHERE auth_token_id = $1
+                  AND gateway_mode <> $2
+                  AND revoked_at IS NULL
+                  AND expires_at > $3
+            )
+            "#,
+        )
+        .bind(token_id)
+        .bind(MCP_GATEWAY_MODE_REBALANCE)
+        .bind(now)
+        .fetch_one(self.pg()?)
+        .await?;
+        Ok(exists != 0)
+    }
+
+    pub(crate) async fn touch_mcp_session_pg(
+        &self,
+        proxy_session_id: &str,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET
+                protocol_version = COALESCE($1, protocol_version),
+                last_event_id = COALESCE($2, last_event_id),
+                updated_at = $3,
+                expires_at = $4
+            WHERE proxy_session_id = $5
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(protocol_version)
+        .bind(last_event_id)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_mcp_session_rate_limited_pg(
+        &self,
+        proxy_session_id: &str,
+        rate_limited_until: i64,
+        reason: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET
+                rate_limited_until = $1,
+                last_rate_limited_at = $2,
+                last_rate_limit_reason = $3,
+                updated_at = $4,
+                expires_at = $5
+            WHERE proxy_session_id = $6
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(rate_limited_until)
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_mcp_session_rate_limit_pg(
+        &self,
+        proxy_session_id: &str,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET
+                rate_limited_until = NULL,
+                updated_at = $1,
+                expires_at = $2
+            WHERE proxy_session_id = $3
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_mcp_session_upstream_identity_pg(
+        &self,
+        proxy_session_id: &str,
+        upstream_session_id: &str,
+        protocol_version: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET
+                upstream_session_id = $1,
+                protocol_version = COALESCE($2, protocol_version),
+                updated_at = $3,
+                expires_at = $4
+            WHERE proxy_session_id = $5
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(upstream_session_id)
+        .bind(protocol_version)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_mcp_session_rebalance_metadata_pg(
+        &self,
+        proxy_session_id: &str,
+        routing_subject_hash: Option<&str>,
+        fallback_reason: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET
+                routing_subject_hash = COALESCE($1, routing_subject_hash),
+                fallback_reason = COALESCE($2, fallback_reason),
+                updated_at = $3,
+                expires_at = $4
+            WHERE proxy_session_id = $5
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(routing_subject_hash)
+        .bind(fallback_reason)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_session_pg(
+        &self,
+        proxy_session_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
+            WHERE proxy_session_id = $4 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(proxy_session_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_user_key_pg(
+        &self,
+        user_id: &str,
+        upstream_key_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
+            WHERE user_id = $4 AND upstream_key_id = $5 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(user_id)
+        .bind(upstream_key_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_token_key_pg(
+        &self,
+        token_id: &str,
+        upstream_key_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"
+            UPDATE core.mcp_sessions
+            SET revoked_at = $1, revoke_reason = $2, updated_at = $3
+            WHERE auth_token_id = $4 AND upstream_key_id = $5 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(token_id)
+        .bind(upstream_key_id)
+        .execute(self.pg()?)
+        .await?;
+        Ok(())
+    }
+
+    fn push_admin_user_filters_pg<'a>(
+        builder: &mut QueryBuilder<'a, sqlx::Postgres>,
+        tag_id: Option<&'a str>,
+        search: Option<&'a str>,
+        active_since: Option<i64>,
+    ) {
+        builder.push("(");
+        builder.push_bind(tag_id);
+        builder.push(" IS NULL OR EXISTS (SELECT 1 FROM core.user_tag_bindings utb_filter WHERE utb_filter.user_id = u.id AND utb_filter.tag_id = ");
+        builder.push_bind(tag_id);
+        builder.push(")) AND (");
+        builder.push_bind(search);
+        builder.push(" IS NULL OR u.id ILIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(u.display_name, '') ILIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(u.username, '') ILIKE ");
+        builder.push_bind(search);
+        builder.push(" OR EXISTS (SELECT 1 FROM core.user_tag_bindings utb_search JOIN core.user_tags ut_search ON ut_search.id = utb_search.tag_id WHERE utb_search.user_id = u.id AND (ut_search.name ILIKE ");
+        builder.push_bind(search);
+        builder.push(" OR COALESCE(ut_search.display_name, '') ILIKE ");
+        builder.push_bind(search);
+        builder.push("))) AND (");
+        builder.push_bind(active_since);
+        builder.push(
+            " IS NULL OR EXISTS (SELECT 1 FROM core.account_usage_rollup_buckets aur WHERE aur.user_id = u.id AND aur.metric_kind = ",
+        );
+        builder.push_bind(AccountUsageRollupMetricKind::RequestCount.as_str());
+        builder.push(" AND aur.bucket_kind = ");
+        builder.push_bind(AccountUsageRollupBucketKind::Day.as_str());
+        builder.push(" AND aur.bucket_start >= ");
+        builder.push_bind(active_since.map(local_day_bucket_start_utc_ts));
+        builder.push(" AND aur.value > 0");
+        builder.push("))");
+    }
+
+    fn push_admin_user_listing_select_pg(builder: &mut QueryBuilder<'_, sqlx::Postgres>) {
+        builder.push(
+            r#"SELECT
+                 u.id,
+                 u.display_name,
+                 u.username,
+                 u.active,
+                 u.last_login_at,
+                 COALESCE(COUNT(b.token_id), 0) AS token_count
+               FROM core.users u
+               LEFT JOIN core.user_token_bindings b ON b.user_id = u.id
+               WHERE "#,
+        );
+    }
+
+    fn push_admin_user_listing_group_order_pg(builder: &mut QueryBuilder<'_, sqlx::Postgres>) {
+        builder.push(
+            r#" GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+        );
+    }
+}

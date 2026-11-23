@@ -3,6 +3,9 @@ impl KeyStore {
         &self,
         older_than_secs: i64,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_keys_pending_quota_sync_pg(older_than_secs).await;
+        }
         let now = self.backend_time.now_ts();
         let threshold = now - older_than_secs;
         let rows = sqlx::query_scalar::<_, String>(
@@ -29,11 +32,44 @@ impl KeyStore {
         Ok(rows)
     }
 
+    pub(crate) async fn list_keys_pending_quota_sync_pg(
+        &self,
+        older_than_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let threshold = now - older_than_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM core.api_keys
+            WHERE deleted_at IS NULL
+              AND status <> $1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $2
+            )
+            ORDER BY CASE WHEN quota_synced_at IS NULL OR quota_synced_at = 0 THEN 0 ELSE 1 END, quota_synced_at ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(threshold)
+        .fetch_all(self.pg()?)
+        .await?;
+        Ok(rows)
+    }
+
     pub(crate) async fn list_keys_pending_hot_quota_sync(
         &self,
         active_within_secs: i64,
         stale_after_secs: i64,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_keys_pending_hot_quota_sync_pg(active_within_secs, stale_after_secs).await;
+        }
         let now = self.backend_time.now_ts();
         let active_since = now - active_within_secs;
         let stale_before = now - stale_after_secs;
@@ -63,7 +99,44 @@ impl KeyStore {
         Ok(rows)
     }
 
+    pub(crate) async fn list_keys_pending_hot_quota_sync_pg(
+        &self,
+        active_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = self.backend_time.now_ts();
+        let active_since = now - active_within_secs;
+        let stale_before = now - stale_after_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM core.api_keys
+            WHERE deleted_at IS NULL
+              AND status <> $1
+              AND last_used_at >= $2
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM core.api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < $3
+            )
+            ORDER BY last_used_at DESC, quota_synced_at ASC, id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(active_since)
+        .bind(stale_before)
+        .fetch_all(self.pg()?)
+        .await?;
+        Ok(rows)
+    }
+
     pub(crate) async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_recent_jobs_pg(limit).await;
+        }
         let limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             r#"SELECT
@@ -109,10 +182,59 @@ impl KeyStore {
         Ok(items)
     }
 
+    pub(crate) async fn list_recent_jobs_pg(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query(
+            r#"SELECT
+                    j.id,
+                    j.job_type,
+                    j.trigger_source,
+                    j.key_id,
+                    k.group_name AS key_group,
+                    j.status,
+                    j.attempt,
+                    j.message,
+                    j.queued_at,
+                    j.started_at,
+                    j.finished_at,
+                    j.claim_generation
+                FROM core.scheduled_jobs j
+                LEFT JOIN core.api_keys k ON k.id = j.key_id
+                ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
+                LIMIT $1"#,
+        )
+        .bind(limit)
+        .fetch_all(self.pg()?)
+        .await?;
+        let items = rows
+            .into_iter()
+            .map(|row| -> Result<JobLog, sqlx::Error> {
+                Ok(JobLog {
+                    id: row.try_get("id")?,
+                    job_type: row.try_get("job_type")?,
+                    trigger_source: row.try_get("trigger_source")?,
+                    key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    key_group: row.try_get::<Option<String>, _>("key_group")?,
+                    status: row.try_get("status")?,
+                    attempt: row.try_get("attempt")?,
+                    message: row.try_get::<Option<String>, _>("message")?,
+                    queued_at: row.try_get("queued_at")?,
+                    started_at: row.try_get("started_at")?,
+                    finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
+                    claim_generation: row.try_get("claim_generation")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(items)
+    }
+
     pub(crate) async fn list_recent_job_signatures(
         &self,
         limit: usize,
     ) -> Result<Vec<(i64, String, Option<i64>)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_recent_job_signatures_pg(limit).await;
+        }
         let limit = limit.clamp(1, 500) as i64;
         sqlx::query_as::<_, (i64, String, Option<i64>)>(
             r#"
@@ -128,12 +250,34 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    pub(crate) async fn list_recent_job_signatures_pg(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, Option<i64>)>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        sqlx::query_as::<_, (i64, String, Option<i64>)>(
+            r#"
+            SELECT id, status, finished_at
+            FROM core.scheduled_jobs
+            ORDER BY COALESCE(started_at, queued_at) DESC, id DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(self.pg()?)
+        .await
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn list_recent_jobs_paginated(
         &self,
         group: &str,
         page: usize,
         per_page: usize,
     ) -> Result<(Vec<JobLog>, i64, JobGroupCounts), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_recent_jobs_paginated_pg(group, page, per_page).await;
+        }
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100) as i64;
         let offset = ((page - 1) as i64).saturating_mul(per_page);
@@ -200,6 +344,81 @@ impl KeyStore {
         Ok((items, total, group_counts))
     }
 
+    pub(crate) async fn list_recent_jobs_paginated_pg(
+        &self,
+        group: &str,
+        page: usize,
+        per_page: usize,
+    ) -> Result<(Vec<JobLog>, i64, JobGroupCounts), ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100) as i64;
+        let offset = ((page - 1) as i64).saturating_mul(per_page);
+
+        let where_clause = Self::scheduled_job_group_filter_clause(group, "j.job_type");
+        let count_where_clause = Self::scheduled_job_group_filter_clause(group, "job_type");
+
+        let count_query = format!(
+            "SELECT COUNT(*) FROM core.scheduled_jobs {}",
+            count_where_clause
+        );
+        let total: i64 = sqlx::query_scalar(&count_query)
+            .fetch_one(self.pg()?)
+            .await?;
+        let group_counts = self.fetch_recent_job_group_counts().await?;
+
+        let select_query = format!(
+            r#"
+            SELECT
+                j.id,
+                j.job_type,
+                j.trigger_source,
+                j.key_id,
+                k.group_name AS key_group,
+                j.status,
+                j.attempt,
+                j.message,
+                j.queued_at,
+                j.started_at,
+                j.finished_at,
+                j.claim_generation
+            FROM core.scheduled_jobs j
+            LEFT JOIN core.api_keys k ON k.id = j.key_id
+            {}
+            ORDER BY COALESCE(j.started_at, j.queued_at) DESC, j.id DESC
+            LIMIT $1 OFFSET $2
+            "#,
+            where_clause
+        );
+
+        let rows = sqlx::query(&select_query)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(self.pg()?)
+            .await?;
+
+        let items = rows
+            .into_iter()
+            .map(|row| -> Result<JobLog, sqlx::Error> {
+                Ok(JobLog {
+                    id: row.try_get("id")?,
+                    job_type: row.try_get("job_type")?,
+                    trigger_source: row.try_get("trigger_source")?,
+                    key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    key_group: row.try_get::<Option<String>, _>("key_group")?,
+                    status: row.try_get("status")?,
+                    attempt: row.try_get("attempt")?,
+                    message: row.try_get::<Option<String>, _>("message")?,
+                    queued_at: row.try_get("queued_at")?,
+                    started_at: row.try_get("started_at")?,
+                    finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
+                    claim_generation: row.try_get("claim_generation")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((items, total, group_counts))
+    }
+
     fn scheduled_job_group_filter_clause(group: &str, column: &str) -> String {
         let condition = match group {
             "quota" => format!(
@@ -220,6 +439,9 @@ impl KeyStore {
     }
 
     async fn fetch_recent_job_group_counts(&self) -> Result<JobGroupCounts, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_recent_job_group_counts_pg().await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -234,6 +456,34 @@ impl KeyStore {
             "#,
         )
         .fetch_one(&self.pool)
+        .await?;
+
+        Ok(JobGroupCounts {
+            all: row.try_get("all_count")?,
+            quota: row.try_get("quota_count")?,
+            usage: row.try_get("usage_count")?,
+            logs: row.try_get("logs_count")?,
+            db: row.try_get("db_count")?,
+            geo: row.try_get("geo_count")?,
+            linuxdo: row.try_get("linuxdo_count")?,
+        })
+    }
+
+    async fn fetch_recent_job_group_counts_pg(&self) -> Result<JobGroupCounts, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) AS all_count,
+                COALESCE(SUM(CASE WHEN job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot' THEN 1 ELSE 0 END), 0)::bigint AS quota_count,
+                COALESCE(SUM(CASE WHEN job_type = 'token_usage_rollup' OR job_type = 'usage_aggregation' THEN 1 ELSE 0 END), 0)::bigint AS usage_count,
+                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'ha_outbox_gc' OR job_type = 'request_logs_gc' OR job_type = 'mcp_sessions_gc' OR job_type = 'mcp_session_init_backoffs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0)::bigint AS logs_count,
+                COALESCE(SUM(CASE WHEN job_type = 'db_compaction' THEN 1 ELSE 0 END), 0)::bigint AS db_count,
+                COALESCE(SUM(CASE WHEN job_type = 'forward_proxy_geo_refresh' THEN 1 ELSE 0 END), 0)::bigint AS geo_count,
+                COALESCE(SUM(CASE WHEN job_type = 'linuxdo_user_status_sync' OR job_type = 'linuxdo_user_tag_binding_refresh' THEN 1 ELSE 0 END), 0)::bigint AS linuxdo_count
+            FROM core.scheduled_jobs
+            "#,
+        )
+        .fetch_one(self.pg()?)
         .await?;
 
         Ok(JobGroupCounts {
@@ -329,8 +579,18 @@ impl KeyStore {
     }
 
     pub(crate) async fn fetch_summary_without_flush(&self) -> Result<ProxySummary, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_summary_without_flush_pg().await;
+        }
         let mut tx = self.pool.begin().await?;
         let summary = Self::fetch_summary_without_flush_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok(summary)
+    }
+
+    pub(crate) async fn fetch_summary_without_flush_pg(&self) -> Result<ProxySummary, ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+        let summary = Self::fetch_summary_without_flush_tx_pg(&mut tx).await?;
         tx.commit().await?;
         Ok(summary)
     }
