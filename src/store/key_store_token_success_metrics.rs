@@ -1,5 +1,4 @@
 impl KeyStore {
-
     pub(crate) async fn fetch_token_success_failure(
         &self,
         token_id: &str,
@@ -8,7 +7,9 @@ impl KeyStore {
         day_end: i64,
     ) -> Result<(i64, i64, i64), ProxyError> {
         if self.pg_pool.is_some() {
-            return self.fetch_token_success_failure_pg(token_id, month_since, day_start, day_end).await;
+            return self
+                .fetch_token_success_failure_pg(token_id, month_since, day_start, day_end)
+                .await;
         }
         let scan_floor = month_since.min(day_start);
         let row = sqlx::query(

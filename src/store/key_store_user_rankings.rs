@@ -21,16 +21,10 @@ impl KeyStore {
             .fetch_user_ranking_window(generated_at.saturating_sub(SECS_PER_DAY), generated_at)
             .await?;
         let last7d = self
-            .fetch_user_ranking_window(
-                generated_at.saturating_sub(7 * SECS_PER_DAY),
-                generated_at,
-            )
+            .fetch_user_ranking_window(generated_at.saturating_sub(7 * SECS_PER_DAY), generated_at)
             .await?;
         let last30d = self
-            .fetch_user_ranking_window(
-                generated_at.saturating_sub(30 * SECS_PER_DAY),
-                generated_at,
-            )
+            .fetch_user_ranking_window(generated_at.saturating_sub(30 * SECS_PER_DAY), generated_at)
             .await?;
 
         Ok((
@@ -85,7 +79,9 @@ impl KeyStore {
             AccountUsageRollupMetricKind::BusinessCredits => AccountUsageRollupBucketKind::Hour,
             AccountUsageRollupMetricKind::PrimarySuccess
             | AccountUsageRollupMetricKind::SecondarySuccess
-            | AccountUsageRollupMetricKind::RequestCount => AccountUsageRollupBucketKind::FiveMinute,
+            | AccountUsageRollupMetricKind::RequestCount => {
+                AccountUsageRollupBucketKind::FiveMinute
+            }
         };
 
         let bucket_secs = match bucket_kind {
@@ -96,11 +92,17 @@ impl KeyStore {
             AccountUsageRollupBucketKind::Month => SECS_PER_DAY * 31,
         };
 
-        let first_full_bucket_start = ((start_at + bucket_secs - 1).div_euclid(bucket_secs)) * bucket_secs;
+        let first_full_bucket_start =
+            ((start_at + bucket_secs - 1).div_euclid(bucket_secs)) * bucket_secs;
         let final_full_bucket_end = (end_at.div_euclid(bucket_secs)) * bucket_secs;
 
         let mut totals = self
-            .fetch_user_ranking_rollup_totals(metric_kind, bucket_kind, first_full_bucket_start, final_full_bucket_end)
+            .fetch_user_ranking_rollup_totals(
+                metric_kind,
+                bucket_kind,
+                first_full_bucket_start,
+                final_full_bucket_end,
+            )
             .await?;
 
         if start_at < first_full_bucket_start {
@@ -144,7 +146,9 @@ impl KeyStore {
         end_at: i64,
     ) -> Result<Vec<UserRankingRow>, ProxyError> {
         if self.pg_pool.is_some() {
-            return self.fetch_user_unique_ip_ranking_rows_pg(start_at, end_at).await;
+            return self
+                .fetch_user_unique_ip_ranking_rows_pg(start_at, end_at)
+                .await;
         }
         if end_at <= start_at {
             return Ok(Vec::new());
@@ -239,7 +243,14 @@ impl KeyStore {
         bucket_start_before: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
         if self.pg_pool.is_some() {
-            return self.fetch_user_ranking_rollup_totals_pg(metric_kind, bucket_kind, bucket_start_at_least, bucket_start_before).await;
+            return self
+                .fetch_user_ranking_rollup_totals_pg(
+                    metric_kind,
+                    bucket_kind,
+                    bucket_start_at_least,
+                    bucket_start_before,
+                )
+                .await;
         }
         if bucket_start_before <= bucket_start_at_least {
             return Ok(HashMap::new());
@@ -308,7 +319,9 @@ impl KeyStore {
         end_at: i64,
     ) -> Result<(), ProxyError> {
         if self.pg_pool.is_some() {
-            return self.apply_user_ranking_partial_range_pg(totals, metric_kind, start_at, end_at).await;
+            return self
+                .apply_user_ranking_partial_range_pg(totals, metric_kind, start_at, end_at)
+                .await;
         }
         if end_at <= start_at {
             return Ok(());
@@ -675,13 +688,19 @@ impl KeyStore {
             if value <= 0 {
                 continue;
             }
-            let user = by_id.remove(user_id.as_str()).unwrap_or(UserRankingIdentity {
-                user_id: user_id.clone(),
-                display_name: None,
-                username: None,
-                avatar_template: None,
+            let user = by_id
+                .remove(user_id.as_str())
+                .unwrap_or(UserRankingIdentity {
+                    user_id: user_id.clone(),
+                    display_name: None,
+                    username: None,
+                    avatar_template: None,
+                });
+            ranking_rows.push(UserRankingRow {
+                rank: 0,
+                value,
+                user,
             });
-            ranking_rows.push(UserRankingRow { rank: 0, value, user });
         }
 
         Ok(ranking_rows)

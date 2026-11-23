@@ -1235,9 +1235,11 @@ impl KeyStore {
             .request_logs_column_exists("tavily_status_code")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN tavily_status_code INTEGER")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN tavily_status_code INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         if !self.request_logs_column_exists("forwarded_headers").await? {
@@ -1287,9 +1289,11 @@ impl KeyStore {
             .request_logs_column_exists("key_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN key_effect_summary TEXT")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN key_effect_summary TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         if !self
@@ -1307,9 +1311,11 @@ impl KeyStore {
             .request_logs_column_exists("binding_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN binding_effect_summary TEXT")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN binding_effect_summary TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         if !self
@@ -1327,9 +1333,11 @@ impl KeyStore {
             .request_logs_column_exists("selection_effect_summary")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN selection_effect_summary TEXT")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN selection_effect_summary TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         for (column, sql) in [
@@ -1513,9 +1521,11 @@ impl KeyStore {
             .request_logs_column_exists("request_kind_label")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN request_kind_label TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
             request_kind_schema_changed = true;
         }
 
@@ -1523,25 +1533,31 @@ impl KeyStore {
             .request_logs_column_exists("request_kind_detail")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN request_kind_detail TEXT",
+            )
+            .execute(&self.pool)
+            .await?;
             request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("business_credits").await? {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN business_credits INTEGER")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN business_credits INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         if !self
             .request_logs_column_exists("counts_business_quota")
             .await?
         {
-            sqlx::query("ALTER TABLE observability.request_logs ADD COLUMN counts_business_quota INTEGER")
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "ALTER TABLE observability.request_logs ADD COLUMN counts_business_quota INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         Ok(request_kind_schema_changed)
@@ -1621,4 +1637,21 @@ impl KeyStore {
         Ok(exists.is_some())
     }
 
+    /// PostgreSQL twin of [`Self::generate_unique_key_id`].
+    pub(crate) async fn generate_unique_key_id_pg(
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<String, ProxyError> {
+        loop {
+            let candidate = nanoid!(4);
+            let exists = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT id FROM core.api_keys WHERE id = $1 LIMIT 1",
+            )
+            .bind(&candidate)
+            .fetch_optional(&mut *conn)
+            .await?;
+            if exists.is_none() {
+                return Ok(candidate);
+            }
+        }
+    }
 }
