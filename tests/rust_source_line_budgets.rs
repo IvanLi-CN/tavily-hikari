@@ -16,8 +16,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/tests/jobs_and_request_log_retention.rs",
-        3100,
-        "Request-log retention and scheduled-job regression coverage still lives in the consolidated jobs/request-log suite while the remaining extraction work lands in follow-up slices.",
+        3120,
+        "Request-log retention and scheduled-job regression coverage still lives in the consolidated jobs/request-log suite while the remaining extraction work lands in follow-up slices; the port added one dispatcher assertion to the same suite.",
     ),
     (
         "src/lib.rs",
@@ -31,8 +31,8 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/store/key_store_request_logs_and_dashboard.rs",
-        3160,
-        "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending.",
+        3260,
+        "Request-log persistence, dashboard rollups, and the new request-log cursor filters still live in the legacy shared store module while the follow-up extraction pass is pending; the PostgreSQL twins now live in their own include, only the dispatcher gates remain here.",
     ),
     (
         "src/server/tests/api_keys_and_registration.rs",
@@ -45,14 +45,29 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
         "HTTP search integration coverage now also carries the upstream privacy project-id modes, rollout/header contracts, and the business-call reservation regression path while the legacy consolidated server test file still awaits a broader extraction pass.",
     ),
     (
+        "src/store/key_store_keys.rs",
+        3300,
+        "The wave 2b port gates 59 key-store methods through a PostgreSQL twin while both bodies stay reachable; the cutover wave deletes the SQLite bodies and the dispatcher gates with them.",
+    ),
+    (
+        "src/store/key_store_token_logs.rs",
+        3250,
+        "The wave 2b port gates 38 token-log methods through a PostgreSQL twin while both bodies stay reachable; the cutover wave deletes the SQLite bodies and the dispatcher gates with them.",
+    ),
+    (
+        "src/store/key_store_upstream_reconciliation.rs",
+        3600,
+        "The wave 2b port keeps the PostgreSQL reconciliation reads and writes inline beside their SQLite bodies; the cutover wave deletes the SQLite half.",
+    ),
+    (
         "src/store/key_store_bootstrap.rs",
         3275,
         "The bootstrap schema module now also carries upstream reconciliation polling and persisted HA GC state migrations while the broader store-schema split remains pending.",
     ),
     (
         "src/store/key_store_sessions.rs",
-        3150,
-        "Account quota defaults, LinuxDo tag bootstrap, and session lifecycle persistence remain together while the broader session-store extraction remains a separate behavior-preserving change.",
+        5450,
+        "The wave 2b port keeps each PostgreSQL session body inline beside its SQLite body so both backends stay exercised; the cutover wave deletes the SQLite body and this file shrinks back to its previous size.",
     ),
     (
         "src/store/key_store_ha.rs",

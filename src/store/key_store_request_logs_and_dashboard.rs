@@ -276,6 +276,9 @@ impl KeyStore {
         target_column: &str,
         legacy_effect_codes: &[&str],
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.log_effect_bucket_migration_needed_for_table_pg(table, target_column, legacy_effect_codes).await;
+        }
         let placeholders = std::iter::repeat_n("?", legacy_effect_codes.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -293,6 +296,9 @@ impl KeyStore {
     }
 
     async fn migrate_log_effect_buckets(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.migrate_log_effect_buckets_pg().await;
+        }
         if self
             .get_meta_i64(META_KEY_REQUEST_LOG_EFFECT_BUCKET_MIGRATION_V1_DONE)
             .await?
@@ -682,7 +688,7 @@ impl KeyStore {
         let stored_request_kind_sql = col("request_kind_key");
         let effective_request_kind_sql = stored_request_kind_sql.clone();
         let fallback_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"));
+            request_log_counts_business_quota_sql(&effective_request_kind_sql, &col("request_body"), crate::analysis::SqlDialect::Sqlite);
         let counts_business_quota_sql = format!(
             "COALESCE({}, {fallback_counts_business_quota_sql})",
             col("counts_business_quota")
@@ -790,6 +796,9 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_logs_rollup_total_pg(scoped_key_id, since, filters).await;
+        }
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT COALESCE(SUM(request_count), 0) FROM observability.request_log_catalog_rollups",
         );
@@ -815,18 +824,21 @@ impl KeyStore {
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.request_logs_exist_for_filters_pg(scoped_key_id, since, request_kinds, result_status, key_effect_code, binding_effect_code, selection_effect_code, auth_token_id, key_id, operational_class).await;
+        }
         let normalized_request_kinds = Self::normalize_request_kind_filters(request_kinds);
         let stored_request_kind_sql = "request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -835,7 +847,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -933,6 +945,9 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_log_request_kind_options_pg(scoped_key_id, since, filters).await;
+        }
         type RequestKindOptionRow = (String, String, i64);
         let mut legacy_query = QueryBuilder::<Sqlite>::new(
             "SELECT request_kind_key, request_kind_label, SUM(request_count) AS request_count FROM observability.request_log_catalog_rollups",
@@ -987,6 +1002,9 @@ impl KeyStore {
         require_non_empty: bool,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_log_facet_options_pg(column_expr, scoped_key_id, since, require_non_empty, filters).await;
+        }
         let column_expr = match column_expr {
             "key_effect_code" => "key_effect_code",
             "binding_effect_code" => "binding_effect_code",
@@ -1024,6 +1042,9 @@ impl KeyStore {
         since: Option<i64>,
         filters: RequestLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_log_result_facet_options_pg(scoped_key_id, since, filters).await;
+        }
         let mut query = QueryBuilder::<Sqlite>::new(
             "
             SELECT
@@ -1276,6 +1297,9 @@ impl KeyStore {
         direction: RequestLogsCursorDirection,
         page_size: i64,
     ) -> Result<RequestLogsCursorPage, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_logs_cursor_page_pg(scoped_key_id, since, until, request_kinds, result_status, key_effect_code, binding_effect_code, selection_effect_code, request_user_id, auth_token_id, key_id, operational_class, cursor, direction, page_size).await;
+        }
         let started = Instant::now();
         let retention_days = self
             .get_system_settings()
@@ -1291,7 +1315,7 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
@@ -1299,7 +1323,7 @@ impl KeyStore {
             canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -1308,7 +1332,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -1564,6 +1588,9 @@ impl KeyStore {
         include_key_facets: bool,
         include_bodies: bool,
     ) -> Result<RequestLogsPage, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_logs_page_pg(scoped_key_id, since, request_kinds, result_status, key_effect_code, binding_effect_code, selection_effect_code, request_user_id, auth_token_id, key_id, operational_class, page, per_page, include_token_facets, include_key_facets, include_bodies).await;
+        }
         let retention_days = self
             .get_system_settings()
             .await?
@@ -1584,7 +1611,7 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
@@ -1592,7 +1619,7 @@ impl KeyStore {
             canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
             stored_request_kind_sql,
@@ -1601,7 +1628,7 @@ impl KeyStore {
             "COALESCE(failure_kind, '')",
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
             &legacy_request_kind_sql,
             &legacy_counts_business_quota_sql,
@@ -1858,6 +1885,9 @@ impl KeyStore {
     pub(crate) async fn ensure_request_log_catalog_rollup_schema(
         &self,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_request_log_catalog_rollup_schema_pg().await;
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS observability.request_log_catalog_rollups (
@@ -1907,7 +1937,7 @@ impl KeyStore {
         }
 
         let canonical_new_request_kind_sql =
-            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key");
+            request_log_request_kind_key_sql("NEW.path", "NEW.request_body", "NEW.request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let canonical_new_request_kind_label_sql =
             canonical_request_kind_label_sql(&canonical_new_request_kind_sql);
         let canonical_new_request_kind_detail_sql = format!(
@@ -1981,6 +2011,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn rebuild_request_log_catalog_rollups(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.rebuild_request_log_catalog_rollups_pg().await;
+        }
         let retention_days = self
             .get_system_settings()
             .await?
@@ -2043,6 +2076,9 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_api_key_secret_pg(key_id).await;
+        }
         let secret =
             sqlx::query_scalar::<_, String>("SELECT api_key FROM api_keys WHERE id = ? LIMIT 1")
                 .bind(key_id)
@@ -2056,6 +2092,9 @@ impl KeyStore {
         &self,
         secret: &str,
     ) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_api_key_id_by_secret_pg(secret).await;
+        }
         sqlx::query_scalar::<_, String>(
             "SELECT id FROM api_keys WHERE api_key = ? AND deleted_at IS NULL LIMIT 1",
         )
@@ -2069,6 +2108,9 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<KeyStateSnapshot, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_key_state_snapshot_pg(key_id).await;
+        }
         let status = sqlx::query_scalar::<_, Option<String>>(
             "SELECT status FROM api_keys WHERE id = ? AND deleted_at IS NULL LIMIT 1",
         )
@@ -2098,6 +2140,9 @@ impl KeyStore {
         &self,
         record: ApiKeyMaintenanceRecord,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.insert_api_key_maintenance_record_pg(record).await;
+        }
         let auth_token_id = if let Some(auth_token_id) = record.auth_token_id.as_deref() {
             sqlx::query_scalar::<_, i64>("SELECT 1 FROM auth_tokens WHERE id = ? LIMIT 1")
                 .bind(auth_token_id)
@@ -2162,6 +2207,9 @@ impl KeyStore {
         remaining: i64,
         synced_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.update_quota_for_key_pg(key_id, limit, remaining, synced_at).await;
+        }
         sqlx::query(
             r#"UPDATE api_keys
                SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?
@@ -2185,6 +2233,9 @@ impl KeyStore {
         synced_at: i64,
         source: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.record_quota_sync_sample_pg(key_id, limit, remaining, synced_at, source).await;
+        }
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -2250,6 +2301,9 @@ impl KeyStore {
     }
 
     async fn fetch_dashboard_quota_source_id(&self, today_end: i64) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_source_id_pg(today_end).await;
+        }
         let mut before_id = None;
         for _ in 0..DASHBOARD_QUOTA_SOURCE_MAX_PAGES {
             let mut session = self
@@ -2312,6 +2366,9 @@ impl KeyStore {
         &self,
         today_end: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_source_captured_at_pg(today_end).await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::DashboardQuotaRead)
             .await?;
@@ -2340,6 +2397,9 @@ impl KeyStore {
         today_end: i64,
         limit: i64,
     ) -> Result<(DashboardQuotaSampleWatermark, Vec<DashboardQuotaSample>), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_quota_incremental_samples_pg(after, today_end, limit).await;
+        }
         let watermark = self.fetch_dashboard_quota_sample_watermark(today_end).await?;
         if watermark == after || watermark.source_id <= after.source_id {
             return Ok((watermark, Vec::new()));
@@ -2406,6 +2466,9 @@ impl KeyStore {
         &self,
         since: i64,
     ) -> Result<Option<i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_visible_request_log_floor_since_pg(since).await;
+        }
         sqlx::query_scalar::<_, Option<i64>>(
             r#"
             SELECT MIN(created_at)
@@ -2428,14 +2491,17 @@ impl KeyStore {
         start: i64,
         end: i64,
     ) -> Result<SummaryWindowMetrics, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_visible_request_log_window_metrics_pg(start, end).await;
+        }
         if start >= end {
             return Ok(SummaryWindowMetrics::default());
         }
 
         let request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
+            request_value_bucket_sql(&request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let query = format!(
             r#"
             WITH scoped_logs AS (
@@ -2500,6 +2566,9 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: Option<i64>,
     ) -> Result<SummaryWindowMetrics, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_api_key_usage_bucket_window_metrics_pg(bucket_start_at_least, bucket_start_before).await;
+        }
         let row = if let Some(bucket_start_before) = bucket_start_before {
             sqlx::query(
                 r#"
@@ -2562,7 +2631,6 @@ impl KeyStore {
             quota_charge: SummaryQuotaCharge::default(),
         })
     }
-
 
     async fn fetch_dashboard_rollup_success_count_tx(
         tx: &mut Transaction<'_, Sqlite>,
@@ -2681,6 +2749,9 @@ impl KeyStore {
         day_start: i64,
         day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_success_breakdown_from_dashboard_rollups_pg(month_start, day_start, day_end).await;
+        }
         let now = self.backend_time.now_ts();
         let month_request_log_floor = self
             .fetch_visible_request_log_floor_since(month_start)

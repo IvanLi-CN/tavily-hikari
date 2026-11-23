@@ -6,6 +6,38 @@ impl KeyStore {
         key_ids: &[String],
         now: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if key_ids.is_empty() {
+                    return Ok(HashMap::new());
+                }
+
+                let mut builder = QueryBuilder::new(format!(
+                    "SELECT upstream_key_id, COUNT(*) AS session_count FROM core.mcp_sessions \
+                 WHERE {subject_column} = "
+                ));
+                builder.push_bind(subject_value);
+                builder.push(" AND revoked_at IS NULL AND expires_at > ");
+                builder.push_bind(now);
+                builder.push(" AND upstream_key_id IN (");
+                {
+                    let mut separated = builder.separated(", ");
+                    for key_id in key_ids {
+                        separated.push_bind(key_id);
+                    }
+                }
+                builder.push(") GROUP BY upstream_key_id");
+
+                let rows = builder
+                    .build_query_as::<(String, i64)>()
+                    .fetch_all(pool)
+                    .await?;
+
+                Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if key_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -59,6 +91,27 @@ impl KeyStore {
         token_id: &str,
         now: i64,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let exists = sqlx::query_scalar::<_, i64>(
+                    r#"SELECT EXISTS(
+                       SELECT 1
+                         FROM core.mcp_sessions
+                        WHERE auth_token_id = $1
+                          AND revoked_at IS NULL
+                          AND expires_at > $2
+                        LIMIT 1
+                   )::int::bigint"#,
+                )
+                .bind(token_id)
+                .bind(now)
+                .fetch_one(pool)
+                .await?;
+                Ok(exists != 0)
+            }
+            .await;
+        }
         let exists = sqlx::query_scalar::<_, i64>(
             r#"SELECT EXISTS(
                    SELECT 1
@@ -80,6 +133,94 @@ impl KeyStore {
         &self,
         arm: ApiKeyTransientBackoffArm<'_>,
     ) -> Result<Option<ApiKeyTransientBackoffState>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let previous_cooldown = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT cooldown_until
+                FROM core.api_key_transient_backoffs
+                WHERE key_id = $1 AND scope = $2
+                LIMIT 1
+                "#,
+            )
+            .bind(arm.key_id)
+            .bind(arm.scope)
+            .fetch_optional(pool)
+            .await?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO core.api_key_transient_backoffs (
+                    key_id,
+                    scope,
+                    cooldown_until,
+                    retry_after_secs,
+                    reason_code,
+                    source_request_log_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (key_id, scope) DO UPDATE SET
+                    cooldown_until = GREATEST(core.api_key_transient_backoffs.cooldown_until, excluded.cooldown_until),
+                    retry_after_secs = CASE
+                        WHEN excluded.cooldown_until >= core.api_key_transient_backoffs.cooldown_until
+                            THEN excluded.retry_after_secs
+                        ELSE core.api_key_transient_backoffs.retry_after_secs
+                    END,
+                    reason_code = CASE
+                        WHEN excluded.cooldown_until >= core.api_key_transient_backoffs.cooldown_until
+                            THEN COALESCE(excluded.reason_code, core.api_key_transient_backoffs.reason_code)
+                        ELSE core.api_key_transient_backoffs.reason_code
+                    END,
+                    source_request_log_id = COALESCE(
+                        excluded.source_request_log_id,
+                        core.api_key_transient_backoffs.source_request_log_id
+                    ),
+                    updated_at = CASE
+                        WHEN excluded.cooldown_until >= core.api_key_transient_backoffs.cooldown_until
+                            THEN excluded.updated_at
+                        ELSE core.api_key_transient_backoffs.updated_at
+                    END
+                "#,
+            )
+            .bind(arm.key_id)
+            .bind(arm.scope)
+            .bind(arm.cooldown_until)
+            .bind(arm.retry_after_secs)
+            .bind(arm.reason_code)
+            .bind(arm.source_request_log_id)
+            .bind(arm.now)
+            .bind(arm.now)
+            .execute(pool)
+            .await?;
+
+            let current = sqlx::query_as::<_, (i64, i64)>(
+                r#"
+                SELECT cooldown_until, retry_after_secs
+                FROM core.api_key_transient_backoffs
+                WHERE key_id = $1 AND scope = $2
+                LIMIT 1
+                "#,
+            )
+            .bind(arm.key_id)
+            .bind(arm.scope)
+            .fetch_one(pool)
+            .await?;
+
+            if previous_cooldown.is_some_and(|previous| previous >= current.0) {
+                return Ok(None);
+            }
+
+            Ok(Some(ApiKeyTransientBackoffState {
+                cooldown_until: current.0,
+                retry_after_secs: current.1,
+            }))
+            }
+            .await;
+        }
         let previous_cooldown = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT cooldown_until
@@ -170,6 +311,26 @@ impl KeyStore {
         request_log_id: i64,
         now: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                sqlx::query(
+                    r#"
+                UPDATE core.api_key_transient_backoffs
+                SET source_request_log_id = $1, updated_at = $2
+                WHERE key_id = $3 AND scope = $4
+                "#,
+                )
+                .bind(request_log_id)
+                .bind(now)
+                .bind(key_id)
+                .bind(scope)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+            .await;
+        }
         sqlx::query(
             r#"
             UPDATE api_key_transient_backoffs
@@ -193,13 +354,41 @@ impl KeyStore {
         reason_code: &str,
         now: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if scopes.is_empty() {
+                    return Ok(0);
+                }
+
+                let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+                    "DELETE FROM core.api_key_transient_backoffs WHERE key_id = ",
+                );
+                builder.push_bind(key_id);
+                builder.push(" AND cooldown_until > ");
+                builder.push_bind(now);
+                builder.push(" AND reason_code = ");
+                builder.push_bind(reason_code);
+                builder.push(" AND scope IN (");
+                {
+                    let mut separated = builder.separated(", ");
+                    for scope in scopes {
+                        separated.push_bind(*scope);
+                    }
+                }
+                builder.push(")");
+
+                let result = builder.build().execute(pool).await?;
+                Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
+            }
+            .await;
+        }
         if scopes.is_empty() {
             return Ok(0);
         }
 
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            "DELETE FROM api_key_transient_backoffs WHERE key_id = ",
-        );
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("DELETE FROM api_key_transient_backoffs WHERE key_id = ");
         builder.push_bind(key_id);
         builder.push(" AND cooldown_until > ");
         builder.push_bind(now);
@@ -247,6 +436,35 @@ impl KeyStore {
         request_log_id: i64,
         now: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                sqlx::query(
+                    r#"
+                UPDATE core.api_key_maintenance_records
+                SET request_log_id = $1
+                WHERE id = (
+                    SELECT id
+                    FROM core.api_key_maintenance_records
+                    WHERE key_id = $2
+                      AND operation_code = $3
+                      AND request_log_id IS NULL
+                      AND created_at <= $4
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                )
+                "#,
+                )
+                .bind(request_log_id)
+                .bind(key_id)
+                .bind(MAINTENANCE_OP_AUTO_CLEAR_TRANSIENT_BACKOFF)
+                .bind(now)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+            .await;
+        }
         sqlx::query(
             r#"
             UPDATE api_key_maintenance_records
@@ -277,6 +495,65 @@ impl KeyStore {
         key_ids: &[String],
         since: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if key_ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+
+            let stored_request_kind_sql = "request_kind_key";
+            let legacy_request_kind_predicate_sql =
+                legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+            let legacy_request_kind_sql =
+                request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
+            let effective_request_kind_sql = format!(
+                "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
+            );
+            let stored_counts_business_quota_sql = format!(
+                "COALESCE(counts_business_quota, {})",
+                request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
+            );
+            let legacy_counts_business_quota_sql =
+                request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
+            let effective_counts_business_quota_sql = format!(
+                "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
+            );
+            let effective_non_billable_mcp_sql =
+                token_request_kind_non_billable_mcp_sql(&effective_request_kind_sql);
+
+            let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+                "
+                SELECT api_key_id, COUNT(*) AS request_count
+                FROM observability.request_logs
+                WHERE created_at >= "
+                    .to_string(),
+            );
+            builder.push_bind(since);
+            builder.push(" AND api_key_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for key_id in key_ids {
+                    separated.push_bind(key_id);
+                }
+            }
+            builder.push(")");
+            builder.push(format!(
+                " AND (({effective_request_kind_sql}) LIKE 'api:%' \
+                    OR (({effective_request_kind_sql}) LIKE 'mcp:%' AND NOT {effective_non_billable_mcp_sql}))"
+            ));
+            builder.push(format!(" AND ({effective_counts_business_quota_sql}) = 1"));
+            builder.push(" GROUP BY api_key_id");
+
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(pool)
+                .await?;
+            Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if key_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -285,16 +562,16 @@ impl KeyStore {
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key", crate::analysis::SqlDialect::Sqlite);
         let effective_request_kind_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
         );
         let stored_counts_business_quota_sql = format!(
             "COALESCE(counts_business_quota, {})",
-            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body")
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite)
         );
         let legacy_counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body", crate::analysis::SqlDialect::Sqlite);
         let effective_counts_business_quota_sql = format!(
             "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
         );
@@ -336,6 +613,37 @@ impl KeyStore {
         key_ids: &[String],
         since: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if key_ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+
+            let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT api_key_id, COUNT(*) AS request_count FROM observability.request_logs WHERE created_at >= ",
+            );
+            builder.push_bind(since);
+            builder.push(" AND failure_kind = ");
+            builder.push_bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429);
+            builder.push(" AND api_key_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for key_id in key_ids {
+                    separated.push_bind(key_id);
+                }
+            }
+            builder.push(") GROUP BY api_key_id");
+
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(pool)
+                .await?;
+            Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if key_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -366,6 +674,32 @@ impl KeyStore {
         &self,
         key_ids: &[String],
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if key_ids.is_empty() {
+                    return Ok(HashMap::new());
+                }
+
+                let mut builder = QueryBuilder::<sqlx::Postgres>::new(
+                    "SELECT id, last_used_at FROM core.api_keys WHERE id IN (",
+                );
+                {
+                    let mut separated = builder.separated(", ");
+                    for key_id in key_ids {
+                        separated.push_bind(key_id);
+                    }
+                }
+                builder.push(")");
+
+                let rows = builder
+                    .build_query_as::<(String, i64)>()
+                    .fetch_all(pool)
+                    .await?;
+                Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if key_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -392,6 +726,24 @@ impl KeyStore {
         now: i64,
         revoked_retention_threshold: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let result = sqlx::query(
+                    r#"
+                DELETE FROM core.mcp_sessions
+                WHERE expires_at <= $1
+                   OR (revoked_at IS NOT NULL AND updated_at <= $2)
+                "#,
+                )
+                .bind(now)
+                .bind(revoked_retention_threshold)
+                .execute(pool)
+                .await?;
+                Ok(result.rows_affected() as i64)
+            }
+            .await;
+        }
         let result = sqlx::query(
             r#"
             DELETE FROM mcp_sessions
@@ -410,6 +762,22 @@ impl KeyStore {
         &self,
         now: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let result = sqlx::query(
+                    r#"
+                DELETE FROM core.api_key_transient_backoffs
+                WHERE cooldown_until <= $1
+                "#,
+                )
+                .bind(now)
+                .execute(pool)
+                .await?;
+                Ok(result.rows_affected() as i64)
+            }
+            .await;
+        }
         let result = sqlx::query(
             r#"
             DELETE FROM api_key_transient_backoffs
@@ -508,7 +876,8 @@ impl KeyStore {
                 auth_token_id.as_deref(),
                 api_key_id.as_deref(),
             );
-            Self::upsert_request_log_catalog_rollup_delta(&mut tx, &old_key, -1, updated_at).await?;
+            Self::upsert_request_log_catalog_rollup_delta(&mut tx, &old_key, -1, updated_at)
+                .await?;
             let new_key = Self::request_log_catalog_rollup_key_for_request(
                 created_at,
                 &request_kind_key,
@@ -585,6 +954,190 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedApiKeyStickyUsers, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let page = page.max(1);
+            let per_page = per_page.clamp(1, 100);
+            let offset = (page - 1) * per_page;
+            let now = self.backend_time.local_now();
+            let today_start = start_of_local_day_utc_ts(now);
+            let yesterday_start = previous_local_day_start_utc_ts(now);
+            let month_start = start_of_local_month_utc_ts(now);
+            let oldest_daily_date = now
+                .date_naive()
+                .checked_sub_days(chrono::Days::new(6))
+                .unwrap_or_else(|| now.date_naive());
+            let oldest_daily_start = local_date_start_utc_ts(oldest_daily_date, now);
+            let usage_since = month_start.min(oldest_daily_start);
+
+            let total = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM core.user_api_key_bindings WHERE api_key_id = $1",
+            )
+            .bind(key_id)
+            .fetch_one(pool)
+            .await?;
+
+            let rows = sqlx::query_as::<
+                _,
+                (
+                    String,
+                    i64,
+                    i64,
+                    i64,
+                    i64,
+                    i64,
+                    i64,
+                    i64,
+                ),
+            >(
+                r#"
+                SELECT
+                    b.user_id,
+                    b.last_success_at,
+                    COALESCE(SUM(CASE WHEN u.bucket_start = $1 THEN u.success_credits ELSE 0 END)::bigint, 0) AS yesterday_success_credits,
+                    COALESCE(SUM(CASE WHEN u.bucket_start = $2 THEN u.failure_credits ELSE 0 END)::bigint, 0) AS yesterday_failure_credits,
+                    COALESCE(SUM(CASE WHEN u.bucket_start = $3 THEN u.success_credits ELSE 0 END)::bigint, 0) AS today_success_credits,
+                    COALESCE(SUM(CASE WHEN u.bucket_start = $4 THEN u.failure_credits ELSE 0 END)::bigint, 0) AS today_failure_credits,
+                    COALESCE(SUM(CASE WHEN u.bucket_start >= $5 THEN u.success_credits ELSE 0 END)::bigint, 0) AS month_success_credits,
+                    COALESCE(SUM(CASE WHEN u.bucket_start >= $6 THEN u.failure_credits ELSE 0 END)::bigint, 0) AS month_failure_credits
+                FROM core.user_api_key_bindings b
+                LEFT JOIN core.api_key_user_usage_buckets u
+                  ON u.api_key_id = b.api_key_id
+                 AND u.user_id = b.user_id
+                 AND u.bucket_secs = $7
+                 AND u.bucket_start >= $8
+                WHERE b.api_key_id = $9
+                GROUP BY b.user_id, b.last_success_at
+                ORDER BY
+                    (COALESCE(SUM(CASE WHEN u.bucket_start = $10 THEN u.success_credits ELSE 0 END)::bigint, 0)
+                    + COALESCE(SUM(CASE WHEN u.bucket_start = $11 THEN u.failure_credits ELSE 0 END)::bigint, 0)) DESC,
+                    b.last_success_at DESC,
+                    b.user_id ASC
+                LIMIT $12 OFFSET $13
+                "#,
+            )
+            .bind(yesterday_start)
+            .bind(yesterday_start)
+            .bind(today_start)
+            .bind(today_start)
+            .bind(month_start)
+            .bind(month_start)
+            .bind(SECS_PER_DAY)
+            .bind(usage_since)
+            .bind(key_id)
+            .bind(today_start)
+            .bind(today_start)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?;
+
+            let user_ids = rows.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
+            let identities = self.get_admin_user_identities(&user_ids).await?;
+
+            let bucket_starts = (0..7_i64)
+                .map(|index| oldest_daily_start + index * SECS_PER_DAY)
+                .collect::<Vec<_>>();
+            let daily_rows = if user_ids.is_empty() {
+                Vec::new()
+            } else {
+                let mut builder = QueryBuilder::new(
+                    "SELECT user_id, bucket_start, success_credits, failure_credits \
+                     FROM core.api_key_user_usage_buckets \
+                     WHERE api_key_id = ",
+                );
+                builder.push_bind(key_id);
+                builder.push(" AND bucket_secs = ");
+                builder.push_bind(SECS_PER_DAY);
+                builder.push(" AND bucket_start >= ");
+                builder.push_bind(oldest_daily_start);
+                builder.push(" AND user_id IN (");
+                {
+                    let mut separated = builder.separated(", ");
+                    for user_id in &user_ids {
+                        separated.push_bind(user_id);
+                    }
+                }
+                builder.push(") ORDER BY user_id ASC, bucket_start ASC");
+                builder
+                    .build_query_as::<(String, i64, i64, i64)>()
+                    .fetch_all(pool)
+                    .await?
+            };
+
+            let mut daily_map = HashMap::<String, HashMap<i64, StickyCreditsWindow>>::new();
+            for (user_id, bucket_start, success_credits, failure_credits) in daily_rows {
+                daily_map.entry(user_id).or_default().insert(
+                    bucket_start,
+                    StickyCreditsWindow {
+                        success_credits,
+                        failure_credits,
+                    },
+                );
+            }
+
+            let mut items = Vec::with_capacity(rows.len());
+            for (
+                user_id,
+                last_success_at,
+                yesterday_success_credits,
+                yesterday_failure_credits,
+                today_success_credits,
+                today_failure_credits,
+                month_success_credits,
+                month_failure_credits,
+            ) in rows
+            {
+                let Some(user) = identities.get(&user_id).cloned() else {
+                    continue;
+                };
+                let user_daily = daily_map.get(&user_id);
+                let daily_buckets = bucket_starts
+                    .iter()
+                    .map(|bucket_start| {
+                        let bucket = user_daily
+                            .and_then(|items| items.get(bucket_start))
+                            .cloned()
+                            .unwrap_or_default();
+                        ApiKeyUserUsageBucket {
+                            bucket_start: *bucket_start,
+                            bucket_end: bucket_start.saturating_add(SECS_PER_DAY),
+                            success_credits: bucket.success_credits,
+                            failure_credits: bucket.failure_credits,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                items.push(ApiKeyStickyUser {
+                    user,
+                    last_success_at,
+                    yesterday: StickyCreditsWindow {
+                        success_credits: yesterday_success_credits,
+                        failure_credits: yesterday_failure_credits,
+                    },
+                    today: StickyCreditsWindow {
+                        success_credits: today_success_credits,
+                        failure_credits: today_failure_credits,
+                    },
+                    month: StickyCreditsWindow {
+                        success_credits: month_success_credits,
+                        failure_credits: month_failure_credits,
+                    },
+                    daily_buckets,
+                });
+            }
+
+            Ok(PaginatedApiKeyStickyUsers {
+                items,
+                total,
+                page,
+                per_page,
+            })
+            }
+            .await;
+        }
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -771,6 +1324,68 @@ impl KeyStore {
         daily_credits_limit: i64,
         monthly_credits_limit: i64,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let exists =
+                    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core.users WHERE id = $1")
+                        .bind(user_id)
+                        .fetch_one(pool)
+                        .await?;
+                if exists == 0 {
+                    return Ok(false);
+                }
+
+                let defaults = AccountQuotaLimits::legacy_defaults();
+                let current = self.ensure_account_quota_limits(user_id).await?;
+                let requested = AccountQuotaLimits {
+                    business_calls_1h_limit,
+                    daily_credits_limit,
+                    monthly_credits_limit,
+                    inherits_defaults: false,
+                };
+                let inherits_defaults =
+                    if current.inherits_defaults && requested.same_limits_as(&defaults) {
+                        1
+                    } else {
+                        0
+                    };
+
+                let now = self.backend_time.now_ts();
+                sqlx::query(
+                    r#"INSERT INTO core.account_quota_limits (
+                        user_id,
+                        business_calls_1h_limit,
+                        daily_credits_limit,
+                        monthly_credits_limit,
+                        inherits_defaults,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        business_calls_1h_limit = excluded.business_calls_1h_limit,
+                        daily_credits_limit = excluded.daily_credits_limit,
+                        monthly_credits_limit = excluded.monthly_credits_limit,
+                        inherits_defaults = excluded.inherits_defaults,
+                        updated_at = excluded.updated_at"#,
+                )
+                .bind(user_id)
+                .bind(business_calls_1h_limit)
+                .bind(daily_credits_limit)
+                .bind(monthly_credits_limit)
+                .bind(inherits_defaults)
+                .bind(now)
+                .bind(now)
+                .execute(pool)
+                .await?;
+                self.invalidate_account_quota_resolution(user_id).await;
+                self.record_effective_account_quota_snapshot_at(user_id, now)
+                    .await?;
+                Ok(true)
+            }
+            .await;
+        }
         let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
             .bind(user_id)
             .fetch_one(&self.pool)
@@ -847,6 +1462,33 @@ impl KeyStore {
     pub(crate) async fn backfill_account_quota_inherits_defaults_v1(
         &self,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let defaults = AccountQuotaLimits::legacy_defaults();
+                // Legacy rows do not record whether they were following defaults or manually customized.
+                // Only rows that already match the current env tuple are safe to keep on the default-track;
+                // every other tuple is conservatively treated as a custom baseline so upgrades never clobber
+                // admin-set quotas.
+                sqlx::query(
+                    r#"UPDATE core.account_quota_limits
+                   SET inherits_defaults = CASE
+                       WHEN business_calls_1h_limit = $1
+                        AND daily_credits_limit = $2
+                        AND monthly_credits_limit = $3
+                       THEN 1
+                       ELSE 0
+                   END"#,
+                )
+                .bind(defaults.business_calls_1h_limit)
+                .bind(defaults.daily_credits_limit)
+                .bind(defaults.monthly_credits_limit)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+            .await;
+        }
         let defaults = AccountQuotaLimits::legacy_defaults();
         // Legacy rows do not record whether they were following defaults or manually customized.
         // Only rows that already match the current env tuple are safe to keep on the default-track;
@@ -871,6 +1513,105 @@ impl KeyStore {
     }
 
     pub(crate) async fn sync_account_quota_limits_with_defaults(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let now = self.backend_time.now_ts();
+                let rows = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
+                    r#"
+                SELECT aql.user_id,
+                       u.created_at,
+                       aql.business_calls_1h_limit,
+                       aql.daily_credits_limit,
+                       aql.monthly_credits_limit
+                FROM core.account_quota_limits aql
+                JOIN core.users u ON u.id = aql.user_id
+                WHERE aql.inherits_defaults = 1
+                "#,
+                )
+                .fetch_all(pool)
+                .await?;
+                if rows.is_empty() {
+                    return Ok(());
+                }
+
+                let cutover_at = self.account_quota_zero_base_cutover_at().await?;
+                let affected_user_ids = rows
+                    .iter()
+                    .map(|(user_id, _, _, _, _)| user_id.clone())
+                    .collect::<Vec<_>>();
+                let updates = rows
+                    .into_iter()
+                    .filter_map(
+                        |(
+                            user_id,
+                            user_created_at,
+                            business_calls_1h,
+                            daily_credits,
+                            monthly_credits,
+                        )| {
+                            let defaults = default_account_quota_limits_for_created_at(
+                                user_created_at,
+                                cutover_at,
+                            );
+                            (business_calls_1h, daily_credits, monthly_credits)
+                                .ne(&(
+                                    defaults.business_calls_1h_limit,
+                                    defaults.daily_credits_limit,
+                                    defaults.monthly_credits_limit,
+                                ))
+                                .then_some((
+                                    user_id,
+                                    defaults.business_calls_1h_limit,
+                                    defaults.daily_credits_limit,
+                                    defaults.monthly_credits_limit,
+                                ))
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                if updates.is_empty() {
+                    self.invalidate_all_account_quota_resolutions().await;
+                    self.record_effective_account_quota_snapshots_for_users_at(
+                        &affected_user_ids,
+                        now,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                let mut tx = pool.begin().await?;
+                for (user_id, business_calls_1h, daily_credits, monthly_credits) in updates {
+                    sqlx::query(
+                        r#"
+                    UPDATE core.account_quota_limits
+                    SET business_calls_1h_limit = $1,
+                        daily_credits_limit = $2,
+                        monthly_credits_limit = $3,
+                        updated_at = $4
+                    WHERE user_id = $5 AND inherits_defaults = 1
+                    "#,
+                    )
+                    .bind(business_calls_1h)
+                    .bind(daily_credits)
+                    .bind(monthly_credits)
+                    .bind(now)
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+                self.invalidate_all_account_quota_resolutions().await;
+                if !affected_user_ids.is_empty() {
+                    self.record_effective_account_quota_snapshots_for_users_at(
+                        &affected_user_ids,
+                        now,
+                    )
+                    .await?;
+                }
+                Ok(())
+            }
+            .await;
+        }
         let now = self.backend_time.now_ts();
         let rows = sqlx::query_as::<_, (String, i64, i64, i64, i64)>(
             r#"
@@ -963,6 +1704,23 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<AccountQuotaLimits, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let user_created_at = sqlx::query_scalar::<_, i64>(
+                    "SELECT created_at FROM core.users WHERE id = $1 LIMIT 1",
+                )
+                .bind(user_id)
+                .fetch_one(pool)
+                .await?;
+                let cutover_at = self.account_quota_zero_base_cutover_at().await?;
+                Ok(default_account_quota_limits_for_created_at(
+                    user_created_at,
+                    cutover_at,
+                ))
+            }
+            .await;
+        }
         let user_created_at =
             sqlx::query_scalar::<_, i64>("SELECT created_at FROM users WHERE id = ? LIMIT 1")
                 .bind(user_id)
@@ -979,6 +1737,41 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<HashMap<String, AccountQuotaLimits>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if user_ids.is_empty() {
+                    return Ok(HashMap::new());
+                }
+
+                let cutover_at = self.account_quota_zero_base_cutover_at().await?;
+                let mut builder =
+                    QueryBuilder::new("SELECT id, created_at FROM core.users WHERE id IN (");
+                {
+                    let mut separated = builder.separated(", ");
+                    for user_id in user_ids {
+                        separated.push_bind(user_id);
+                    }
+                }
+                builder.push(")");
+
+                let rows = builder
+                    .build_query_as::<(String, i64)>()
+                    .fetch_all(pool)
+                    .await?;
+
+                Ok(rows
+                    .into_iter()
+                    .map(|(user_id, created_at)| {
+                        (
+                            user_id,
+                            default_account_quota_limits_for_created_at(created_at, cutover_at),
+                        )
+                    })
+                    .collect())
+            }
+            .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1013,6 +1806,48 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<AccountQuotaLimits, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if let Some(existing) = self.fetch_account_quota_limits(user_id).await? {
+                    return Ok(existing);
+                }
+
+                let now = self.backend_time.now_ts();
+                let defaults = self.default_account_quota_limits_for_user(user_id).await?;
+                sqlx::query(
+                    r#"INSERT INTO core.account_quota_limits (
+                        user_id,
+                        business_calls_1h_limit,
+                        daily_credits_limit,
+                        monthly_credits_limit,
+                        inherits_defaults,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (user_id) DO NOTHING"#,
+                )
+                .bind(user_id)
+                .bind(defaults.business_calls_1h_limit)
+                .bind(defaults.daily_credits_limit)
+                .bind(defaults.monthly_credits_limit)
+                .bind(if defaults.inherits_defaults { 1 } else { 0 })
+                .bind(now)
+                .bind(now)
+                .execute(pool)
+                .await?;
+
+                self.fetch_account_quota_limits(user_id)
+                    .await?
+                    .ok_or_else(|| {
+                        ProxyError::Other(format!(
+                            "account quota limits missing after ensure for user {user_id}"
+                        ))
+                    })
+            }
+            .await;
+        }
         if let Some(existing) = self.fetch_account_quota_limits(user_id).await? {
             return Ok(existing);
         }
@@ -1055,6 +1890,51 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if user_ids.is_empty() {
+                return Ok(());
+            }
+
+            let existing = self.fetch_account_quota_limits_bulk(user_ids).await?;
+            let missing_user_ids: Vec<String> = user_ids
+                .iter()
+                .filter(|user_id| !existing.contains_key(*user_id))
+                .cloned()
+                .collect();
+            if missing_user_ids.is_empty() {
+                return Ok(());
+            }
+
+            let now = self.backend_time.now_ts();
+            let defaults_by_user = self
+                .default_account_quota_limits_for_users(&missing_user_ids)
+                .await?;
+
+            let mut builder = QueryBuilder::new(
+                "INSERT INTO core.account_quota_limits (user_id, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit, inherits_defaults, created_at, updated_at) ",
+            );
+            builder.push_values(&missing_user_ids, |mut b, user_id| {
+                let defaults = defaults_by_user
+                    .get(user_id)
+                    .cloned()
+                    .unwrap_or_else(AccountQuotaLimits::zero_base);
+                b.push_bind(user_id)
+                    .push_bind(defaults.business_calls_1h_limit)
+                    .push_bind(defaults.daily_credits_limit)
+                    .push_bind(defaults.monthly_credits_limit)
+                    .push_bind(if defaults.inherits_defaults { 1 } else { 0 })
+                    .push_bind(now)
+                    .push_bind(now);
+            });
+            builder.push(" ON CONFLICT(user_id) DO NOTHING");
+            builder.build().execute(pool).await?;
+            Ok(())
+            }
+            .await;
+        }
         if user_ids.is_empty() {
             return Ok(());
         }
@@ -1099,6 +1979,37 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<AccountQuotaLimits>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let row = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                    r#"SELECT business_calls_1h_limit, daily_credits_limit, monthly_credits_limit,
+                          COALESCE(inherits_defaults, 1)
+                   FROM core.account_quota_limits
+                   WHERE user_id = $1
+                   LIMIT 1"#,
+                )
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(
+                    |(
+                        business_calls_1h_limit,
+                        daily_credits_limit,
+                        monthly_credits_limit,
+                        inherits_defaults,
+                    )| {
+                        account_quota_limits_from_row(
+                            business_calls_1h_limit,
+                            daily_credits_limit,
+                            monthly_credits_limit,
+                            inherits_defaults,
+                        )
+                    },
+                ))
+            }
+            .await;
+        }
         let row = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"SELECT business_calls_1h_limit, daily_credits_limit, monthly_credits_limit,
                       COALESCE(inherits_defaults, 1)
@@ -1130,6 +2041,51 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<HashMap<String, AccountQuotaLimits>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if user_ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+            let mut builder = QueryBuilder::new(
+                "SELECT user_id, business_calls_1h_limit, daily_credits_limit, monthly_credits_limit, COALESCE(inherits_defaults, 1) FROM core.account_quota_limits WHERE user_id IN (",
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(")");
+
+            let rows = builder
+                .build_query_as::<(String, i64, i64, i64, i64)>()
+                .fetch_all(pool)
+                .await?;
+            let mut map = HashMap::new();
+            for (
+                user_id,
+                business_calls_1h_limit,
+                daily_credits_limit,
+                monthly_credits_limit,
+                inherits_defaults,
+            ) in rows
+            {
+                map.insert(
+                    user_id,
+                    account_quota_limits_from_row(
+                        business_calls_1h_limit,
+                        daily_credits_limit,
+                        monthly_credits_limit,
+                        inherits_defaults,
+                    ),
+                );
+            }
+            Ok(map)
+            }
+            .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1182,6 +2138,23 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            self.ensure_account_quota_limits(user_id).await?;
+            let base_limit = self.fetch_user_blocked_key_base_limit().await?;
+            let delta = sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - $1) FROM core.account_quota_limits WHERE user_id = $2 LIMIT 1",
+            )
+            .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+            .bind(user_id)
+            .fetch_one(pool)
+            .await?;
+            Ok((base_limit + delta).max(0))
+            }
+            .await;
+        }
         self.ensure_account_quota_limits(user_id).await?;
         let base_limit = self.fetch_user_blocked_key_base_limit().await?;
         let delta = sqlx::query_scalar::<_, i64>(
@@ -1204,7 +2177,9 @@ impl KeyStore {
 
         self.ensure_account_quota_limits_for_users(user_ids).await?;
         let base_limit = self.fetch_user_blocked_key_base_limit().await?;
-        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ");
+        let mut builder = QueryBuilder::new(
+            "SELECT user_id, COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ",
+        );
         builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
         builder.push(") FROM account_quota_limits WHERE user_id IN (");
         {
@@ -1230,6 +2205,36 @@ impl KeyStore {
         user_id: &str,
         monthly_broken_limit: i64,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await?;
+            if exists == 0 {
+                return Ok(false);
+            }
+
+            self.ensure_account_quota_limits(user_id).await?;
+            let base_limit = self.fetch_user_blocked_key_base_limit().await?;
+            let now = self.backend_time.now_ts();
+            sqlx::query(
+                r#"UPDATE core.account_quota_limits
+                   SET monthly_broken_limit = $1, monthly_blocked_key_limit_delta = $2, updated_at = $3
+                   WHERE user_id = $4"#,
+            )
+            .bind(monthly_broken_limit)
+            .bind(monthly_broken_limit - base_limit)
+            .bind(now)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+            Ok(true)
+            }
+            .await;
+        }
         let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
             .bind(user_id)
             .fetch_one(&self.pool)
@@ -1531,6 +2536,53 @@ impl KeyStore {
         token_ids: &[String],
         month_start: i64,
     ) -> Result<HashSet<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if token_ids.is_empty() {
+                return Ok(HashSet::new());
+            }
+
+            let mut builder = QueryBuilder::new(
+                r#"SELECT DISTINCT skb.subject_id
+                   FROM core.subject_key_breakages skb
+                   JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+                   LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+                   WHERE skb.subject_kind = "#,
+            );
+            builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+            builder.push(" AND skb.month_start = ");
+            builder.push_bind(month_start);
+            builder.push(" AND aq.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.subject_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for token_id in token_ids {
+                    separated.push_bind(token_id);
+                }
+            }
+            builder.push(")");
+
+            let rows = builder
+                .build_query_scalar::<String>()
+                .fetch_all(pool)
+                .await?;
+            Ok(rows.into_iter().collect())
+            }
+            .await;
+        }
         if token_ids.is_empty() {
             return Ok(HashSet::new());
         }
@@ -1577,6 +2629,49 @@ impl KeyStore {
         &self,
         key_ids: &[String],
     ) -> Result<HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if key_ids.is_empty() {
+                    return Ok(HashMap::new());
+                }
+
+                let mut builder = QueryBuilder::new(
+                    r#"SELECT DISTINCT
+                        b.api_key_id,
+                        u.id,
+                        u.display_name,
+                        u.username
+                   FROM core.user_api_key_bindings b
+                   JOIN core.users u ON u.id = b.user_id
+                   WHERE b.api_key_id IN ("#,
+                );
+                {
+                    let mut separated = builder.separated(", ");
+                    for key_id in key_ids {
+                        separated.push_bind(key_id);
+                    }
+                }
+                builder.push(") ORDER BY b.api_key_id ASC, u.username ASC, u.id ASC");
+
+                let rows = builder
+                    .build_query_as::<(String, String, Option<String>, Option<String>)>()
+                    .fetch_all(pool)
+                    .await?;
+                let mut map: HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>> = HashMap::new();
+                for (key_id, user_id, display_name, username) in rows {
+                    map.entry(key_id)
+                        .or_default()
+                        .push(MonthlyBrokenKeyRelatedUser {
+                            user_id,
+                            display_name,
+                            username,
+                        });
+                }
+                Ok(map)
+            }
+            .await;
+        }
         if key_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1624,6 +2719,135 @@ impl KeyStore {
         per_page: i64,
         month_start: i64,
     ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let page = page.max(1);
+                let per_page = per_page.clamp(1, 100);
+                let offset = (page - 1) * per_page;
+
+                let total = sqlx::query_scalar::<_, i64>(
+                    r#"
+                SELECT COUNT(*)
+                FROM core.subject_key_breakages skb
+                JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+                LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+                WHERE skb.subject_kind = $1
+                  AND skb.subject_id = $2
+                  AND skb.month_start = $3
+                  AND aq.reason_code IN ($4, $5, $6)
+                  AND skb.reason_code IN ($7, $8, $9)
+                "#,
+                )
+                .bind(subject_kind)
+                .bind(subject_id)
+                .bind(month_start)
+                .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+                .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+                .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
+                .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+                .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+                .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
+                .fetch_one(pool)
+                .await?;
+
+                let rows = sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                        Option<String>,
+                    ),
+                >(
+                    r#"
+                SELECT
+                    skb.key_id,
+                    CASE WHEN aq.key_id IS NOT NULL THEN $1 ELSE ak.status END AS current_status,
+                    COALESCE(aq.reason_code, skb.reason_code) AS reason_code,
+                    COALESCE(aq.reason_summary, skb.reason_summary) AS reason_summary,
+                    skb.latest_break_at,
+                    skb.source,
+                    skb.breaker_token_id,
+                    skb.breaker_user_id,
+                    skb.breaker_user_display_name,
+                    skb.manual_actor_display_name
+                FROM core.subject_key_breakages skb
+                JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+                LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+                WHERE skb.subject_kind = $2
+                  AND skb.subject_id = $3
+                  AND skb.month_start = $4
+                  AND aq.reason_code IN ($5, $6, $7)
+                  AND skb.reason_code IN ($8, $9, $10)
+                ORDER BY skb.latest_break_at DESC, skb.key_id ASC
+                LIMIT $11 OFFSET $12
+                "#,
+                )
+                .bind(KEY_EFFECT_QUARANTINED)
+                .bind(subject_kind)
+                .bind(subject_id)
+                .bind(month_start)
+                .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+                .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+                .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
+                .bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED)
+                .bind(BLOCKED_KEY_REASON_KEY_REVOKED)
+                .bind(BLOCKED_KEY_REASON_INVALID_API_KEY)
+                .bind(per_page)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?;
+
+                let key_ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+                let mut related_users = self
+                    .fetch_monthly_broken_related_users_for_keys(&key_ids)
+                    .await?;
+                let items = rows
+                    .into_iter()
+                    .map(
+                        |(
+                            key_id,
+                            current_status,
+                            reason_code,
+                            reason_summary,
+                            latest_break_at,
+                            source,
+                            breaker_token_id,
+                            breaker_user_id,
+                            breaker_user_display_name,
+                            manual_actor_display_name,
+                        )| MonthlyBrokenKeyDetail {
+                            key_id: key_id.clone(),
+                            current_status,
+                            reason_code,
+                            reason_summary,
+                            latest_break_at,
+                            source,
+                            breaker_token_id,
+                            breaker_user_id,
+                            breaker_user_display_name,
+                            manual_actor_display_name,
+                            related_users: related_users.remove(&key_id).unwrap_or_default(),
+                        },
+                    )
+                    .collect();
+
+                Ok(PaginatedMonthlyBrokenKeys {
+                    items,
+                    total,
+                    page,
+                    per_page,
+                })
+            }
+            .await;
+        }
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1750,6 +2974,79 @@ impl KeyStore {
     }
 
     pub(crate) async fn seed_linuxdo_system_tags(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let mut complete = true;
+                for level in 0..=4 {
+                    let system_key = linuxdo_system_key_for_level(level);
+                    let display_name = format!("L{level}");
+                    let exists = sqlx::query_scalar::<_, i64>(
+                        "SELECT EXISTS(SELECT 1 FROM core.user_tags \
+                     WHERE system_key = $1 AND name = $2 AND display_name = $3 \
+                       AND icon = $4 AND effect_kind = $5)::int::bigint",
+                    )
+                    .bind(&system_key)
+                    .bind(&system_key)
+                    .bind(display_name)
+                    .bind(USER_TAG_ICON_LINUXDO)
+                    .bind(USER_TAG_EFFECT_QUOTA_DELTA)
+                    .fetch_one(pool)
+                    .await?;
+                    if exists == 0 {
+                        complete = false;
+                        break;
+                    }
+                }
+                if complete {
+                    return Ok(());
+                }
+
+                let now = self.backend_time.now_ts();
+                let (business_calls_1h_delta, daily_credits_delta, monthly_credits_delta) =
+                    linuxdo_system_tag_default_deltas();
+                for level in 0..=4 {
+                    let system_key = linuxdo_system_key_for_level(level);
+                    let display_name = format!("L{level}");
+                    sqlx::query(
+                        r#"INSERT INTO core.user_tags (
+                            id,
+                            name,
+                            display_name,
+                            icon,
+                            system_key,
+                            effect_kind,
+                            business_calls_1h_delta,
+                            daily_credits_delta,
+                            monthly_credits_delta,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        ON CONFLICT (system_key) DO UPDATE SET
+                            name = excluded.name,
+                            display_name = excluded.display_name,
+                            icon = excluded.icon,
+                            updated_at = excluded.updated_at"#,
+                    )
+                    .bind(&system_key)
+                    .bind(&system_key)
+                    .bind(display_name)
+                    .bind(USER_TAG_ICON_LINUXDO)
+                    .bind(&system_key)
+                    .bind(USER_TAG_EFFECT_QUOTA_DELTA)
+                    .bind(business_calls_1h_delta)
+                    .bind(daily_credits_delta)
+                    .bind(monthly_credits_delta)
+                    .bind(now)
+                    .bind(now)
+                    .execute(pool)
+                    .await?;
+                }
+                Ok(())
+            }
+            .await;
+        }
         let mut complete = true;
         for level in 0..=4 {
             let system_key = linuxdo_system_key_for_level(level);
@@ -1822,6 +3119,43 @@ impl KeyStore {
     pub(crate) async fn infer_linuxdo_system_tag_default_deltas_from_rows(
         &self,
     ) -> Result<Option<(i64, i64, i64)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+                r#"SELECT effect_kind, business_calls_1h_delta, daily_credits_delta, monthly_credits_delta
+                   FROM core.user_tags
+                   WHERE system_key ILIKE 'linuxdo_l%'
+                   ORDER BY system_key"#,
+            )
+            .fetch_all(pool)
+            .await?;
+            if rows.len() != 5 {
+                return Ok(None);
+            }
+            let mut expected: Option<(i64, i64, i64)> = None;
+            for (effect_kind, business_calls_1h_delta, daily_credits_delta, monthly_credits_delta) in
+                rows
+            {
+                if effect_kind != USER_TAG_EFFECT_QUOTA_DELTA {
+                    return Ok(None);
+                }
+                let current = (
+                    business_calls_1h_delta,
+                    daily_credits_delta,
+                    monthly_credits_delta,
+                );
+                match expected {
+                    Some(previous) if previous != current => return Ok(None),
+                    Some(_) => {}
+                    None => expected = Some(current),
+                }
+            }
+            Ok(expected)
+            }
+            .await;
+        }
         let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
             r#"SELECT effect_kind, business_calls_1h_delta, daily_credits_delta, monthly_credits_delta
                FROM user_tags
@@ -1855,6 +3189,21 @@ impl KeyStore {
     }
 
     async fn list_user_ids_for_linuxdo_system_tags(&self) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                sqlx::query_scalar::<_, String>(
+                    r#"SELECT DISTINCT b.user_id
+                   FROM core.user_tag_bindings b
+                   JOIN core.user_tags t ON t.id = b.tag_id
+                   WHERE t.system_key ILIKE 'linuxdo_l%'"#,
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(ProxyError::Database)
+            }
+            .await;
+        }
         sqlx::query_scalar::<_, String>(
             r#"SELECT DISTINCT b.user_id
                FROM user_tag_bindings b
@@ -1901,6 +3250,62 @@ impl KeyStore {
     pub(crate) async fn sync_linuxdo_system_tag_default_deltas_with_env(
         &self,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let current = linuxdo_system_tag_default_deltas();
+                let previous = match self.get_linuxdo_system_tag_default_deltas_meta().await? {
+                    Some(value) if value == current => return Ok(()),
+                    Some(value) => value,
+                    None => self
+                        .infer_linuxdo_system_tag_default_deltas_from_rows()
+                        .await?
+                        .unwrap_or(current),
+                };
+                if previous == current {
+                    self.set_linuxdo_system_tag_default_deltas_meta(current)
+                        .await?;
+                    return Ok(());
+                }
+
+                let now = self.backend_time.now_ts();
+                let affected_user_ids = self.list_user_ids_for_linuxdo_system_tags().await?;
+                let updated = sqlx::query(
+                    r#"UPDATE core.user_tags
+                   SET business_calls_1h_delta = $1,
+                       daily_credits_delta = $2,
+                       monthly_credits_delta = $3,
+                       updated_at = $4
+                   WHERE system_key ILIKE 'linuxdo_l%'
+                     AND effect_kind = $5
+                     AND business_calls_1h_delta = $6
+                     AND daily_credits_delta = $7
+                     AND monthly_credits_delta = $8"#,
+                )
+                .bind(current.0)
+                .bind(current.1)
+                .bind(current.2)
+                .bind(now)
+                .bind(USER_TAG_EFFECT_QUOTA_DELTA)
+                .bind(previous.0)
+                .bind(previous.1)
+                .bind(previous.2)
+                .execute(pool)
+                .await?;
+                if updated.rows_affected() > 0 {
+                    self.invalidate_all_account_quota_resolutions().await;
+                    self.record_effective_account_quota_snapshots_for_users_at(
+                        &affected_user_ids,
+                        now,
+                    )
+                    .await?;
+                }
+                self.set_linuxdo_system_tag_default_deltas_meta(current)
+                    .await?;
+                Ok(())
+            }
+            .await;
+        }
         let current = linuxdo_system_tag_default_deltas();
         let previous = match self.get_linuxdo_system_tag_default_deltas_meta().await? {
             Some(value) if value == current => return Ok(()),
@@ -1953,6 +3358,44 @@ impl KeyStore {
     pub(crate) async fn backfill_linuxdo_system_tag_default_deltas_v1(
         &self,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let now = self.backend_time.now_ts();
+                let (business_calls_1h_delta, daily_credits_delta, monthly_credits_delta) =
+                    linuxdo_system_tag_default_deltas();
+                let affected_user_ids = self.list_user_ids_for_linuxdo_system_tags().await?;
+                let updated = sqlx::query(
+                    r#"UPDATE core.user_tags
+                   SET business_calls_1h_delta = $1,
+                       daily_credits_delta = $2,
+                       monthly_credits_delta = $3,
+                       updated_at = $4
+                   WHERE system_key ILIKE 'linuxdo_l%'
+                     AND effect_kind = $5
+                     AND business_calls_1h_delta = 0
+                     AND daily_credits_delta = 0
+                     AND monthly_credits_delta = 0"#,
+                )
+                .bind(business_calls_1h_delta)
+                .bind(daily_credits_delta)
+                .bind(monthly_credits_delta)
+                .bind(now)
+                .bind(USER_TAG_EFFECT_QUOTA_DELTA)
+                .execute(pool)
+                .await?;
+                if updated.rows_affected() > 0 {
+                    self.invalidate_all_account_quota_resolutions().await;
+                    self.record_effective_account_quota_snapshots_for_users_at(
+                        &affected_user_ids,
+                        now,
+                    )
+                    .await?;
+                }
+                Ok(())
+            }
+            .await;
+        }
         let now = self.backend_time.now_ts();
         let (business_calls_1h_delta, daily_credits_delta, monthly_credits_delta) =
             linuxdo_system_tag_default_deltas();
@@ -2103,6 +3546,54 @@ impl KeyStore {
     }
 
     pub(crate) async fn backfill_linuxdo_user_tag_bindings(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let mismatched_count: i64 = sqlx::query_scalar(
+                    r#"SELECT COUNT(*)
+                   FROM core.oauth_accounts oa
+                   WHERE oa.provider = 'linuxdo'
+                     AND oa.trust_level BETWEEN 0 AND 4
+                     AND (
+                         (
+                             SELECT COUNT(*)
+                             FROM core.user_tag_bindings b
+                             JOIN core.user_tags t ON t.id = b.tag_id
+                             WHERE b.user_id = oa.user_id
+                               AND t.system_key ILIKE 'linuxdo_l%'
+                         ) != 1
+                         OR NOT EXISTS (
+                             SELECT 1
+                             FROM core.user_tag_bindings b
+                             JOIN core.user_tags t ON t.id = b.tag_id
+                             WHERE b.user_id = oa.user_id
+                               AND t.system_key = 'linuxdo_l' || CAST(oa.trust_level AS TEXT)
+                               AND b.source = $1
+                         )
+                     )"#,
+                )
+                .bind(USER_TAG_SOURCE_SYSTEM_LINUXDO)
+                .fetch_one(pool)
+                .await?;
+                if mismatched_count == 0 {
+                    return Ok(());
+                }
+
+                let rows = sqlx::query_as::<_, (String, Option<i64>)>(
+                    r#"SELECT user_id, trust_level
+                   FROM core.oauth_accounts
+                   WHERE provider = 'linuxdo'"#,
+                )
+                .fetch_all(pool)
+                .await?;
+                for (user_id, trust_level) in rows {
+                    self.sync_linuxdo_system_tag_binding(&user_id, trust_level)
+                        .await?;
+                }
+                Ok(())
+            }
+            .await;
+        }
         let mismatched_count: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)
                FROM oauth_accounts oa
@@ -2173,6 +3664,35 @@ impl KeyStore {
     }
 
     pub(crate) async fn refresh_linuxdo_user_tag_bindings(&self) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let rows = sqlx::query_as::<_, (String, Option<i64>)>(
+                    r#"SELECT user_id, trust_level
+                   FROM core.oauth_accounts
+                   WHERE provider = 'linuxdo'
+                     AND trust_level BETWEEN 0 AND 4"#,
+                )
+                .fetch_all(pool)
+                .await?;
+                let mut refreshed = 0_i64;
+                for (user_id, trust_level) in rows {
+                    if self
+                        .sync_linuxdo_system_tag_binding_with_refresh(&user_id, trust_level, true)
+                        .await?
+                    {
+                        refreshed += 1;
+                    }
+                }
+                self.set_meta_i64(
+                    META_KEY_LINUXDO_USER_TAG_BINDINGS_REFRESH_V1,
+                    self.backend_time.now_ts(),
+                )
+                .await?;
+                Ok(refreshed)
+            }
+            .await;
+        }
         let rows = sqlx::query_as::<_, (String, Option<i64>)>(
             r#"SELECT user_id, trust_level
                FROM oauth_accounts
@@ -2202,6 +3722,74 @@ impl KeyStore {
         &self,
         tag_id: &str,
     ) -> Result<Option<UserTagRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let row = sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        String,
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        String,
+                        i64,
+                        i64,
+                        i64,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                     t.id,
+                     t.name,
+                     t.display_name,
+                     t.icon,
+                     t.system_key,
+                     t.effect_kind,
+                     t.business_calls_1h_delta,
+                     t.daily_credits_delta,
+                     t.monthly_credits_delta,
+                     COALESCE(COUNT(b.user_id), 0) AS user_count
+                   FROM core.user_tags t
+                   LEFT JOIN core.user_tag_bindings b ON b.tag_id = t.id
+                   WHERE t.id = $1
+                   GROUP BY t.id, t.name, t.display_name, t.icon, t.system_key,
+                            t.effect_kind, t.business_calls_1h_delta,
+                            t.daily_credits_delta, t.monthly_credits_delta
+                   LIMIT 1"#,
+                )
+                .bind(tag_id)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(
+                    |(
+                        id,
+                        name,
+                        display_name,
+                        icon,
+                        system_key,
+                        effect_kind,
+                        business_calls_1h_delta,
+                        daily_credits_delta,
+                        monthly_credits_delta,
+                        user_count,
+                    )| UserTagRecord {
+                        id,
+                        name,
+                        display_name,
+                        icon,
+                        system_key,
+                        effect_kind,
+                        business_calls_1h_delta,
+                        daily_credits_delta,
+                        monthly_credits_delta,
+                        user_count,
+                    },
+                ))
+            }
+            .await;
+        }
         let row = sqlx::query_as::<
             _,
             (
@@ -2267,6 +3855,62 @@ impl KeyStore {
     }
 
     pub(crate) async fn list_user_tags(&self) -> Result<Vec<UserTagRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, String, i64, i64, i64, i64)>(
+                r#"SELECT
+                     t.id,
+                     t.name,
+                     t.display_name,
+                     t.icon,
+                     t.system_key,
+                     t.effect_kind,
+                     t.business_calls_1h_delta,
+                     t.daily_credits_delta,
+                     t.monthly_credits_delta,
+                     COALESCE(COUNT(b.user_id), 0) AS user_count
+                   FROM core.user_tags t
+                   LEFT JOIN core.user_tag_bindings b ON b.tag_id = t.id
+                   GROUP BY t.id, t.name, t.display_name, t.icon, t.system_key,
+                            t.effect_kind, t.business_calls_1h_delta,
+                            t.daily_credits_delta, t.monthly_credits_delta
+                   ORDER BY (t.system_key IS NULL) ASC, COALESCE(t.system_key, t.name) ASC, t.display_name ASC"#,
+            )
+            .fetch_all(pool)
+            .await?;
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        name,
+                        display_name,
+                        icon,
+                        system_key,
+                        effect_kind,
+                        business_calls_1h_delta,
+                        daily_credits_delta,
+                        monthly_credits_delta,
+                        user_count,
+                    )| UserTagRecord {
+                        id,
+                        name,
+                        display_name,
+                        icon,
+                        system_key,
+                        effect_kind,
+                        business_calls_1h_delta,
+                        daily_credits_delta,
+                        monthly_credits_delta,
+                        user_count,
+                    },
+                )
+                .collect())
+            }
+            .await;
+        }
         let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, String, i64, i64, i64, i64)>(
             r#"SELECT
                  t.id,
@@ -2329,6 +3973,73 @@ impl KeyStore {
         daily_credits_delta: i64,
         monthly_credits_delta: i64,
     ) -> Result<UserTagRecord, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if effect_kind != USER_TAG_EFFECT_QUOTA_DELTA
+                    && effect_kind != USER_TAG_EFFECT_BLOCK_ALL
+                {
+                    return Err(ProxyError::Other(
+                        "invalid user tag effect kind".to_string(),
+                    ));
+                }
+                const ALPHABET: &[u8] =
+                    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                let now = self.backend_time.now_ts();
+                for _ in 0..8 {
+                    let id = random_string(ALPHABET, 8);
+                    let inserted = sqlx::query(
+                        r#"INSERT INTO core.user_tags (
+                            id,
+                            name,
+                            display_name,
+                            icon,
+                            system_key,
+                            effect_kind,
+                            business_calls_1h_delta,
+                            daily_credits_delta,
+                            monthly_credits_delta,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10)"#,
+                    )
+                    .bind(&id)
+                    .bind(name)
+                    .bind(display_name)
+                    .bind(icon)
+                    .bind(effect_kind)
+                    .bind(business_calls_1h_delta)
+                    .bind(daily_credits_delta)
+                    .bind(monthly_credits_delta)
+                    .bind(now)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+
+                    match inserted {
+                        Ok(_) => {
+                            return self.fetch_user_tag_by_id(&id).await?.ok_or_else(|| {
+                                ProxyError::Other("created user tag missing".to_string())
+                            });
+                        }
+                        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                            if db_err.message().contains("user_tags.name") {
+                                return Err(ProxyError::Other(
+                                    "user tag name already exists".to_string(),
+                                ));
+                            }
+                            continue;
+                        }
+                        Err(err) => return Err(ProxyError::Database(err)),
+                    }
+                }
+                Err(ProxyError::Other(
+                    "failed to allocate unique user tag id".to_string(),
+                ))
+            }
+            .await;
+        }
         if effect_kind != USER_TAG_EFFECT_QUOTA_DELTA && effect_kind != USER_TAG_EFFECT_BLOCK_ALL {
             return Err(ProxyError::Other(
                 "invalid user tag effect kind".to_string(),
@@ -2402,6 +4113,89 @@ impl KeyStore {
         daily_credits_delta: i64,
         monthly_credits_delta: i64,
     ) -> Result<Option<UserTagRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                if effect_kind != USER_TAG_EFFECT_QUOTA_DELTA
+                    && effect_kind != USER_TAG_EFFECT_BLOCK_ALL
+                {
+                    return Err(ProxyError::Other(
+                        "invalid user tag effect kind".to_string(),
+                    ));
+                }
+                let Some(existing) = self.fetch_user_tag_by_id(tag_id).await? else {
+                    return Ok(None);
+                };
+                let affected_user_ids = self.list_user_ids_for_tag(tag_id).await?;
+                let now = self.backend_time.now_ts();
+                if existing.is_system() {
+                    if existing.name != name
+                        || existing.display_name != display_name
+                        || existing.icon.as_deref() != icon
+                    {
+                        return Err(ProxyError::Other(
+                            "system user tags only allow effect updates".to_string(),
+                        ));
+                    }
+                    sqlx::query(
+                        r#"UPDATE core.user_tags
+                       SET effect_kind = $1,
+                           business_calls_1h_delta = $2,
+                           daily_credits_delta = $3,
+                           monthly_credits_delta = $4,
+                           updated_at = $5
+                       WHERE id = $6"#,
+                    )
+                    .bind(effect_kind)
+                    .bind(business_calls_1h_delta)
+                    .bind(daily_credits_delta)
+                    .bind(monthly_credits_delta)
+                    .bind(now)
+                    .bind(tag_id)
+                    .execute(pool)
+                    .await?;
+                } else {
+                    let updated = sqlx::query(
+                        r#"UPDATE core.user_tags
+                       SET name = $1,
+                           display_name = $2,
+                           icon = $3,
+                           effect_kind = $4,
+                           business_calls_1h_delta = $5,
+                           daily_credits_delta = $6,
+                           monthly_credits_delta = $7,
+                           updated_at = $8
+                       WHERE id = $9"#,
+                    )
+                    .bind(name)
+                    .bind(display_name)
+                    .bind(icon)
+                    .bind(effect_kind)
+                    .bind(business_calls_1h_delta)
+                    .bind(daily_credits_delta)
+                    .bind(monthly_credits_delta)
+                    .bind(now)
+                    .bind(tag_id)
+                    .execute(pool)
+                    .await;
+                    match updated {
+                        Ok(_) => {}
+                        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                            return Err(ProxyError::Other(
+                                "user tag name already exists".to_string(),
+                            ));
+                        }
+                        Err(err) => return Err(ProxyError::Database(err)),
+                    }
+                }
+                self.invalidate_account_quota_resolutions(&affected_user_ids)
+                    .await;
+                self.record_effective_account_quota_snapshots_for_users_at(&affected_user_ids, now)
+                    .await?;
+                self.fetch_user_tag_by_id(tag_id).await
+            }
+            .await;
+        }
         if effect_kind != USER_TAG_EFFECT_QUOTA_DELTA && effect_kind != USER_TAG_EFFECT_BLOCK_ALL {
             return Err(ProxyError::Other(
                 "invalid user tag effect kind".to_string(),
@@ -2480,6 +4274,39 @@ impl KeyStore {
     }
 
     pub(crate) async fn delete_user_tag(&self, tag_id: &str) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let Some(existing) = self.fetch_user_tag_by_id(tag_id).await? else {
+                    return Ok(false);
+                };
+                if existing.is_system() {
+                    return Err(ProxyError::Other(
+                        "system user tags cannot be deleted".to_string(),
+                    ));
+                }
+                let affected_user_ids = self.list_user_ids_for_tag(tag_id).await?;
+                let mut tx = pool.begin().await?;
+                sqlx::query("DELETE FROM core.user_tag_bindings WHERE tag_id = $1")
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query("DELETE FROM core.user_tags WHERE id = $1")
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                self.invalidate_account_quota_resolutions(&affected_user_ids)
+                    .await;
+                self.record_effective_account_quota_snapshots_for_users_at(
+                    &affected_user_ids,
+                    self.backend_time.now_ts(),
+                )
+                .await?;
+                Ok(true)
+            }
+            .await;
+        }
         let Some(existing) = self.fetch_user_tag_by_id(tag_id).await? else {
             return Ok(false);
         };
@@ -2514,6 +4341,47 @@ impl KeyStore {
         user_id: &str,
         tag_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let user_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await?;
+            if user_exists == 0 {
+                return Ok(false);
+            }
+            let Some(tag) = self.fetch_user_tag_by_id(tag_id).await? else {
+                return Ok(false);
+            };
+            if tag.is_system() {
+                return Err(ProxyError::Other(
+                    "system user tags are managed by the server".to_string(),
+                ));
+            }
+            let now = self.backend_time.now_ts();
+            sqlx::query(
+                r#"INSERT INTO core.user_tag_bindings (user_id, tag_id, source, created_at, updated_at)
+                   VALUES ($1, $2, $3, $4, $5)
+                   ON CONFLICT (user_id, tag_id) DO UPDATE SET
+                       source = excluded.source,
+                       updated_at = excluded.updated_at"#,
+            )
+            .bind(user_id)
+            .bind(tag_id)
+            .bind(USER_TAG_SOURCE_MANUAL)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            self.invalidate_account_quota_resolution(user_id).await;
+            self.record_effective_account_quota_snapshot_at(user_id, now)
+                .await?;
+            Ok(true)
+            }
+            .await;
+        }
         let user_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
             .bind(user_id)
             .fetch_one(&self.pool)
@@ -2555,6 +4423,45 @@ impl KeyStore {
         user_id: &str,
         tag_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+                let binding = sqlx::query_as::<_, (String, Option<String>)>(
+                    r#"SELECT b.source, t.system_key
+                   FROM core.user_tag_bindings b
+                   JOIN core.user_tags t ON t.id = b.tag_id
+                   WHERE b.user_id = $1 AND b.tag_id = $2
+                   LIMIT 1"#,
+                )
+                .bind(user_id)
+                .bind(tag_id)
+                .fetch_optional(pool)
+                .await?;
+                let Some((source, system_key)) = binding else {
+                    return Ok(false);
+                };
+                if source != USER_TAG_SOURCE_MANUAL || system_key.is_some() {
+                    return Err(ProxyError::Other(
+                        "system-managed user tag bindings are read-only".to_string(),
+                    ));
+                }
+                sqlx::query(
+                    "DELETE FROM core.user_tag_bindings WHERE user_id = $1 AND tag_id = $2",
+                )
+                .bind(user_id)
+                .bind(tag_id)
+                .execute(pool)
+                .await?;
+                self.invalidate_account_quota_resolution(user_id).await;
+                self.record_effective_account_quota_snapshot_at(
+                    user_id,
+                    self.backend_time.now_ts(),
+                )
+                .await?;
+                Ok(true)
+            }
+            .await;
+        }
         let binding = sqlx::query_as::<_, (String, Option<String>)>(
             r#"SELECT b.source, t.system_key
                FROM user_tag_bindings b
@@ -2589,6 +4496,91 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<HashMap<String, Vec<UserTagBindingRecord>>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            if user_ids.is_empty() {
+                return Ok(HashMap::new());
+            }
+            let mut builder = QueryBuilder::new(
+                r#"SELECT
+                     b.user_id,
+                     b.source,
+                     t.id,
+                     t.name,
+                     t.display_name,
+                     t.icon,
+                     t.system_key,
+                     t.effect_kind,
+                     t.business_calls_1h_delta,
+                     t.daily_credits_delta,
+                     t.monthly_credits_delta
+                   FROM core.user_tag_bindings b
+                   JOIN core.user_tags t ON t.id = b.tag_id
+                   WHERE b.user_id IN ("#,
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(") ORDER BY (t.system_key IS NULL) ASC, COALESCE(t.system_key, t.name) ASC, t.display_name ASC");
+
+            let rows = builder
+                .build_query_as::<(
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    String,
+                    i64,
+                    i64,
+                    i64,
+                )>()
+                .fetch_all(pool)
+                .await?;
+            let mut map: HashMap<String, Vec<UserTagBindingRecord>> = HashMap::new();
+            for (
+                user_id,
+                source,
+                tag_id,
+                name,
+                display_name,
+                icon,
+                system_key,
+                effect_kind,
+                business_calls_1h_delta,
+                daily_credits_delta,
+                monthly_credits_delta,
+            ) in rows
+            {
+                map.entry(user_id.clone())
+                    .or_default()
+                    .push(UserTagBindingRecord {
+                        source,
+                        tag: UserTagRecord {
+                            id: tag_id,
+                            name,
+                            display_name,
+                            icon,
+                            system_key,
+                            effect_kind,
+                            business_calls_1h_delta,
+                            daily_credits_delta,
+                            monthly_credits_delta,
+                            user_count: 0,
+                        },
+                    });
+            }
+            Ok(map)
+            }
+            .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -2690,8 +4682,7 @@ impl KeyStore {
         self.ensure_account_quota_limits_for_users(user_ids).await?;
         let base_limits = self.fetch_account_quota_limits_bulk(user_ids).await?;
         let tag_bindings = self.list_user_tag_bindings_for_users(user_ids).await?;
-        let current_month_start =
-            crate::start_of_local_month_utc_ts(self.backend_time.local_now());
+        let current_month_start = crate::start_of_local_month_utc_ts(self.backend_time.local_now());
         let entitlement_deltas = self
             .sum_account_entitlement_deltas_for_users(user_ids, current_month_start)
             .await?;
@@ -2731,8 +4722,7 @@ impl KeyStore {
 
         let base = self.ensure_account_quota_limits(user_id).await?;
         let tags = self.list_user_tag_bindings_for_user(user_id).await?;
-        let current_month_start =
-            crate::start_of_local_month_utc_ts(self.backend_time.local_now());
+        let current_month_start = crate::start_of_local_month_utc_ts(self.backend_time.local_now());
         let base_entitlement_delta = self
             .sum_account_entitlement_deltas_for_scope(user_id, ACCOUNT_ENTITLEMENT_SCOPE_BASE)
             .await?;
@@ -2960,6 +4950,51 @@ impl KeyStore {
         binding_hash: Option<&str>,
         bind_token_id: Option<&str>,
     ) -> Result<String, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            let now = self.backend_time.now_ts();
+            let expires_at = now + ttl_secs.max(60);
+
+            sqlx::query(
+                "DELETE FROM core.oauth_login_states WHERE expires_at < $1 OR consumed_at IS NOT NULL",
+            )
+            .bind(now)
+            .execute(pool)
+            .await?;
+
+            loop {
+                let state = random_string(ALPHABET, 48);
+                let res = sqlx::query(
+                    r#"INSERT INTO core.oauth_login_states
+                       (state, provider, redirect_to, binding_hash, bind_token_id, created_at, expires_at, consumed_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)"#,
+                )
+                .bind(&state)
+                .bind(provider)
+                .bind(redirect_to.map(str::trim).filter(|value| !value.is_empty()))
+                .bind(
+                    binding_hash
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty()),
+                )
+                .bind(bind_token_id.map(str::trim).filter(|value| !value.is_empty()))
+                .bind(now)
+                .bind(expires_at)
+                .execute(pool)
+                .await;
+
+                match res {
+                    Ok(_) => return Ok(state),
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => return Err(ProxyError::Database(err)),
+                }
+            }
+            }
+            .await;
+        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let now = self.backend_time.now_ts();
         let expires_at = now + ttl_secs.max(60);
@@ -3006,6 +5041,87 @@ impl KeyStore {
         state: &str,
         binding_hash: Option<&str>,
     ) -> Result<Option<OAuthLoginStatePayload>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let now = self.backend_time.now_ts();
+            let mut tx = pool.begin().await?;
+
+            sqlx::query(
+                "DELETE FROM core.oauth_login_states WHERE expires_at < $1 OR consumed_at IS NOT NULL",
+            )
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+
+            let row = if let Some(hash) = binding_hash
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                    r#"SELECT redirect_to, bind_token_id
+                       FROM core.oauth_login_states
+                       WHERE state = $1
+                         AND provider = $2
+                         AND consumed_at IS NULL
+                         AND expires_at >= $3
+                         AND binding_hash = $4
+                       LIMIT 1"#,
+                )
+                .bind(state)
+                .bind(provider)
+                .bind(now)
+                .bind(hash)
+                .fetch_optional(&mut *tx)
+                .await?
+            } else {
+                sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                    r#"SELECT redirect_to, bind_token_id
+                       FROM core.oauth_login_states
+                       WHERE state = $1
+                         AND provider = $2
+                         AND consumed_at IS NULL
+                         AND expires_at >= $3
+                         AND binding_hash IS NULL
+                       LIMIT 1"#,
+                )
+                .bind(state)
+                .bind(provider)
+                .bind(now)
+                .fetch_optional(&mut *tx)
+                .await?
+            };
+
+            let Some((redirect_to, bind_token_id)) = row else {
+                tx.rollback().await.ok();
+                return Ok(None);
+            };
+
+            let updated = sqlx::query(
+                r#"UPDATE core.oauth_login_states
+                   SET consumed_at = $1
+                   WHERE state = $2 AND provider = $3 AND consumed_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(state)
+            .bind(provider)
+            .execute(&mut *tx)
+            .await?;
+
+            if updated.rows_affected() == 0 {
+                tx.rollback().await.ok();
+                return Ok(None);
+            }
+
+            tx.commit().await?;
+            Ok(Some(OAuthLoginStatePayload {
+                redirect_to,
+                bind_token_id,
+            }))
+            }
+            .await;
+        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
@@ -3081,5 +5197,4 @@ impl KeyStore {
             bind_token_id,
         }))
     }
-
 }

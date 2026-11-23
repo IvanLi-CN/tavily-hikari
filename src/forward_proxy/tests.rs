@@ -174,6 +174,7 @@ rule-providers:
             _observability_lock: None,
             sqlite_runtime: crate::store::SqliteRuntime::new(pool.clone()),
             pool: pool.clone(),
+            pg_pool: None,
             backend_time: crate::BackendTime::system(),
             token_binding_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             account_quota_resolution_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
@@ -1533,6 +1534,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -1694,6 +1696,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -1741,6 +1744,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -1786,6 +1790,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -1883,6 +1888,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -1965,6 +1971,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(0),
+                database_url: None,
             },
         )
         .await
@@ -2008,6 +2015,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(0),
+                database_url: None,
             },
         )
         .await
@@ -2177,6 +2185,7 @@ if __name__ == "__main__":
                     .expect("valid trace url"),
                 low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
             },
         )
         .await
@@ -2250,6 +2259,7 @@ if __name__ == "__main__":
                         .expect("valid trace url"),
                     low_quota_depletion_threshold: LOW_QUOTA_DEPLETION_THRESHOLD_DEFAULT,
                 health_readiness_grace_period: Duration::from_secs(90),
+                database_url: None,
                 },
             )
             .await

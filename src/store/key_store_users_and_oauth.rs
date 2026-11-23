@@ -11,6 +11,9 @@ impl KeyStore {
     const USER_DEBUG_INFO_SHARED_CACHE_TTL: Duration = Duration::from_secs(5);
 
     pub(crate) async fn user_debug_info_shared(&self, user_id: &str) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.user_debug_info_shared_pg(user_id).await;
+        }
         let now = self.backend_time.now_ts();
         if let Some(cached) = self
             .user_debug_info_shared_cache
@@ -44,6 +47,9 @@ impl KeyStore {
         user_id: &str,
         shared: bool,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.set_user_debug_info_shared_pg(user_id, shared).await;
+        }
         let now = self.backend_time.now_ts();
         let result = sqlx::query(
             r#"
@@ -74,6 +80,9 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<HashMap<String, bool>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.user_debug_info_shared_bulk_pg(user_ids).await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -115,7 +124,8 @@ impl KeyStore {
         token_id: &str,
         billing_subject: Option<&str>,
     ) -> Result<Option<String>, ProxyError> {
-        if let Some(user_id) = billing_subject.and_then(|subject| subject.strip_prefix("account:")) {
+        if let Some(user_id) = billing_subject.and_then(|subject| subject.strip_prefix("account:"))
+        {
             return Ok(Some(user_id.to_string()));
         }
 
@@ -128,6 +138,15 @@ impl KeyStore {
         touch_last_login_at: bool,
         refresh_token_update: Option<(&str, &str)>,
     ) -> Result<UserIdentity, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .upsert_oauth_account_with_options_pg(
+                    profile,
+                    touch_last_login_at,
+                    refresh_token_update,
+                )
+                .await;
+        }
         let display_name = profile
             .name
             .as_deref()
@@ -406,6 +425,11 @@ impl KeyStore {
         provider: &str,
         provider_user_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .oauth_account_exists_pg(provider, provider_user_id)
+                .await;
+        }
         let row = sqlx::query_scalar::<_, i64>(
             r#"SELECT 1
                FROM oauth_accounts
@@ -426,6 +450,16 @@ impl KeyStore {
         refresh_token_ciphertext: &str,
         refresh_token_nonce: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .set_oauth_account_refresh_token_pg(
+                    provider,
+                    provider_user_id,
+                    refresh_token_ciphertext,
+                    refresh_token_nonce,
+                )
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"UPDATE oauth_accounts
@@ -447,6 +481,9 @@ impl KeyStore {
         user_id: &str,
         active: bool,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.set_user_active_status_pg(user_id, active).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"UPDATE users
@@ -465,6 +502,11 @@ impl KeyStore {
         &self,
         provider: &str,
     ) -> Result<Vec<OAuthAccountRefreshTokenRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_oauth_accounts_with_refresh_token_pg(provider)
+                .await;
+        }
         let rows = sqlx::query(
             r#"SELECT
                     provider,
@@ -506,6 +548,15 @@ impl KeyStore {
         provider_user_id: &str,
         attempted_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .record_oauth_account_profile_sync_success_pg(
+                    provider,
+                    provider_user_id,
+                    attempted_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"UPDATE oauth_accounts
                SET last_profile_sync_attempt_at = ?,
@@ -529,6 +580,16 @@ impl KeyStore {
         attempted_at: i64,
         error: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .record_oauth_account_profile_sync_failure_pg(
+                    provider,
+                    provider_user_id,
+                    attempted_at,
+                    error,
+                )
+                .await;
+        }
         sqlx::query(
             r#"UPDATE oauth_accounts
                SET last_profile_sync_attempt_at = ?,
@@ -558,6 +619,9 @@ impl KeyStore {
         user_id: &str,
         note: Option<&str>,
     ) -> Result<AuthTokenSecret, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_user_bound_access_token_pg(user_id, note).await;
+        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let note = note.unwrap_or("").trim().to_string();
 
@@ -565,12 +629,11 @@ impl KeyStore {
             let now = self.backend_time.now_ts();
             let mut tx = self.pool.begin().await?;
 
-            let user_exists = sqlx::query_scalar::<_, Option<i64>>(
-                r#"SELECT 1 FROM users WHERE id = ? LIMIT 1"#,
-            )
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            let user_exists =
+                sqlx::query_scalar::<_, Option<i64>>(r#"SELECT 1 FROM users WHERE id = ? LIMIT 1"#)
+                    .bind(user_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
             if user_exists.is_none() {
                 tx.rollback().await.ok();
                 return Err(ProxyError::Database(sqlx::Error::RowNotFound));
@@ -653,6 +716,11 @@ impl KeyStore {
         user_id: &str,
         token_id: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .delete_user_bound_access_token_pg(user_id, token_id)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         let result = sqlx::query(
             r#"UPDATE auth_tokens
@@ -718,6 +786,9 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_active_token_secret_by_id_pg(token_id).await;
+        }
         let row = sqlx::query_as::<_, (String,)>(
             r#"SELECT secret
                FROM auth_tokens
@@ -740,6 +811,11 @@ impl KeyStore {
         note: Option<&str>,
         preferred_token_id: Option<&str>,
     ) -> Result<AuthTokenSecret, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .ensure_user_token_binding_with_preferred_pg(user_id, note, preferred_token_id)
+                .await;
+        }
         let retry_deadline = self.backend_time.deadline_after(Duration::from_secs(5));
         let mut retry_attempt = 0usize;
         let preferred_token_id = preferred_token_id
@@ -1074,6 +1150,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_user_token_any_status_pg(user_id).await;
+        }
         let row = sqlx::query_as::<_, (String, String)>(
             r#"SELECT b.token_id, t.secret
                FROM user_token_bindings b
@@ -1096,6 +1175,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<UserTokenLookup, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_user_token_pg(user_id).await;
+        }
         let row = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<i64>)>(
             r#"SELECT b.token_id, t.secret, t.enabled, t.deleted_at
                FROM user_token_bindings b
@@ -1130,6 +1212,11 @@ impl KeyStore {
         user: &UserIdentity,
         session_max_age_secs: i64,
     ) -> Result<UserSession, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .create_user_session_pg(user, session_max_age_secs)
+                .await;
+        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
         let now = self.backend_time.now_ts();
         let expires_at = now + session_max_age_secs.max(60);
@@ -1171,6 +1258,9 @@ impl KeyStore {
         &self,
         token: &str,
     ) -> Result<Option<UserSession>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_user_session_pg(token).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query("DELETE FROM user_sessions WHERE expires_at < ?")
             .bind(now)
@@ -1236,6 +1326,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn revoke_user_session(&self, token: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.revoke_user_session_pg(token).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             "UPDATE user_sessions SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL",
@@ -1269,6 +1362,30 @@ impl KeyStore {
         selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<UserBusinessCallEventWriteDecision, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .insert_token_log_pg(
+                    token_id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    counts_business_quota,
+                    result_status,
+                    error_message,
+                    request_kind,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
+                    binding_effect_code,
+                    binding_effect_summary,
+                    selection_effect_code,
+                    selection_effect_summary,
+                    request_log_id,
+                )
+                .await;
+        }
         let created_at = self.backend_time.now_ts();
         let request_kind = self
             .resolve_token_log_request_kind(request_log_id, request_kind)
@@ -1403,10 +1520,9 @@ impl KeyStore {
         let diagnostic_metadata = self
             .resolve_request_log_diagnostic_metadata(request_log_id)
             .await?;
-        let request_user_id = diagnostic_metadata.request_user_id.clone().or(
-            self.resolve_request_rollup_user_id(token_id, Some(billing_subject))
-                .await?,
-        );
+        let request_user_id = diagnostic_metadata.request_user_id.clone().or(self
+            .resolve_request_rollup_user_id(token_id, Some(billing_subject))
+            .await?);
         let request_log_created_at = diagnostic_metadata.created_at;
         let upstream_operation_for_business = diagnostic_metadata.upstream_operation.clone();
         let retry_budget = Duration::from_secs(10);
@@ -1567,6 +1683,36 @@ impl KeyStore {
         request_user_id: Option<&str>,
         diagnostic_metadata: &RequestLogDiagnosticMetadata,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .insert_token_log_pending_billing_once_pg(
+                    token_id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    counts_business_quota,
+                    result_status,
+                    error_message,
+                    business_credits,
+                    billing_subject,
+                    request_kind,
+                    api_key_id,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
+                    binding_effect_code,
+                    binding_effect_summary,
+                    selection_effect_code,
+                    selection_effect_summary,
+                    request_log_id,
+                    created_at,
+                    request_user_id,
+                    diagnostic_metadata,
+                )
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let log_id: i64 = sqlx::query_scalar(
             r#"
@@ -1704,6 +1850,11 @@ impl KeyStore {
         &self,
         request_log_id: Option<i64>,
     ) -> Result<RequestLogDiagnosticMetadata, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .resolve_request_log_diagnostic_metadata_pg(request_log_id)
+                .await;
+        }
         let Some(request_log_id) = request_log_id else {
             return Ok(RequestLogDiagnosticMetadata::default());
         };
@@ -1767,6 +1918,11 @@ impl KeyStore {
         request_log_id: Option<i64>,
         fallback: &TokenRequestKind,
     ) -> Result<TokenRequestKind, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .resolve_token_log_request_kind_pg(request_log_id, fallback)
+                .await;
+        }
         let Some(request_log_id) = request_log_id else {
             return Ok(fallback.clone());
         };
@@ -1804,6 +1960,9 @@ impl KeyStore {
         &self,
         billing_subject: &str,
     ) -> Result<Vec<i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_pending_billing_log_ids_pg(billing_subject).await;
+        }
         sqlx::query_scalar(
             r#"
             SELECT auth_token_log_id
@@ -1824,6 +1983,11 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_pending_billing_subjects_for_token_pg(token_id)
+                .await;
+        }
         sqlx::query_scalar(
             r#"
             SELECT DISTINCT billing_subject
@@ -1925,6 +2089,9 @@ impl KeyStore {
         &self,
         log_id: i64,
     ) -> Result<Option<(String, String, String)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.pending_billing_log_retry_metadata_pg(log_id).await;
+        }
         let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
             r#"
             SELECT atl.path, atl.request_kind_key, bl.billing_subject
@@ -1955,6 +2122,9 @@ impl KeyStore {
         &self,
         log_id: i64,
     ) -> Result<PendingBillingSettleOutcome, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.apply_pending_billing_log_once_pg(log_id).await;
+        }
         let mut tx = self.pool.begin().await?;
         #[cfg(test)]
         let force_claim_miss = {
@@ -2363,6 +2533,9 @@ impl KeyStore {
         log_id: i64,
         message: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.annotate_pending_billing_log_pg(log_id, message).await;
+        }
         sqlx::query(
             r#"
             UPDATE billing_ledger
@@ -2409,6 +2582,11 @@ impl KeyStore {
         ttl: Duration,
         wait_timeout: Duration,
     ) -> Result<QuotaSubjectDbLease, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .acquire_quota_subject_lock_pg(subject, ttl, wait_timeout)
+                .await;
+        }
         let owner = format!(
             "{}:{}",
             std::process::id(),
@@ -2525,6 +2703,9 @@ impl KeyStore {
         &self,
         lease: &QuotaSubjectDbLease,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.refresh_quota_subject_lock_pg(lease).await;
+        }
         let deadline = self.backend_time.deadline_after(lease.ttl);
         let mut attempt = 0usize;
         let rows = loop {
@@ -2573,6 +2754,9 @@ impl KeyStore {
         &self,
         lease: &QuotaSubjectDbLease,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.release_quota_subject_lock_pg(lease).await;
+        }
         let deadline = self.backend_time.deadline_after(Duration::from_secs(2));
         let mut attempt = 0usize;
         loop {

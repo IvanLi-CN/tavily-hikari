@@ -108,7 +108,12 @@ fn extract_usage_credits_from_json_bytes_finds_nested_usage_and_rounds_up() {
 
 #[test]
 fn request_log_request_kind_key_sql_avoids_extra_parentheses_in_mcp_batch_aggregates() {
-    let sql = request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+    let sql = request_log_request_kind_key_sql(
+        "path",
+        "request_body",
+        "request_kind_key",
+        crate::analysis::SqlDialect::Sqlite,
+    );
 
     assert!(!sql.contains("COUNT(DISTINCT ("));
     assert!(!sql.contains("MIN(("));
@@ -2288,6 +2293,7 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         _observability_lock: None,
         sqlite_runtime: SqliteRuntime::new(pool.clone()),
         pool,
+        pg_pool: None,
         backend_time: BackendTime::system(),
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),

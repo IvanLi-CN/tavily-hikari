@@ -1079,7 +1079,7 @@ impl KeyStore {
     fn sidecar_counts_business_quota_sql(alias: &str, request_kind_sql: &str) -> String {
         format!(
             "COALESCE({alias}.counts_business_quota, {})",
-            request_log_counts_business_quota_sql(request_kind_sql, &format!("{alias}.request_body"))
+            request_log_counts_business_quota_sql(request_kind_sql, &format!("{alias}.request_body"), crate::analysis::SqlDialect::Sqlite)
         )
     }
 
@@ -1107,7 +1107,7 @@ impl KeyStore {
     ) -> Result<(), ProxyError> {
         let request_kind_sql = "rl.request_kind_key";
         let request_value_bucket_sql =
-            request_value_bucket_sql(request_kind_sql, "rl.request_body");
+            request_value_bucket_sql(request_kind_sql, "rl.request_body", crate::analysis::SqlDialect::Sqlite);
         let bucket_start_sql = Self::sidecar_local_day_bucket_start_sql("rl.created_at");
         let insert_sql = format!(
             r#"
@@ -1178,7 +1178,7 @@ impl KeyStore {
         let counts_business_quota_sql =
             Self::sidecar_counts_business_quota_sql("rl", request_kind_sql);
         let request_value_bucket_sql =
-            request_value_bucket_sql(request_kind_sql, "rl.request_body");
+            request_value_bucket_sql(request_kind_sql, "rl.request_body", crate::analysis::SqlDialect::Sqlite);
         let protocol_group_sql = format!(
             "CASE WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
         );
@@ -1746,6 +1746,7 @@ impl KeyStore {
             database_path: layout.core_database_path.clone(),
             observability_database_path,
             _observability_lock: None,
+            pg_pool: None,
             sqlite_runtime: SqliteRuntime::new(pool.clone()),
             pool,
             backend_time: BackendTime::system(),

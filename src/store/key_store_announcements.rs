@@ -90,7 +90,10 @@ fn parse_announcement_content(value: &str) -> ParsedAnnouncementContent {
     if let Some(title_markdown) = parse_atx_heading(lines[first_non_empty_index]) {
         return ParsedAnnouncementContent {
             title_markdown: Some(title_markdown),
-            body_markdown: lines[first_non_empty_index + 1..].join("\n").trim().to_string(),
+            body_markdown: lines[first_non_empty_index + 1..]
+                .join("\n")
+                .trim()
+                .to_string(),
         };
     }
 
@@ -100,7 +103,10 @@ fn parse_announcement_content(value: &str) -> ParsedAnnouncementContent {
     {
         return ParsedAnnouncementContent {
             title_markdown: Some(lines[first_non_empty_index].trim().to_string()),
-            body_markdown: lines[first_non_empty_index + 2..].join("\n").trim().to_string(),
+            body_markdown: lines[first_non_empty_index + 2..]
+                .join("\n")
+                .trim()
+                .to_string(),
         };
     }
 
@@ -120,7 +126,9 @@ fn normalize_announcement_display(value: &str) -> Result<String, ProxyError> {
     Ok(normalized)
 }
 
-fn normalize_announcement_mutation(input: AnnouncementMutation) -> Result<AnnouncementMutation, ProxyError> {
+fn normalize_announcement_mutation(
+    input: AnnouncementMutation,
+) -> Result<AnnouncementMutation, ProxyError> {
     let display_kind = normalize_announcement_display(&input.display_kind)?;
     let content = normalize_announcement_content(&input.content)?;
     let parsed = parse_announcement_content(&content);
@@ -128,7 +136,9 @@ fn normalize_announcement_mutation(input: AnnouncementMutation) -> Result<Announ
     if let Some(title) = parsed.title_markdown.as_ref()
         && title.chars().count() > ANNOUNCEMENT_TITLE_MAX_LEN
     {
-        return Err(ProxyError::Other("announcement title is too long".to_string()));
+        return Err(ProxyError::Other(
+            "announcement title is too long".to_string(),
+        ));
     }
 
     if display_kind == ANNOUNCEMENT_DISPLAY_MODAL {
@@ -150,7 +160,14 @@ fn normalize_announcement_mutation(input: AnnouncementMutation) -> Result<Announ
     })
 }
 
-fn announcement_from_row(row: sqlx::sqlite::SqliteRow) -> Result<Announcement, sqlx::Error> {
+fn announcement_from_row<'r, R>(row: &'r R) -> Result<Announcement, sqlx::Error>
+where
+    R: sqlx::Row,
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    Option<i64>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+{
     Ok(Announcement {
         id: row.try_get("id")?,
         content: row.try_get("content")?,
@@ -173,15 +190,19 @@ impl KeyStore {
             != 0)
     }
 
-    async fn announcement_columns_set(&self) -> Result<std::collections::HashSet<String>, ProxyError> {
+    async fn announcement_columns_set(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, ProxyError> {
         if !self.announcements_table_exists().await? {
             return Ok(std::collections::HashSet::new());
         }
-        sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('announcements', 'main')")
-            .fetch_all(&self.pool)
-            .await
-            .map(|rows| rows.into_iter().collect())
-            .map_err(ProxyError::Database)
+        sqlx::query_scalar::<_, String>(
+            "SELECT name FROM pragma_table_info('announcements', 'main')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map(|rows| rows.into_iter().collect())
+        .map_err(ProxyError::Database)
     }
 
     async fn create_announcements_table_in_pool(&self) -> Result<(), ProxyError> {
@@ -224,9 +245,7 @@ impl KeyStore {
         );
 
         if source_columns.contains("content") {
-            format!(
-                "COALESCE(NULLIF(TRIM(COALESCE(legacy.content, '')), ''), {fallback_sql})"
-            )
+            format!("COALESCE(NULLIF(TRIM(COALESCE(legacy.content, '')), ''), {fallback_sql})")
         } else {
             fallback_sql
         }
@@ -277,7 +296,7 @@ impl KeyStore {
         };
 
         let mut conn = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
-        let rebuild_result = async {
+        let rebuild_result: Result<_, ProxyError> = async {
             sqlx::query("DROP TABLE IF EXISTS announcements_new")
                 .execute(&mut *conn)
                 .await?;
@@ -343,8 +362,9 @@ impl KeyStore {
 
     pub(crate) async fn ensure_announcements_schema(&self) -> Result<(), ProxyError> {
         let source_columns = self.announcement_columns_set().await?;
-        let has_target_schema =
-            source_columns.contains("content") && !source_columns.contains("title") && !source_columns.contains("body");
+        let has_target_schema = source_columns.contains("content")
+            && !source_columns.contains("title")
+            && !source_columns.contains("body");
 
         if source_columns.is_empty() {
             self.create_announcements_table_in_pool().await?;
@@ -432,6 +452,31 @@ impl KeyStore {
     }
 
     pub(crate) async fn list_announcements(&self) -> Result<Vec<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return async {
+
+            let rows = sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 ORDER BY
+                   CASE status
+                     WHEN 'published' THEN 0
+                     WHEN 'draft' THEN 1
+                     ELSE 2
+                   END,
+                   COALESCE(published_at, updated_at, created_at) DESC,
+                   id DESC
+                "#,
+            )
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_all(pool)
+            .await?;
+            Ok(rows)
+            }
+            .await;
+        }
         let rows = sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
@@ -446,7 +491,7 @@ impl KeyStore {
                rowid DESC
             "#,
         )
-        .try_map(announcement_from_row)
+        .try_map(|row| announcement_from_row(&row))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -468,7 +513,7 @@ impl KeyStore {
             "#,
         )
         .bind(id)
-        .try_map(announcement_from_row)
+        .try_map(|row| announcement_from_row(&row))
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -595,7 +640,10 @@ impl KeyStore {
         }))
     }
 
-    pub(crate) async fn publish_announcement(&self, id: &str) -> Result<Option<Announcement>, ProxyError> {
+    pub(crate) async fn publish_announcement(
+        &self,
+        id: &str,
+    ) -> Result<Option<Announcement>, ProxyError> {
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query(
@@ -606,7 +654,7 @@ impl KeyStore {
             "#,
         )
         .bind(id)
-        .try_map(announcement_from_row)
+        .try_map(|row| announcement_from_row(&row))
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -686,7 +734,10 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn archive_announcement(&self, id: &str) -> Result<Option<Announcement>, ProxyError> {
+    pub(crate) async fn archive_announcement(
+        &self,
+        id: &str,
+    ) -> Result<Option<Announcement>, ProxyError> {
         let now = self.backend_time.now_ts();
         let updated = sqlx::query(
             r#"UPDATE announcements
@@ -709,7 +760,10 @@ impl KeyStore {
         self.get_announcement(id).await
     }
 
-    pub(crate) async fn get_announcement(&self, id: &str) -> Result<Option<Announcement>, ProxyError> {
+    pub(crate) async fn get_announcement(
+        &self,
+        id: &str,
+    ) -> Result<Option<Announcement>, ProxyError> {
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
@@ -718,13 +772,15 @@ impl KeyStore {
             "#,
         )
         .bind(id)
-        .try_map(announcement_from_row)
+        .try_map(|row| announcement_from_row(&row))
         .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::Database)
     }
 
-    pub(crate) async fn list_user_active_announcements(&self) -> Result<Vec<Announcement>, ProxyError> {
+    pub(crate) async fn list_user_active_announcements(
+        &self,
+    ) -> Result<Vec<Announcement>, ProxyError> {
         let mut out = Vec::new();
         for display_kind in [ANNOUNCEMENT_DISPLAY_MODAL, ANNOUNCEMENT_DISPLAY_TICKER] {
             if let Some(item) = sqlx::query(
@@ -738,7 +794,7 @@ impl KeyStore {
             )
             .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
             .bind(display_kind)
-            .try_map(announcement_from_row)
+            .try_map(|row| announcement_from_row(&row))
             .fetch_optional(&self.pool)
             .await?
             {
@@ -748,7 +804,9 @@ impl KeyStore {
         Ok(out)
     }
 
-    pub(crate) async fn list_user_announcement_history(&self) -> Result<Vec<Announcement>, ProxyError> {
+    pub(crate) async fn list_user_announcement_history(
+        &self,
+    ) -> Result<Vec<Announcement>, ProxyError> {
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
@@ -766,7 +824,7 @@ impl KeyStore {
         .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
         .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
         .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
-        .try_map(announcement_from_row)
+        .try_map(|row| announcement_from_row(&row))
         .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::Database)

@@ -300,6 +300,59 @@ jobs:
             --filtered-process-workers 4 \
             --filtered-test-threads 2
 
+  postgres-write-paths:
+    name: PostgreSQL Write Paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: th_test
+          POSTGRES_PASSWORD: th_test
+          POSTGRES_DB: th_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U th_test -d th_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout source tree
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo directories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-pg-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-pg-
+
+      - name: Run PostgreSQL write-path parity tests
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+          TAVILY_TEST_PG_URL: postgres://th_test:th_test@127.0.0.1:5432/th_test
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib -- pg_write_paths --test-threads=1 \
+            2>&1 | tee /tmp/pg-write-paths.log
+          if grep -q 'skipped (TAVILY_TEST_PG_URL unset)' /tmp/pg-write-paths.log; then
+            echo "postgres write-path tests skipped despite a configured database"
+            exit 1
+          fi
+
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-24.04

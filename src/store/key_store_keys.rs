@@ -99,6 +99,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn count_total_users(&self) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.count_total_users_pg().await;
+        }
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
             .fetch_one(&self.pool)
             .await
@@ -109,6 +112,11 @@ impl KeyStore {
         &self,
         since_bucket_start: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .count_active_users_since_bucket_pg(since_bucket_start)
+                .await;
+        }
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(DISTINCT user_id)
                FROM account_usage_rollup_buckets
@@ -156,6 +164,9 @@ impl KeyStore {
         key_id: &str,
         since: i64,
     ) -> Result<ProxySummary, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_key_summary_since_pg(key_id, since).await;
+        }
         // `api_key_usage_buckets.bucket_start` is aligned to *server-local midnight* (stored as UTC ts).
         // Callers might pass `since` aligned to UTC midnight (e.g. from browser). Normalize so daily
         // bucket queries remain correct under non-UTC server timezones.
@@ -237,6 +248,9 @@ impl KeyStore {
         limit: usize,
         since: Option<i64>,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_key_logs_pg(key_id, limit, since).await;
+        }
         let limit = limit.clamp(1, 500) as i64;
         let rows = if let Some(since_ts) = since {
             sqlx::query(
@@ -304,6 +318,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.sync_keys_pg(keys).await;
+        }
         let mut tx = self.pool.begin().await?;
 
         let now = self.backend_time.now_ts();
@@ -374,9 +391,8 @@ impl KeyStore {
                 .execute(&mut *tx)
                 .await?;
         } else {
-            let mut interval_builder = QueryBuilder::new(
-                "UPDATE api_key_membership_intervals SET active_until = ",
-            );
+            let mut interval_builder =
+                QueryBuilder::new("UPDATE api_key_membership_intervals SET active_until = ");
             interval_builder.push_bind(now);
             interval_builder.push(
                 " WHERE active_until IS NULL AND key_id IN (SELECT id FROM api_keys WHERE deleted_at IS NULL AND api_key NOT IN (",
@@ -408,6 +424,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn acquire_key(&self) -> Result<ApiKeyLease, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.acquire_key_pg().await;
+        }
         self.reset_monthly().await?;
 
         let now = self.backend_time.now_ts();
@@ -528,6 +547,11 @@ impl KeyStore {
         scope: &str,
         excluded_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .acquire_key_avoiding_transient_backoff_excluding_pg(scope, excluded_key_id)
+                .await;
+        }
         self.reset_monthly().await?;
 
         let now = self.backend_time.now_ts();
@@ -599,6 +623,9 @@ impl KeyStore {
     pub(crate) async fn list_mcp_session_candidate_key_ids(
         &self,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_mcp_session_candidate_key_ids_pg().await;
+        }
         self.reset_monthly().await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
@@ -757,7 +784,10 @@ impl KeyStore {
             SpecificKeySelection::Unavailable => {}
         }
 
-        if self.has_available_regular_exhausted_key_excluding(Some(key_id)).await? {
+        if self
+            .has_available_regular_exhausted_key_excluding(Some(key_id))
+            .await?
+        {
             return Ok(None);
         }
 
@@ -782,6 +812,16 @@ impl KeyStore {
         allow_low_quota_depleted: bool,
         transient_backoff_scope: Option<&str>,
     ) -> Result<SpecificKeySelection, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .try_acquire_specific_key_with_status_pg(
+                    key_id,
+                    status,
+                    allow_low_quota_depleted,
+                    transient_backoff_scope,
+                )
+                .await;
+        }
         let now = self.backend_time.now_ts();
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
@@ -868,6 +908,11 @@ impl KeyStore {
         &self,
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .has_available_active_key_excluding_pg(excluded_key_id)
+                .await;
+        }
         self.reset_monthly().await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
@@ -925,6 +970,11 @@ impl KeyStore {
         &self,
         excluded_key_id: Option<&str>,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .has_available_regular_exhausted_key_excluding_pg(excluded_key_id)
+                .await;
+        }
         self.reset_monthly().await?;
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
 
@@ -982,6 +1032,9 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.is_low_quota_depleted_this_month_pg(key_id).await;
+        }
         let month_start = start_of_month(self.backend_time.now_utc()).timestamp();
         let exists = sqlx::query_scalar::<_, i64>(
             r#"
@@ -1004,13 +1057,18 @@ impl KeyStore {
         key_id: &str,
         threshold: i64,
     ) -> Result<bool, ProxyError> {
-        let Some(quota_remaining) =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT quota_remaining FROM api_keys WHERE id = ?")
-                .bind(key_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .flatten()
-        else {
+        if self.pg_pool.is_some() {
+            return self
+                .record_low_quota_depletion_if_needed_pg(key_id, threshold)
+                .await;
+        }
+        let Some(quota_remaining) = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT quota_remaining FROM api_keys WHERE id = ?",
+        )
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten() else {
             return Ok(false);
         };
 
@@ -1049,6 +1107,9 @@ impl KeyStore {
         &self,
         excluded_key_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.acquire_active_key_excluding_pg(excluded_key_id).await;
+        }
         self.reset_monthly().await?;
 
         let now = self.backend_time.now_ts();
@@ -1123,6 +1184,11 @@ impl KeyStore {
         token_id: &str,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .save_research_request_affinity_pg(request_id, key_id, token_id, expires_at)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -1161,6 +1227,9 @@ impl KeyStore {
     }
 
     async fn ensure_api_key_maintenance_records_schema(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_api_key_maintenance_records_schema_pg().await;
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_key_maintenance_records (
@@ -1223,6 +1292,9 @@ impl KeyStore {
     }
 
     async fn ensure_api_key_transient_backoffs_schema(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.ensure_api_key_transient_backoffs_schema_pg().await;
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_key_transient_backoffs (
@@ -1269,6 +1341,9 @@ impl KeyStore {
         request_id: &str,
         now: i64,
     ) -> Result<Option<(String, String, i64)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_research_request_affinity_pg(request_id, now).await;
+        }
         let row = sqlx::query_as::<_, (String, String, i64)>(
             r#"
             SELECT key_id, token_id, expires_at
@@ -1295,7 +1370,7 @@ impl KeyStore {
             .await?;
         }
 
-            Ok(row)
+        Ok(row)
     }
 
     // ----- Access token helpers -----
@@ -1305,6 +1380,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn validate_access_token(&self, token: &str) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.validate_access_token_pg(token).await;
+        }
         // Expect format th-<id>-<secret>
         let Some(rest) = token.strip_prefix("th-") else {
             return Ok(false);
@@ -1348,6 +1426,9 @@ impl KeyStore {
         &self,
         note: Option<&str>,
     ) -> Result<AuthTokenSecret, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_access_token_pg(note).await;
+        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let deadline = self.backend_time.instant_now() + ACCESS_TOKEN_CREATE_RETRY_BUDGET;
         let sqlite_deadline = deadline.into_std();
@@ -1461,6 +1542,9 @@ impl KeyStore {
         count: usize,
         note: Option<&str>,
     ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_access_tokens_batch_pg(group, count, note).await;
+        }
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let mut tx = self.pool.begin().await?;
         let mut out: Vec<AuthTokenSecret> = Vec::with_capacity(count);
@@ -1499,11 +1583,15 @@ impl KeyStore {
         tx.commit().await?;
         Ok(out)
     }
+
     // Generate random string of given length from provided alphabet
     // Alphabet is a byte slice of ASCII alphanumerics
     // Using ThreadRng for simplicity
 
     pub(crate) async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_access_tokens_pg().await;
+        }
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -1553,6 +1641,9 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<AuthToken>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_disabled_access_tokens_pg(limit).await;
+        }
         let limit = limit.clamp(1, 100) as i64;
         let rows = sqlx::query_as::<
             _,
@@ -1600,6 +1691,9 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_disabled_access_token_ids_pg(limit).await;
+        }
         let limit = limit.clamp(1, 100) as i64;
         sqlx::query_scalar::<_, String>(
             r#"SELECT id
@@ -1615,6 +1709,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.delete_access_token_pg(id).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query("UPDATE auth_tokens SET enabled = 0, deleted_at = ? WHERE id = ?")
             .bind(now)
@@ -1629,6 +1726,9 @@ impl KeyStore {
         id: &str,
         enabled: bool,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.set_access_token_enabled_pg(id, enabled).await;
+        }
         sqlx::query("UPDATE auth_tokens SET enabled = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(if enabled { 1 } else { 0 })
             .bind(id)
@@ -1642,6 +1742,9 @@ impl KeyStore {
         id: &str,
         note: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.update_access_token_note_pg(id, note).await;
+        }
         sqlx::query("UPDATE auth_tokens SET note = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(note)
             .bind(id)
@@ -1654,6 +1757,9 @@ impl KeyStore {
         &self,
         id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_access_token_secret_pg(id).await;
+        }
         let row = sqlx::query_as::<_, (String,)>(
             "SELECT secret FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
         )
@@ -1671,6 +1777,9 @@ impl KeyStore {
         &self,
         id: &str,
     ) -> Result<AuthTokenSecret, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.rotate_access_token_secret_pg(id).await;
+        }
         // Ensure token exists first to provide a clearer error on missing id
         let exists = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT 1 FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
@@ -1702,6 +1811,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Vec<AuthToken>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_user_tokens_pg(user_id).await;
+        }
         let rows = sqlx::query_as::<
             _,
             (
@@ -1748,6 +1860,9 @@ impl KeyStore {
         user_id: &str,
         token_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.is_user_token_bound_pg(user_id, token_id).await;
+        }
         let exists = sqlx::query_scalar::<_, Option<i64>>(
             r#"SELECT 1
                FROM user_token_bindings
@@ -1765,6 +1880,9 @@ impl KeyStore {
         &self,
         token_ids: &[String],
     ) -> Result<HashMap<String, String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_user_bindings_for_tokens_pg(token_ids).await;
+        }
         if token_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -1794,6 +1912,9 @@ impl KeyStore {
         user_id: &str,
         token_id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_user_token_secret_pg(user_id, token_id).await;
+        }
         let row = sqlx::query_as::<_, (String,)>(
             r#"SELECT t.secret
                FROM user_token_bindings b
@@ -1832,6 +1953,9 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.find_user_id_by_token_fresh_pg(token_id).await;
+        }
         let row = sqlx::query_as::<_, (String,)>(
             r#"SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1"#,
         )
@@ -1910,9 +2034,9 @@ impl KeyStore {
             .load(std::sync::atomic::Ordering::Acquire)
             != 0
             || self
-            .account_quota_resolution_generation
-            .load(std::sync::atomic::Ordering::Acquire)
-            != generation.0
+                .account_quota_resolution_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+                != generation.0
             || user_generations.get(user_id).copied().unwrap_or(0) != generation.1
         {
             return;
@@ -1942,10 +2066,7 @@ impl KeyStore {
         }
     }
 
-    pub(crate) async fn quota_cache_generation(
-        &self,
-        user_id: &str,
-    ) -> (u64, u64) {
+    pub(crate) async fn quota_cache_generation(&self, user_id: &str) -> (u64, u64) {
         let global = self
             .account_quota_resolution_generation
             .load(std::sync::atomic::Ordering::Acquire);
@@ -2050,6 +2171,9 @@ impl KeyStore {
         &self,
         tag_id: &str,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.list_user_ids_for_tag_pg(tag_id).await;
+        }
         sqlx::query_scalar::<_, String>(
             "SELECT DISTINCT user_id FROM user_tag_bindings WHERE tag_id = ?",
         )
@@ -2067,6 +2191,11 @@ impl KeyStore {
         tag_id: Option<&str>,
         activity_scope: AdminUserActivityScope,
     ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_admin_users_paged_pg(page, per_page, query, tag_id, activity_scope)
+                .await;
+        }
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -2122,6 +2251,11 @@ impl KeyStore {
         tag_id: Option<&str>,
         activity_scope: AdminUserActivityScope,
     ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .list_admin_users_filtered_pg(query, tag_id, activity_scope)
+                .await;
+        }
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -2159,6 +2293,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<AdminUserIdentity>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_admin_user_identity_pg(user_id).await;
+        }
         let row = sqlx::query_as::<
             _,
             (
@@ -2205,6 +2342,9 @@ impl KeyStore {
         &self,
         user_ids: &[String],
     ) -> Result<HashMap<String, AdminUserIdentity>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_admin_user_identities_pg(user_ids).await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -2262,6 +2402,9 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_user_primary_api_key_affinity_pg(user_id).await;
+        }
         sqlx::query_scalar::<_, String>(
             r#"SELECT api_key_id
                FROM user_primary_api_key_affinity
@@ -2278,6 +2421,9 @@ impl KeyStore {
         &self,
         token_id: &str,
     ) -> Result<Option<TokenPrimaryApiKeyAffinity>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_token_primary_api_key_affinity_pg(token_id).await;
+        }
         let row = sqlx::query_as::<_, (String, Option<String>, String)>(
             r#"SELECT token_id, user_id, api_key_id
                FROM token_primary_api_key_affinity
@@ -2301,6 +2447,11 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<Option<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .find_recent_primary_candidate_for_user_pg(user_id)
+                .await;
+        }
         sqlx::query_scalar::<_, String>(
             r#"
             SELECT api_key_id
@@ -2321,6 +2472,11 @@ impl KeyStore {
         user_id: &str,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .sync_user_primary_api_key_affinity_pg(user_id, api_key_id)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
 
@@ -2375,6 +2531,11 @@ impl KeyStore {
         user_id: Option<&str>,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .set_token_primary_api_key_affinity_pg(token_id, user_id, api_key_id)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -2408,6 +2569,11 @@ impl KeyStore {
         owner_subject: &str,
         project_id_hash: &str,
     ) -> Result<Option<HttpProjectAffinityBinding>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .get_http_project_api_key_affinity_pg(owner_subject, project_id_hash)
+                .await;
+        }
         let row = sqlx::query_as::<_, (String, String, String)>(
             r#"SELECT owner_subject, project_id_hash, api_key_id
                FROM http_project_api_key_affinity
@@ -2434,6 +2600,11 @@ impl KeyStore {
         project_id_hash: &str,
         api_key_id: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .set_http_project_api_key_affinity_pg(owner_subject, project_id_hash, api_key_id)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -2465,6 +2636,11 @@ impl KeyStore {
         owner_subject: &str,
         route_key_hash: &str,
     ) -> Result<Option<ApiRouteAffinityBinding>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .get_api_route_api_key_affinity_pg(owner_subject, route_key_hash)
+                .await;
+        }
         let row = sqlx::query_as::<_, (String, String, String)>(
             r#"SELECT owner_subject, project_id_hash, api_key_id
                FROM http_project_api_key_affinity
@@ -2499,6 +2675,9 @@ impl KeyStore {
         &self,
         binding: &McpSessionBinding,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.create_or_replace_mcp_session_pg(binding).await;
+        }
         sqlx::query(
             r#"
             INSERT INTO mcp_sessions (
@@ -2575,6 +2754,9 @@ impl KeyStore {
         proxy_session_id: &str,
         now: i64,
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.get_active_mcp_session_pg(proxy_session_id, now).await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -2639,6 +2821,11 @@ impl KeyStore {
         token_id: &str,
         now: i64,
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .get_latest_active_mcp_session_for_token_pg(token_id, now)
+                .await;
+        }
         let row = sqlx::query(
             r#"
             SELECT
@@ -2704,6 +2891,11 @@ impl KeyStore {
         token_id: &str,
         now: i64,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .has_active_non_rebalance_mcp_session_for_token_pg(token_id, now)
+                .await;
+        }
         let exists: i64 = sqlx::query_scalar(
             r#"
             SELECT EXISTS(
@@ -2732,6 +2924,17 @@ impl KeyStore {
         now: i64,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .touch_mcp_session_pg(
+                    proxy_session_id,
+                    protocol_version,
+                    last_event_id,
+                    now,
+                    expires_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2762,6 +2965,17 @@ impl KeyStore {
         now: i64,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .mark_mcp_session_rate_limited_pg(
+                    proxy_session_id,
+                    rate_limited_until,
+                    reason,
+                    now,
+                    expires_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2792,6 +3006,11 @@ impl KeyStore {
         now: i64,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .clear_mcp_session_rate_limit_pg(proxy_session_id, now, expires_at)
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2819,6 +3038,17 @@ impl KeyStore {
         now: i64,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .update_mcp_session_upstream_identity_pg(
+                    proxy_session_id,
+                    upstream_session_id,
+                    protocol_version,
+                    now,
+                    expires_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2849,6 +3079,17 @@ impl KeyStore {
         now: i64,
         expires_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .update_mcp_session_rebalance_metadata_pg(
+                    proxy_session_id,
+                    routing_subject_hash,
+                    fallback_reason,
+                    now,
+                    expires_at,
+                )
+                .await;
+        }
         sqlx::query(
             r#"
             UPDATE mcp_sessions
@@ -2876,6 +3117,9 @@ impl KeyStore {
         proxy_session_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.revoke_mcp_session_pg(proxy_session_id, reason).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -2899,6 +3143,11 @@ impl KeyStore {
         upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .revoke_mcp_sessions_for_user_key_pg(user_id, upstream_key_id, reason)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -2923,6 +3172,11 @@ impl KeyStore {
         upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .revoke_mcp_sessions_for_token_key_pg(token_id, upstream_key_id, reason)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"

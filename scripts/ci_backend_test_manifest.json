@@ -41,6 +41,12 @@
         "request_user_id_backfill"
       ]
     },
+    "bin-s2pg": {
+      "list_args": [
+        "--bin",
+        "s2pg"
+      ]
+    },
     "integration:mcp_billing_regression": {
       "list_args": [
         "--test",
@@ -98,6 +104,7 @@
         "ha::tests::",
         "models::client_ip_tests::",
         "runtime_logging::tests::",
+        "store::pg::",
         "store::admin_passkey_store_tests::",
         "store::alert_grouping_tests::",
         "store::sqlite_runtime::tests::",
@@ -222,6 +229,21 @@
       ],
       "include_prefixes": [
         "tests::jobs_and_request_log_retention::scheduled_job_claim_serializes_concurrent_duplicate_triggers"
+      ]
+    },
+    {
+      "id": "lib-pg-write-paths",
+      "kind": "lib",
+      "name": "Lib PostgreSQL Write Paths",
+      "estimated_seconds": 15,
+      "coverage_target": "lib",
+      "run_args": ["--lib"],
+      "filtered_test_threads": 1,
+      "serial_prefixes": [
+        "tests::pg_write_paths::"
+      ],
+      "include_prefixes": [
+        "tests::pg_write_paths::"
       ]
     },
     {
@@ -1056,6 +1078,17 @@
         "server::tests::log_catalog_and_dashboard_sse::key_",
         "server::tests::research_result_and_mcp_subpath::db_",
         "server::tests::system_settings_and_forward_proxy::proxy_"
+      ]
+    },
+    {
+      "id": "bin-s2pg",
+      "kind": "bin",
+      "name": "Bin S2pg Migrator",
+      "estimated_seconds": 8,
+      "coverage_target": "bin-s2pg",
+      "run_args": [
+        "--bin",
+        "s2pg"
       ]
     },
     {

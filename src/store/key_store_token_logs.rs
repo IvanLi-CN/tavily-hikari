@@ -42,6 +42,82 @@ const REQUEST_LOG_BODY_RETENTION_PROFILE_GLOBAL: &str = "global";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_HEAVY_USAGE: &str = "heavy_usage";
 const REQUEST_LOG_BODY_RETENTION_PROFILE_DEBUG_SHARED: &str = "debug_shared";
 
+macro_rules! push_request_kind_filter_clause_body {
+    ($builder:expr, $stored:expr, $legacy_pred:expr, $legacy:expr, $kinds:expr) => {{
+        $builder.push("(");
+        $builder.push($stored.to_string());
+        $builder.push(" IN (");
+        {
+            let mut separated = $builder.separated(", ");
+            for request_kind in $kinds {
+                separated.push_bind(request_kind.clone());
+            }
+            separated.push_unseparated(")");
+        }
+        $builder.push(" OR (");
+        $builder.push($legacy_pred.to_string());
+        $builder.push(" AND ");
+        $builder.push($legacy.to_string());
+        $builder.push(" IN (");
+        {
+            let mut separated = $builder.separated(", ");
+            for request_kind in $kinds {
+                separated.push_bind(request_kind.clone());
+            }
+            separated.push_unseparated(")");
+        }
+        $builder.push("))");
+    }};
+}
+
+macro_rules! push_class_filter_clause_body {
+    ($builder:expr, $value:expr, $legacy_pred:expr, $stored:expr, $legacy:expr) => {{
+        $builder.push("(");
+        $builder.push("((NOT ");
+        $builder.push($legacy_pred.to_string());
+        $builder.push(") AND ");
+        $builder.push($stored.to_string());
+        $builder.push(" = ");
+        $builder.push_bind($value);
+        $builder.push(") OR (");
+        $builder.push($legacy_pred.to_string());
+        $builder.push(" AND ");
+        $builder.push($legacy.to_string());
+        $builder.push(" = ");
+        $builder.push_bind($value);
+        $builder.push("))");
+    }};
+}
+
+macro_rules! push_desc_cursor_clause_body {
+    ($builder:expr, $created_at_column:expr, $id_column:expr, $cursor:expr, $direction:expr, $has_where:expr) => {{
+        let Some(cursor) = $cursor else {
+            return $has_where;
+        };
+        let builder = $builder;
+        builder.push(if $has_where { " AND (" } else { " WHERE (" });
+        builder.push($created_at_column);
+        builder.push(match $direction {
+            RequestLogsCursorDirection::Older => " < ",
+            RequestLogsCursorDirection::Newer => " > ",
+        });
+        builder.push_bind(cursor.created_at);
+        builder.push(" OR (");
+        builder.push($created_at_column);
+        builder.push(" = ");
+        builder.push_bind(cursor.created_at);
+        builder.push(" AND ");
+        builder.push($id_column);
+        builder.push(match $direction {
+            RequestLogsCursorDirection::Older => " < ",
+            RequestLogsCursorDirection::Newer => " > ",
+        });
+        builder.push_bind(cursor.id);
+        builder.push("))");
+        true
+    }};
+}
+
 impl KeyStore {
     pub async fn fetch_token_logs(
         &self,
@@ -60,6 +136,11 @@ impl KeyStore {
         before_id: Option<i64>,
         billing_filter: TokenLogBillingFilter,
     ) -> Result<Vec<TokenLogRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_logs_by_billing_pg(token_id, limit, before_id, billing_filter)
+                .await;
+        }
         let limit = limit.clamp(1, 500) as i64;
         let mut builder = QueryBuilder::new(
             r#"
@@ -184,7 +265,15 @@ impl KeyStore {
         builder.push("))");
     }
 
-    fn map_token_log_row(row: sqlx::sqlite::SqliteRow) -> Result<TokenLogRecord, sqlx::Error> {
+    fn map_token_log_row<R>(row: R) -> Result<TokenLogRecord, sqlx::Error>
+    where
+        R: sqlx::Row,
+        for<'r> &'r str: sqlx::ColumnIndex<R>,
+        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<i64>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<String>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    {
         let key_id: Option<String> = row.try_get("api_key_id")?;
         let method: String = row.try_get("method")?;
         let path: String = row.try_get("path")?;
@@ -239,6 +328,11 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
     ) -> Result<TokenSummary, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_summary_since_pg(token_id, since, until)
+                .await;
+        }
         let now_ts = self.backend_time.now_ts();
         let end_exclusive = until.unwrap_or(now_ts);
         if end_exclusive <= since {
@@ -472,6 +566,25 @@ impl KeyStore {
         cursor: Option<&RequestLogsCursor>,
         direction: RequestLogsCursorDirection,
     ) -> Result<TokenLogsCursorPage, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_logs_cursor_page_pg(
+                    token_id,
+                    page_size,
+                    since,
+                    until,
+                    request_kinds,
+                    result_status,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    key_id,
+                    operational_class,
+                    cursor,
+                    direction,
+                )
+                .await;
+        }
         let started = Instant::now();
         let page_size = page_size.clamp(1, 200);
         let query_limit = page_size + 1;
@@ -495,10 +608,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let stored_result_bucket_sql = result_bucket_case_sql(
+            &stored_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
+        let legacy_result_bucket_sql = result_bucket_case_sql(
+            &legacy_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
 
         let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
@@ -586,10 +703,14 @@ impl KeyStore {
         );
         match direction {
             RequestLogsCursorDirection::Older => {
-                rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
+                rows_query.push(
+                    " ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ",
+                );
             }
             RequestLogsCursorDirection::Newer => {
-                rows_query.push(" ORDER BY auth_token_logs.created_at ASC, auth_token_logs.id ASC LIMIT ");
+                rows_query.push(
+                    " ORDER BY auth_token_logs.created_at ASC, auth_token_logs.id ASC LIMIT ",
+                );
             }
         }
         rows_query.push_bind(query_limit);
@@ -690,6 +811,24 @@ impl KeyStore {
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<TokenLogsPage, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_logs_page_pg(
+                    token_id,
+                    page,
+                    per_page,
+                    since,
+                    until,
+                    request_kinds,
+                    result_status,
+                    key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
+                    key_id,
+                    operational_class,
+                )
+                .await;
+        }
         let per_page = per_page.clamp(1, 200) as i64;
         let page = page.max(1) as i64;
         let offset = (page - 1) * per_page;
@@ -713,10 +852,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let stored_result_bucket_sql = result_bucket_case_sql(
+            &stored_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
+        let legacy_result_bucket_sql = result_bucket_case_sql(
+            &legacy_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
 
         let mut total_query = QueryBuilder::<Sqlite>::new(
             "SELECT COUNT(*) FROM auth_token_logs WHERE auth_token_logs.token_id = ",
@@ -855,7 +998,8 @@ impl KeyStore {
                 &legacy_operational_class_case_sql,
             );
         }
-        rows_query.push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
+        rows_query
+            .push(" ORDER BY auth_token_logs.created_at DESC, auth_token_logs.id DESC LIMIT ");
         rows_query.push_bind(per_page);
         rows_query.push(" OFFSET ");
         rows_query.push_bind(offset);
@@ -946,6 +1090,18 @@ impl KeyStore {
         require_non_empty: bool,
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_log_facet_options_pg(
+                    token_id,
+                    since,
+                    until,
+                    column_expr,
+                    require_non_empty,
+                    filters,
+                )
+                .await;
+        }
         let column_expr = match column_expr {
             "api_key_id" => "auth_token_logs.api_key_id",
             "key_effect_code" => "auth_token_logs.key_effect_code",
@@ -972,10 +1128,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let stored_result_bucket_sql = result_bucket_case_sql(
+            &stored_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
+        let legacy_result_bucket_sql = result_bucket_case_sql(
+            &legacy_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT {column_expr} AS value, COUNT(*) AS count FROM auth_token_logs"
         ));
@@ -1020,6 +1180,11 @@ impl KeyStore {
         until: Option<i64>,
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_log_result_facet_options_pg(token_id, since, until, filters)
+                .await;
+        }
         let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let legacy_request_kind_predicate_sql =
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
@@ -1039,10 +1204,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let stored_result_bucket_sql = result_bucket_case_sql(
+            &stored_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
+        let legacy_result_bucket_sql = result_bucket_case_sql(
+            &legacy_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
 
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "
@@ -1090,6 +1259,11 @@ impl KeyStore {
         until: Option<i64>,
         filters: TokenLogsCatalogFilters<'_>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_log_request_kind_options_pg(token_id, since, until, filters)
+                .await;
+        }
         type RequestKindOptionRow = (String, String, i64, i64, i64);
         let stored_request_kind_sql = "auth_token_logs.request_kind_key";
         let canonical_request_kind_predicate_sql =
@@ -1124,10 +1298,14 @@ impl KeyStore {
             "auth_token_logs.result_status",
             "COALESCE(auth_token_logs.failure_kind, '')",
         );
-        let stored_result_bucket_sql =
-            result_bucket_case_sql(&stored_operational_class_case_sql, "auth_token_logs.result_status");
-        let legacy_result_bucket_sql =
-            result_bucket_case_sql(&legacy_operational_class_case_sql, "auth_token_logs.result_status");
+        let stored_result_bucket_sql = result_bucket_case_sql(
+            &stored_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
+        let legacy_result_bucket_sql = result_bucket_case_sql(
+            &legacy_operational_class_case_sql,
+            "auth_token_logs.result_status",
+        );
         Self::push_token_logs_catalog_filters(
             &mut stored_query,
             token_id,
@@ -1250,6 +1428,9 @@ impl KeyStore {
         token_id: &str,
         hours: i64,
     ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_token_hourly_breakdown_pg(token_id, hours).await;
+        }
         let hours = hours.clamp(1, 168); // up to 7 days
         let now_ts = self.backend_time.now_ts();
         let current_bucket = now_ts - (now_ts % SECS_PER_HOUR);
@@ -1294,6 +1475,11 @@ impl KeyStore {
         until: i64,
         bucket_secs: i64,
     ) -> Result<Vec<TokenUsageBucket>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_token_usage_series_pg(token_id, since, until, bucket_secs)
+                .await;
+        }
         if until <= since {
             return Err(ProxyError::Other("invalid usage window".into()));
         }
@@ -1409,6 +1595,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn reset_monthly(&self) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.reset_monthly_pg().await;
+        }
         let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
 
@@ -1434,6 +1623,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn mark_quota_exhausted(&self, key: &str) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.mark_quota_exhausted_pg(key).await;
+        }
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
@@ -1454,6 +1646,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn restore_active_status(&self, key: &str) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.restore_active_status_pg(key).await;
+        }
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
@@ -1479,6 +1674,11 @@ impl KeyStore {
         reason_summary: &str,
         reason_detail: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .quarantine_key_by_id_pg(key_id, source, reason_code, reason_summary, reason_detail)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         let quarantine_id = nanoid!(12);
         let insert_result = sqlx::query(
@@ -1525,6 +1725,9 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.clear_key_quarantine_by_id_pg(key_id).await;
+        }
         let now = self.backend_time.now_ts();
         let res = sqlx::query(
             r#"
@@ -1549,6 +1752,9 @@ impl KeyStore {
         &self,
         api_keys: &[String],
     ) -> Result<HashSet<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_active_existing_api_keys_pg(api_keys).await;
+        }
         if api_keys.is_empty() {
             return Ok(HashSet::new());
         }
@@ -1655,10 +1861,9 @@ impl KeyStore {
                     let remaining = input
                         .deadline
                         .saturating_duration_since(std::time::Instant::now());
-                    let backoff = Duration::from_millis(
-                        API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS[retry_idx],
-                    )
-                    .min(remaining);
+                    let backoff =
+                        Duration::from_millis(API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS[retry_idx])
+                            .min(remaining);
                     if backoff.is_zero() {
                         return Err(ProxyError::Deferred {
                             operation: "admin_api_key_mutation",
@@ -1692,6 +1897,11 @@ impl KeyStore {
         api_key: &str,
         input: ApiKeyUpsertInput<'_>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .add_or_undelete_key_with_status_in_group_once_pg(api_key, input)
+                .await;
+        }
         let mut tx = self
             .sqlite_runtime
             .begin_immediate_before(SqliteOperation::AdminMutation, input.deadline)
@@ -1848,13 +2058,18 @@ impl KeyStore {
             }
             Err(err) => match tx.finish(Err(err)).await {
                 Err(err) => Err(err),
-                Ok(()) => unreachable!("rolling back a failed API key mutation must return its error"),
+                Ok(()) => {
+                    unreachable!("rolling back a failed API key mutation must return its error")
+                }
             },
         }
     }
 
     // Admin ops: soft-delete by ID (mark deleted_at)
     pub(crate) async fn soft_delete_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.soft_delete_key_by_id_pg(key_id).await;
+        }
         let now = self.backend_time.now_ts();
         let mut tx = self.pool.begin().await?;
         sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
@@ -1874,6 +2089,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn disable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.disable_key_by_id_pg(key_id).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -1891,6 +2109,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn enable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.enable_key_by_id_pg(key_id).await;
+        }
         let now = self.backend_time.now_ts();
         sqlx::query(
             r#"
@@ -1910,6 +2131,9 @@ impl KeyStore {
     }
 
     pub(crate) async fn touch_key(&self, key: &str, timestamp: i64) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.touch_key_pg(key, timestamp).await;
+        }
         sqlx::query(
             r#"
             UPDATE api_keys
@@ -1930,6 +2154,11 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_api_key_group_facets_pg(statuses, registration_ip, regions)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.group_name, '')) AS value, COUNT(*) AS count",
         );
@@ -1957,6 +2186,11 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_api_key_status_facets_pg(groups, registration_ip, regions)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT CASE
@@ -1990,6 +2224,11 @@ impl KeyStore {
         statuses: &[String],
         registration_ip: Option<&str>,
     ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_api_key_region_facets_pg(groups, statuses, registration_ip)
+                .await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT TRIM(COALESCE(ak.registration_region, '')) AS value, COUNT(*) AS count",
         );
@@ -2016,6 +2255,11 @@ impl KeyStore {
         &self,
         include_quarantine_detail: bool,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_api_key_metrics_pg(include_quarantine_detail)
+                .await;
+        }
         let query = format!(
             "{} ORDER BY CASE WHEN ak.status = 'active' THEN 0 ELSE 1 END ASC, COALESCE(ak.last_used_at, 0) DESC, ak.id ASC",
             Self::api_key_metrics_query(include_quarantine_detail),
@@ -2031,6 +2275,11 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_dashboard_exhausted_api_key_metrics_pg(limit)
+                .await;
+        }
         let limit = limit.clamp(1, 50) as i64;
         let statuses = vec![STATUS_EXHAUSTED.to_string()];
         let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
@@ -2053,6 +2302,9 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_exhausted_api_key_ids_pg(limit).await;
+        }
         let limit = limit.clamp(1, 50) as i64;
         sqlx::query_scalar::<_, String>(
             r#"
@@ -2083,6 +2335,18 @@ impl KeyStore {
         registration_ip: Option<&str>,
         regions: &[String],
     ) -> Result<PaginatedApiKeyMetrics, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_api_key_metrics_page_pg(
+                    page,
+                    per_page,
+                    groups,
+                    statuses,
+                    registration_ip,
+                    regions,
+                )
+                .await;
+        }
         let _permit = self
             .admin_heavy_read_semaphore
             .acquire()
@@ -2156,15 +2420,15 @@ impl KeyStore {
         &self,
         key_id: &str,
     ) -> Result<Option<ApiKeyMetrics>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_api_key_metric_by_id_pg(key_id).await;
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(true));
         builder.push(" AND ak.id = ");
         builder.push_bind(key_id);
         builder.push(" LIMIT 1");
 
-        let row = builder
-            .build()
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = builder.build().fetch_optional(&self.pool).await?;
 
         row.map(Self::map_api_key_metrics_row)
             .transpose()
@@ -2176,6 +2440,9 @@ impl KeyStore {
         limit: usize,
         since: Option<i64>,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_recent_logs_pg(limit, since).await;
+        }
         let limit = limit.clamp(1, 500) as i64;
 
         let rows = if let Some(since) = since {
@@ -2309,9 +2576,11 @@ impl KeyStore {
         &self,
         since: Option<i64>,
     ) -> Result<Option<i64>, ProxyError> {
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT id FROM request_logs WHERE visibility = ",
-        );
+        if self.pg_pool.is_some() {
+            return self.fetch_latest_visible_request_log_id_pg(since).await;
+        }
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT id FROM request_logs WHERE visibility = ");
         builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
         if let Some(since) = since {
             builder.push(" AND created_at >= ").push_bind(since);
@@ -2331,6 +2600,11 @@ impl KeyStore {
         limit: usize,
         since: i64,
     ) -> Result<Vec<(i64, i64)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_recent_visible_request_log_signature_pg(limit, since)
+                .await;
+        }
         let limit = limit.clamp(1, 500) as i64;
         sqlx::query_as::<_, (i64, i64)>(
             r#"
@@ -2354,6 +2628,11 @@ impl KeyStore {
         user_ids: &[String],
         since: i64,
     ) -> Result<HashMap<String, i64>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_recent_client_ip_counts_by_user_pg(user_ids, since)
+                .await;
+        }
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -2372,7 +2651,8 @@ impl KeyStore {
         }
         builder.push(" AND created_at >= ");
         builder.push_bind(since);
-        builder.push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
+        builder
+            .push(" AND client_ip IS NOT NULL AND TRIM(client_ip) != '' GROUP BY request_user_id");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
         let mut result = HashMap::new();
@@ -2390,6 +2670,11 @@ impl KeyStore {
         since: i64,
         limit: usize,
     ) -> Result<Vec<String>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_recent_client_ip_addresses_for_user_pg(user_id, since, limit)
+                .await;
+        }
         let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MAX(created_at) AS latest_seen_at FROM request_logs \
@@ -2416,6 +2701,11 @@ impl KeyStore {
         since: i64,
         limit: usize,
     ) -> Result<Vec<AdminUserIpTimelineEntry>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_recent_client_ip_timeline_for_user_pg(user_id, since, limit)
+                .await;
+        }
         let row_limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
             "SELECT client_ip, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at, \
@@ -2433,12 +2723,14 @@ impl KeyStore {
         .await?;
 
         rows.into_iter()
-            .map(|row| Ok(AdminUserIpTimelineEntry {
-                ip_address: row.try_get("client_ip")?,
-                first_seen_at: row.try_get("first_seen_at")?,
-                last_seen_at: row.try_get("last_seen_at")?,
-                request_count: row.try_get("request_count")?,
-            }))
+            .map(|row| {
+                Ok(AdminUserIpTimelineEntry {
+                    ip_address: row.try_get("client_ip")?,
+                    first_seen_at: row.try_get("first_seen_at")?,
+                    last_seen_at: row.try_get("last_seen_at")?,
+                    request_count: row.try_get("request_count")?,
+                })
+            })
             .collect()
     }
 
@@ -2446,6 +2738,9 @@ impl KeyStore {
         &self,
         limit: usize,
     ) -> Result<Vec<ObservedClientIpRequest>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_recent_client_ip_requests_pg(limit).await;
+        }
         let row_limit = limit.clamp(1, 100) as i64;
         let rows = sqlx::query(
             r#"
@@ -2485,7 +2780,9 @@ impl KeyStore {
                 client_ip: row.try_get("client_ip")?,
                 client_ip_source: row.try_get("client_ip_source")?,
                 client_ip_trusted: row.try_get::<i64, _>("client_ip_trusted")? != 0,
-                ip_headers: parse_client_ip_header_values(row.try_get::<Option<String>, _>("ip_headers")?),
+                ip_headers: parse_client_ip_header_values(
+                    row.try_get::<Option<String>, _>("ip_headers")?,
+                ),
             });
         }
         Ok(items)
@@ -2522,7 +2819,16 @@ impl KeyStore {
         Ok((result.items, result.total))
     }
 
-    fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, sqlx::Error> {
+    fn map_request_log_row<R>(row: R) -> Result<RequestLogRecord, sqlx::Error>
+    where
+        R: sqlx::Row,
+        for<'r> &'r str: sqlx::ColumnIndex<R>,
+        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> String: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<i64>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<String>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<Vec<u8>>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    {
         let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
         let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
         let ip_headers =
@@ -2544,11 +2850,10 @@ impl KeyStore {
         );
         let result_status: String = row.try_get("result_status")?;
         let failure_kind: Option<String> = row.try_get("failure_kind")?;
-        let counts_business_quota =
-            match row.try_get::<Option<i64>, _>("counts_business_quota") {
-                Ok(Some(value)) => value != 0,
-                _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
-            };
+        let counts_business_quota = match row.try_get::<Option<i64>, _>("counts_business_quota") {
+            Ok(Some(value)) => value != 0,
+            _ => request_log_counts_business_quota(&request_kind.key, request_body.as_deref()),
+        };
         let request_kind_protocol_group =
             match row.try_get::<Option<String>, _>("request_kind_protocol_group") {
                 Ok(Some(value)) => value,
@@ -2624,9 +2929,14 @@ impl KeyStore {
         })
     }
 
-    fn map_request_log_bodies_row(
-        row: sqlx::sqlite::SqliteRow,
-    ) -> Result<RequestLogBodiesRecord, sqlx::Error> {
+    fn map_request_log_bodies_row<R>(row: R) -> Result<RequestLogBodiesRecord, sqlx::Error>
+    where
+        R: sqlx::Row,
+        for<'r> &'r str: sqlx::ColumnIndex<R>,
+        for<'r> i64: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<Vec<u8>>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+        for<'r> Option<String>: sqlx::Decode<'r, R::Database> + sqlx::Type<R::Database>,
+    {
         Ok(RequestLogBodiesRecord {
             request_body: row.try_get("request_body")?,
             response_body: row.try_get("response_body")?,
@@ -2643,6 +2953,9 @@ impl KeyStore {
         &self,
         log_id: i64,
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_request_log_bodies_pg(log_id).await;
+        }
         sqlx::query(
             r#"
             SELECT request_body, response_body,
@@ -2668,6 +2981,9 @@ impl KeyStore {
         key_id: &str,
         log_id: i64,
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_key_request_log_bodies_pg(key_id, log_id).await;
+        }
         sqlx::query(
             r#"
             SELECT request_body, response_body,
@@ -2694,6 +3010,9 @@ impl KeyStore {
         token_id: &str,
         log_id: i64,
     ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_token_log_bodies_pg(token_id, log_id).await;
+        }
         sqlx::query(
             r#"
             SELECT rl.request_body, rl.response_body,

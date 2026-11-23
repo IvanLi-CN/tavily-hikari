@@ -269,6 +269,9 @@ impl KeyStore {
         &self,
         summary_windows: &SummaryWindows,
     ) -> Result<DashboardMonthSeries, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_dashboard_month_series_pg(summary_windows).await;
+        }
         let mut tx = self.pool.begin().await?;
 
         let current = Self::fetch_dashboard_month_series_points_tx(
@@ -285,6 +288,53 @@ impl KeyStore {
         )
         .await?;
         let mut comparison = Self::fetch_dashboard_month_series_points_tx(
+            &mut tx,
+            summary_windows.previous_month_start,
+            summary_windows.previous_month_end,
+            summary_windows.previous_month_end,
+        )
+        .await?;
+        for (index, point) in comparison.iter_mut().enumerate() {
+            point.display_bucket_start = current
+                .get(index)
+                .map(|current_point| {
+                    current_point
+                        .display_bucket_start
+                        .unwrap_or(current_point.bucket_start)
+                });
+        }
+        if !comparison_has_retained_data {
+            comparison.clear();
+        }
+
+        tx.commit().await?;
+
+        Ok(DashboardMonthSeries {
+            current,
+            comparison,
+        })
+    }
+
+    pub(crate) async fn fetch_dashboard_month_series_pg(
+        &self,
+        summary_windows: &SummaryWindows,
+    ) -> Result<DashboardMonthSeries, ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+
+        let current = Self::fetch_dashboard_month_series_points_tx_pg(
+            &mut tx,
+            summary_windows.month_start,
+            summary_windows.month_period_end,
+            summary_windows.month_end,
+        )
+        .await?;
+        let comparison_has_retained_data = Self::dashboard_month_series_has_retained_data_tx_pg(
+            &mut tx,
+            summary_windows.previous_month_start,
+            summary_windows.previous_month_end,
+        )
+        .await?;
+        let mut comparison = Self::fetch_dashboard_month_series_points_tx_pg(
             &mut tx,
             summary_windows.previous_month_start,
             summary_windows.previous_month_end,

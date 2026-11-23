@@ -20,6 +20,7 @@ async fn quota_subject_lock_retries_transient_sqlite_write_lock() {
         _observability_lock: None,
         sqlite_runtime: SqliteRuntime::new(pool.clone()),
         pool,
+        pg_pool: None,
         backend_time: BackendTime::system(),
         token_binding_cache: RwLock::new(std::collections::HashMap::new()),
         account_quota_resolution_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),

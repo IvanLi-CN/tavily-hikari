@@ -234,6 +234,9 @@ impl KeyStore {
         log_transient_exhaustion: bool,
         max_committed_chunks: Option<usize>,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.flush_request_stats_writes_with_wait_policy_pg(retry_budget, inflight_wait_deadline, log_transient_exhaustion, max_committed_chunks).await;
+        }
         loop {
             if inflight_wait_deadline.is_some_and(|deadline| {
                 self.backend_time.instant_now() >= deadline
@@ -305,6 +308,98 @@ impl KeyStore {
             Self::flush_request_stats_writes_drained_batch(
                 self.request_stats_coalescer.clone(),
                 self.backend_time.clone(),
+                self.sqlite_runtime.clone(),
+                retry_budget,
+                drained,
+                log_transient_exhaustion,
+                max_committed_chunks,
+            )
+            .await?;
+            if max_committed_chunks.is_some() {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn flush_request_stats_writes_with_wait_policy_pg(
+        &self,
+        retry_budget: Duration,
+        inflight_wait_deadline: Option<Instant>,
+        log_transient_exhaustion: bool,
+        max_committed_chunks: Option<usize>,
+    ) -> Result<(), ProxyError> {
+        loop {
+            if inflight_wait_deadline.is_some_and(|deadline| {
+                self.backend_time.instant_now() >= deadline
+            }) {
+                return Err(request_stats_flush_wait_budget_exhausted_error());
+            }
+            let pending = {
+                let mut state = self.request_stats_coalescer.state.lock().await;
+                if state.flushing {
+                    None
+                } else if state.pending_dashboard_rollups.is_empty()
+                    && state.pending_api_key_usage.is_empty()
+                    && state.pending_auth_token_activity.is_empty()
+                    && state.pending_account_request_rollups.is_empty()
+                    && state.pending_request_log_catalog.is_empty()
+                {
+                    return Ok(());
+                } else {
+                    state.flushing = true;
+                    state.flushing_oldest_created_at = state.oldest_pending_created_at.take();
+                    state.flushing_newest_created_at = state.newest_pending_created_at.take();
+                    state.flushing_dashboard_rollup_ranges = state
+                        .pending_dashboard_rollups
+                        .keys()
+                        .map(|&(bucket_start, bucket_secs)| {
+                            (bucket_start, bucket_start.saturating_add(bucket_secs))
+                        })
+                        .collect();
+                    Some(DrainedRequestStatsFlushBatch {
+                        pending_dashboard_rollups: std::mem::take(&mut state.pending_dashboard_rollups),
+                        pending_api_key_usage: std::mem::take(&mut state.pending_api_key_usage),
+                        pending_auth_token_activity: std::mem::take(&mut state.pending_auth_token_activity),
+                        pending_account_request_rollups: std::mem::take(
+                            &mut state.pending_account_request_rollups,
+                        ),
+                        pending_request_log_catalog: std::mem::take(
+                            &mut state.pending_request_log_catalog,
+                        ),
+                        drained_oldest_pending_created_at: state.flushing_oldest_created_at,
+                        drained_newest_pending_created_at: state.flushing_newest_created_at,
+                    })
+                }
+            };
+            let Some(drained) = pending else {
+                if let Some(deadline) = inflight_wait_deadline {
+                    let remaining = deadline.saturating_duration_since(self.backend_time.instant_now());
+                    if remaining.is_zero() {
+                        return Err(request_stats_flush_wait_budget_exhausted_error());
+                    }
+                    if tokio::time::timeout(
+                        remaining,
+                        self.request_stats_coalescer.wait_until_not_flushing(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err(request_stats_flush_wait_budget_exhausted_error());
+                    }
+                } else {
+                    self.request_stats_coalescer.wait_until_not_flushing().await;
+                }
+                continue;
+            };
+
+            // Once this worker owns a drained batch, keep its admission permit
+            // until the bounded flush returns the batch to the coalescer or
+            // commits it. A detached flush would outlive the bulk permit and
+            // could reacquire the SQLite writer under foreground pressure.
+            Self::flush_request_stats_writes_drained_batch_pg(
+                self.request_stats_coalescer.clone(),
+                self.backend_time.clone(),
+                self.pg()?.clone(),
                 self.sqlite_runtime.clone(),
                 retry_budget,
                 drained,
@@ -741,6 +836,9 @@ impl KeyStore {
         bucket_start_at_least: i64,
         bucket_start_before: Option<i64>,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_api_key_usage_bucket_success_count_pg(bucket_start_at_least, bucket_start_before).await;
+        }
         if let Some(bucket_start_before) = bucket_start_before {
             sqlx::query_scalar::<_, i64>(
                 r#"
@@ -767,6 +865,42 @@ impl KeyStore {
             )
             .bind(bucket_start_at_least)
             .fetch_one(&self.pool)
+            .await
+            .map_err(ProxyError::Database)
+        }
+    }
+
+    async fn fetch_api_key_usage_bucket_success_count_pg(
+        &self,
+        bucket_start_at_least: i64,
+        bucket_start_before: Option<i64>,
+    ) -> Result<i64, ProxyError> {
+        if let Some(bucket_start_before) = bucket_start_before {
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT COALESCE(SUM(success_count), 0)::bigint
+                FROM observability.api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= $1
+                  AND bucket_start < $2
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(self.pg()?)
+            .await
+            .map_err(ProxyError::Database)
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT COALESCE(SUM(success_count), 0)::bigint
+                FROM observability.api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= $1
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .fetch_one(self.pg()?)
             .await
             .map_err(ProxyError::Database)
         }
@@ -836,6 +970,9 @@ impl KeyStore {
         month_request_log_floor: Option<i64>,
         gap_fallback_end: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.fetch_utc_month_gap_success_count_pg(month_start, month_request_log_floor, gap_fallback_end).await;
+        }
         let gap_end = match month_request_log_floor {
             Some(floor) if floor > month_start => floor,
             Some(_) => return Ok(0),
@@ -873,6 +1010,61 @@ impl KeyStore {
                 .await?;
             let mut tx = self.pool.begin().await?;
             let retained_tail_success = Self::fetch_visible_request_log_success_count_tx(
+                &mut tx,
+                gap_end,
+                last_gap_bucket_end,
+            )
+            .await?;
+            tx.commit().await?;
+            success_count += subtract_nonnegative(full_day_success, retained_tail_success);
+        }
+
+        Ok(success_count)
+    }
+
+    async fn fetch_utc_month_gap_success_count_pg(
+        &self,
+        month_start: i64,
+        month_request_log_floor: Option<i64>,
+        gap_fallback_end: i64,
+    ) -> Result<i64, ProxyError> {
+        let gap_end = match month_request_log_floor {
+            Some(floor) if floor > month_start => floor,
+            Some(_) => return Ok(0),
+            None => gap_fallback_end,
+        };
+        if gap_end <= month_start {
+            return Ok(0);
+        }
+
+        let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
+        let first_exact_bucket_start = if first_bucket_start == month_start {
+            month_start
+        } else {
+            next_local_day_start_utc_ts(first_bucket_start)
+        };
+        let last_gap_bucket_start = local_day_bucket_start_utc_ts(gap_end);
+        let mut success_count = 0;
+
+        if first_exact_bucket_start < last_gap_bucket_start {
+            success_count += self
+                .fetch_api_key_usage_bucket_success_count(
+                    first_exact_bucket_start,
+                    Some(last_gap_bucket_start),
+                )
+                .await?;
+        }
+
+        if gap_end > last_gap_bucket_start && last_gap_bucket_start >= month_start {
+            let last_gap_bucket_end = next_local_day_start_utc_ts(last_gap_bucket_start);
+            let full_day_success = self
+                .fetch_api_key_usage_bucket_success_count(
+                    last_gap_bucket_start,
+                    Some(last_gap_bucket_end),
+                )
+                .await?;
+            let mut tx = self.pg()?.begin().await?;
+            let retained_tail_success = Self::fetch_visible_request_log_success_count_tx_pg(
                 &mut tx,
                 gap_end,
                 last_gap_bucket_end,
