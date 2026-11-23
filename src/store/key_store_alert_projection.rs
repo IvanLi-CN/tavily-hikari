@@ -85,6 +85,50 @@ impl KeyStore {
         &self,
         lane: AlertProjectionLane,
     ) -> Result<Option<AlertProjectionSourceState>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let query = match lane {
+                AlertProjectionLane::RecentTail => {
+                    r#"SELECT source_kind, cursor_occurred_at, cursor_row_sort_id,
+                              fence_occurred_at, fence_row_sort_id, generation, phase
+                         FROM observability.dashboard_alert_projection_state
+                        ORDER BY
+                          CASE WHEN phase = 'catching_up' THEN 0 ELSE 1 END,
+                          generation ASC,
+                          source_kind ASC
+                        LIMIT 1"#
+                }
+                AlertProjectionLane::History => {
+                    r#"SELECT source_kind, cursor_occurred_at, cursor_row_sort_id,
+                              fence_occurred_at, fence_row_sort_id, generation, phase
+                         FROM observability.dashboard_alert_projection_history_state
+                        WHERE phase = 'catching_up'
+                        ORDER BY generation ASC, source_kind ASC
+                        LIMIT 1"#
+                }
+            };
+            let row = sqlx::query_as::<_, (
+                String,
+                i64,
+                String,
+                Option<i64>,
+                Option<String>,
+                i64,
+                String,
+            )>(query)
+            .fetch_optional(self.pg()?)
+            .await
+            .map_err(ProxyError::from)?;
+            return Ok(row.map(|row| AlertProjectionSourceState {
+                source_kind: row.0,
+                cursor_occurred_at: row.1,
+                cursor_row_sort_id: row.2,
+                fence_occurred_at: row.3,
+                fence_row_sort_id: row.4,
+                generation: row.5,
+                phase: row.6,
+                lane,
+            }));
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -157,6 +201,36 @@ impl KeyStore {
                 "observability.dashboard_alert_projection_history_state"
             }
         };
+        if self.pg_pool.is_some() {
+            let query = format!(
+                "SELECT source_kind, cursor_occurred_at, cursor_row_sort_id, \
+                        fence_occurred_at, fence_row_sort_id, generation, phase \
+                   FROM {table} WHERE source_kind = $1"
+            );
+            let row = sqlx::query_as::<_, (
+                String,
+                i64,
+                String,
+                Option<i64>,
+                Option<String>,
+                i64,
+                String,
+            )>(&query)
+            .bind(source_kind)
+            .fetch_optional(self.pg()?)
+            .await
+            .map_err(ProxyError::from)?;
+            return Ok(row.map(|row| AlertProjectionSourceState {
+                source_kind: row.0,
+                cursor_occurred_at: row.1,
+                cursor_row_sort_id: row.2,
+                fence_occurred_at: row.3,
+                fence_row_sort_id: row.4,
+                generation: row.5,
+                phase: row.6,
+                lane,
+            }));
+        }
         let query = format!(
             "SELECT source_kind, cursor_occurred_at, cursor_row_sort_id, \
                     fence_occurred_at, fence_row_sort_id, generation, phase \
