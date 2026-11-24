@@ -254,6 +254,71 @@ impl KeyStore {
         &self,
         claimed_job: Option<(i64, i64)>,
     ) -> Result<UpstreamReconciliationRunAdmissionState, ProxyError> {
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            let claim_current = if let Some((job_id, claim_generation)) = claimed_job {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT EXISTS(SELECT 1 FROM core.scheduled_jobs WHERE id = $1 AND status = 'running' AND claim_generation = $2)::int::bigint",
+                )
+                .bind(job_id)
+                .bind(claim_generation)
+                .fetch_one(pool)
+                .await?
+                    != 0
+            } else {
+                true
+            };
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                r#"
+                SELECT key, value
+                FROM core.meta
+                WHERE key IN ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+            .bind(META_KEY_API_REBALANCE_ENABLED_V1)
+            .bind(META_KEY_REBALANCE_MCP_ENABLED_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1)
+            .fetch_all(pool)
+            .await?;
+            let mode: String = sqlx::query_scalar(
+                "SELECT mode FROM core.upstream_reconciliation_control_state WHERE id = 'local'",
+            )
+            .fetch_one(pool)
+            .await?;
+            let values = rows
+                .into_iter()
+                .collect::<std::collections::HashMap<_, _>>();
+            let value_i64 = |key: &str| {
+                values
+                    .get(key)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(0)
+            };
+            let shadow_ready = values
+                .get(META_KEY_UPSTREAM_PROJECT_ID_MODE_V1)
+                .and_then(|value| UpstreamProjectIdMode::from_meta_value(value))
+                .unwrap_or_default()
+                == UpstreamProjectIdMode::AccessToken
+                && value_i64(META_KEY_API_REBALANCE_ENABLED_V1) != 0
+                && value_i64(META_KEY_REBALANCE_MCP_ENABLED_V1) != 0;
+            return Ok(UpstreamReconciliationRunAdmissionState {
+                claim_current,
+                shadow_ready,
+                mode: ReconciliationMode::parse(&mode).ok_or_else(|| {
+                    ProxyError::Other(
+                        "invalid persisted upstream reconciliation mode".to_string(),
+                    )
+                })?,
+                local_backoff_level: value_i64(
+                    META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_LEVEL_V1,
+                ),
+                local_backoff_until: value_i64(
+                    META_KEY_UPSTREAM_RECONCILIATION_LOCAL_BACKOFF_UNTIL_V1,
+                ),
+            });
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -327,6 +392,26 @@ impl KeyStore {
         key_id: &str,
         scope: &str,
     ) -> Result<Option<ApiKeyTransientBackoffState>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let state = sqlx::query_as::<_, (i64, i64)>(
+                r#"
+                SELECT cooldown_until, retry_after_secs
+                FROM core.api_key_transient_backoffs
+                WHERE key_id = $1 AND scope = $2
+                LIMIT 1
+                "#,
+            )
+            .bind(key_id)
+            .bind(scope)
+            .fetch_optional(self.pg()?)
+            .await?;
+            return Ok(state.map(
+                |(cooldown_until, retry_after_secs)| ApiKeyTransientBackoffState {
+                    cooldown_until,
+                    retry_after_secs,
+                },
+            ));
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
