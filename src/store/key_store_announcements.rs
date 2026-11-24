@@ -764,6 +764,20 @@ impl KeyStore {
         &self,
         id: &str,
     ) -> Result<Option<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 WHERE id = $1
+                "#,
+            )
+            .bind(id)
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_optional(self.pg()?)
+            .await
+            .map_err(ProxyError::Database);
+        }
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
@@ -781,6 +795,29 @@ impl KeyStore {
     pub(crate) async fn list_user_active_announcements(
         &self,
     ) -> Result<Vec<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let mut out = Vec::new();
+            for display_kind in [ANNOUNCEMENT_DISPLAY_MODAL, ANNOUNCEMENT_DISPLAY_TICKER] {
+                if let Some(item) = sqlx::query(
+                    r#"
+                    SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                      FROM core.announcements
+                     WHERE status = $1 AND display_kind = $2
+                     ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
+                     LIMIT 1
+                    "#,
+                )
+                .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+                .bind(display_kind)
+                .try_map(|row| announcement_from_row(&row))
+                .fetch_optional(self.pg()?)
+                .await?
+                {
+                    out.push(item);
+                }
+            }
+            return Ok(out);
+        }
         let mut out = Vec::new();
         for display_kind in [ANNOUNCEMENT_DISPLAY_MODAL, ANNOUNCEMENT_DISPLAY_TICKER] {
             if let Some(item) = sqlx::query(
@@ -807,6 +844,29 @@ impl KeyStore {
     pub(crate) async fn list_user_announcement_history(
         &self,
     ) -> Result<Vec<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 WHERE status IN ($1, $2)
+                   AND (status != $3 OR published_at IS NOT NULL)
+                 ORDER BY
+                   CASE
+                     WHEN status = 'archived' THEN COALESCE(archived_at, published_at, updated_at, created_at)
+                     ELSE COALESCE(published_at, updated_at, created_at)
+                   END DESC,
+                   id DESC
+                "#,
+            )
+            .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_all(self.pg()?)
+            .await
+            .map_err(ProxyError::Database);
+        }
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
