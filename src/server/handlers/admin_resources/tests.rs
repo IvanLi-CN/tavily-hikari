@@ -60,6 +60,31 @@ mod admin_resources_tests {
         headers
     }
 
+    /// The mutation contract is retryable: after the writer lock is released the handler may
+    /// still answer one more `503` while other pooled connections finish their own statements.
+    /// Retry the same request until it stops reporting contention, within a bounded budget.
+    async fn retry_until_contention_clears<F, Fut, E>(mut call: F) -> axum::response::Response
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<axum::response::Response, E>>,
+        E: std::fmt::Debug,
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let response = call()
+                .await
+                .expect("contention recovery is an HTTP response, not a handler failure");
+            if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+                return response;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mutation stayed retryable for the whole recovery budget"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     #[test]
     fn alert_read_cache_key_preserves_optional_time_filter_presence() {
         let request_kinds = vec!["proxy".to_string()];
@@ -146,18 +171,19 @@ mod admin_resources_tests {
             .await
             .expect("release SQLite writer lock");
         drop(lock_conn);
-        let created = create_api_key(
-            State(state),
-            admin_headers(),
-            Json(CreateKeyRequest {
-                api_key: "tvly-admin-api-key-contention".to_string(),
-                group: None,
-                registration_ip: None,
-                assigned_proxy_key: None,
-            }),
-        )
-        .await
-        .expect("API key create recovers after the writer lock releases");
+        let created = retry_until_contention_clears(|| {
+            create_api_key(
+                State(state.clone()),
+                admin_headers(),
+                Json(CreateKeyRequest {
+                    api_key: "tvly-admin-api-key-contention".to_string(),
+                    group: None,
+                    registration_ip: None,
+                    assigned_proxy_key: None,
+                }),
+            )
+        })
+        .await;
         assert_eq!(created.status(), StatusCode::CREATED);
 
         let _ = std::fs::remove_file(&db_path);
@@ -208,15 +234,16 @@ mod admin_resources_tests {
             .await
             .expect("release SQLite writer lock");
         drop(lock_conn);
-        let created = create_token(
-            State(state),
-            admin_headers(),
-            Json(CreateTokenRequest {
-                note: Some("admin-access-token-contention".to_string()),
-            }),
-        )
-        .await
-        .expect("access-token create recovers after the writer lock releases");
+        let created = retry_until_contention_clears(|| {
+            create_token(
+                State(state.clone()),
+                admin_headers(),
+                Json(CreateTokenRequest {
+                    note: Some("admin-access-token-contention".to_string()),
+                }),
+            )
+        })
+        .await;
         assert_eq!(created.status(), StatusCode::CREATED);
 
         let _ = std::fs::remove_file(&db_path);
