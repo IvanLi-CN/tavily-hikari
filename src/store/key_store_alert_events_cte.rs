@@ -52,6 +52,15 @@ impl<'a> AlertSql<'a> {
             Self::Postgres(query) => query.sql(),
         }
     }
+
+    /// Takes the PostgreSQL builder out of the dialect wrapper so the caller can execute it
+    /// with the compiled statement type that `sqlx` expects.
+    fn into_postgres(self) -> Option<QueryBuilder<'a, sqlx::Postgres>> {
+        match self {
+            Self::Postgres(query) => Some(query),
+            Self::Sqlite(_) => None,
+        }
+    }
 }
 
 #[allow(dead_code)]
