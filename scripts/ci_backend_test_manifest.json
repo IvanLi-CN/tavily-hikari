@@ -543,9 +543,11 @@
       "coverage_target": "lib",
       "run_args": ["--lib"],
       "isolated_prefixes": [
+        "store::alert_sql_tests::emits_placeholders_for_each_dialect",
         "tests::alert_projection::alert_projection_recent_summary_does_not_silently_truncate_events"
       ],
       "include_prefixes": [
+        "store::alert_sql_tests::emits_placeholders_for_each_dialect",
         "tests::alert_projection::",
         "store::key_store_alert_event_projection::tests::alert_projection_redacts_"
       ]
