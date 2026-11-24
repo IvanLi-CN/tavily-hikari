@@ -1247,3 +1247,90 @@ async fn api_key_lifecycle_matches_across_backends() {
     assert_eq!(sqlite.uncleared_quarantine_rows, 0);
     assert!(sqlite.deleted_at_present);
 }
+
+// ---------------------------------------------------------------------------
+// 2x. Canonical alert page (converted reader)
+// ---------------------------------------------------------------------------
+
+fn canonical_alert_payload(source_id: &str, occurred_at: i64) -> String {
+    format!(
+        r#"{{"source_kind":"auth_token_log","source_id":"{source_id}","row_sort_id":"{source_id}",
+        "alert_type":"upstream_rate_limited_429","occurred_at":{occurred_at},
+        "token_id":null,"key_id":null,"request_log_id":null,"method":null,"path":null,"query":null,
+        "request_kind_key":null,"request_kind_label":null,"request_kind_detail":null,
+        "result_status":null,"failure_kind":null,"error_message":null,"counts_business_quota":null,
+        "user_id":null,"user_display_name":null,"user_username":null,"reason_code":null,
+        "reason_summary":null,"reason_detail":null,"job_id":null,"job_type":null,
+        "job_trigger_source":null,"job_status":null,"job_attempt":null,"job_message":null,
+        "job_queued_at":null,"job_started_at":null,"job_finished_at":null}}"#
+    )
+}
+
+/// The canonical page reader must produce the same page from the PostgreSQL snapshot as the
+/// SQLite read session: same total, same ordering, same event identity.
+#[tokio::test]
+async fn canonical_alert_page_matches_across_backends() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-alert-canonical-page", now).await else {
+        return;
+    };
+    let build_generation = now;
+    let tag = nanoid!(8);
+    for index in 0..3_i64 {
+        let source_id = format!("atl:{tag}-{index}");
+        let occurred_at = now - 30 - index;
+        let payload = canonical_alert_payload(&source_id, occurred_at);
+        let binds = [
+            Bind::Int(build_generation),
+            Bind::Text("auth_token_log"),
+            Bind::Text(&source_id),
+            Bind::Int(occurred_at),
+            Bind::Text(&source_id),
+            Bind::Text("partition"),
+            Bind::Text(&payload),
+        ];
+        for backend in [Backend::Sqlite, Backend::Postgres] {
+            let store = match backend {
+                Backend::Sqlite => &pair.sqlite.key_store,
+                Backend::Postgres => &pair.postgres.key_store,
+            };
+            execute_statement(
+                store,
+                backend,
+                "INSERT INTO observability.admin_alert_canonical_group_events \
+                 (build_generation, source_kind, source_id, occurred_at, row_sort_id, \
+                  partition_key, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &binds,
+            )
+            .await;
+        }
+    }
+
+    let sqlite_page = pair
+        .sqlite
+        .key_store
+        .fetch_admin_alert_events_page_for_canonical_snapshot(build_generation, 1, 20)
+        .await
+        .expect("sqlite canonical page");
+    let postgres_page = pair
+        .postgres
+        .key_store
+        .fetch_admin_alert_events_page_for_canonical_snapshot(build_generation, 1, 20)
+        .await
+        .expect("postgres canonical page");
+
+    assert_eq!(sqlite_page.total, 3);
+    assert_eq!(postgres_page.total, sqlite_page.total);
+    let sqlite_ids: Vec<&str> = sqlite_page
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    let postgres_ids: Vec<&str> = postgres_page
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    assert_eq!(postgres_ids, sqlite_ids);
+    assert_eq!(postgres_page.items.len(), 3);
+}

@@ -21,4 +21,10 @@ impl KeyStore {
         self.pg_pool = Some(pg_store.pool().clone());
         Ok(())
     }
+
+    /// Opens the repeatable-read snapshot used by converted readers that must build one response
+    /// from several statements.
+    pub(crate) async fn begin_pg_read_session(&self) -> Result<PgReadSession, ProxyError> {
+        PgReadSession::begin(self.pg()?).await
+    }
 }

@@ -1084,6 +1084,15 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_admin_alert_events_page_for_canonical_snapshot_pg(
+                    build_generation,
+                    page,
+                    per_page,
+                )
+                .await;
+        }
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1132,6 +1141,55 @@ impl KeyStore {
         let finish = session.finish().await;
         finish?;
         result
+    }
+
+    /// PostgreSQL branch of the canonical-snapshot page. One repeatable-read transaction keeps
+    /// the total and the page on the same canonical build, matching the SQLite read session.
+    async fn fetch_admin_alert_events_page_for_canonical_snapshot_pg(
+        &self,
+        build_generation: i64,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedAlertEvents, ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+        let retention_since = self.alert_projection_retention_since();
+        let mut session = self.begin_pg_read_session().await?;
+        let total = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = $1 AND occurred_at >= $2",
+        )
+        .bind(build_generation)
+        .bind(retention_since)
+        .fetch_one(&mut *session.connection())
+        .await?;
+        let rows = sqlx::query(
+            "SELECT source_kind, source_id, occurred_at, row_sort_id, payload_json \
+             FROM observability.admin_alert_canonical_group_events \
+             WHERE build_generation = $1 AND occurred_at >= $2 \
+             ORDER BY occurred_at DESC, row_sort_id DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(build_generation)
+        .bind(retention_since)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&mut *session.connection())
+        .await?;
+        session.finish().await?;
+        let items = rows
+            .into_iter()
+            .map(Self::decode_default_alert_event_projection_row_pg)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(Self::build_alert_event_from_projection)
+            .collect();
+        Ok(PaginatedAlertEvents {
+            items,
+            total,
+            page,
+            per_page,
+        })
     }
 
     async fn fetch_projected_alert_events_page(
@@ -2281,6 +2339,21 @@ impl KeyStore {
         // The ordering and source identity columns are authoritative for the
         // indexed read. Reapply them so a stale payload cannot alter paging
         // identity or the event's source reference.
+        projection.source_kind = row.try_get("source_kind")?;
+        projection.source_id = row.try_get("source_id")?;
+        projection.row_sort_id = row.try_get("row_sort_id")?;
+        projection.occurred_at = row.try_get("occurred_at")?;
+        Ok(projection)
+    }
+
+    /// PostgreSQL twin of [`Self::decode_default_alert_event_projection_row`]; the canonical
+    /// relations keep the same column names, so only the row type changes.
+    fn decode_default_alert_event_projection_row_pg(
+        row: sqlx::postgres::PgRow,
+    ) -> Result<AlertEventProjectionRow, ProxyError> {
+        let payload_json = row.try_get::<String, _>("payload_json")?;
+        let mut projection = serde_json::from_str::<AlertEventProjectionRow>(&payload_json)
+            .map_err(|_| ProxyError::Other("invalid alert projection payload".to_string()))?;
         projection.source_kind = row.try_get("source_kind")?;
         projection.source_id = row.try_get("source_id")?;
         projection.row_sort_id = row.try_get("row_sort_id")?;
