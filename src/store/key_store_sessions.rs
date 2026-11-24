@@ -413,6 +413,18 @@ impl KeyStore {
         scope: &str,
         now: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            let result = sqlx::query(
+                "DELETE FROM core.api_key_transient_backoffs
+                 WHERE key_id = $1 AND scope = $2 AND cooldown_until > $3",
+            )
+            .bind(key_id)
+            .bind(scope)
+            .bind(now)
+            .execute(self.pg()?)
+            .await?;
+            return Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX));
+        }
         let mut connection = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -906,6 +918,45 @@ impl KeyStore {
     ) -> Result<HashMap<String, i64>, ProxyError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
+        }
+
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                r#"SELECT user_id, COUNT(*) AS api_key_count
+                   FROM (
+                       SELECT DISTINCT user_id, api_key_id
+                       FROM core.user_api_key_bindings
+                       WHERE user_id IN ("#,
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(
+                r#")
+                       UNION
+                       SELECT DISTINCT user_id, api_key_id
+                       FROM core.api_key_user_usage_buckets
+                       WHERE user_id IN ("#,
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(
+                r#")
+                   )
+                   GROUP BY user_id"#,
+            );
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows.into_iter().collect());
         }
 
         let mut builder = QueryBuilder::new(
@@ -2177,6 +2228,28 @@ impl KeyStore {
 
         self.ensure_account_quota_limits_for_users(user_ids).await?;
         let base_limit = self.fetch_user_blocked_key_base_limit().await?;
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT user_id, COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ",
+            );
+            builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
+            builder.push(") FROM core.account_quota_limits WHERE user_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(")");
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(user_id, delta)| (user_id, (base_limit + delta).max(0)))
+                .collect());
+        }
         let mut builder = QueryBuilder::new(
             "SELECT user_id, COALESCE(monthly_blocked_key_limit_delta, monthly_broken_limit - ",
         );
