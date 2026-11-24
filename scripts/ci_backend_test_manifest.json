@@ -578,6 +578,9 @@
       "run_args": ["--lib"],
       "filtered_process_workers": 4,
       "filtered_test_threads": 1,
+      "isolated_prefixes": [
+        "tests::upstream_reconciliation::reconciliation_rejects_reclaimed_claim_after_remote_fetch"
+      ],
       "include_prefixes": [
         "tests::upstream_reconciliation::claimed_reconciliation_backoff_requeues_the_same_generation_fenced_job",
         "tests::upstream_reconciliation::daily_reconciliation_progress_includes_actual_mode_windows",
