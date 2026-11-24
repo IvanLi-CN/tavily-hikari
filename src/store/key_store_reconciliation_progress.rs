@@ -187,9 +187,11 @@ impl KeyStore {
                       FROM windows WHERE billing_subject LIKE 'account:%' GROUP BY billing_subject
                 )
                 SELECT COUNT(*), COALESCE(SUM(CASE WHEN settled > 0 THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN terminal = observed THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(observed), 0), COALESCE(SUM(settled), 0),
-                       COALESCE(SUM(degraded), 0), COALESCE(SUM(observed - terminal), 0)
+                       CAST(COALESCE(SUM(CASE WHEN terminal = observed THEN 1 ELSE 0 END), 0) AS BIGINT),
+                       CAST(COALESCE(SUM(observed), 0) AS BIGINT),
+                       CAST(COALESCE(SUM(settled), 0) AS BIGINT),
+                       CAST(COALESCE(SUM(degraded), 0) AS BIGINT),
+                       CAST(COALESCE(SUM(observed - terminal), 0) AS BIGINT)
                   FROM accounts"#,
             )
             .bind(day_window.start)

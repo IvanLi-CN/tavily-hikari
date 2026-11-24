@@ -1338,16 +1338,18 @@ async fn canonical_alert_page_matches_across_backends() {
 /// The filtered projection page must build the same page from PostgreSQL: same total, ordering,
 /// and event identity, with the JSONB payload rewrite in place of `json_extract`.
 #[tokio::test]
-async fn filtered_alert_page_matches_across_backends() {
+async fn filtered_alert_page_reads_the_postgres_projection() {
     let now = unique_epoch();
     let Some(pair) = StorePair::open("pg-alert-filtered-page", now).await else {
         return;
     };
     let tag = nanoid!(8);
+    let mut expected_ids = Vec::new();
     for index in 0..3_i64 {
         let source_id = format!("atl:{tag}-{index}");
         let occurred_at = now - 60 - index;
         let payload = canonical_alert_payload(&source_id, occurred_at);
+        expected_ids.push(source_id.clone());
         let binds = [
             Bind::Text("auth_token_log"),
             Bind::Text(&source_id),
@@ -1356,42 +1358,19 @@ async fn filtered_alert_page_matches_across_backends() {
             Bind::Text(&payload),
             Bind::Int(now),
         ];
-        for backend in [Backend::Sqlite, Backend::Postgres] {
-            let store = match backend {
-                Backend::Sqlite => &pair.sqlite.key_store,
-                Backend::Postgres => &pair.postgres.key_store,
-            };
-            execute_statement(
-                store,
-                backend,
-                "INSERT INTO observability.dashboard_alert_projection_events \
-                 (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-                &binds,
-            )
-            .await;
-        }
+        execute_statement(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            "INSERT INTO observability.dashboard_alert_projection_events \
+             (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            &binds,
+        )
+        .await;
     }
 
     let request_kinds: Vec<String> = Vec::new();
-    let sqlite_page = pair
-        .sqlite
-        .key_store
-        .fetch_admin_alert_events_page_for_operation(
-            None,
-            Some(now - 600),
-            None,
-            None,
-            None,
-            None,
-            &request_kinds,
-            1,
-            20,
-            SqliteOperation::AdminAlertsRead,
-        )
-        .await
-        .expect("sqlite filtered page");
-    let postgres_page = pair
+    let page = pair
         .postgres
         .key_store
         .fetch_admin_alert_events_page_for_operation(
@@ -1409,19 +1388,9 @@ async fn filtered_alert_page_matches_across_backends() {
         .await
         .expect("postgres filtered page");
 
-    assert_eq!(sqlite_page.total, 3);
-    assert_eq!(postgres_page.total, sqlite_page.total);
-    let sqlite_ids: Vec<&str> = sqlite_page
-        .items
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect();
-    let postgres_ids: Vec<&str> = postgres_page
-        .items
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect();
-    assert_eq!(postgres_ids, sqlite_ids);
+    assert_eq!(page.total, 3);
+    let ids: Vec<&str> = page.items.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(ids, expected_ids);
 }
 
 /// The reconciliation progress reader must run on PostgreSQL: this exercises every statement in
