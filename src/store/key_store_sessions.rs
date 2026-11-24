@@ -808,6 +808,94 @@ impl KeyStore {
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            let mut tx = self.pg()?.begin().await?;
+            let row = sqlx::query(
+                r#"
+                SELECT
+                    created_at, request_kind_key, request_kind_label, counts_business_quota,
+                    result_status, failure_kind, key_effect_code, binding_effect_code,
+                    selection_effect_code, auth_token_id, api_key_id, visibility
+                FROM observability.request_logs
+                WHERE id = $1
+                LIMIT 1
+                "#,
+            )
+            .bind(request_log_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(row) = row else {
+                tx.commit().await?;
+                return Ok(());
+            };
+            let current_key_effect_code: String = row.try_get("key_effect_code")?;
+            if current_key_effect_code != KEY_EFFECT_NONE {
+                tx.commit().await?;
+                return Ok(());
+            }
+            let visibility: String = row.try_get("visibility")?;
+            let created_at: i64 = row.try_get("created_at")?;
+            let request_kind_key: String = row.try_get("request_kind_key")?;
+            let request_kind_label: String = row.try_get("request_kind_label")?;
+            let counts_business_quota: i64 = row.try_get("counts_business_quota")?;
+            let result_status: String = row.try_get("result_status")?;
+            let failure_kind: Option<String> = row.try_get("failure_kind")?;
+            let binding_effect_code: String = row.try_get("binding_effect_code")?;
+            let selection_effect_code: String = row.try_get("selection_effect_code")?;
+            let auth_token_id: Option<String> = row.try_get("auth_token_id")?;
+            let api_key_id: Option<String> = row.try_get("api_key_id")?;
+            sqlx::query(
+                r#"
+                UPDATE observability.request_logs
+                SET key_effect_code = $1, key_effect_summary = $2
+                WHERE id = $3 AND key_effect_code = $4
+                "#,
+            )
+            .bind(key_effect_code)
+            .bind(key_effect_summary)
+            .bind(request_log_id)
+            .bind(KEY_EFFECT_NONE)
+            .execute(&mut *tx)
+            .await?;
+            if visibility == REQUEST_LOG_VISIBILITY_VISIBLE
+                && !request_kind_key.trim().is_empty()
+                && request_kind_key.trim() != "api:unknown-path"
+            {
+                let updated_at = self.backend_time.now_ts();
+                let old_key = Self::request_log_catalog_rollup_key_for_request(
+                    created_at,
+                    &request_kind_key,
+                    &request_kind_label,
+                    counts_business_quota != 0,
+                    &result_status,
+                    failure_kind.as_deref(),
+                    KEY_EFFECT_NONE,
+                    &binding_effect_code,
+                    &selection_effect_code,
+                    auth_token_id.as_deref(),
+                    api_key_id.as_deref(),
+                );
+                Self::upsert_request_log_catalog_rollup_delta_pg(&mut tx, &old_key, -1, updated_at)
+                    .await?;
+                let new_key = Self::request_log_catalog_rollup_key_for_request(
+                    created_at,
+                    &request_kind_key,
+                    &request_kind_label,
+                    counts_business_quota != 0,
+                    &result_status,
+                    failure_kind.as_deref(),
+                    key_effect_code,
+                    &binding_effect_code,
+                    &selection_effect_code,
+                    auth_token_id.as_deref(),
+                    api_key_id.as_deref(),
+                );
+                Self::upsert_request_log_catalog_rollup_delta_pg(&mut tx, &new_key, 1, updated_at)
+                    .await?;
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
