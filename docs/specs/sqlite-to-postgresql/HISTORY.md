@@ -72,3 +72,14 @@
 
 - D2 登记表与 PG schema 评审。
 - D1 迁移工具、D3 服务端实现、D4 发布流水线、D5 演练。
+
+## 演练发现（2026-11-24）
+
+在生产规模数据上进行首次全量演练，确认以下两点：
+
+- 在线快照用 `VACUUM INTO`，不用 `.backup`。持续写入下 `sqlite3 .backup` 会因源页变化反复重启，
+  13 分钟只写出约 2 GB；`VACUUM INTO` 走一次一致性读事务，9.14 GB 库 2 分 20 秒完成，
+  17.5 GB 观测库 51 秒完成（压缩后 2.98 GB）。
+- `load` 必须挂起用户触发器。快照同时包含派生表与其来源表，而 9 个 PG 触发器会从来源行重建派生行；
+  保持触发器启用会在 `core.upstream_reconciliation_work` 上撞主键并中止 COPY。载入事务内
+  `DISABLE TRIGGER USER` → COPY → `ENABLE TRIGGER USER`，失败回滚即恢复启用状态。
