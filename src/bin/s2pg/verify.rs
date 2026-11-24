@@ -288,15 +288,20 @@ async fn verify_table(
 }
 
 fn check_column_sets(table: &SqliteTable, target: &TargetTable) -> std::result::Result<(), String> {
-    let sqlite_names: Vec<&str> = table.column_names();
-    let target_names: Vec<&str> = target
+    // Column order is not part of the contract: `load` matches columns by name, and the PG
+    // baseline groups related columns differently from the historical SQLite column order.
+    // Comparing ordered names reported 18 false failures on the first production-scale drill.
+    let mut sqlite_names: Vec<&str> = table.column_names();
+    let mut target_names: Vec<&str> = target
         .columns
         .iter()
         .map(|column| column.name.as_str())
         .collect();
+    sqlite_names.sort_unstable();
+    target_names.sort_unstable();
     if sqlite_names != target_names {
         return Err(format!(
-            "column order/set differs: sqlite={sqlite_names:?} postgres={target_names:?}"
+            "column set differs: sqlite={sqlite_names:?} postgres={target_names:?}"
         ));
     }
     for column in &table.columns {
@@ -539,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn column_set_checks_reject_reordering() {
+    fn column_set_checks_reject_extra_column() {
         let mut sqlite = table();
         sqlite.columns.push(SqliteColumn {
             name: "name".to_string(),
@@ -548,6 +553,25 @@ mod tests {
             primary_key_ordinal: None,
         });
         let error = check_column_sets(&sqlite, &target(ColumnKind::Text)).unwrap_err();
-        assert!(error.contains("column order/set differs"));
+        assert!(error.contains("column set differs"));
+    }
+
+    #[test]
+    fn column_set_checks_accept_reordered_columns() {
+        let mut sqlite = table();
+        sqlite.columns.push(SqliteColumn {
+            name: "status".to_string(),
+            declared_type: "TEXT".to_string(),
+            kind: ColumnKind::Text,
+            primary_key_ordinal: None,
+        });
+        let mut target = target(ColumnKind::Text);
+        target.columns.push(crate::catalog::TargetColumn {
+            name: "status".to_string(),
+            kind: ColumnKind::Text,
+            is_identity: false,
+        });
+        target.columns.reverse();
+        assert!(check_column_sets(&sqlite, &target).is_ok());
     }
 }
