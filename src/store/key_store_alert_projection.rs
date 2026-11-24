@@ -85,50 +85,6 @@ impl KeyStore {
         &self,
         lane: AlertProjectionLane,
     ) -> Result<Option<AlertProjectionSourceState>, ProxyError> {
-        if self.pg_pool.is_some() {
-            let query = match lane {
-                AlertProjectionLane::RecentTail => {
-                    r#"SELECT source_kind, cursor_occurred_at, cursor_row_sort_id,
-                              fence_occurred_at, fence_row_sort_id, generation, phase
-                         FROM observability.dashboard_alert_projection_state
-                        ORDER BY
-                          CASE WHEN phase = 'catching_up' THEN 0 ELSE 1 END,
-                          generation ASC,
-                          source_kind ASC
-                        LIMIT 1"#
-                }
-                AlertProjectionLane::History => {
-                    r#"SELECT source_kind, cursor_occurred_at, cursor_row_sort_id,
-                              fence_occurred_at, fence_row_sort_id, generation, phase
-                         FROM observability.dashboard_alert_projection_history_state
-                        WHERE phase = 'catching_up'
-                        ORDER BY generation ASC, source_kind ASC
-                        LIMIT 1"#
-                }
-            };
-            let row = sqlx::query_as::<_, (
-                String,
-                i64,
-                String,
-                Option<i64>,
-                Option<String>,
-                i64,
-                String,
-            )>(query)
-            .fetch_optional(self.pg()?)
-            .await
-            .map_err(ProxyError::from)?;
-            return Ok(row.map(|row| AlertProjectionSourceState {
-                source_kind: row.0,
-                cursor_occurred_at: row.1,
-                cursor_row_sort_id: row.2,
-                fence_occurred_at: row.3,
-                fence_row_sort_id: row.4,
-                generation: row.5,
-                phase: row.6,
-                lane,
-            }));
-        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -201,36 +157,6 @@ impl KeyStore {
                 "observability.dashboard_alert_projection_history_state"
             }
         };
-        if self.pg_pool.is_some() {
-            let query = format!(
-                "SELECT source_kind, cursor_occurred_at, cursor_row_sort_id, \
-                        fence_occurred_at, fence_row_sort_id, generation, phase \
-                   FROM {table} WHERE source_kind = $1"
-            );
-            let row = sqlx::query_as::<_, (
-                String,
-                i64,
-                String,
-                Option<i64>,
-                Option<String>,
-                i64,
-                String,
-            )>(&query)
-            .bind(source_kind)
-            .fetch_optional(self.pg()?)
-            .await
-            .map_err(ProxyError::from)?;
-            return Ok(row.map(|row| AlertProjectionSourceState {
-                source_kind: row.0,
-                cursor_occurred_at: row.1,
-                cursor_row_sort_id: row.2,
-                fence_occurred_at: row.3,
-                fence_row_sort_id: row.4,
-                generation: row.5,
-                phase: row.6,
-                lane,
-            }));
-        }
         let query = format!(
             "SELECT source_kind, cursor_occurred_at, cursor_row_sort_id, \
                     fence_occurred_at, fence_row_sort_id, generation, phase \
@@ -279,62 +205,11 @@ impl KeyStore {
         &self,
         source_kind: &str,
     ) -> Result<Option<(i64, String)>, ProxyError> {
-        let retention_since = self.alert_projection_retention_since();
-        if self.pg_pool.is_some() {
-            let pool = self.pg()?;
-            return match source_kind {
-                ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
-                    r#"SELECT created_at, id
-                         FROM core.auth_token_logs
-                        WHERE (failure_kind = 'upstream_rate_limited_429'
-                               OR result_status = 'quota_exhausted')
-                          AND created_at >= $1
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT 1"#,
-                )
-                .bind(retention_since)
-                .fetch_optional(pool)
-                .await
-                .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("atl:{id:020}"))))
-                .map_err(ProxyError::from),
-                ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD => sqlx::query_as::<_, (i64, String)>(
-                    r#"SELECT created_at, id
-                         FROM core.api_key_maintenance_records
-                        WHERE (COALESCE(reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
-                               OR (source = 'system'
-                                   AND operation_code = 'auto_mark_exhausted'
-                                   AND reason_code = 'quota_exhausted'))
-                          AND created_at >= $1
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT 1"#,
-                )
-                .bind(retention_since)
-                .fetch_optional(pool)
-                .await
-                .map(|row| row.map(|(occurred_at, source_id)| (occurred_at, format!("maint:{source_id}"))))
-                .map_err(ProxyError::from),
-                ALERT_SOURCE_SCHEDULED_JOB => sqlx::query_as::<_, (i64, i64)>(
-                    r#"SELECT COALESCE(finished_at, started_at, queued_at), id
-                         FROM core.scheduled_jobs
-                        WHERE LOWER(TRIM(status)) IN ('error', 'failed')
-                          AND COALESCE(finished_at, started_at, queued_at) >= $1
-                        ORDER BY COALESCE(finished_at, started_at, queued_at) DESC, id DESC
-                        LIMIT 1"#,
-                )
-                .bind(retention_since)
-                .fetch_optional(pool)
-                .await
-                .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("job:{id:020}"))))
-                .map_err(ProxyError::from),
-                other => Err(ProxyError::Other(format!(
-                    "unknown alert projection source: {other}"
-                ))),
-            };
-        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
+        let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
@@ -1200,36 +1075,13 @@ impl KeyStore {
             .await
     }
 
-    /// One aggregate row over both projection tails. PostgreSQL has no operation-budget
-    /// wrapper, so it reads the pool directly and casts the `SUM` results, which arrive as
-    /// `numeric` there.
-    async fn alert_projection_status_row(
-        &self,
-        stale_since: i64,
-    ) -> Result<(i64, Option<i64>, i64, i64, Option<String>, i64, i64), ProxyError> {
-        type Row = (i64, Option<i64>, i64, i64, Option<String>, i64, i64);
-        if self.pg_pool.is_some() {
-            return sqlx::query_as::<_, Row>(
-                r#"SELECT COUNT(tail.source_kind), MIN(tail.observed_at),
-                          COALESCE(SUM(CASE WHEN tail.phase = 'idle' THEN 1 ELSE 0 END), 0)::bigint,
-                          COALESCE(SUM(CASE WHEN tail.observed_at IS NOT NULL AND tail.observed_at >= $1 THEN 1 ELSE 0 END), 0)::bigint,
-                          MAX(tail.stale_reason),
-                          COUNT(history.source_kind),
-                          COALESCE(SUM(CASE WHEN history.phase = 'idle' THEN 1 ELSE 0 END), 0)::bigint
-                     FROM observability.dashboard_alert_projection_state AS tail
-                     LEFT JOIN observability.dashboard_alert_projection_history_state AS history
-                       ON history.source_kind = tail.source_kind"#,
-            )
-            .bind(stale_since)
-            .fetch_one(self.pg()?)
-            .await
-            .map_err(ProxyError::from);
-        }
+    pub(crate) async fn alert_projection_status(&self) -> Result<AlertProjectionStatus, ProxyError> {
+        let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
-        let result = sqlx::query_as::<_, Row>(
+        let result = sqlx::query_as::<_, (i64, Option<i64>, i64, i64, Option<String>, i64, i64)>(
             r#"SELECT COUNT(tail.source_kind), MIN(tail.observed_at),
                       SUM(CASE WHEN tail.phase = 'idle' THEN 1 ELSE 0 END),
                       SUM(CASE WHEN tail.observed_at IS NOT NULL AND tail.observed_at >= ? THEN 1 ELSE 0 END),
@@ -1240,34 +1092,9 @@ impl KeyStore {
                  LEFT JOIN observability.dashboard_alert_projection_history_state AS history
                    ON history.source_kind = tail.source_kind"#,
         )
-        .bind(stale_since)
-        .fetch_one(&mut *conn)
+        .bind(now.saturating_sub(ALERT_PROJECTION_STALE_SECS))
+            .fetch_one(&mut *conn)
         .await;
-        conn.complete_query(result).await
-    }
-
-    /// Tail sources whose projection has not gone idle yet.
-    async fn alert_projection_incomplete_sources(&self) -> Result<Vec<String>, ProxyError> {
-        let sql = r#"SELECT source_kind
-                       FROM observability.dashboard_alert_projection_state
-                      WHERE phase <> 'idle'
-                      ORDER BY source_kind ASC"#;
-        if self.pg_pool.is_some() {
-            return sqlx::query_scalar::<_, String>(sql)
-                .fetch_all(self.pg()?)
-                .await
-                .map_err(ProxyError::from);
-        }
-        let mut conn = self
-            .sqlite_runtime
-            .acquire_operation_connection(SqliteOperation::AlertProjection)
-            .await?;
-        let result = sqlx::query_scalar::<_, String>(sql).fetch_all(&mut *conn).await;
-        conn.complete_query(result).await
-    }
-
-    pub(crate) async fn alert_projection_status(&self) -> Result<AlertProjectionStatus, ProxyError> {
-        let now = self.backend_time.now_ts();
         let (
             sources,
             observed_at,
@@ -1276,9 +1103,8 @@ impl KeyStore {
             stale_reason,
             history_sources,
             idle_history_sources,
-        ) = self
-            .alert_projection_status_row(now.saturating_sub(ALERT_PROJECTION_STALE_SECS))
-            .await?;
+        ) =
+            conn.complete_query(result).await?;
         let observations_expired = sources == ALERT_PROJECTION_SOURCES.len() as i64
             && idle_sources == sources
             && fresh_sources != sources;
@@ -1298,7 +1124,19 @@ impl KeyStore {
         // watermark. This uses three bounded source seeks, not the raw alert
         // CTE, and avoids turning a cold no-alert database into a 5xx.
         if recent_coverage == "projecting" && stale_reason.is_none() {
-            let incomplete_sources = self.alert_projection_incomplete_sources().await?;
+            let mut conn = self
+                .sqlite_runtime
+                .acquire_operation_connection(SqliteOperation::AlertProjection)
+                .await?;
+            let result = sqlx::query_scalar::<_, String>(
+                r#"SELECT source_kind
+                     FROM observability.dashboard_alert_projection_state
+                    WHERE phase <> 'idle'
+                    ORDER BY source_kind ASC"#,
+            )
+            .fetch_all(&mut *conn)
+            .await;
+            let incomplete_sources = conn.complete_query(result).await?;
             if !incomplete_sources.is_empty() {
                 let mut sources_have_events = false;
                 for source_kind in incomplete_sources {
@@ -1398,14 +1236,6 @@ impl KeyStore {
     }
 
     async fn alert_projection_recent_generation(&self) -> Result<i64, ProxyError> {
-        if self.pg_pool.is_some() {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COALESCE(SUM(generation), 0)::bigint FROM observability.dashboard_alert_projection_state",
-            )
-            .fetch_one(self.pg()?)
-            .await
-            .map_err(ProxyError::from);
-        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -1422,17 +1252,6 @@ impl KeyStore {
         &self,
         window_hours: i64,
     ) -> Result<Option<(i64, i64)>, ProxyError> {
-        if self.pg_pool.is_some() {
-            return sqlx::query_as::<_, (i64, i64)>(
-                r#"SELECT source_generation, computed_at
-                     FROM observability.dashboard_alert_projection_recent_summaries
-                    WHERE window_hours = $1"#,
-            )
-            .bind(window_hours)
-            .fetch_optional(self.pg()?)
-            .await
-            .map_err(ProxyError::from);
-        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
