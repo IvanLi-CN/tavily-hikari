@@ -1411,3 +1411,32 @@ async fn reconciliation_progress_runs_on_postgres() {
     assert_eq!(progress.research_total, 0);
     assert!(by_key.is_empty());
 }
+
+/// The key-observation reader must run on PostgreSQL: a candidate with no stored observations
+/// returns an empty map while still executing the source read and the fenced lookup.
+#[tokio::test]
+async fn reconciliation_key_observations_run_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-reconciliation-key-observations", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: format!("tok-{tag}"),
+        period_code: "2026-07-14/S2".to_string(),
+        project_id: "anonymous-project".to_string(),
+        billing_subject: format!("token:tok-{tag}"),
+        settlement_mode: "actual".to_string(),
+        period_start: now - 3600,
+        period_end: now,
+        pending_research: 0,
+        degraded: false,
+    };
+    let observations = pair
+        .postgres
+        .key_store
+        .reconciliation_key_observations(&candidate, 1, &[format!("key-{tag}")])
+        .await
+        .expect("postgres key observations");
+    assert!(observations.is_empty());
+}

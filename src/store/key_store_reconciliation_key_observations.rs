@@ -53,6 +53,11 @@ impl KeyStore {
         if key_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+        if self.pg_pool.is_some() {
+            return self
+                .reconciliation_key_observations_pg(candidate, work_generation, key_ids)
+                .await;
+        }
         let mut session = self
             .sqlite_runtime
             .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
@@ -116,6 +121,75 @@ impl KeyStore {
                 key_ids.len().saturating_sub(matching.len()) as u64,
             );
         Ok(matching)
+    }
+
+    /// PostgreSQL twin of [`Self::reconciliation_key_observations`]. SQLite's read budget and
+    /// identity counters belong to the native SQLite runtime and are not part of this branch.
+    async fn reconciliation_key_observations_pg(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        work_generation: i64,
+        key_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, i64>, ProxyError> {
+        let mut session = self.begin_pg_read_session().await?;
+        let source_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT key_id, request_count, first_used_at, last_used_at \
+             FROM core.upstream_reconciliation_usage \
+             WHERE token_id = $1 AND period_code = $2 ORDER BY key_id ASC",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_all(&mut *session.connection())
+        .await?;
+        let source_identity =
+            Self::reconciliation_key_observation_source_identity_from_rows(candidate, source_rows);
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT key_id, upstream_usage, key_source_identity \
+             FROM core.upstream_reconciliation_key_observations WHERE token_id = ",
+        );
+        query
+            .push_bind(&candidate.token_id)
+            .push(" AND period_code = ")
+            .push_bind(&candidate.period_code)
+            .push(" AND candidate_identity = ")
+            .push_bind(&source_identity.candidate_identity)
+            .push(" AND key_set_identity = ")
+            .push_bind(&source_identity.key_set_identity)
+            .push(" AND key_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        query.push(") AND (");
+        for (index, key_id) in key_ids.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(key_id = ")
+                .push_bind(key_id)
+                .push(" AND key_source_identity = ")
+                .push_bind(source_identity.key_identity(key_id))
+                .push(")");
+        }
+        query
+            .push(") AND work_generation <= ")
+            .push_bind(work_generation)
+            .push(" ORDER BY work_generation DESC, observed_at DESC");
+        let rows = query
+            .build_query_as::<(String, i64, String)>()
+            .fetch_all(&mut *session.connection())
+            .await?;
+        session.finish().await?;
+        Ok(rows.into_iter().fold(
+            std::collections::HashMap::new(),
+            |mut matching, (key_id, upstream_usage, _key_source_identity)| {
+                matching.entry(key_id).or_insert(upstream_usage);
+                matching
+            },
+        ))
     }
 
     pub(crate) async fn persist_reconciliation_key_observations(
