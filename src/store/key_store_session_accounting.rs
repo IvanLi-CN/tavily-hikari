@@ -242,6 +242,78 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn sync_linuxdo_system_tag_binding_in_tx_pg(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        user_id: &str,
+        trust_level: Option<i64>,
+        force_refresh: bool,
+    ) -> Result<bool, ProxyError> {
+        let Some(level) = normalize_linuxdo_trust_level(trust_level) else {
+            return Ok(false);
+        };
+        let desired_key = linuxdo_system_key_for_level(level);
+        let Some((tag_id,)) = sqlx::query_as::<_, (String,)>(
+            "SELECT id FROM core.user_tags WHERE system_key = $1 LIMIT 1",
+        )
+        .bind(&desired_key)
+        .fetch_optional(&mut **tx)
+        .await?
+        else {
+            eprintln!(
+                "linuxdo system tag sync skipped for user {} trust_level {:?}: missing system tag for LinuxDo trust level {}",
+                user_id, trust_level, level
+            );
+            return Ok(false);
+        };
+        let existing_bindings = sqlx::query_as::<_, (String, String)>(
+            r#"SELECT b.tag_id, b.source
+               FROM core.user_tag_bindings b
+               JOIN core.user_tags t ON t.id = b.tag_id
+               WHERE b.user_id = $1
+                 AND t.system_key LIKE 'linuxdo_l%'
+               ORDER BY b.tag_id"#,
+        )
+        .bind(user_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        if existing_bindings.len() == 1
+            && existing_bindings[0].0 == tag_id
+            && existing_bindings[0].1 == USER_TAG_SOURCE_SYSTEM_LINUXDO
+            && !force_refresh
+        {
+            return Ok(false);
+        }
+        let now = self.backend_time.now_ts();
+        sqlx::query(
+            r#"DELETE FROM core.user_tag_bindings
+               WHERE user_id = $1
+                 AND tag_id IN (
+                     SELECT id FROM core.user_tags WHERE system_key LIKE 'linuxdo_l%'
+                 )
+                 AND tag_id <> $2"#,
+        )
+        .bind(user_id)
+        .bind(&tag_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO core.user_tag_bindings (user_id, tag_id, source, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (user_id, tag_id) DO UPDATE SET
+                   source = excluded.source,
+                   updated_at = excluded.updated_at"#,
+        )
+        .bind(user_id)
+        .bind(&tag_id)
+        .bind(USER_TAG_SOURCE_SYSTEM_LINUXDO)
+        .bind(now)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+        Ok(true)
+    }
+
     pub(crate) async fn sync_linuxdo_system_tag_binding_in_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,

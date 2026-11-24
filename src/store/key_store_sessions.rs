@@ -3341,11 +3341,26 @@ impl KeyStore {
         force_refresh: bool,
     ) -> Result<bool, ProxyError> {
         let changed_at = self.backend_time.now_ts();
-        let mut tx = self.pool.begin().await?;
-        let changed = self
-            .sync_linuxdo_system_tag_binding_in_tx(&mut tx, user_id, trust_level, force_refresh)
-            .await?;
-        tx.commit().await?;
+        let changed = if self.pg_pool.is_some() {
+            let mut tx = self.pg()?.begin().await?;
+            let changed = self
+                .sync_linuxdo_system_tag_binding_in_tx_pg(
+                    &mut tx,
+                    user_id,
+                    trust_level,
+                    force_refresh,
+                )
+                .await?;
+            tx.commit().await?;
+            changed
+        } else {
+            let mut tx = self.pool.begin().await?;
+            let changed = self
+                .sync_linuxdo_system_tag_binding_in_tx(&mut tx, user_id, trust_level, force_refresh)
+                .await?;
+            tx.commit().await?;
+            changed
+        };
         if changed {
             self.invalidate_account_quota_resolution(user_id).await;
             self.record_effective_account_quota_snapshot_at(user_id, changed_at)
