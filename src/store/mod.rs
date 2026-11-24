@@ -2797,6 +2797,7 @@ include!("key_store_account_base_entitlement_backfill.rs");
 include!("key_store_admin_passkey_schema.rs");
 include!("key_store_admin_passkeys.rs");
 include!("key_store_sessions.rs");
+include!("key_store_session_accounting.rs");
 include!("key_store_api_key_transient_backoff_read.rs");
 include!("key_store_mcp_session_bindings.rs");
 include!("key_store_system_settings.rs");

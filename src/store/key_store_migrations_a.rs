@@ -1404,6 +1404,97 @@ impl KeyStore {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_subject_key_breakage_tx_pg(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        subject_kind: &str,
+        subject_id: &str,
+        key_id: &str,
+        break_at: i64,
+        key_status: &str,
+        reason_code: Option<&str>,
+        reason_summary: Option<&str>,
+        source: &str,
+        breaker_token_id: Option<&str>,
+        breaker_user_id: Option<&str>,
+        breaker_user_display_name: Option<&str>,
+        manual_actor_display_name: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let month_start = start_of_month(
+            Utc.timestamp_opt(break_at, 0)
+                .single()
+                .unwrap_or_else(|| self.backend_time.now_utc()),
+        )
+        .timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO core.subject_key_breakages (
+                subject_kind, subject_id, key_id, month_start, created_at, updated_at,
+                latest_break_at, key_status, reason_code, reason_summary, source,
+                breaker_token_id, breaker_user_id, breaker_user_display_name,
+                manual_actor_display_name
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT (subject_kind, subject_id, key_id, month_start)
+            DO UPDATE SET
+                updated_at = excluded.updated_at,
+                latest_break_at = GREATEST(core.subject_key_breakages.latest_break_at, excluded.latest_break_at),
+                key_status = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.key_status
+                    ELSE core.subject_key_breakages.key_status
+                END,
+                reason_code = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.reason_code
+                    ELSE core.subject_key_breakages.reason_code
+                END,
+                reason_summary = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.reason_summary
+                    ELSE core.subject_key_breakages.reason_summary
+                END,
+                source = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.source
+                    ELSE core.subject_key_breakages.source
+                END,
+                breaker_token_id = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_token_id
+                    ELSE core.subject_key_breakages.breaker_token_id
+                END,
+                breaker_user_id = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_user_id
+                    ELSE core.subject_key_breakages.breaker_user_id
+                END,
+                breaker_user_display_name = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_user_display_name
+                    ELSE core.subject_key_breakages.breaker_user_display_name
+                END,
+                manual_actor_display_name = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.manual_actor_display_name
+                    ELSE core.subject_key_breakages.manual_actor_display_name
+                END
+            "#,
+        )
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(key_id)
+        .bind(month_start)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(key_status)
+        .bind(reason_code)
+        .bind(reason_summary)
+        .bind(source)
+        .bind(breaker_token_id)
+        .bind(breaker_user_id)
+        .bind(breaker_user_display_name)
+        .bind(manual_actor_display_name)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_subject_key_breakage_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
