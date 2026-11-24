@@ -1349,7 +1349,7 @@ async fn filtered_alert_page_reads_the_postgres_projection() {
         let source_id = format!("atl:{tag}-{index}");
         let occurred_at = now - 60 - index;
         let payload = canonical_alert_payload(&source_id, occurred_at);
-        expected_ids.push(source_id.clone());
+        expected_ids.push(format!("auth_token_log:{source_id}"));
         let binds = [
             Bind::Text("auth_token_log"),
             Bind::Text(&source_id),

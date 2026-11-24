@@ -601,7 +601,10 @@ class BackendTestRunnerContractTests(unittest.TestCase):
 
         self.assertEqual(
             reporting["isolated_prefixes"],
-            ["tests::request_rollup_public_metrics::admin_"],
+            [
+                "tests::request_rollup_public_metrics::admin_",
+                "tests::request_rollup_public_metrics::request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget",
+            ],
         )
         reporting_slice_test = (
             "tests::request_rollup_public_metrics::request_stats_background_slice_bounds_work_and_requeues_the_tail"
