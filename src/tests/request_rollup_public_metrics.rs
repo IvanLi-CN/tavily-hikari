@@ -1056,12 +1056,15 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
     let store = proxy.key_store.clone();
     let flush = tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
 
-    tokio::time::timeout(Duration::from_secs(1), pause.wait_until_arrived())
+    // The wait only proves the flush reaches the owned-commit boundary; the assertion under test
+    // is whether a commit that crosses the retry budget is requeued, not how fast the boundary
+    // is reached on a shared CI runner.
+    tokio::time::timeout(Duration::from_secs(15), pause.wait_until_arrived())
         .await
         .expect("flush reaches the owned commit boundary");
     tokio::time::sleep(Duration::from_millis(75)).await;
     pause.release();
-    let outcome = tokio::time::timeout(Duration::from_secs(1), flush)
+    let outcome = tokio::time::timeout(Duration::from_secs(15), flush)
         .await
         .expect("flush completes after the owned commit is released")
         .expect("flush task joins")
