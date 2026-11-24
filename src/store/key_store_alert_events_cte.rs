@@ -493,20 +493,53 @@ impl KeyStore {
     fn push_projected_alert_events_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
+        dialect: SqlDialect,
     ) {
         Self::push_projected_alert_events_cte_from_relation(
             query,
             filters,
             "observability.dashboard_alert_projection_events",
+            dialect,
         );
+    }
+
+    /// Rewrites the SQLite `json_extract(payload_json, '$.field')` projection for PostgreSQL.
+    /// The payload column is text on both engines, so the PostgreSQL form needs an explicit
+    /// `jsonb` cast; the SQLite statement itself stays untouched.
+    pub(crate) fn alert_payload_projection_sql(sql: &str, dialect: SqlDialect) -> String {
+        if dialect == SqlDialect::Sqlite {
+            return sql.to_string();
+        }
+        let marker = "json_extract(payload_json, '$.";
+        let mut out = String::with_capacity(sql.len());
+        let mut rest = sql;
+        while let Some(index) = rest.find(marker) {
+            out.push_str(&rest[..index]);
+            let after = &rest[index + marker.len()..];
+            let Some(end) = after.find('\'') else {
+                out.push_str(rest);
+                return out;
+            };
+            let field = &after[..end];
+            out.push_str("(payload_json::jsonb ->> '");
+            out.push_str(field);
+            out.push_str("')");
+            rest = &after[end + 1..];
+            if let Some(tail) = rest.strip_prefix(')') {
+                rest = tail;
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     fn push_projected_alert_events_cte_from_relation<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
         relation: &str,
+        dialect: SqlDialect,
     ) {
-        query.push(
+        query.push(Self::alert_payload_projection_sql(
             r#"WITH alerts AS (
                 SELECT source_kind,
                        source_id,
@@ -542,7 +575,8 @@ impl KeyStore {
                        json_extract(payload_json, '$.job_started_at') AS job_started_at,
                        json_extract(payload_json, '$.job_finished_at') AS job_finished_at
                   FROM "#,
-        );
+            dialect,
+        ));
         query.push(relation);
         query.push(
             r#"

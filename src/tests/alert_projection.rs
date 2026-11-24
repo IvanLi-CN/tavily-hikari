@@ -2637,3 +2637,29 @@ async fn alert_projection_writer_contention_is_a_typed_defer() {
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
 }
+
+#[tokio::test]
+async fn alert_payload_projection_rewrites_json_extract_for_postgres() {
+    let sql = "SELECT json_extract(payload_json, '$.alert_type'), \
+                      COALESCE(json_extract(payload_json, '$.job_id'), '') FROM alerts";
+    let sqlite = KeyStore::alert_payload_projection_sql(sql, crate::analysis::SqlDialect::Sqlite);
+    assert_eq!(
+        sqlite, sql,
+        "the SQLite statement must stay byte for byte identical"
+    );
+
+    let postgres =
+        KeyStore::alert_payload_projection_sql(sql, crate::analysis::SqlDialect::Postgres);
+    assert!(
+        !postgres.contains("json_extract"),
+        "no SQLite JSON function may survive the rewrite: {postgres}"
+    );
+    assert!(
+        postgres.contains("(payload_json::jsonb ->> 'alert_type')"),
+        "{postgres}"
+    );
+    assert!(
+        postgres.contains("(payload_json::jsonb ->> 'job_id')"),
+        "{postgres}"
+    );
+}

@@ -805,7 +805,7 @@ impl KeyStore {
     ) {
         match source {
             AlertReadSource::Raw => Self::push_alert_events_cte(query, filters),
-            AlertReadSource::Projected => Self::push_projected_alert_events_cte(query, filters),
+            AlertReadSource::Projected => Self::push_projected_alert_events_cte(query, filters, SqlDialect::Sqlite),
         }
     }
 
@@ -1034,7 +1034,7 @@ impl KeyStore {
             self.ensure_admin_alert_projection_coverage(&mut session).await?;
 
             let mut count_query = QueryBuilder::new("");
-            Self::push_projected_alert_events_cte(&mut count_query, filters);
+            Self::push_projected_alert_events_cte(&mut count_query, filters, SqlDialect::Sqlite);
             count_query.push(" SELECT COUNT(*) FROM alerts WHERE 1 = 1");
             Self::push_alert_request_kind_filter(
                 &mut count_query,
@@ -1045,7 +1045,7 @@ impl KeyStore {
             let total = session.query(count_result).await?;
 
             let mut query = QueryBuilder::new("");
-            Self::push_projected_alert_events_cte(&mut query, filters);
+            Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
             query.push(" SELECT * FROM alerts WHERE 1 = 1");
             Self::push_alert_request_kind_filter(
                 &mut query,
@@ -1173,7 +1173,7 @@ impl KeyStore {
         let offset = (page - 1) * per_page;
 
         let mut count_query = QueryBuilder::new("");
-        Self::push_projected_alert_events_cte(&mut count_query, filters);
+        Self::push_projected_alert_events_cte(&mut count_query, filters, SqlDialect::Sqlite);
         count_query.push(" SELECT COUNT(*) FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut count_query,
@@ -1185,7 +1185,7 @@ impl KeyStore {
             .await?;
 
         let mut query = QueryBuilder::new("");
-        Self::push_projected_alert_events_cte(&mut query, filters);
+        Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
         query.push(" SELECT * FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut query,
@@ -1388,7 +1388,7 @@ impl KeyStore {
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        Self::push_projected_alert_events_cte(query, filters);
+        Self::push_projected_alert_events_cte(query, filters, SqlDialect::Sqlite);
         Self::push_alert_grouping_cte_tail(query, filters);
     }
 
@@ -2147,7 +2147,7 @@ impl KeyStore {
         let mut query = QueryBuilder::new("");
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
-        Self::push_projected_alert_events_cte(&mut query, filters);
+        Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
         query.push(" SELECT * FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut query,
