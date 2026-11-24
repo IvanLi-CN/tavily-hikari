@@ -1423,3 +1423,22 @@ async fn filtered_alert_page_matches_across_backends() {
         .collect();
     assert_eq!(postgres_ids, sqlite_ids);
 }
+
+/// The reconciliation progress reader must run on PostgreSQL: this exercises every statement in
+/// the ported branch (schema prefixes, `$n` binds, aggregate typing) against an empty day window.
+#[tokio::test]
+async fn reconciliation_progress_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-reconciliation-progress", now).await else {
+        return;
+    };
+    let (progress, by_key) = pair
+        .postgres
+        .key_store
+        .daily_reconciliation_progress()
+        .await
+        .expect("postgres reconciliation progress");
+    assert_eq!(progress.observed_accounts, 0);
+    assert_eq!(progress.research_total, 0);
+    assert!(by_key.is_empty());
+}
