@@ -2787,6 +2787,7 @@ include!("key_store_blog_runtime.rs");
 include!("key_store_request_logs_gc.rs");
 include!("key_store_request_logs_gc_pg.rs");
 include!("key_store_migrations_a.rs");
+include!("key_store_quota_accounting.rs");
 include!("key_store_migrations_b.rs");
 include!("key_store_admin_user_listing.rs");
 include!("key_store_admin_tokens.rs");
