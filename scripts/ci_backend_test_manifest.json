@@ -629,7 +629,10 @@
         "tavily_proxy::user_business_calls_memory::memory_window_regression_tests::",
         "upstream_privacy::tests::"
       ],
-      "isolated_prefixes": ["tests::upstream_reconciliation_fencing::"]
+      "isolated_prefixes": [
+        "tests::upstream_reconciliation_fencing::",
+        "tests::upstream_reconciliation_continuation::reconciliation_usage_publishes_hint_before_owner_enqueues_representative"
+      ]
     },
     {
       "id": "bin-support",
