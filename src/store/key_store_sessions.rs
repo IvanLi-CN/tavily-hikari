@@ -2607,6 +2607,43 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+                   FROM core.subject_key_breakages skb
+                   JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+                   LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+                   WHERE skb.subject_kind = "#,
+            );
+            builder.push_bind(BROKEN_KEY_SUBJECT_USER);
+            builder.push(" AND skb.month_start = ");
+            builder.push_bind(month_start);
+            builder.push(" AND aq.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.subject_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for id in user_ids {
+                    separated.push_bind(id);
+                }
+            }
+            builder.push(") GROUP BY skb.subject_id");
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows.into_iter().collect());
+        }
         let mut builder = QueryBuilder::new(
             r#"SELECT skb.subject_id, COUNT(*) AS broken_count
                FROM subject_key_breakages skb
@@ -2654,6 +2691,43 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+                   FROM core.subject_key_breakages skb
+                   JOIN core.api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+                   LEFT JOIN core.api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+                   WHERE skb.subject_kind = "#,
+            );
+            builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+            builder.push(" AND skb.month_start = ");
+            builder.push_bind(month_start);
+            builder.push(" AND aq.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.reason_code IN (");
+            builder.push_bind(BLOCKED_KEY_REASON_ACCOUNT_DEACTIVATED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_KEY_REVOKED);
+            builder.push(", ");
+            builder.push_bind(BLOCKED_KEY_REASON_INVALID_API_KEY);
+            builder.push(") AND skb.subject_id IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for id in token_ids {
+                    separated.push_bind(id);
+                }
+            }
+            builder.push(") GROUP BY skb.subject_id");
+            let rows = builder
+                .build_query_as::<(String, i64)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows.into_iter().collect());
+        }
         let mut builder = QueryBuilder::new(
             r#"SELECT skb.subject_id, COUNT(*) AS broken_count
                FROM subject_key_breakages skb
