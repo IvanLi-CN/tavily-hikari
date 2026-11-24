@@ -1049,26 +1049,44 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
         )
         .await;
 
-    let pause = proxy
-        .key_store
-        .sqlite_runtime
-        .install_owned_finish_pause_for_test();
-    let store = proxy.key_store.clone();
-    let flush = tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
-
-    // The wait only proves the flush reaches the owned-commit boundary; the assertion under test
-    // is whether a commit that crosses the retry budget is requeued, not how fast the boundary
-    // is reached on a shared CI runner.
-    tokio::time::timeout(Duration::from_secs(15), pause.wait_until_arrived())
-        .await
-        .expect("flush reaches the owned commit boundary");
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    pause.release();
-    let outcome = tokio::time::timeout(Duration::from_secs(15), flush)
-        .await
-        .expect("flush completes after the owned commit is released")
-        .expect("flush task joins")
-        .expect("background admission decision must remain typed");
+    // The background flush is allowed to defer before it starts when maintenance capacity is
+    // unavailable, so retry until one attempt actually reaches the owned-commit boundary. The
+    // assertion under test is whether that commit crossing the retry budget is requeued.
+    let mut outcome = None;
+    for _ in 0..50 {
+        let pause = proxy
+            .key_store
+            .sqlite_runtime
+            .install_owned_finish_pause_for_test();
+        let store = proxy.key_store.clone();
+        let mut flush =
+            tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
+        let arrived = tokio::select! {
+            _ = pause.wait_until_arrived() => true,
+            _ = &mut flush => false,
+        };
+        if arrived {
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            pause.release();
+            let result = tokio::time::timeout(Duration::from_secs(15), flush)
+                .await
+                .expect("flush completes after the owned commit is released")
+                .expect("flush task joins")
+                .expect("background admission decision must remain typed");
+            outcome = Some(result);
+            break;
+        }
+        let deferred = flush
+            .await
+            .expect("flush task joins")
+            .expect("background admission decision must remain typed");
+        assert!(
+            matches!(deferred, RequestStatsBackgroundFlushOutcome::Deferred(_)),
+            "flush left before the owned commit boundary: {deferred:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let outcome = outcome.expect("flush reaches the owned commit boundary");
     assert_eq!(
         outcome,
         RequestStatsBackgroundFlushOutcome::Flushed,
