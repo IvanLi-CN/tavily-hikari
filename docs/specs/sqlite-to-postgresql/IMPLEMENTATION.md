@@ -36,6 +36,20 @@
 3. 删除被退役模块与维护二进制；补齐 PG 版维护入口。
 4. 测试改造：PG 基线、CI 服务容器、并发回归与确定性时间合同保持。
 
+#### 现状（2026-11-25）
+
+含 SQL 的 `src/store` 模块共 78 个，其中 38 个已有 PG 路径（`self.pg()` 分支或 `*_pg.rs`
+双胞胎模块）。剩余 30 个分三类：
+
+| 类别         | 模块                                                                                                                                                                                                                                                                                                                                               | 处置             |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| 待移植（12） | `key_store_alerts`、`key_store_alert_canonical_{catalog,groups,semantic_reduction}`、`key_store_alert_projection`、`key_store_admin_privacy_read`、`key_store_reconciliation_{progress,key_observations}`、`key_store_upstream_reconciliation_{admission,research}`、`key_store_quota_schema_semantic_migration`、`key_store_admin_passkey_schema` | 加 PG 分支       |
+| 待退役（4）  | `key_store_ha`、`key_store_ha_gc_online`、`key_store_ha_schema`、`key_store_ha_watermarks`                                                                                                                                                                                                                                                         | 删除（ADR 0004） |
+| 待删除（14） | `sqlite_runtime`、`sqlite_runtime_cooperative`、`immediate_transaction`、`key_store_observability_sidecar`、`key_store_bootstrap{,_legacy}`、`key_store_migrations_{a,b}`、`key_store_schema_migrations{,_convergence}`、`reconciliation_projection_controller`、`mod` 中的 SQLite 装配                                                            | W3-cleanup       |
+
+告警与对账读模块都持有 "一个响应一个只读快照" 的合同，移植时先落 PG 只读快照（
+`REPEATABLE READ READ ONLY`），再逐函数接 `self.pg()`。
+
 ### D4 发布
 
 1. 第二个镜像进入 release 流水线：digest 分集、manifest 合并、平台校验、标签与版本标注。
