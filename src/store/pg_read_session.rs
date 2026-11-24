@@ -27,6 +27,23 @@ impl PgReadSession {
             .execute(&mut *transaction)
             .await
             .map_err(ProxyError::Database)?;
+        // Readers that reproduce the SQLite `localtime` day and month buckets must resolve the
+        // same zone the process runs in. The server reports local time through `chrono::Local`,
+        // which carries an offset but not a zone name, so the zone is resolved here instead of
+        // pinning a fixed offset that would be wrong across daylight-saving transitions.
+        if let Ok(timezone) = iana_time_zone::get_timezone() {
+            let applied = sqlx::query("SELECT set_config('TimeZone', $1, true)")
+                .bind(timezone)
+                .execute(&mut *transaction)
+                .await;
+            if applied.is_err() {
+                // An unrecognised zone name must not fail the read: the server default stays in
+                // effect and the caller keeps its own zone contract.
+                tracing::warn!(
+                    "postgres read session kept its default time zone; local zone was rejected"
+                );
+            }
+        }
         Ok(Self {
             transaction: Some(transaction),
         })

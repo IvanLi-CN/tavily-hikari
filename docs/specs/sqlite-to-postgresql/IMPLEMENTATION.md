@@ -50,6 +50,17 @@
 告警与对账读模块都持有 "一个响应一个只读快照" 的合同，移植时先落 PG 只读快照（
 `REPEATABLE READ READ ONLY`），再逐函数接 `self.pg()`。
 
+已完成入口（均带 `pg-write-paths` 跨后端对拍测试）：
+
+- `PgReadSession`：`REPEATABLE READ, READ ONLY` 单事务，替代 SQLite 读会话的一致性职责；
+  不带 cooperative 预算（那是为了管不可取消的原生 SQLite 工作）。
+- 告警事件页：`fetch_admin_alert_events_page_for_canonical_snapshot`、
+  `fetch_admin_alert_events_page_for_operation`（复用双方言 CTE builder）。
+- 对账进度：`daily_reconciliation_progress`（含空窗口 PG 冒烟测试）。
+
+尚未完成：告警分组与目录（依赖 `strftime` 本地日/月边界与 `printf` 的方言替代，
+需先确定 PG 会话时区来源）、告警投影写入侧、`admin_privacy_read`、对账 research/admission。
+
 ### D4 发布
 
 1. 第二个镜像进入 release 流水线：digest 分集、manifest 合并、平台校验、标签与版本标注。
