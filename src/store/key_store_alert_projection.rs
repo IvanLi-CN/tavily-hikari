@@ -279,11 +279,62 @@ impl KeyStore {
         &self,
         source_kind: &str,
     ) -> Result<Option<(i64, String)>, ProxyError> {
+        let retention_since = self.alert_projection_retention_since();
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            return match source_kind {
+                ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
+                    r#"SELECT created_at, id
+                         FROM core.auth_token_logs
+                        WHERE (failure_kind = 'upstream_rate_limited_429'
+                               OR result_status = 'quota_exhausted')
+                          AND created_at >= $1
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1"#,
+                )
+                .bind(retention_since)
+                .fetch_optional(pool)
+                .await
+                .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("atl:{id:020}"))))
+                .map_err(ProxyError::from),
+                ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD => sqlx::query_as::<_, (i64, String)>(
+                    r#"SELECT created_at, id
+                         FROM core.api_key_maintenance_records
+                        WHERE (COALESCE(reason_code, '') IN ('account_deactivated', 'key_revoked', 'invalid_api_key')
+                               OR (source = 'system'
+                                   AND operation_code = 'auto_mark_exhausted'
+                                   AND reason_code = 'quota_exhausted'))
+                          AND created_at >= $1
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1"#,
+                )
+                .bind(retention_since)
+                .fetch_optional(pool)
+                .await
+                .map(|row| row.map(|(occurred_at, source_id)| (occurred_at, format!("maint:{source_id}"))))
+                .map_err(ProxyError::from),
+                ALERT_SOURCE_SCHEDULED_JOB => sqlx::query_as::<_, (i64, i64)>(
+                    r#"SELECT COALESCE(finished_at, started_at, queued_at), id
+                         FROM core.scheduled_jobs
+                        WHERE LOWER(TRIM(status)) IN ('error', 'failed')
+                          AND COALESCE(finished_at, started_at, queued_at) >= $1
+                        ORDER BY COALESCE(finished_at, started_at, queued_at) DESC, id DESC
+                        LIMIT 1"#,
+                )
+                .bind(retention_since)
+                .fetch_optional(pool)
+                .await
+                .map(|row| row.map(|(occurred_at, id)| (occurred_at, format!("job:{id:020}"))))
+                .map_err(ProxyError::from),
+                other => Err(ProxyError::Other(format!(
+                    "unknown alert projection source: {other}"
+                ))),
+            };
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
             .await?;
-        let retention_since = self.alert_projection_retention_since();
         let result = match source_kind {
             ALERT_SOURCE_AUTH_TOKEN_LOG => sqlx::query_as::<_, (i64, i64)>(
                 r#"SELECT created_at, id
