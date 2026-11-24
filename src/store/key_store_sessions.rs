@@ -5017,6 +5017,69 @@ impl KeyStore {
         let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                r#"
+                SELECT
+                  b.user_id,
+                  COALESCE(SUM(CASE WHEN l.result_status = "#,
+            );
+            builder.push_bind(OUTCOME_SUCCESS);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(day_start);
+            builder.push(" AND l.created_at < ");
+            builder.push_bind(day_end);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS daily_success, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_ERROR);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(day_start);
+            builder.push(" AND l.created_at < ");
+            builder.push_bind(day_end);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS daily_failure, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_SUCCESS);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(month_start);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS monthly_success, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_ERROR);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(month_start);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS monthly_failure, ");
+            builder.push(
+                r#"MAX(l.created_at) AS last_activity
+                FROM core.user_token_bindings b
+                LEFT JOIN core.auth_token_logs l ON l.token_id = b.token_id
+                WHERE b.user_id IN ("#,
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for user_id in user_ids {
+                    separated.push_bind(user_id);
+                }
+            }
+            builder.push(") GROUP BY b.user_id");
+            let rows = builder
+                .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(user_id, daily_success, daily_failure, monthly_success, monthly_failure, last_activity)| {
+                    (
+                        user_id,
+                        UserLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                })
+                .collect());
+        }
         let mut builder = QueryBuilder::new(
             r#"
             SELECT
@@ -5104,6 +5167,68 @@ impl KeyStore {
         let now = self.backend_time.now_utc();
         let month_start = start_of_month(now).timestamp();
 
+        if self.pg_pool.is_some() {
+            let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                r#"
+                SELECT
+                  l.token_id,
+                  COALESCE(SUM(CASE WHEN l.result_status = "#,
+            );
+            builder.push_bind(OUTCOME_SUCCESS);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(day_start);
+            builder.push(" AND l.created_at < ");
+            builder.push_bind(day_end);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS daily_success, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_ERROR);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(day_start);
+            builder.push(" AND l.created_at < ");
+            builder.push_bind(day_end);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS daily_failure, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_SUCCESS);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(month_start);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS monthly_success, ");
+            builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+            builder.push_bind(OUTCOME_ERROR);
+            builder.push(" AND l.created_at >= ");
+            builder.push_bind(month_start);
+            builder.push(" THEN 1 ELSE 0 END), 0)::bigint AS monthly_failure, ");
+            builder.push(
+                r#"MAX(l.created_at) AS last_activity
+                FROM core.auth_token_logs l
+                WHERE l.token_id IN ("#,
+            );
+            {
+                let mut separated = builder.separated(", ");
+                for token_id in token_ids {
+                    separated.push_bind(token_id);
+                }
+            }
+            builder.push(") GROUP BY l.token_id");
+            let rows = builder
+                .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+                .fetch_all(self.pg()?)
+                .await?;
+            return Ok(rows
+                .into_iter()
+                .map(|(token_id, daily_success, daily_failure, monthly_success, monthly_failure, last_activity)| {
+                    (
+                        token_id,
+                        TokenLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                })
+                .collect());
+        }
         let mut builder = QueryBuilder::new(
             r#"
             SELECT
