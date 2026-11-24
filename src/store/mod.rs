@@ -2832,6 +2832,7 @@ include!("key_store_dashboard_window_metrics_pg.rs");
 include!("key_store_dashboard_month_series.rs");
 include!("key_store_dashboard_month_series_pg.rs");
 include!("key_store_dashboard_rollup_integrity.rs");
+include!("key_store_dashboard_rollup_integrity_pg.rs");
 include!("key_store_dashboard_and_job_read_models.rs");
 include!("key_store_dashboard_and_job_read_models_pg.rs");
 include!("key_store_request_stats_flush_and_public_metrics.rs");
