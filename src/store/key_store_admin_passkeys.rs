@@ -1106,6 +1106,70 @@ impl KeyStore {
         runtime_password_available: bool,
     ) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            let mut tx = pool.begin().await?;
+            let target_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE credential_id = $1 AND scope_id = $2 AND revoked_at IS NULL",
+            )
+            .bind(credential_id)
+            .bind(&scope.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if target_active == 0 {
+                tx.commit().await?;
+                return Ok(false);
+            }
+            if !external_admin_login_available {
+                let other_active_passkey_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE credential_id != $1 AND scope_id = $2 AND revoked_at IS NULL",
+                )
+                .bind(credential_id)
+                .bind(&scope.id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let password_row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+                    r#"SELECT password_hash, disabled_at
+                       FROM core.admin_password_settings
+                       WHERE id = 1
+                       LIMIT 1"#,
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+                let password_disabled = password_row
+                    .as_ref()
+                    .and_then(|(_, disabled_at)| *disabled_at)
+                    .is_some();
+                let persisted_password_available = runtime_password_available
+                    && password_row
+                        .as_ref()
+                        .and_then(|(password_hash, _)| password_hash.as_deref())
+                        .is_some_and(|password_hash| !password_hash.trim().is_empty())
+                    && !password_disabled;
+                let runtime_password_available = runtime_password_available && !password_disabled;
+                if other_active_passkey_count == 0
+                    && !persisted_password_available
+                    && !runtime_password_available
+                {
+                    let _ = tx.rollback().await;
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+            }
+            let updated = sqlx::query(
+                r#"UPDATE core.admin_passkey_credentials
+                   SET revoked_at = $1, updated_at = $2
+                   WHERE credential_id = $3 AND scope_id = $4 AND revoked_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(credential_id)
+            .bind(&scope.id)
+            .execute(&mut *tx)
+            .await?;
+            let revoked = updated.rows_affected() > 0;
+            tx.commit().await?;
+            return Ok(revoked);
+        }
         let mut conn = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
 
         let result: Result<bool, ProxyError> = async {
