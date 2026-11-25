@@ -1546,3 +1546,25 @@ async fn alert_projection_status_runs_on_postgres() {
     assert_eq!(status.recent_coverage, "projecting");
     assert!(status.stale_reason.is_none());
 }
+
+/// The last-run stats reader must return the same tuple from PostgreSQL as from SQLite.
+#[tokio::test]
+async fn reconciliation_last_run_stats_matches_across_backends() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-reconciliation-last-run-stats", now).await else {
+        return;
+    };
+    let sqlite = pair
+        .sqlite
+        .key_store
+        .upstream_reconciliation_last_run_stats()
+        .await
+        .expect("sqlite last run stats");
+    let postgres = pair
+        .postgres
+        .key_store
+        .upstream_reconciliation_last_run_stats()
+        .await
+        .expect("postgres last run stats");
+    assert_eq!(postgres, sqlite);
+}
