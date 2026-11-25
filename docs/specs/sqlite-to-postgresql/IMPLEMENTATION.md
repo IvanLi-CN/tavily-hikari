@@ -65,6 +65,9 @@
 尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
 告警投影写入侧、`admin_privacy_read`、对账 research/admission。
 
+告警投影的“状态读取”与“写入”必须同批落地：写入仍走 SQLite 时，PG 读到的覆盖状态永远停在
+`projecting`，会让 `alert_projection_rebuild_is_idempotent` 这类收敛断言无法完成。
+
 ### D4 发布
 
 1. 第二个镜像进入 release 流水线：digest 分集、manifest 合并、平台校验、标签与版本标注。
