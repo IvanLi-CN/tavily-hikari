@@ -1617,18 +1617,13 @@ impl SqliteRuntime {
             .maintenance_class()
             .expect("maintenance bulk operations must have a coordinator class");
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
-        let admission_bypass = self.inner.admission_bypass.load(AtomicOrdering::Relaxed);
-        let reason = (!admission_bypass)
-            .then(|| {
-                self.maintenance_bulk_defer_reason_for_with_policy(
-                    operation,
-                    bypass_foreground_pressure,
-                    force_recent_contention_defer,
-                    false,
-                    aged_turn_bypass,
-                )
-            })
-            .flatten();
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            false,
+            aged_turn_bypass,
+        );
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
@@ -1641,17 +1636,13 @@ impl SqliteRuntime {
         }
         self.inner.maintenance_coordinator.register_request(class);
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
-        let reason = (!admission_bypass)
-            .then(|| {
-                self.maintenance_bulk_defer_reason_for_with_policy(
-                    operation,
-                    bypass_foreground_pressure,
-                    force_recent_contention_defer,
-                    true,
-                    aged_turn_bypass,
-                )
-            })
-            .flatten();
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            true,
+            aged_turn_bypass,
+        );
         if let Some(reason) = reason {
             if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
                 if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
@@ -2002,6 +1993,11 @@ impl SqliteRuntime {
         allow_aged_coordinator_turn: bool,
         allow_aged_pool_probe: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
+        // Single choke point for the test-only escape: the preflight probe and the bulk acquire
+        // both ask this function, so a defer here is exactly what callers observe.
+        if self.inner.admission_bypass.load(AtomicOrdering::Relaxed) {
+            return None;
+        }
         let foreground_rps = self.foreground_activity_rps();
         if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)
