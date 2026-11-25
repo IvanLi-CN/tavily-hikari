@@ -1527,3 +1527,22 @@ async fn projected_alert_groups_sql_runs_on_postgres() {
         "grouped alerts must include the seeded auth-token log group: {count}"
     );
 }
+
+/// The projection-status reader must run on PostgreSQL: a fresh observability schema has no
+/// source rows yet, which reads as `projecting` rather than an error.
+#[tokio::test]
+async fn alert_projection_status_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-alert-projection-status", now).await else {
+        return;
+    };
+    let status = pair
+        .postgres
+        .key_store
+        .alert_projection_status()
+        .await
+        .expect("postgres projection status");
+    assert_eq!(status.coverage, "projecting");
+    assert_eq!(status.recent_coverage, "projecting");
+    assert!(status.stale_reason.is_none());
+}
