@@ -1633,3 +1633,57 @@ async fn reconciliation_singletons_are_seeded_on_postgres() {
         );
     }
 }
+
+/// The research selector must run on PostgreSQL: with a seeded pollable row whose usage window
+/// has ended, it returns that candidate and a cursor derived from it.
+#[tokio::test]
+async fn research_candidates_select_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-research-candidates", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let token_id = format!("tok-{tag}");
+    let key_id = format!("key-{tag}");
+    let period_code = "2026-07-14/S2";
+    let request_id = format!("req-{tag}");
+    for statement in [
+        format!(
+            "INSERT INTO core.upstream_reconciliation_usage \
+             (token_id, period_code, key_id, project_id, billing_subject, request_count, \
+              first_used_at, last_used_at, period_start, period_end, settlement_mode) \
+             VALUES ('{token_id}', '{period_code}', '{key_id}', 'proj', 'token:{token_id}', 1, \
+                     {now_minus}, {now_minus}, {now_minus}, {now_minus}, 'actual')",
+            now_minus = now - 3600
+        ),
+        format!(
+            "INSERT INTO core.upstream_reconciliation_research \
+             (request_id, token_id, key_id, period_code, created_at, updated_at, \
+              next_poll_at, poll_attempt_count, poll_resolution) \
+             VALUES ('{request_id}', '{token_id}', '{key_id}', '{period_code}', {now}, {now}, \
+                     0, 0, 'pollable')"
+        ),
+    ] {
+        sqlx::query(&statement)
+            .execute(pair.postgres.key_store.pg().expect("postgres pool"))
+            .await
+            .unwrap_or_else(|err| panic!("seed `{statement}`: {err}"));
+    }
+
+    let page = pair
+        .postgres
+        .key_store
+        .next_upstream_reconciliation_research_candidates(10)
+        .await
+        .expect("postgres research candidates");
+    assert!(
+        page.candidates
+            .iter()
+            .any(|candidate| candidate.request_id == request_id),
+        "seeded pollable research row must be selected: {:?}",
+        page.candidates
+            .iter()
+            .map(|candidate| candidate.request_id.as_str())
+            .collect::<Vec<_>>()
+    );
+}

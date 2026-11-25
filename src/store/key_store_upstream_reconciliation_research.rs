@@ -121,6 +121,11 @@ impl KeyStore {
         &self,
         limit: i64,
     ) -> Result<UpstreamReconciliationResearchCandidatePage, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .next_upstream_reconciliation_research_candidates_pg(limit)
+                .await;
+        }
         let now = self.backend_time.now_ts();
         let day_window =
             server_local_day_window_utc(self.backend_time.now_utc().with_timezone(&Local));
@@ -358,80 +363,24 @@ impl KeyStore {
             }
             None => (None, 0),
         };
-        let mut selected_per_key = std::collections::HashMap::<String, usize>::new();
-        let mut candidates = rows
-            .into_iter()
-            .filter_map(
-                |(
-                    request_id,
-                    token_id,
-                    key_id,
-                    period_code,
-                    billing_subject,
-                    period_end,
-                    poll_attempt_count,
-                    has_settled_period,
-                )| {
-                    let slot = selected_per_key.entry(key_id.clone()).or_default();
-                    if *slot >= 4 || has_settled_period > 1 {
-                        return None;
-                    }
-                    *slot += 1;
-                    Some(crate::models::UpstreamReconciliationResearchCandidate {
-                        request_id,
-                        token_id,
-                        key_id,
-                        period_code,
-                        billing_subject,
-                        period_end,
-                        poll_attempt_count,
-                    })
-                },
-            )
-            .collect::<Vec<_>>();
-        candidates.truncate(page_limit as usize);
-        let candidate_cursors = raw_rows
-            .iter()
-            .map(|(request_id, _, key_id, _, next_poll_at, _)| {
-                (
-                    request_id.clone(),
-                    UpstreamReconciliationResearchCursor {
-                        next_poll_at: *next_poll_at,
-                        key_id: key_id.clone(),
-                        request_id: request_id.clone(),
-                    },
-                )
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        let next_cursor = raw_rows.last().map(|(_, _, key_id, _, next_poll_at, _)| {
-            UpstreamReconciliationResearchCursor {
-                next_poll_at: *next_poll_at,
-                key_id: key_id.clone(),
-                request_id: raw_rows
-                    .last()
-                    .map(|(request_id, _, _, _, _, _)| request_id.clone())
-                    .unwrap_or_default(),
-            }
-        });
         let result = session
             .complete_query_or_defer(Ok::<_, sqlx::Error>((
-                candidates,
-                candidate_cursors,
-                next_cursor,
-                wrapped,
+                raw_rows.clone(),
+                rows,
                 cooled_due_count,
                 earliest_cooldown_until,
+                wrapped,
             )))
             .await?;
-        Ok(UpstreamReconciliationResearchCandidatePage {
-            candidates: result.0,
-            cooled_due_count: result.4,
-            earliest_cooldown_until: result.5,
+        Ok(Self::assemble_research_candidate_page(
+            page_limit,
             start_cursor,
-            candidate_cursors: result.1,
-            next_cursor: result.2,
-            wrapped: result.3,
-        })
+            &result.0,
+            result.1,
+            result.2,
+            result.3,
+            result.4,
+        ))
     }
 
     pub(crate) async fn commit_upstream_reconciliation_research_drain(
