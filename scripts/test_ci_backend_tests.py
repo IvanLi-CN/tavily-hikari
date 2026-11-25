@@ -177,7 +177,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
             },
         )
         upstream = reconciliation_shards["lib-upstream-reconciliation"]
-        self.assertEqual(RUNNER.shard_resource_limits(upstream, 4, 2), (4, 1))
+        self.assertEqual(RUNNER.shard_resource_limits(upstream, 4, 2), (2, 1))
         self.assertEqual(len(upstream["include_prefixes"]), 29)
         self.assertEqual(len(upstream["include_prefixes"]), len(set(upstream["include_prefixes"])))
         self.assertTrue(
@@ -488,7 +488,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertIn(timing_prefix, tavily_http["include_prefixes"])
         self.assertEqual(tavily_http["isolated_prefixes"], [search_prefix, timing_prefix])
         self.assertEqual(tavily_http["isolated_process_workers"], 4)
-        self.assertEqual(RUNNER.shard_resource_limits(tavily_http, 4, 2), (4, 1))
+        self.assertEqual(RUNNER.shard_resource_limits(tavily_http, 4, 2), (2, 1))
         self.assertEqual(RUNNER.isolated_process_worker_limit(tavily_http, 4), 4)
         self.assertEqual(RUNNER.isolated_process_worker_limit(tavily_http, 2), 2)
 
@@ -627,8 +627,8 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertEqual(scheduled_maintenance_claim["include_prefixes"], [scheduled_claim_test])
         self.assertEqual(scheduled_maintenance_claim["serial_prefixes"], [scheduled_claim_test])
         self.assertEqual(RUNNER.shard_resource_limits(scheduled_maintenance_claim, 4, 2), (1, 1))
-        self.assertEqual(RUNNER.shard_resource_limits(alert, 3, 2), (3, 1))
-        self.assertEqual(RUNNER.shard_resource_limits(affinity, 3, 2), (3, 2))
+        self.assertEqual(RUNNER.shard_resource_limits(alert, 3, 2), (2, 1))
+        self.assertEqual(RUNNER.shard_resource_limits(affinity, 3, 2), (2, 2))
         self.assertEqual(RUNNER.shard_resource_limits(admin_identity, 3, 2), (2, 2))
         self.assertEqual(RUNNER.shard_resource_limits(admin_identity, 4, 2), (2, 2))
         self.assertEqual(RUNNER.shard_resource_limits(admin_observability, 3, 2), (2, 2))
@@ -637,7 +637,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
         self.assertIn(sse_test, admin_identity["exclude_prefixes"])
         self.assertEqual(admin_sse["include_prefixes"], [sse_test])
         self.assertEqual(RUNNER.shard_resource_limits(admin_sse, 4, 2), (1, 1))
-        self.assertEqual(RUNNER.shard_resource_limits(operational, 4, 2), (4, 1))
+        self.assertEqual(RUNNER.shard_resource_limits(operational, 4, 2), (2, 1))
         self.assertIn(
             "server::tests::alerts_and_ha_dashboard_defaults::admin_alerts_pressure_uses_same_key_last_good_and_reports_cold_misses",
             admin_lifecycle["serial_prefixes"],

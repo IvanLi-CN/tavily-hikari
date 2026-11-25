@@ -512,7 +512,7 @@
       "estimated_seconds": 110,
       "coverage_target": "lib",
       "run_args": ["--lib"],
-      "filtered_process_workers": 4,
+      "filtered_process_workers": 2,
       "include_prefixes": [
         "ha_perf_sampling_tests::",
         "tests::jobs_and_request_log_retention::abandon_",
@@ -576,7 +576,7 @@
       "estimated_seconds": 20,
       "coverage_target": "lib",
       "run_args": ["--lib"],
-      "filtered_process_workers": 4,
+      "filtered_process_workers": 2,
       "filtered_test_threads": 1,
       "isolated_prefixes": [
         "tests::upstream_reconciliation::reconciliation_rejects_reclaimed_claim_after_remote_fetch"
@@ -808,7 +808,7 @@
         "server::tests::tavily_http_search_timing::tavily_"
       ],
       "isolated_process_workers": 4,
-      "filtered_process_workers": 4,
+      "filtered_process_workers": 2,
       "include_prefixes": [
         "server::avatar_url_tests::",
         "server::spa_404_tests::",

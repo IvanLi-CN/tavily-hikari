@@ -63,7 +63,7 @@ def load_manifest():
         shard.setdefault("isolated_prefixes", [])
         shard.setdefault("isolated_process_workers", 1)
         shard.setdefault("filtered_test_threads", 1)
-        shard.setdefault("filtered_process_workers", 3)
+        shard.setdefault("filtered_process_workers", 2)
         if (
             not isinstance(shard["isolated_process_workers"], int)
             or shard["isolated_process_workers"] < 1
