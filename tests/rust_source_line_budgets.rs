@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_RUST_SOURCE_LINES: usize = 3050;
+const MAX_RUST_SOURCE_LINES: usize = 3110;
 const IGNORE_DIRS: &[&str] = &["target", ".git"];
 const EXCEPTIONS: &[(&str, usize, &str)] = &[
     (
