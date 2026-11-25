@@ -193,7 +193,7 @@ impl KeyStore {
                 r#")
                 SELECT h.request_id, h.token_id, h.key_id, h.period_code,
                        h.billing_subject, h.period_end, h.poll_attempt_count,
-                       CASE WHEN EXISTS (
+                       CAST(CASE WHEN EXISTS (
                           SELECT 1 FROM core.upstream_reconciliation_usage prior_u
                           JOIN core.upstream_reconciliation_settlements prior_s
                             ON prior_s.settlement_key = 'v1:' || prior_u.token_id || ':' || prior_u.period_code
@@ -203,7 +203,7 @@ impl KeyStore {
             query.push_bind(day_window.start);
             query.push(" AND prior_u.period_start < ");
             query.push_bind(day_window.end);
-            query.push(" AND prior_s.status = 'shadow_settled') THEN 1 ELSE 0 END AS has_settled_period FROM hydrated h ORDER BY has_settled_period, h.period_end DESC, h.request_id");
+            query.push(" AND prior_s.status = 'shadow_settled') THEN 1 ELSE 0 END AS BIGINT) AS has_settled_period FROM hydrated h ORDER BY has_settled_period, h.period_end DESC, h.request_id");
             query
                 .build_query_as::<(String, String, String, String, String, i64, i64, i64)>()
                 .fetch_all(&mut *session.connection())
