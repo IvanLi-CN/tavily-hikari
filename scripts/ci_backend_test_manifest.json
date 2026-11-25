@@ -173,6 +173,7 @@
     },
     {
       "id": "lib-request-log-retention-maintenance",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Request Log Retention Maintenance",
       "estimated_seconds": 32,
@@ -185,6 +186,7 @@
     },
     {
       "id": "lib-request-log-retention-policy",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Request Log Retention Policy",
       "estimated_seconds": 62,
@@ -260,6 +262,7 @@
     },
     {
       "id": "lib-request-rollup-reporting",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Request Rollup Reporting",
       "estimated_seconds": 55,
@@ -507,6 +510,7 @@
     },
     {
       "id": "lib-operational-maintenance",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Operational Maintenance",
       "estimated_seconds": 110,
@@ -571,6 +575,7 @@
     },
     {
       "id": "lib-upstream-reconciliation",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Upstream Reconciliation",
       "estimated_seconds": 20,
@@ -615,6 +620,7 @@
     },
     {
       "id": "lib-reconciliation-projection",
+      "admission_bypass": true,
       "kind": "lib",
       "name": "Lib Reconciliation Projection",
       "estimated_seconds": 74,
@@ -761,6 +767,7 @@
     },
     {
       "id": "bin-admin-api-lifecycle",
+      "admission_bypass": true,
       "kind": "bin",
       "name": "Bin Admin API Lifecycle",
       "estimated_seconds": 34,
