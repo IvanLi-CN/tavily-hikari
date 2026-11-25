@@ -1439,6 +1439,29 @@ impl KeyStore {
         }
     }
 
+    /// Typed null or zero literal for a union branch. SQLite tolerates untyped `NULL` against a
+    /// typed column in `UNION ALL`; PostgreSQL requires the branch types to match exactly.
+    fn alert_typed_null_sql(kind: &str, dialect: SqlDialect) -> String {
+        let sql_type = match dialect {
+            SqlDialect::Sqlite => match kind {
+                "text" => "TEXT",
+                _ => "INTEGER",
+            },
+            SqlDialect::Postgres => match kind {
+                "text" => "text",
+                _ => "bigint",
+            },
+        };
+        format!("CAST(NULL AS {sql_type})")
+    }
+
+    fn alert_typed_zero_sql(dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => "CAST(0 AS INTEGER)".to_string(),
+            SqlDialect::Postgres => "CAST(0 AS bigint)".to_string(),
+        }
+    }
+
     /// Window identity string `<prefix>:<value>`.
     #[allow(dead_code)] // wired into the grouping CTE next
     fn alert_window_key_sql(prefix: &str, expr: &str, dialect: SqlDialect) -> String {
@@ -1514,6 +1537,12 @@ impl KeyStore {
         let key_hour = Self::alert_window_key_sql("hour", "alerts.occurred_at - 3540", dialect);
         let key_day = Self::alert_window_key_sql("day", &day_start, dialect);
         let key_month = Self::alert_window_key_sql("month", &month_start, dialect);
+        let null_kind = Self::alert_typed_null_sql("text", dialect);
+        let null_minutes = Self::alert_typed_null_sql("int", dialect);
+        let null_start = Self::alert_typed_null_sql("int", dialect);
+        let null_end = Self::alert_typed_null_sql("int", dialect);
+        let null_request_kind = Self::alert_typed_null_sql("text", dialect);
+        let zero_count = Self::alert_typed_zero_sql(dialect);
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
         let request_kind_sql = Self::alert_group_request_kind_sql("alerts");
@@ -1828,7 +1857,7 @@ impl KeyStore {
                     semantic_mother_heads.alert_type AS alert_type,
                     semantic_mother_heads.subject_kind AS subject_kind,
                     semantic_mother_heads.subject_id AS subject_id,
-                    NULL AS request_kind_key_normalized,
+                    {null_request_kind} AS request_kind_key_normalized,
                     SUM(semantic_mother_heads.child_event_count) OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
@@ -1917,11 +1946,11 @@ impl KeyStore {
                                      filtered_alerts.subject_id,
                                      filtered_alerts.request_kind_key_normalized
                     ) AS last_seen,
-                    NULL AS semantic_window_kind,
-                    NULL AS semantic_window_minutes,
-                    NULL AS semantic_window_start,
-                    NULL AS semantic_window_end,
-                    0 AS child_count,
+                    {null_kind} AS semantic_window_kind,
+                    {null_minutes} AS semantic_window_minutes,
+                    {null_start} AS semantic_window_start,
+                    {null_end} AS semantic_window_end,
+                    {zero_count} AS child_count,
                     ROW_NUMBER() OVER (
                         PARTITION BY filtered_alerts.alert_type,
                                      filtered_alerts.subject_kind,
