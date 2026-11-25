@@ -1179,10 +1179,6 @@ def run_shard(
 
     target_id = shard["coverage_target"]
     extra_env = os.environ.copy()
-    if shard.get("admission_bypass"):
-        # Opt-in shards assert product behaviour, not admission; cgroup write pressure from the
-        # preceding shard in the same job must not decide their outcome.
-        extra_env["TAVILY_TEST_ADMISSION_BYPASS"] = "1"
     if shard["mode"] == "all":
         if prebuilt_root:
             executables, support_binaries = load_prebuilt_executables(prebuilt_root, target_id)

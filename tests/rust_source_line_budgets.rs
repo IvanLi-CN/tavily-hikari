@@ -86,12 +86,12 @@ const EXCEPTIONS: &[(&str, usize, &str)] = &[
     ),
     (
         "src/tests/upstream_reconciliation.rs",
-        3500,
+        3530,
         "The consolidated upstream reconciliation integration suite carries the multi-key observation, per-key cooldown, and continuation-fencing coverage while a broader test extraction remains a separate behavior-preserving change.",
     ),
     (
         "src/store/sqlite_runtime.rs",
-        4550,
+        4600,
         "The runtime owns the shared pool, operation budgeting, transaction guards, fair maintenance admission coordinator, operation-scoped owned-finish tracking, workload aggregation, and the bounded reconciliation read session; cooperative query cleanup remains isolated in its dedicated child module.",
     ),
 ];

@@ -960,7 +960,6 @@ impl Default for WorkloadWindow {
 
 #[derive(Debug)]
 struct SqliteRuntimeInner {
-    admission_bypass: AtomicBool,
     pool: SqlitePool,
     maximum_connections: u32,
     maintenance_bulk: Arc<Semaphore>,
@@ -1104,12 +1103,6 @@ pub(crate) struct SqliteRuntime {
     inner: Arc<SqliteRuntimeInner>,
 }
 
-/// Test-only admission escape, read once per process.
-fn test_admission_bypass() -> bool {
-    static BYPASS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *BYPASS.get_or_init(|| std::env::var_os("TAVILY_TEST_ADMISSION_BYPASS").is_some())
-}
-
 impl SqliteRuntime {
     #[cfg(debug_assertions)]
     pub(crate) fn discarded_connections_for_test(&self, operation: SqliteOperation) -> u64 {
@@ -1142,7 +1135,6 @@ impl SqliteRuntime {
     pub(crate) fn with_max_connections(pool: SqlitePool, maximum_connections: u32) -> Self {
         Self {
             inner: Arc::new(SqliteRuntimeInner {
-                admission_bypass: AtomicBool::new(test_admission_bypass()),
                 pool,
                 maximum_connections: maximum_connections.max(1),
                 maintenance_bulk: Arc::new(Semaphore::new(1)),
@@ -1182,16 +1174,6 @@ impl SqliteRuntime {
         self.inner
             .fail_next_reconciliation_research_read
             .store(true, AtomicOrdering::Release);
-    }
-
-    #[cfg(test)]
-    /// Admission tests assert the real defers, so they clear the CI-wide bypass after building
-    /// their runtime.
-    #[cfg(test)]
-    pub(crate) fn disable_test_admission_bypass(&self) {
-        self.inner
-            .admission_bypass
-            .store(false, AtomicOrdering::Relaxed);
     }
 
     #[cfg(test)]
@@ -1605,10 +1587,6 @@ impl SqliteRuntime {
         force_recent_contention_defer: bool,
     ) -> Result<SqliteMaintenanceBulkPermit, SqliteAdmissionDeferReason> {
         debug_assert!(operation.is_maintenance_bulk());
-        // Test-only escape: shards that assert product behaviour, not admission, can run their
-        // fixtures without cgroup write pressure deciding the outcome. Admission keeps its own
-        // unit tests, which never set this variable.
-        let admission_bypass = self.inner.admission_bypass.load(AtomicOrdering::Relaxed);
         if self
             .inner
             .maintenance_shutdown
@@ -1621,17 +1599,13 @@ impl SqliteRuntime {
             .maintenance_class()
             .expect("maintenance bulk operations must have a coordinator class");
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
-        let reason = (!admission_bypass)
-            .then(|| {
-                self.maintenance_bulk_defer_reason_for_with_policy(
-                    operation,
-                    bypass_foreground_pressure,
-                    force_recent_contention_defer,
-                    false,
-                    aged_turn_bypass,
-                )
-            })
-            .flatten();
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            false,
+            aged_turn_bypass,
+        );
         if let Some(reason) = reason
             && !matches!(reason, SqliteAdmissionDeferReason::BulkBusy)
         {
@@ -1644,17 +1618,13 @@ impl SqliteRuntime {
         }
         self.inner.maintenance_coordinator.register_request(class);
         let aged_turn_bypass = self.inner.maintenance_coordinator.turn_bypass_due(class);
-        let reason = (!admission_bypass)
-            .then(|| {
-                self.maintenance_bulk_defer_reason_for_with_policy(
-                    operation,
-                    bypass_foreground_pressure,
-                    force_recent_contention_defer,
-                    true,
-                    aged_turn_bypass,
-                )
-            })
-            .flatten();
+        let reason = self.maintenance_bulk_defer_reason_for_with_policy(
+            operation,
+            bypass_foreground_pressure,
+            force_recent_contention_defer,
+            true,
+            aged_turn_bypass,
+        );
         if let Some(reason) = reason {
             if !matches!(reason, SqliteAdmissionDeferReason::BulkBusy) {
                 if SqliteMaintenanceCoordinator::retain_request_for_defer(reason) {
