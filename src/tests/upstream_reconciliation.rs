@@ -49,14 +49,33 @@ async fn reconciliation_controlled_retry_advances_the_claim_attempt_before_succe
         .expect("claim initial reconciliation attempt")
         .expect("initial reconciliation attempt is due");
 
-    let first_outcome = proxy
-        .run_upstream_reconciliation_once_claimed_outcome(
-            "http://127.0.0.1:9",
-            first_claim.id,
-            first_claim.claim_generation,
-        )
-        .await
-        .expect("controlled first attempt returns a typed defer");
+    // A run may defer at admission with `pool_pressure` before it reaches the controlled
+    // retry boundary; that defer neither advances the claim attempt nor consumes the
+    // controlled budget, so retry until the boundary is observed.
+    let mut first_outcome = None;
+    for _ in 0..50 {
+        let outcome = proxy
+            .run_upstream_reconciliation_once_claimed_outcome(
+                "http://127.0.0.1:9",
+                first_claim.id,
+                first_claim.claim_generation,
+            )
+            .await
+            .expect("controlled first attempt returns a typed defer");
+        if matches!(
+            outcome,
+            ClaimedReconciliationRunOutcome::Deferred {
+                reason: "pool_pressure",
+                ..
+            }
+        ) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        first_outcome = Some(outcome);
+        break;
+    }
+    let first_outcome = first_outcome.expect("controlled retry reaches its deferral boundary");
     assert!(matches!(
         first_outcome,
         ClaimedReconciliationRunOutcome::Deferred {
