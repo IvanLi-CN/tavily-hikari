@@ -61,6 +61,14 @@ impl<'a> AlertSql<'a> {
             Self::Sqlite(_) => None,
         }
     }
+
+    /// SQLite counterpart of [`Self::into_postgres`].
+    fn into_sqlite(self) -> Option<QueryBuilder<'a, Sqlite>> {
+        match self {
+            Self::Sqlite(query) => Some(query),
+            Self::Postgres(_) => None,
+        }
+    }
 }
 
 #[allow(dead_code)]

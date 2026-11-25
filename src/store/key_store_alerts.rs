@@ -1452,22 +1452,39 @@ impl KeyStore {
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        Self::push_alert_events_cte(query, filters);
-        Self::push_alert_grouping_cte_tail(query, filters);
+        let mut inner = AlertSql::new(SqlDialect::Sqlite);
+        Self::push_alert_events_cte_any(&mut inner, filters);
+        Self::push_alert_grouping_cte_tail(&mut inner, filters, SqlDialect::Sqlite);
+        *query = inner.into_sqlite().expect("sqlite alert builder");
     }
 
     fn push_projected_alert_groups_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        Self::push_projected_alert_events_cte(query, filters, SqlDialect::Sqlite);
-        Self::push_alert_grouping_cte_tail(query, filters);
+        let mut inner = AlertSql::new(SqlDialect::Sqlite);
+        Self::push_projected_alert_events_cte_any(&mut inner, filters, SqlDialect::Sqlite);
+        Self::push_alert_grouping_cte_tail(&mut inner, filters, SqlDialect::Sqlite);
+        *query = inner.into_sqlite().expect("sqlite alert builder");
     }
 
     fn push_alert_grouping_cte_tail<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
+        query: &mut AlertSql<'a>,
         filters: AlertEventFilters<'a>,
+        dialect: SqlDialect,
     ) {
+        let error_message = "COALESCE(alerts.error_message, '')";
+        let occurred_at = "alerts.occurred_at";
+        let instr_month = Self::alert_text_contains_sql(error_message, "month window", dialect);
+        let instr_day = Self::alert_text_contains_sql(error_message, "day window", dialect);
+        let instr_hour = Self::alert_text_contains_sql(error_message, "hour window", dialect);
+        let day_start = Self::alert_local_period_start_sql("day", occurred_at, dialect);
+        let day_end = Self::alert_local_period_end_sql("day", occurred_at, dialect);
+        let month_start = Self::alert_local_period_start_sql("month", occurred_at, dialect);
+        let month_end = Self::alert_local_period_end_sql("month", occurred_at, dialect);
+        let key_hour = Self::alert_window_key_sql("hour", "alerts.occurred_at - 3540", dialect);
+        let key_day = Self::alert_window_key_sql("day", &day_start, dialect);
+        let key_month = Self::alert_window_key_sql("month", &month_start, dialect);
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
         let request_kind_sql = Self::alert_group_request_kind_sql("alerts");
@@ -1486,9 +1503,9 @@ impl KeyStore {
                             THEN 'mother'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
                              AND (
-                                 instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                                 OR instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                                 OR instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                                 {instr_month}
+                                 OR {instr_day}
+                                 OR {instr_hour}
                              )
                             THEN 'mother'
                         ELSE 'compat'
@@ -1497,13 +1514,13 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN 'request_rate'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
+                             AND {instr_month}
                             THEN 'month'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
+                             AND {instr_day}
                             THEN 'day'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN 'rolling_hour'
                         ELSE NULL
                     END AS semantic_window_kind,
@@ -1511,7 +1528,7 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN {request_rate_minutes}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN 60
                         ELSE NULL
                     END AS semantic_window_minutes,
@@ -1519,42 +1536,42 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN alerts.occurred_at - {request_rate_seconds}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN alerts.occurred_at - 3540
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', 'utc')) AS INTEGER)
+                             AND {instr_day}
+                            THEN {day_start}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month')) AS INTEGER)
+                             AND {instr_month}
+                            THEN {month_start}
                         ELSE NULL
                     END AS semantic_window_start,
                     CASE
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN alerts.occurred_at
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN alerts.occurred_at
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', '+1 day', 'utc')) AS INTEGER) - 1
+                             AND {instr_day}
+                            THEN {day_end}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month', '+1 month')) AS INTEGER) - 1
+                             AND {instr_month}
+                            THEN {month_end}
                         ELSE NULL
                     END AS semantic_window_end,
                     CASE
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN NULL
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
-                            THEN printf('hour:%lld', alerts.occurred_at - 3540)
+                             AND {instr_hour}
+                            THEN {key_hour}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN printf('day:%lld', CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', 'utc')) AS INTEGER))
+                             AND {instr_day}
+                            THEN {key_day}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN printf('month:%lld', CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month')) AS INTEGER))
+                             AND {instr_month}
+                            THEN {key_month}
                         ELSE NULL
                     END AS semantic_window_key
                 FROM alerts
@@ -1564,7 +1581,7 @@ impl KeyStore {
                 WHERE 1 = 1
             "#
         ));
-        Self::push_alert_request_kind_filter(
+        Self::push_alert_request_kind_filter_any(
             query,
             "COALESCE(NULLIF(TRIM(request_kind_key_normalized), ''), 'unknown')",
             filters.request_kinds,
