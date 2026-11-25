@@ -1192,6 +1192,7 @@ async fn maintenance_bulk_age_does_not_bypass_foreground_pressure() {
 #[tokio::test]
 async fn bounded_recovery_bulk_allows_foreground_pressure_after_ticket_ages() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     for _ in 0..6 {
         runtime.record_foreground_activity();
     }
@@ -1269,6 +1270,7 @@ async fn bounded_recovery_bulk_allows_both_recovery_operations_after_aging() {
         SqliteOperation::RequestLogsGc,
     ] {
         let runtime = three_connection_runtime().await;
+        runtime.disable_test_admission_bypass();
         for _ in 0..6 {
             runtime.record_foreground_activity();
         }
@@ -1306,6 +1308,7 @@ async fn bounded_recovery_bulk_allows_both_recovery_operations_after_aging() {
 #[tokio::test]
 async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     for _ in 0..6 {
         runtime.record_foreground_activity();
     }
@@ -1339,6 +1342,7 @@ async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
 #[tokio::test]
 async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_turn() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let first_foreground = runtime
         .inner
         .pool
@@ -1396,6 +1400,7 @@ async fn reconciliation_preflight_guard_cancels_without_a_bulk_attempt() {
 #[tokio::test]
 async fn reconciliation_preflight_bulk_busy_retains_ticket_for_retry() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
         .expect("hold the shared bulk permit");
@@ -1421,6 +1426,7 @@ async fn reconciliation_preflight_bulk_busy_retains_ticket_for_retry() {
 #[tokio::test]
 async fn reconciliation_preflight_retains_ticket_when_coordinator_orders_an_older_class() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     runtime
         .inner
         .maintenance_coordinator

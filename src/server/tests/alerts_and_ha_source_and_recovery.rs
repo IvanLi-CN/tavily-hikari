@@ -14,6 +14,7 @@ async fn aged_reconciliation_turn_still_defers_for_foreground_pressure() {
     )
     .await
     .expect("create reconciliation proxy");
+    proxy.disable_test_admission_bypass_for_test();
     let pool = connect_sqlite_test_pool(&db_str).await;
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.upstream_project_id_mode = tavily_hikari::UpstreamProjectIdMode::AccessToken;
