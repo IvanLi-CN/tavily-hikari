@@ -61,6 +61,8 @@
   `UNION ALL` 两支在 PG 下使用显式类型字面量（SQLite 动态类型容忍、PG 按位置严格匹配）。
   分组 SQL 已在 `pg-write-paths` 中直接执行验证。
 - 对账 key observations：读与写都走 PG（写侧用 `FOR UPDATE` 锁工作行代替 SQLite 立即事务）。
+- 对账运行统计与 research 不可用标记：`upstream_reconciliation_last_run_stats`、
+  `mark_upstream_reconciliation_research_unavailable` 已接 PG，并有跨库/落库断言。
 
 尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
 告警投影写入侧、`admin_privacy_read`、对账 research/admission。
