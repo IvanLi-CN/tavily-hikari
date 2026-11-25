@@ -1063,7 +1063,17 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
             tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
         let arrived = tokio::select! {
             _ = pause.wait_until_arrived() => true,
-            _ = &mut flush => false,
+            result = &mut flush => {
+                // The handle is consumed here, so the attempt must be judged in this branch.
+                let deferred = result
+                    .expect("flush task joins")
+                    .expect("background admission decision must remain typed");
+                assert!(
+                    matches!(deferred, RequestStatsBackgroundFlushOutcome::Deferred(_)),
+                    "flush left before the owned commit boundary: {deferred:?}"
+                );
+                false
+            }
         };
         if arrived {
             tokio::time::sleep(Duration::from_millis(75)).await;
@@ -1076,14 +1086,6 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
             outcome = Some(result);
             break;
         }
-        let deferred = flush
-            .await
-            .expect("flush task joins")
-            .expect("background admission decision must remain typed");
-        assert!(
-            matches!(deferred, RequestStatsBackgroundFlushOutcome::Deferred(_)),
-            "flush left before the owned commit boundary: {deferred:?}"
-        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let outcome = outcome.expect("flush reaches the owned commit boundary");
