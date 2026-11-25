@@ -57,9 +57,13 @@
 - 告警事件页：`fetch_admin_alert_events_page_for_canonical_snapshot`、
   `fetch_admin_alert_events_page_for_operation`（复用双方言 CTE builder）。
 - 对账进度：`daily_reconciliation_progress`（含空窗口 PG 冒烟测试）。
+- 告警分组 CTE：`instr`/`strftime` 本地日月中点/`printf` 窗口键改为按方言生成；
+  `UNION ALL` 两支在 PG 下使用显式类型字面量（SQLite 动态类型容忍、PG 按位置严格匹配）。
+  分组 SQL 已在 `pg-write-paths` 中直接执行验证。
+- 对账 key observations：读与写都走 PG（写侧用 `FOR UPDATE` 锁工作行代替 SQLite 立即事务）。
 
-尚未完成：告警分组与目录（依赖 `strftime` 本地日/月边界与 `printf` 的方言替代，
-需先确定 PG 会话时区来源）、告警投影写入侧、`admin_privacy_read`、对账 research/admission。
+尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
+告警投影写入侧、`admin_privacy_read`、对账 research/admission。
 
 ### D4 发布
 
