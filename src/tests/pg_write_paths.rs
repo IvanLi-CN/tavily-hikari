@@ -1651,9 +1651,9 @@ async fn research_candidates_select_on_postgres() {
         format!(
             "INSERT INTO core.upstream_reconciliation_usage \
              (token_id, period_code, key_id, project_id, billing_subject, request_count, \
-              first_used_at, last_used_at, period_start, period_end, settlement_mode) \
+              first_used_at, last_used_at, period_start, period_end, settlement_mode, updated_at) \
              VALUES ('{token_id}', '{period_code}', '{key_id}', 'proj', 'token:{token_id}', 1, \
-                     {now_minus}, {now_minus}, {now_minus}, {now_minus}, 'actual')",
+                     {now_minus}, {now_minus}, {now_minus}, {now_minus}, 'actual', {now_minus})",
             now_minus = now - 3600
         ),
         format!(
