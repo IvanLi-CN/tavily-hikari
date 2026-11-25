@@ -637,7 +637,8 @@
       ],
       "isolated_prefixes": [
         "tests::upstream_reconciliation_fencing::",
-        "tests::upstream_reconciliation_continuation::reconciliation_usage_publishes_hint_before_owner_enqueues_representative"
+        "tests::upstream_reconciliation_continuation::reconciliation_usage_publishes_hint_before_owner_enqueues_representative",
+        "tests::upstream_reconciliation::reconciliation_controlled_retry_advances_the_claim_attempt_before_success"
       ]
     },
     {
