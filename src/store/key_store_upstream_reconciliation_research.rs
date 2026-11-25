@@ -76,6 +76,27 @@ impl KeyStore {
         error_kind: &str,
     ) -> Result<(), ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let mut tx = self.begin_pg_write().await?;
+            sqlx::query(
+                r#"
+                UPDATE core.upstream_reconciliation_research
+                SET last_polled_at = $1, next_poll_at = 0,
+                    poll_attempt_count = poll_attempt_count + 1,
+                    poll_resolution = 'unavailable', last_poll_outcome = 'unavailable',
+                    last_poll_error_kind = $2, updated_at = $3
+                WHERE request_id = $4 AND terminal_at IS NULL
+                "#,
+            )
+            .bind(now)
+            .bind(error_kind)
+            .bind(now)
+            .bind(request_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await.map_err(ProxyError::Database)?;
+            return Ok(());
+        }
         let mut transaction = self.begin_reconciliation_control().await?;
         sqlx::query(
             r#"

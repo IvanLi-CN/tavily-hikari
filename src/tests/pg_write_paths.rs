@@ -1549,3 +1549,52 @@ async fn reconciliation_last_run_stats_matches_across_backends() {
         .expect("postgres last run stats");
     assert_eq!(postgres, sqlite);
 }
+
+/// The research-unavailable write must reach PostgreSQL and leave the row pollable-once more
+/// semantics intact (next_poll_at = 0, resolution `unavailable`).
+#[tokio::test]
+async fn research_unavailable_write_lands_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-research-unavailable", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let request_id = format!("req-{tag}");
+    for backend in [Backend::Sqlite, Backend::Postgres] {
+        let store = match backend {
+            Backend::Sqlite => &pair.sqlite.key_store,
+            Backend::Postgres => &pair.postgres.key_store,
+        };
+        execute_statement(
+            store,
+            backend,
+            "INSERT INTO upstream_reconciliation_research \
+             (request_id, token_id, key_id, period_code, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            &[
+                Bind::Text(&request_id),
+                Bind::Text(&format!("tok-{tag}")),
+                Bind::Text(&format!("key-{tag}")),
+                Bind::Text("2026-07-14/S2"),
+                Bind::Int(now),
+                Bind::Int(now),
+            ],
+        )
+        .await;
+    }
+    pair.postgres
+        .key_store
+        .mark_upstream_reconciliation_research_unavailable(&request_id, "not_found")
+        .await
+        .expect("postgres research unavailable write");
+    let row = fetch_pairs(
+        &pair.postgres.key_store,
+        Backend::Postgres,
+        "SELECT poll_resolution, next_poll_at FROM upstream_reconciliation_research WHERE request_id = ?",
+        &[Bind::Text(&request_id)],
+    )
+    .await;
+    assert_eq!(row.len(), 1);
+    assert_eq!(row[0].0, "unavailable");
+    assert_eq!(row[0].1, 0);
+}
