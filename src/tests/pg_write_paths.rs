@@ -1565,12 +1565,18 @@ async fn research_unavailable_write_lands_on_postgres() {
             Backend::Sqlite => &pair.sqlite.key_store,
             Backend::Postgres => &pair.postgres.key_store,
         };
+        let relation = match backend {
+            Backend::Sqlite => "upstream_reconciliation_research",
+            Backend::Postgres => "core.upstream_reconciliation_research",
+        };
         execute_statement(
             store,
             backend,
-            "INSERT INTO upstream_reconciliation_research \
-             (request_id, token_id, key_id, period_code, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            &format!(
+                "INSERT INTO {relation} \
+                 (request_id, token_id, key_id, period_code, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            ),
             &[
                 Bind::Text(&request_id),
                 Bind::Text(&format!("tok-{tag}")),
@@ -1590,7 +1596,7 @@ async fn research_unavailable_write_lands_on_postgres() {
     let row = fetch_pairs(
         &pair.postgres.key_store,
         Backend::Postgres,
-        "SELECT poll_resolution, next_poll_at FROM upstream_reconciliation_research WHERE request_id = ?",
+        "SELECT poll_resolution, next_poll_at FROM core.upstream_reconciliation_research WHERE request_id = ?",
         &[Bind::Text(&request_id)],
     )
     .await;
