@@ -896,3 +896,45 @@ async fn alert_candidate_query_uses_partial_time_index() {
     );
     assert!(!details.contains("SCAN auth_token_logs"), "{details}");
 }
+
+#[test]
+fn alert_grouping_fragments_keep_sqlite_text_unchanged() {
+    use crate::analysis::SqlDialect;
+    let dialect = SqlDialect::Sqlite;
+    assert_eq!(
+        KeyStore::alert_text_contains_sql("COALESCE(alerts.error_message, '')", "day window", dialect),
+        "instr(COALESCE(alerts.error_message, ''), 'day window') > 0"
+    );
+    assert_eq!(
+        KeyStore::alert_local_period_start_sql("day", "alerts.occurred_at", dialect),
+        "CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', 'utc')) AS INTEGER)"
+    );
+    assert_eq!(
+        KeyStore::alert_local_period_end_sql("month", "alerts.occurred_at", dialect),
+        "CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of month', '+1 month', 'utc')) AS INTEGER) - 1"
+    );
+    assert_eq!(
+        KeyStore::alert_window_key_sql("hour", "alerts.occurred_at - 3540", dialect),
+        "printf('hour:%lld', alerts.occurred_at - 3540)"
+    );
+}
+
+#[test]
+fn alert_grouping_fragments_use_postgres_constructs() {
+    use crate::analysis::SqlDialect;
+    let dialect = SqlDialect::Postgres;
+    assert_eq!(
+        KeyStore::alert_text_contains_sql("COALESCE(alerts.error_message, '')", "day window", dialect),
+        "strpos(COALESCE(alerts.error_message, ''), 'day window') > 0"
+    );
+    let start = KeyStore::alert_local_period_start_sql("day", "alerts.occurred_at", dialect);
+    assert!(start.contains("date_trunc('day'"), "{start}");
+    assert!(start.contains("current_setting('TimeZone')"), "{start}");
+    assert!(start.contains("AS BIGINT"), "{start}");
+    let end = KeyStore::alert_local_period_end_sql("month", "alerts.occurred_at", dialect);
+    assert!(end.contains("interval '1 month' - interval '1 second'"), "{end}");
+    assert_eq!(
+        KeyStore::alert_window_key_sql("day", "alerts.occurred_at", dialect),
+        "'day:' || CAST(alerts.occurred_at AS text)"
+    );
+}

@@ -1401,6 +1401,53 @@ impl KeyStore {
         format!("COALESCE(NULLIF(TRIM({alias}.request_kind_key), ''), 'unknown')")
     }
 
+    /// Case-sensitive substring test. SQLite spells it `instr`, PostgreSQL `strpos`; both return
+    /// a 1-based position or zero.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_text_contains_sql(expr: &str, needle: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!("instr({expr}, '{needle}') > 0"),
+            SqlDialect::Postgres => format!("strpos({expr}, '{needle}') > 0"),
+        }
+    }
+
+    /// Start of the server-local day or month that contains `expr` (an epoch second), as an epoch
+    /// second. SQLite converts through `localtime`; PostgreSQL needs an explicit zone, which the
+    /// read session pins with `SET LOCAL TimeZone`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_local_period_start_sql(period: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!(
+                "CAST(strftime('%s', datetime({expr}, 'unixepoch', 'localtime', 'start of {period}', 'utc')) AS INTEGER)"
+            ),
+            SqlDialect::Postgres => format!(
+                "CAST(EXTRACT(EPOCH FROM (date_trunc('{period}', to_timestamp({expr}) AT TIME ZONE current_setting('TimeZone'))) AT TIME ZONE current_setting('TimeZone')) AS BIGINT)"
+            ),
+        }
+    }
+
+    /// Last second of the server-local day or month that contains `expr`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_local_period_end_sql(period: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!(
+                "CAST(strftime('%s', datetime({expr}, 'unixepoch', 'localtime', 'start of {period}', '+1 {period}', 'utc')) AS INTEGER) - 1"
+            ),
+            SqlDialect::Postgres => format!(
+                "CAST(EXTRACT(EPOCH FROM (date_trunc('{period}', to_timestamp({expr}) AT TIME ZONE current_setting('TimeZone')) + interval '1 {period}' - interval '1 second') AT TIME ZONE current_setting('TimeZone')) AS BIGINT)"
+            ),
+        }
+    }
+
+    /// Window identity string `<prefix>:<value>`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_window_key_sql(prefix: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!("printf('{prefix}:%lld', {expr})"),
+            SqlDialect::Postgres => format!("'{prefix}:' || CAST({expr} AS text)"),
+        }
+    }
+
     fn push_alert_groups_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
