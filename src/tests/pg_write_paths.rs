@@ -1440,3 +1440,47 @@ async fn reconciliation_key_observations_run_on_postgres() {
         .expect("postgres key observations");
     assert!(observations.is_empty());
 }
+
+/// The observation writer must round-trip through PostgreSQL: a persisted observation is read
+/// back by the same candidate identity, without a claim fence.
+#[tokio::test]
+async fn reconciliation_key_observations_round_trip_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-reconciliation-observations-roundtrip", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let candidate = UpstreamReconciliationCandidate {
+        token_id: format!("tok-{tag}"),
+        period_code: "2026-07-14/S2".to_string(),
+        project_id: "anonymous-project".to_string(),
+        billing_subject: format!("token:tok-{tag}"),
+        settlement_mode: "actual".to_string(),
+        period_start: now - 3600,
+        period_end: now,
+        pending_research: 0,
+        degraded: false,
+    };
+    let key_id = format!("key-{tag}");
+    let observations = [ReconciliationKeyObservation {
+        key_id: key_id.clone(),
+        upstream_usage: 42,
+    }];
+    let outcome = pair
+        .postgres
+        .key_store
+        .persist_reconciliation_key_observations(&candidate, 1, &observations, None)
+        .await
+        .expect("postgres persist observations");
+    assert_eq!(
+        outcome,
+        ReconciliationKeyObservationPersistOutcome::Persisted
+    );
+    let stored = pair
+        .postgres
+        .key_store
+        .reconciliation_key_observations(&candidate, 1, std::slice::from_ref(&key_id))
+        .await
+        .expect("postgres read observations");
+    assert_eq!(stored.get(&key_id), Some(&42));
+}

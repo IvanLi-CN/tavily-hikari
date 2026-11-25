@@ -27,4 +27,12 @@ impl KeyStore {
     pub(crate) async fn begin_pg_read_session(&self) -> Result<PgReadSession, ProxyError> {
         PgReadSession::begin(self.pg()?).await
     }
+
+    /// Opens a read-write transaction for converted writers. Row locks replace the SQLite
+    /// immediate-transaction write lock where the caller needs claim fencing.
+    pub(crate) async fn begin_pg_write(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, ProxyError> {
+        self.pg()?.begin().await.map_err(ProxyError::Database)
+    }
 }
