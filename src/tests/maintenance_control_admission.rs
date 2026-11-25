@@ -236,6 +236,10 @@ async fn reconciliation_candidate_preparation_defers_before_a_saturated_pool() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let queued = proxy
         .scheduled_job_enqueue("upstream_reconciliation", "scheduler", None, 1)
         .await

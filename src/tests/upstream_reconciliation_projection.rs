@@ -1123,6 +1123,10 @@ async fn projection_no_progress_gate_uses_durable_ladder_and_maximum() {
     )
     .await
     .expect("create proxy");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let existing_gate = now + 90;
     sqlx::query(
         "UPDATE upstream_reconciliation_projection_state SET completed = 0, next_retry_at = ?, last_defer_reason = NULL WHERE id = 'local'",

@@ -1439,6 +1439,7 @@ async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("create proxy");
+    proxy.disable_test_admission_bypass_for_test();
     let pool = connect_sqlite_test_pool(&db_str).await;
     let expired_created_at = Utc::now().timestamp() - 15 * 24 * 60 * 60;
     for index in 0..1_250 {
@@ -2240,6 +2241,7 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
     )
     .await
     .expect("proxy created");
+    proxy.disable_test_admission_bypass_for_test();
 
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {

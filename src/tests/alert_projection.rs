@@ -2582,6 +2582,10 @@ async fn alert_projection_writer_contention_is_a_typed_defer() {
     )
     .await
     .expect("create proxy");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     insert_projected_rate_limit_alert(&proxy, "projection-token-contention", now).await;
 
     let mut holder =

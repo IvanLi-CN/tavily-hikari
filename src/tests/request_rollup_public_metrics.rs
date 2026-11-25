@@ -929,6 +929,10 @@ async fn request_stats_background_flush_defers_before_pool_acquire_and_preserves
     let db_path = temp_db_path("request-stats-background-admission");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-background-admission").await;
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let key_id = proxy
         .list_api_key_metrics()
         .await
@@ -1137,6 +1141,10 @@ async fn request_stats_background_flush_defers_on_writer_lock_and_requeues_exact
     )
     .await
     .expect("proxy created");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let key_id = proxy
         .list_api_key_metrics()
         .await

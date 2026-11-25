@@ -315,6 +315,10 @@ async fn recovery_fails_closed_when_legacy_gc_deleted_source_baseline_is_missing
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("create proxy");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let now = proxy.backend_time().now_ts();
     let day = local_day_bucket_start_utc_ts(now - 40 * SECS_PER_DAY);
     let day_end = next_local_day_start_utc_ts(day);

@@ -1179,6 +1179,10 @@ def run_shard(
 
     target_id = shard["coverage_target"]
     extra_env = os.environ.copy()
+    # CI shards share one cgroup, so SQLite admission samples the writes of the preceding
+    # shard. Product-behaviour tests must not inherit that pressure; admission tests clear the
+    # bypass on the runtime they build.
+    extra_env["TAVILY_TEST_ADMISSION_BYPASS"] = "1"
     if shard["mode"] == "all":
         if prebuilt_root:
             executables, support_binaries = load_prebuilt_executables(prebuilt_root, target_id)
