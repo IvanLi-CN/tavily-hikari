@@ -1448,6 +1448,35 @@ impl KeyStore {
         }
     }
 
+    /// Renders the grouped-alert count query for one dialect. Test-only seam: the PostgreSQL
+    /// grouping SQL has no other consumer until the groups page is ported, and this lets the
+    /// `pg-write-paths` job execute it against a real server.
+    #[cfg(test)]
+    pub(crate) fn projected_alert_groups_count_sql_for_test(dialect: SqlDialect) -> String {
+        let filters = AlertEventFilters {
+            alert_type: None,
+            since: None,
+            until: None,
+            user_id: None,
+            token_id: None,
+            key_id: None,
+            request_kinds: &[],
+        };
+        let mut inner = AlertSql::new(dialect);
+        Self::push_projected_alert_groups_cte_any(&mut inner, filters, dialect);
+        format!("{} SELECT COUNT(*) FROM grouped_alerts", inner.sql())
+    }
+
+    #[allow(dead_code)] // consumed by the groups page port and its SQL seam
+    fn push_projected_alert_groups_cte_any<'a>(
+        query: &mut AlertSql<'a>,
+        filters: AlertEventFilters<'a>,
+        dialect: SqlDialect,
+    ) {
+        Self::push_projected_alert_events_cte_any(query, filters, dialect);
+        Self::push_alert_grouping_cte_tail(query, filters, dialect);
+    }
+
     fn push_alert_groups_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,

@@ -1484,3 +1484,46 @@ async fn reconciliation_key_observations_round_trip_on_postgres() {
         .expect("postgres read observations");
     assert_eq!(stored.get(&key_id), Some(&42));
 }
+
+/// The dialect-aware grouping CTE must execute on PostgreSQL. The groups page itself is still on
+/// the SQLite session path, so this runs the rendered count query directly against the server.
+#[tokio::test]
+async fn projected_alert_groups_sql_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-alert-groups-sql", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    for index in 0..3_i64 {
+        let source_id = format!("atl:{tag}-{index}");
+        let occurred_at = now - 30 - index;
+        let payload = canonical_alert_payload(&source_id, occurred_at);
+        let binds = [
+            Bind::Text("auth_token_log"),
+            Bind::Text(&source_id),
+            Bind::Int(occurred_at),
+            Bind::Text(&source_id),
+            Bind::Text(&payload),
+            Bind::Int(now),
+        ];
+        execute_statement(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            "INSERT INTO observability.dashboard_alert_projection_events \
+             (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            &binds,
+        )
+        .await;
+    }
+
+    let sql = KeyStore::projected_alert_groups_count_sql_for_test(SqlDialect::Postgres);
+    let count = sqlx::query_scalar::<_, i64>(&sql)
+        .fetch_one(pair.postgres.key_store.pg().expect("postgres pool"))
+        .await
+        .expect("postgres grouping count");
+    assert!(
+        count >= 1,
+        "grouped alerts must include the seeded auth-token log group: {count}"
+    );
+}
