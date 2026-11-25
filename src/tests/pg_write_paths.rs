@@ -1604,3 +1604,32 @@ async fn research_unavailable_write_lands_on_postgres() {
     assert_eq!(row[0].0, "unavailable");
     assert_eq!(row[0].1, 0);
 }
+
+/// Every singleton the reconciler reads must exist after migrations. The structural baseline
+/// only created the tables; the seed migration is what makes `WHERE id = 'local'` return a row.
+#[tokio::test]
+async fn reconciliation_singletons_are_seeded_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-reconciliation-singletons", now).await else {
+        return;
+    };
+    for relation in [
+        "upstream_reconciliation_projection_state",
+        "upstream_reconciliation_run_observation",
+        "upstream_reconciliation_control_state",
+        "upstream_reconciliation_research_progress_window",
+        "upstream_reconciliation_research_scan_state",
+    ] {
+        let count = fetch_scalar(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            &format!("SELECT COUNT(*)::bigint FROM core.{relation} WHERE id = 'local'"),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            count, 1,
+            "{relation} must carry exactly one local singleton"
+        );
+    }
+}
