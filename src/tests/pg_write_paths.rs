@@ -851,7 +851,23 @@ async fn advance_alert_projection_until(
         last = Some(trace);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("alert projection did not converge: last snapshot {last:?}");
+    let dump: Vec<(String, String)> = sqlx::query_as(
+        "SELECT source_kind, source_id FROM observability.dashboard_alert_projection_events",
+    )
+    .fetch_all(proxy.key_store.pg().expect("postgres pool"))
+    .await
+    .unwrap_or_default();
+    let state: Vec<(String, i64, i64, String)> = sqlx::query_as(
+        "SELECT source_kind, cursor_occurred_at, generation, phase \
+         FROM observability.dashboard_alert_projection_state ORDER BY source_kind",
+    )
+    .fetch_all(proxy.key_store.pg().expect("postgres pool"))
+    .await
+    .unwrap_or_default();
+    panic!(
+        "alert projection did not converge: last snapshot {last:?}; token={token_id}; \
+         projected={dump:?}; state={state:?}"
+    );
 }
 
 async fn reset_alert_projection(proxy: &TavilyProxy, backend: Backend) {
