@@ -5,6 +5,27 @@
 /// pool. Both branches build their SQL from the same dialect-aware CTE helpers, so the query
 /// text stays single-sourced.
 impl KeyStore {
+    /// PostgreSQL twin of [`Self::decode_alert_group_projection_row`].
+    fn decode_alert_group_projection_row_pg(
+        row: &sqlx::postgres::PgRow,
+    ) -> Result<AlertGroupProjectionRow, sqlx::Error> {
+        Ok(AlertGroupProjectionRow {
+            grouping_kind: row.try_get("grouping_kind")?,
+            row_sort_id: row.try_get("row_sort_id")?,
+            alert_type: row.try_get("alert_type")?,
+            subject_kind: row.try_get("subject_kind")?,
+            subject_id: row.try_get("subject_id")?,
+            count: row.try_get("total_count")?,
+            first_seen: row.try_get("first_seen")?,
+            last_seen: row.try_get("last_seen")?,
+            semantic_window_kind: row.try_get("semantic_window_kind")?,
+            semantic_window_minutes: row.try_get("semantic_window_minutes")?,
+            semantic_window_start: row.try_get("semantic_window_start")?,
+            semantic_window_end: row.try_get("semantic_window_end")?,
+            child_count: row.try_get("child_count")?,
+        })
+    }
+
     /// PostgreSQL branch of the filtered projection page. The dialect-aware CTE builder supplies
     /// the JSONB rewrite and `$n` placeholders, so the SQL body stays single-sourced with SQLite.
     ///
@@ -187,5 +208,221 @@ impl KeyStore {
             job_started_at: row.try_get("job_started_at")?,
             job_finished_at: row.try_get("job_finished_at")?,
         })
+    }
+}
+
+impl KeyStore {
+    /// PostgreSQL branch of the admin alert groups page. One repeatable-read session covers the
+    /// count, the page, the latest event per group, and the mother-group population, so the page
+    /// cannot mix projection generations.
+    async fn fetch_admin_alert_groups_page_pg(
+        &self,
+        filters: AlertEventFilters<'_>,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedAlertGroups, ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+        let mut session = self.begin_pg_read_session().await?;
+
+        let mut count = AlertSql::new(SqlDialect::Postgres);
+        Self::push_projected_alert_groups_cte_any(&mut count, filters, SqlDialect::Postgres);
+        count.push(" SELECT COUNT(*) FROM grouped_alerts");
+        let total = count
+            .into_postgres()
+            .expect("postgres alert builder")
+            .build_query_scalar::<i64>()
+            .fetch_one(&mut *session.connection())
+            .await?;
+
+        let mut query = AlertSql::new(SqlDialect::Postgres);
+        Self::push_projected_alert_groups_cte_any(&mut query, filters, SqlDialect::Postgres);
+        query.push(" SELECT * FROM grouped_alerts");
+        query.push(
+            " ORDER BY last_seen DESC, total_count DESC, alert_type DESC, row_sort_id DESC LIMIT ",
+        );
+        query.push_bind(per_page);
+        query.push(" OFFSET ");
+        query.push_bind(offset);
+        let rows = query
+            .into_postgres()
+            .expect("postgres alert builder")
+            .build()
+            .fetch_all(&mut *session.connection())
+            .await?;
+        let groups = rows
+            .iter()
+            .map(Self::decode_alert_group_projection_row_pg)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let latest_events = self
+            .fetch_group_latest_events_in_pg_session(filters, &groups, &mut session)
+            .await?;
+        let page_items = Self::build_alert_group_records(groups, latest_events);
+        let items = self
+            .populate_selected_mother_groups_in_pg_session(filters, page_items, &mut session)
+            .await?;
+        session.finish().await?;
+        Ok(PaginatedAlertGroups {
+            items,
+            total,
+            page,
+            per_page,
+        })
+    }
+
+    /// PostgreSQL twin of [`Self::fetch_projected_group_latest_events_in_admin_session`].
+    async fn fetch_group_latest_events_in_pg_session(
+        &self,
+        filters: AlertEventFilters<'_>,
+        groups: &[AlertGroupProjectionRow],
+        session: &mut crate::store::PgReadSession,
+    ) -> Result<HashMap<String, AlertEventRecord>, ProxyError> {
+        if groups.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = AlertSql::new(SqlDialect::Postgres);
+        Self::push_projected_alert_events_cte_any(&mut query, filters, SqlDialect::Postgres);
+        query.push(" SELECT * FROM alerts WHERE row_sort_id IN (");
+        {
+            let mut separated = query.push("").separated(", ");
+            for group in groups {
+                separated.push_bind(group.row_sort_id.as_str());
+            }
+        }
+        query.push(")");
+        let rows = query
+            .into_postgres()
+            .expect("postgres alert builder")
+            .build()
+            .fetch_all(&mut *session.connection())
+            .await?;
+        let mut events_by_row_sort_id = HashMap::new();
+        for row in rows {
+            let decoded = Self::decode_alert_event_projection_row_pg(row)?;
+            let row_sort_id = decoded.row_sort_id.clone();
+            if let Some(event) = Self::build_alert_event_from_projection(decoded) {
+                events_by_row_sort_id.insert(row_sort_id, event);
+            }
+        }
+        Ok(events_by_row_sort_id)
+    }
+
+    /// PostgreSQL twin of [`Self::populate_selected_projected_mother_groups_in_admin_session`].
+    async fn populate_selected_mother_groups_in_pg_session(
+        &self,
+        filters: AlertEventFilters<'_>,
+        groups: Vec<AlertGroupRecord>,
+        session: &mut crate::store::PgReadSession,
+    ) -> Result<Vec<AlertGroupRecord>, ProxyError> {
+        if groups.is_empty() {
+            return Ok(groups);
+        }
+        let selected_mother_keys = groups
+            .iter()
+            .filter(|group| group.grouping_kind == "mother")
+            .map(|group| {
+                (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                )
+            })
+            .collect::<HashSet<_>>();
+        let selected_subjects = selected_mother_keys.iter().cloned().collect::<Vec<_>>();
+        if selected_subjects.is_empty() {
+            return Ok(groups);
+        }
+
+        let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
+        let subject_id_sql = Self::alert_subject_id_sql("alerts");
+        let mut query = AlertSql::new(SqlDialect::Postgres);
+        Self::push_projected_alert_events_cte_any(&mut query, filters, SqlDialect::Postgres);
+        query.push(" SELECT * FROM alerts WHERE 1 = 1");
+        Self::push_alert_request_kind_filter_any(
+            &mut query,
+            "COALESCE(NULLIF(TRIM(request_kind_key), ''), 'unknown')",
+            filters.request_kinds,
+        );
+        query.push(" AND (");
+        {
+            let mut separated = query.push("").separated(" OR ");
+            for (alert_type, subject_kind, subject_id, first_seen, last_seen) in
+                &selected_subjects
+            {
+                separated.push("(");
+                separated
+                    .push_unseparated("alerts.alert_type = ")
+                    .push_bind_unseparated(alert_type);
+                separated.push_unseparated(" AND ");
+                separated
+                    .push_unseparated(subject_kind_sql.as_str())
+                    .push_unseparated(" = ")
+                    .push_bind_unseparated(subject_kind);
+                separated.push_unseparated(" AND ");
+                separated
+                    .push_unseparated(subject_id_sql.as_str())
+                    .push_unseparated(" = ")
+                    .push_bind_unseparated(subject_id);
+                separated
+                    .push_unseparated(" AND alerts.occurred_at >= ")
+                    .push_bind_unseparated(*first_seen);
+                separated
+                    .push_unseparated(" AND alerts.occurred_at <= ")
+                    .push_bind_unseparated(*last_seen);
+                separated.push_unseparated(")");
+            }
+        }
+        query.push(") ORDER BY occurred_at DESC, row_sort_id DESC");
+        let rows = query
+            .into_postgres()
+            .expect("postgres alert builder")
+            .build()
+            .fetch_all(&mut *session.connection())
+            .await?;
+        let all_events = rows
+            .into_iter()
+            .map(Self::decode_alert_event_projection_row_pg)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(Self::build_alert_event_from_projection)
+            .collect::<Vec<_>>();
+        let mut groups_by_mother_key = build_group_records_from_events(all_events)
+            .top_level_items
+            .into_iter()
+            .filter_map(|group| {
+                if group.grouping_kind != "mother" {
+                    return None;
+                }
+                let key = (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                );
+                selected_mother_keys.contains(&key).then_some((key, group))
+            })
+            .collect::<HashMap<_, _>>();
+
+        Ok(groups
+            .into_iter()
+            .map(|group| {
+                if group.grouping_kind != "mother" {
+                    return group;
+                }
+                let key = (
+                    group.alert_type.clone(),
+                    group.subject_kind.clone(),
+                    group.subject_id.clone(),
+                    group.first_seen,
+                    group.last_seen,
+                );
+                groups_by_mother_key.remove(&key).unwrap_or(group)
+            })
+            .collect())
     }
 }

@@ -46,6 +46,15 @@ impl<'a> AlertSql<'a> {
         self
     }
 
+    /// Separator helper for `IN (...)` lists; the dialect-erased port of `QueryBuilder::separated`.
+    fn separated(&mut self, separator: &'static str) -> Separated<'_, 'a> {
+        Separated {
+            query: self,
+            separator,
+            first: true,
+        }
+    }
+
     fn sql(&self) -> &str {
         match self {
             Self::Sqlite(query) => query.sql(),
@@ -68,6 +77,63 @@ impl<'a> AlertSql<'a> {
             Self::Sqlite(query) => Some(query),
             Self::Postgres(_) => None,
         }
+    }
+}
+
+/// Separator writer over [`AlertSql`], mirroring `sqlx::QueryBuilder::separated`.
+pub(crate) struct Separated<'q, 'a> {
+    query: &'q mut AlertSql<'a>,
+    separator: &'static str,
+    first: bool,
+}
+
+impl<'q, 'a> Separated<'q, 'a> {
+    fn next(&mut self) {
+        if self.first {
+            self.first = false;
+        } else {
+            self.query.push(self.separator);
+        }
+    }
+
+    pub(crate) fn push(&mut self, sql: impl std::fmt::Display) -> &mut Self {
+        self.next();
+        self.query.push(sql);
+        self
+    }
+
+    pub(crate) fn push_unseparated(&mut self, sql: impl std::fmt::Display) -> &mut Self {
+        self.query.push(sql);
+        self
+    }
+
+    pub(crate) fn push_bind<T>(&mut self, value: T) -> &mut Self
+    where
+        T: 'a
+            + Send
+            + Sync
+            + sqlx::Encode<'a, Sqlite>
+            + sqlx::Type<Sqlite>
+            + sqlx::Encode<'a, sqlx::Postgres>
+            + sqlx::Type<sqlx::Postgres>,
+    {
+        self.next();
+        self.query.push_bind(value);
+        self
+    }
+
+    pub(crate) fn push_bind_unseparated<T>(&mut self, value: T) -> &mut Self
+    where
+        T: 'a
+            + Send
+            + Sync
+            + sqlx::Encode<'a, Sqlite>
+            + sqlx::Type<Sqlite>
+            + sqlx::Encode<'a, sqlx::Postgres>
+            + sqlx::Type<sqlx::Postgres>,
+    {
+        self.query.push_bind(value);
+        self
     }
 }
 

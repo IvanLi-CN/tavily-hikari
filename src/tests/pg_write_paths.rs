@@ -1687,3 +1687,65 @@ async fn research_candidates_select_on_postgres() {
             .collect::<Vec<_>>()
     );
 }
+
+/// The groups page must run on PostgreSQL: a seeded projected event yields one group with its
+/// latest event attached.
+#[tokio::test]
+async fn alert_groups_page_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-alert-groups-page", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    for index in 0..2_i64 {
+        let source_id = format!("atl:{tag}-{index}");
+        let occurred_at = now - 120 - index;
+        let payload = canonical_alert_payload(&source_id, occurred_at);
+        let binds = [
+            Bind::Text("auth_token_log"),
+            Bind::Text(&source_id),
+            Bind::Int(occurred_at),
+            Bind::Text(&source_id),
+            Bind::Text(&payload),
+            Bind::Int(now),
+        ];
+        execute_statement(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            "INSERT INTO observability.dashboard_alert_projection_events \
+             (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            &binds,
+        )
+        .await;
+    }
+
+    let request_kinds: Vec<String> = Vec::new();
+    let page = pair
+        .postgres
+        .key_store
+        .fetch_admin_alert_groups_page(
+            None,
+            Some(now - 900),
+            None,
+            None,
+            None,
+            None,
+            &request_kinds,
+            1,
+            20,
+        )
+        .await
+        .expect("postgres alert groups page");
+    assert!(
+        page.total >= 1,
+        "grouped page must report the seeded group: {}",
+        page.total
+    );
+    assert!(
+        page.items
+            .iter()
+            .all(|item| item.latest_event.id.contains(&tag)),
+        "group item must settle on the seeded latest event"
+    );
+}

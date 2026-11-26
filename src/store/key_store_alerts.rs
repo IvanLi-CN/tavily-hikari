@@ -2736,6 +2736,11 @@ impl KeyStore {
                 per_page,
             });
         }
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_admin_alert_groups_page_pg(filters, page, per_page)
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(operation)
             .await?;
