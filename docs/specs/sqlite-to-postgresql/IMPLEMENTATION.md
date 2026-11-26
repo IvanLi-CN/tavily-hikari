@@ -72,6 +72,22 @@
   `alert_projection_status` 走同一事务模型（切片单事务、状态更新按 `generation` 乐观比较），
   写入侧不再依赖 SQLite 的 owned immediate 包装。
 
+#### PostgreSQL 类型适配清单（每条来自一次真实 CI 失败）
+
+| 现象                                            | 根因                                                | 处置                                                                          |
+| ----------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `UNION types text and bigint cannot be matched` | 分支列类型不同                                      | 给整数列/`NULL` 显式定型                                                      |
+| `INT8 ... TEXT` on decode                       | `json_extract` → `->>` 恒返回 text                  | 整数成员加 `::bigint`                                                         |
+| `invalid input syntax for type bigint: "true"`  | payload 存 JSON 布尔                                | `CASE WHEN ... = 'true' THEN 1 ELSE 0 END`，且结果 `::bigint`（CASE 是 int4） |
+| `column "bound_users" does not exist`           | PG 的 `HAVING` 不支持 select 别名                   | `HAVING` 重复完整聚合表达式                                                   |
+| `SUM(...)` decode 失败                          | PG 把 bigint 的 `SUM` 提升为 numeric                | `CAST(... AS BIGINT)`                                                         |
+| `relation "x" does not exist`                   | 未加 schema 前缀                                    | `core.` / `observability.`                                                    |
+| `relation "observability.core.x"`               | 重写把已带前缀的再前缀一次                          | 先替换 `core.<已带前缀>` 回原样                                               |
+| 投影切片返回 0 行                               | `AlertProjectionSourceKey::source_id` 应为裸 id     | 只让 `row_sort_id` 带前缀                                                     |
+| 投影 CTE 的类型修复无效                         | 它走 `alert_payload_projection_sql`，不经通用重写器 | 在该函数内处理类型                                                            |
+
+**排查顺序**：先确认 SQL 由哪条路径生成（通用重写器 / 专用 helper），再核对该路径的类型处理；否则会陷入「同一错误反复修复」。
+
 #### 迁移硬约束（由真实失败得出）
 
 1. 纯装配逻辑可抽成双方言共享函数，但 SQLite 的 `complete_query_or_defer` /
