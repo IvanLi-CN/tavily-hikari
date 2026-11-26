@@ -97,6 +97,9 @@
       "serial_prefixes": [
         "tavily_proxy::tests::"
       ],
+      "isolated_prefixes": [
+        "store::alert_grouping_tests::fetch_alert_groups_page_executes_sqlite_grouped_query_for_mother_and_compat_groups"
+      ],
       "include_prefixes": [
         "observability::tests::",
         "affinity_tests::",

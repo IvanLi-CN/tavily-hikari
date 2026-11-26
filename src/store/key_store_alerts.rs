@@ -1543,6 +1543,12 @@ impl KeyStore {
         let null_end = Self::alert_typed_null_sql("int", dialect);
         let null_request_kind = Self::alert_typed_null_sql("text", dialect);
         let zero_count = Self::alert_typed_zero_sql(dialect);
+        // PostgreSQL widens `SUM` over bigint to `numeric`; the row decoder reads `i64`, so the
+        // window result must be cast back. SQLite needs neither wrapper.
+        let (total_count_sum, total_count_cast) = match dialect {
+            SqlDialect::Sqlite => ("", ""),
+            SqlDialect::Postgres => ("CAST(", " AS BIGINT)"),
+        };
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
         let request_kind_sql = Self::alert_group_request_kind_sql("alerts");
@@ -1858,14 +1864,14 @@ impl KeyStore {
                     semantic_mother_heads.subject_kind AS subject_kind,
                     semantic_mother_heads.subject_id AS subject_id,
                     {null_request_kind} AS request_kind_key_normalized,
-                    SUM(semantic_mother_heads.child_event_count) OVER (
+                    {total_count_sum}SUM(semantic_mother_heads.child_event_count) OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
                                      semantic_mother_heads.subject_id,
                                      semantic_mother_heads.semantic_window_kind,
                                      COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
                                      semantic_mother_heads.mother_ordinal
-                    ) AS total_count,
+                    ){total_count_cast} AS total_count,
                     MIN(semantic_mother_heads.child_first_seen) OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
