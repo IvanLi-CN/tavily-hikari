@@ -28,14 +28,6 @@ fn postgres_alert_sql(sql: &str) -> String {
     .replace("NULL AS job_finished_at", "CAST(NULL AS bigint) AS job_finished_at")
     .replace("NULL AS request_log_id", "CAST(NULL AS bigint) AS request_log_id")
     .replace("NULL AS counts_business_quota", "CAST(NULL AS bigint) AS counts_business_quota")
-    .replace("json_extract(", "jsonb_extract_path_text(")
-    .replace("jsonb_extract_path_text(payload_json, '$.request_log_id')", "(payload_json ->> 'request_log_id')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.counts_business_quota')", "(payload_json ->> 'counts_business_quota')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.job_attempt')", "(payload_json ->> 'job_attempt')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.job_queued_at')", "(payload_json ->> 'job_queued_at')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.job_started_at')", "(payload_json ->> 'job_started_at')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.job_finished_at')", "(payload_json ->> 'job_finished_at')::bigint")
-    .replace("jsonb_extract_path_text(payload_json, '$.occurred_at')", "(payload_json ->> 'occurred_at')::bigint")
     .replace(
         "printf('atl:%020lld', atl.id)",
         "('atl:' || lpad(CAST(atl.id AS text), 20, '0'))",
@@ -78,6 +70,38 @@ fn postgres_alert_sql(sql: &str) -> String {
         .replace("JOIN meta", "JOIN core.meta")
 }
 
+/// Rewrites `json_extract(payload_json, '$.x')` into the PostgreSQL extraction, typing the
+/// members the projection decoder reads as integers. A regex pass avoids depending on how the
+/// surrounding statement is split across `push` calls.
+fn rewrite_json_members(sql: &str) -> String {
+    const INT_MEMBERS: [&str; 7] = [
+        "occurred_at",
+        "request_log_id",
+        "counts_business_quota",
+        "job_attempt",
+        "job_queued_at",
+        "job_started_at",
+        "job_finished_at",
+    ];
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(start) = rest.find("json_extract(payload_json, '$.") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "json_extract(payload_json, '$.".len()..];
+        let end = after.find('\'').expect("json member is quoted");
+        let member = &after[..end];
+        let consumed = start + "json_extract(payload_json, '$.".len() + end + 1;
+        if INT_MEMBERS.contains(&member) {
+            out.push_str(&format!("(payload_json ->> '{member}')::bigint"));
+        } else {
+            out.push_str(&format!("(payload_json ->> '{member}')"));
+        }
+        rest = &rest[consumed..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[allow(dead_code)]
 impl<'a> AlertSql<'a> {
     fn new(dialect: SqlDialect) -> Self {
@@ -96,7 +120,7 @@ impl<'a> AlertSql<'a> {
                 // The alert CTE text is written in SQLite's dialect because that is the historical
                 // implementation. Rewrite the constructs PostgreSQL spells differently here, once,
                 // instead of at every call site.
-                query.push(postgres_alert_sql(&sql.to_string()));
+                query.push(rewrite_json_members(&postgres_alert_sql(&sql.to_string())));
             }
         }
         self
