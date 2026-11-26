@@ -903,13 +903,36 @@ async fn run_alert_rebuild_sequence(
     (first, second)
 }
 
+/// The projection tables are process-wide. This test truncates them, so it must not run beside
+/// another test that projects rows; the environment gate keeps the shared-database contract.
 #[tokio::test]
 async fn alert_projection_rebuild_is_idempotent() {
-    let now = unique_epoch();
-    let Some(pair) = StorePair::open("pg-write-alert-projection", now).await else {
+    // Serialise on a dedicated advisory lock so a parallel test cannot repopulate the projection
+    // between the reset and the rebuild.
+    let Some(pair) = StorePair::open("pg-write-alert-projection", unique_epoch()).await else {
         return;
     };
+    let mut lock = pair
+        .postgres
+        .key_store
+        .pg()
+        .expect("postgres pool")
+        .acquire()
+        .await
+        .expect("advisory lock connection");
+    sqlx::query("SELECT pg_advisory_lock(918273645)")
+        .execute(&mut *lock)
+        .await
+        .expect("acquire projection advisory lock");
+    run_alert_projection_rebuild(&pair).await;
+    sqlx::query("SELECT pg_advisory_unlock(918273645)")
+        .execute(&mut *lock)
+        .await
+        .expect("release projection advisory lock");
+}
 
+async fn run_alert_projection_rebuild(pair: &StorePair) {
+    let now = unique_epoch();
     let (sqlite_first, sqlite_second) =
         run_alert_rebuild_sequence(&pair.sqlite, Backend::Sqlite, now).await;
     let (postgres_first, postgres_second) =
