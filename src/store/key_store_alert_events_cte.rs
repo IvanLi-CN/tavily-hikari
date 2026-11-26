@@ -4,6 +4,40 @@ enum AlertSql<'a> {
     Postgres(QueryBuilder<'a, sqlx::Postgres>),
 }
 
+
+/// Rewrites the SQLite spellings used by the alert CTE text into their PostgreSQL equivalents.
+///
+/// Only whole-token constructs are replaced, and the replacements are idempotent, so a fragment
+/// may be pushed more than once without changing the emitted SQL.
+fn postgres_alert_sql(sql: &str) -> String {
+    sql.replace("json_extract(payload_json, '$.alert_type')", "payload_json ->> 'alert_type'")
+        .replace("json_extract(payload_json, '$.occurred_at')", "(payload_json ->> 'occurred_at')::bigint")
+        .replace(
+            "printf('atl:%020lld', atl.id)",
+            "('atl:' || lpad(CAST(atl.id AS text), 20, '0'))",
+        )
+        .replace(
+            "printf('job:%020lld', j.id)",
+            "('job:' || lpad(CAST(j.id AS text), 20, '0'))",
+        )
+        .replace("printf('maint:%s', m.id)", "('maint:' || CAST(m.id AS text))")
+        .replace("printf('maint:%s', atl.api_key_id)", "('maint:' || CAST(atl.api_key_id AS text))")
+        .replace("json_extract(", "jsonb_extract_path_text(")
+        .replace("CAST(atl.id AS TEXT)", "CAST(atl.id AS text)")
+        .replace("FROM auth_token_logs", "FROM core.auth_token_logs")
+        .replace("JOIN auth_token_logs", "JOIN core.auth_token_logs")
+        .replace("FROM request_logs", "FROM core.request_logs")
+        .replace("JOIN request_logs", "JOIN core.request_logs")
+        .replace("FROM api_key_maintenance_records", "FROM core.api_key_maintenance_records")
+        .replace("JOIN api_key_maintenance_records", "JOIN core.api_key_maintenance_records")
+        .replace("FROM scheduled_jobs", "FROM core.scheduled_jobs")
+        .replace("JOIN scheduled_jobs", "JOIN core.scheduled_jobs")
+        .replace("FROM api_key_transient_backoffs", "FROM core.api_key_transient_backoffs")
+        .replace("JOIN api_key_transient_backoffs", "JOIN core.api_key_transient_backoffs")
+        .replace("FROM upstream_reconciliation_usage", "FROM core.upstream_reconciliation_usage")
+        .replace("FROM meta", "FROM core.meta")
+}
+
 #[allow(dead_code)]
 impl<'a> AlertSql<'a> {
     fn new(dialect: SqlDialect) -> Self {
@@ -19,7 +53,10 @@ impl<'a> AlertSql<'a> {
                 query.push(sql);
             }
             Self::Postgres(query) => {
-                query.push(sql);
+                // The alert CTE text is written in SQLite's dialect because that is the historical
+                // implementation. Rewrite the constructs PostgreSQL spells differently here, once,
+                // instead of at every call site.
+                query.push(postgres_alert_sql(&sql.to_string()));
             }
         }
         self
