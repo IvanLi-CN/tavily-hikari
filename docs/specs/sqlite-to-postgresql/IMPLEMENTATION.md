@@ -63,6 +63,11 @@
 - 对账 key observations：读与写都走 PG（写侧用 `FOR UPDATE` 锁工作行代替 SQLite 立即事务）。
 - 对账运行统计与 research 不可用标记：`upstream_reconciliation_last_run_stats`、
   `mark_upstream_reconciliation_research_unavailable` 已接 PG，并有跨库/落库断言。
+- 对账 research 候选选择：`next_upstream_reconciliation_research_candidates` 有 PG twin，
+  游标遍历、hydrate 与冷却计数同源，页面装配为双方言共享纯函数。
+- 告警分组页：`fetch_admin_alert_groups_page` 的 PG 分支在一个可重复读会话内完成计数、
+  分页、每组最新事件与母组补全。
+- PG 迁移新增 `0003_singletons.sql`：播种 5 张对账单例表的 `id='local'`，否则 PG 读全部为空。
 
 尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
 告警投影写入侧、`admin_privacy_read`、对账 research/admission。
