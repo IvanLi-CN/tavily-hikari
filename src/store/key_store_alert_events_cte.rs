@@ -37,6 +37,8 @@ fn postgres_alert_sql(sql: &str) -> String {
         "('maint:' || CAST(atl.api_key_id AS text))",
     )
     .replace("CAST(atl.id AS TEXT)", "CAST(atl.id AS text)")
+    .replace("CAST(m.id AS TEXT)", "CAST(m.id AS text)")
+    .replace("CAST(j.id AS TEXT)", "CAST(j.id AS text)")
         .replace("FROM api_key_maintenance_records", "FROM core.api_key_maintenance_records")
         .replace("FROM api_key_transient_backoffs", "FROM core.api_key_transient_backoffs")
         .replace("FROM auth_token_logs", "FROM core.auth_token_logs")
@@ -481,7 +483,7 @@ impl KeyStore {
         query.push_bind(ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD);
         query.push(format!(
             r#" AS source_kind,
-                m.id AS source_id,
+                CAST(m.id AS TEXT) AS source_id,
                 printf('maint:%s', m.id) AS row_sort_id,
                 'upstream_key_blocked' AS alert_type,
                 m.created_at AS occurred_at,
@@ -550,7 +552,7 @@ impl KeyStore {
         query.push_bind(ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD);
         query.push(format!(
             r#" AS source_kind,
-                m.id AS source_id,
+                CAST(m.id AS TEXT) AS source_id,
                 printf('maint:%s', m.id) AS row_sort_id,
                 'api_key_exhausted' AS alert_type,
                 m.created_at AS occurred_at,
@@ -1069,7 +1071,7 @@ impl KeyStore {
         query.push_bind(ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD);
         query.push(format!(
             r#" AS source_kind,
-                m.id AS source_id,
+                CAST(m.id AS TEXT) AS source_id,
                 printf('maint:%s', m.id) AS row_sort_id,
                 'upstream_key_blocked' AS alert_type,
                 m.created_at AS occurred_at,
@@ -1138,7 +1140,7 @@ impl KeyStore {
         query.push_bind(ALERT_SOURCE_API_KEY_MAINTENANCE_RECORD);
         query.push(format!(
             r#" AS source_kind,
-                m.id AS source_id,
+                CAST(m.id AS TEXT) AS source_id,
                 printf('maint:%s', m.id) AS row_sort_id,
                 'api_key_exhausted' AS alert_type,
                 m.created_at AS occurred_at,
