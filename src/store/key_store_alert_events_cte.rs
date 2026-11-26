@@ -1335,9 +1335,26 @@ impl KeyStore {
                 return out;
             };
             let field = &after[..end];
-            out.push_str("(payload_json::jsonb ->> '");
-            out.push_str(field);
-            out.push_str("')");
+            // The projection decoder reads these members as `i64`; `->>` always yields text, so
+            // cast the integer members back to bigint.
+            const INT_MEMBERS: [&str; 7] = [
+                "occurred_at",
+                "request_log_id",
+                "counts_business_quota",
+                "job_attempt",
+                "job_queued_at",
+                "job_started_at",
+                "job_finished_at",
+            ];
+            if INT_MEMBERS.contains(&field) {
+                out.push_str("((payload_json::jsonb ->> '");
+                out.push_str(field);
+                out.push_str("'))::bigint");
+            } else {
+                out.push_str("(payload_json::jsonb ->> '");
+                out.push_str(field);
+                out.push_str("')");
+            }
             rest = &after[end + 1..];
             if let Some(tail) = rest.strip_prefix(')') {
                 rest = tail;
