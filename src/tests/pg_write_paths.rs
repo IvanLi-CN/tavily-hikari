@@ -1840,10 +1840,22 @@ async fn alert_projection_slice_runs_end_to_end_on_postgres() {
         &[Bind::Text(&log_id.to_string())],
     )
     .await;
-    assert_eq!(
-        projected, 1,
-        "the slice must project the seeded alert with its numeric source id"
-    );
+    if projected != 1 {
+        let all: Vec<(String, String)> = sqlx::query_as(
+            "SELECT source_kind, source_id FROM observability.dashboard_alert_projection_events",
+        )
+        .fetch_all(pair.postgres.key_store.pg().expect("postgres pool"))
+        .await
+        .expect("dump projected rows");
+        let state: Vec<(String, i64, i64, String)> = sqlx::query_as(
+            "SELECT source_kind, cursor_occurred_at, generation, phase \
+             FROM observability.dashboard_alert_projection_state ORDER BY source_kind",
+        )
+        .fetch_all(pair.postgres.key_store.pg().expect("postgres pool"))
+        .await
+        .expect("dump projection state");
+        panic!("expected source_id {log_id}; projected={all:?}; state={state:?}");
+    }
 
     let status = pair
         .postgres
