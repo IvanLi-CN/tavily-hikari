@@ -61,6 +61,18 @@ fn postgres_alert_sql(sql: &str) -> String {
         "('maint:' || CAST(atl.api_key_id AS text))",
     )
     .replace("CAST(atl.id AS TEXT)", "CAST(atl.id AS text)")
+    .replace(
+        "atl.request_log_id AS request_log_id,",
+        "CAST(atl.request_log_id AS text) AS request_log_id,",
+    )
+    .replace(
+        "atl.counts_business_quota AS counts_business_quota,",
+        "CAST(atl.counts_business_quota AS text) AS counts_business_quota,",
+    )
+    .replace("j.attempt AS job_attempt,", "CAST(j.attempt AS text) AS job_attempt,")
+    .replace("j.queued_at AS job_queued_at,", "CAST(j.queued_at AS text) AS job_queued_at,")
+    .replace("j.started_at AS job_started_at,", "CAST(j.started_at AS text) AS job_started_at,")
+    .replace("j.finished_at AS job_finished_at", "CAST(j.finished_at AS text) AS job_finished_at")
     .replace("CAST(m.id AS TEXT)", "CAST(m.id AS text)")
     .replace("CAST(j.id AS TEXT)", "CAST(j.id AS text)")
         .replace("FROM api_key_maintenance_records", "FROM core.api_key_maintenance_records")
