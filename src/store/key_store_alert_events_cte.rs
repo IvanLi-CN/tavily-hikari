@@ -87,6 +87,11 @@ fn postgres_alert_sql(sql: &str) -> String {
         .replace("JOIN upstream_reconciliation_usage", "JOIN core.upstream_reconciliation_usage")
         .replace("JOIN user_token_bindings", "JOIN core.user_token_bindings")
         .replace("JOIN users", "JOIN core.users")
+    .replace("LEFT JOIN user_token_bindings", "LEFT JOIN core.user_token_bindings")
+    .replace("LEFT JOIN users", "LEFT JOIN core.users")
+    .replace("LEFT JOIN auth_token_logs", "LEFT JOIN core.auth_token_logs")
+    .replace("LEFT JOIN api_key_maintenance_records", "LEFT JOIN core.api_key_maintenance_records")
+    .replace("LEFT JOIN scheduled_jobs", "LEFT JOIN core.scheduled_jobs")
         .replace("JOIN meta", "JOIN core.meta")
 }
 
