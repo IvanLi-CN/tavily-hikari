@@ -1348,7 +1348,7 @@ impl KeyStore {
             if field == "counts_business_quota" {
                 // The payload stores this member as a JSON boolean; SQLite returns 1/0 while
                 // PostgreSQL would reject the text `true` for a bigint column.
-                out.push_str("(CASE WHEN (payload_json::jsonb ->> 'counts_business_quota') = 'true' THEN 1 ELSE 0 END)");
+                out.push_str("(CASE WHEN (payload_json::jsonb ->> 'counts_business_quota') = 'true' THEN 1 ELSE 0 END)::bigint");
             } else if INT_MEMBERS.contains(&field) {
                 out.push_str("((payload_json::jsonb ->> '");
                 out.push_str(field);
