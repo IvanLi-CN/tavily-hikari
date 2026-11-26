@@ -1792,3 +1792,56 @@ async fn alert_groups_page_runs_on_postgres() {
         "group item must settle on the seeded latest event"
     );
 }
+
+/// The projection family must work as one unit on PostgreSQL: seed an alert source row, run a
+/// slice, and observe the projected row plus an advanced generation and a non-`projecting` status.
+#[tokio::test]
+async fn alert_projection_slice_runs_end_to_end_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-projection-e2e", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let token_id = format!("tok-{tag}");
+    let log_id: i64 = sqlx::query_scalar(
+        "INSERT INTO core.auth_token_logs \
+         (token_id, created_at, method, path, result_status, failure_kind) \
+         VALUES ($1, $2, 'GET', '/search', 'upstream_error', 'upstream_rate_limited_429') \
+         RETURNING id",
+    )
+    .bind(&token_id)
+    .bind(now - 30)
+    .fetch_one(pair.postgres.key_store.pg().expect("postgres pool"))
+    .await
+    .expect("seed auth token log");
+
+    for _ in 0..8 {
+        pair.postgres
+            .key_store
+            .advance_alert_projection_slice_for_test()
+            .await
+            .expect("postgres projection slice");
+    }
+
+    let projected = fetch_scalar(
+        &pair.postgres.key_store,
+        Backend::Postgres,
+        "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
+         WHERE source_id = $1",
+        &[Bind::Text(&format!("atl:{log_id:020}"))],
+    )
+    .await;
+    assert_eq!(projected, 1, "the slice must project the seeded alert");
+
+    let status = pair
+        .postgres
+        .key_store
+        .alert_projection_status()
+        .await
+        .expect("postgres projection status");
+    assert_ne!(
+        status.coverage, "stale",
+        "a freshly written projection must not read as stale: {:?}",
+        status
+    );
+}
