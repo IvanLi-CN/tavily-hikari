@@ -216,7 +216,9 @@ impl KeyStore {
                  FROM core.upstream_reconciliation_usage u
                 WHERE u.period_code = $1
                 GROUP BY u.key_id
-                HAVING bound_users > 0
+                HAVING COUNT(DISTINCT CASE
+                      WHEN u.billing_subject LIKE 'account:%' THEN SUBSTRING(u.billing_subject FROM 9)
+                  END) > 0
                 ORDER BY bound_users DESC, u.key_id ASC"#,
         )
         .bind(&period.code)
@@ -230,7 +232,7 @@ impl KeyStore {
                 WHERE u.period_code = $1
                   AND (s.settlement_key IS NULL OR s.status IN ('pending', 'waiting', 'rate_limited'))
                 GROUP BY u.key_id
-                HAVING pending_project_ids > 0
+                HAVING COUNT(DISTINCT u.project_id) > 0
                 ORDER BY pending_project_ids DESC, u.key_id ASC"#,
         )
         .bind(&period.code)

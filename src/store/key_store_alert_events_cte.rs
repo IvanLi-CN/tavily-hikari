@@ -1337,16 +1337,19 @@ impl KeyStore {
             let field = &after[..end];
             // The projection decoder reads these members as `i64`; `->>` always yields text, so
             // cast the integer members back to bigint.
-            const INT_MEMBERS: [&str; 7] = [
+            const INT_MEMBERS: [&str; 6] = [
                 "occurred_at",
                 "request_log_id",
-                "counts_business_quota",
                 "job_attempt",
                 "job_queued_at",
                 "job_started_at",
                 "job_finished_at",
             ];
-            if INT_MEMBERS.contains(&field) {
+            if field == "counts_business_quota" {
+                // The payload stores this member as a JSON boolean; SQLite returns 1/0 while
+                // PostgreSQL would reject the text `true` for a bigint column.
+                out.push_str("(CASE WHEN (payload_json::jsonb ->> 'counts_business_quota') = 'true' THEN 1 ELSE 0 END)");
+            } else if INT_MEMBERS.contains(&field) {
                 out.push_str("((payload_json::jsonb ->> '");
                 out.push_str(field);
                 out.push_str("'))::bigint");
