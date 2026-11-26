@@ -25,7 +25,7 @@ pub(crate) struct AlertProjectionStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AlertProjectionLane {
+enum AlertProjectionLane {
     RecentTail,
     History,
 }
@@ -947,18 +947,6 @@ impl KeyStore {
         complete: bool,
         observed_at: i64,
     ) -> Result<(), ProxyError> {
-        if self.pg_pool.is_some() {
-            return self
-                .persist_alert_projection_slice_pg(
-                    state,
-                    fence,
-                    rows,
-                    next_cursor,
-                    complete,
-                    observed_at,
-                )
-                .await;
-        }
         let next_cursor = next_cursor
             .unwrap_or_else(|| (state.cursor_occurred_at, state.cursor_row_sort_id.clone()));
         let state = state.clone();
@@ -1087,100 +1075,7 @@ impl KeyStore {
             .await
     }
 
-    /// Test-only entry to the projection writer. The production caller is the slice advancer,
-    /// which still reads its source rows through the SQLite runtime; this lets the
-    /// `pg-write-paths` job exercise the PostgreSQL transaction in isolation.
-    #[cfg(test)]
-    pub(crate) async fn persist_alert_projection_slice_for_test(
-        &self,
-        source_kind: &str,
-        lane: AlertProjectionLane,
-        generation: i64,
-        row: &AlertEventProjectionRow,
-        observed_at: i64,
-    ) -> Result<(), ProxyError> {
-        let state = AlertProjectionSourceState {
-            source_kind: source_kind.to_string(),
-            cursor_occurred_at: 0,
-            cursor_row_sort_id: String::new(),
-            fence_occurred_at: None,
-            fence_row_sort_id: None,
-            generation,
-            phase: "catching_up".to_string(),
-            lane,
-        };
-        self.persist_alert_projection_slice(&state, None, std::slice::from_ref(row), None, true, observed_at)
-            .await
-    }
-
-    /// Builds a minimal projection row for the PostgreSQL writer test; every optional column
-    /// stays empty so the payload serialises deterministically.
-    #[cfg(test)]
-    pub(crate) fn projection_row_for_test(
-        &self,
-        source_kind: &str,
-        source_id: &str,
-        occurred_at: i64,
-    ) -> AlertEventProjectionRow {
-        AlertEventProjectionRow {
-            source_kind: source_kind.to_string(),
-            source_id: source_id.to_string(),
-            row_sort_id: format!("{occurred_at:020}"),
-            alert_type: "upstream_rate_limited_429".to_string(),
-            occurred_at,
-            token_id: None,
-            key_id: None,
-            request_log_id: None,
-            method: None,
-            path: None,
-            query: None,
-            request_kind_key: None,
-            request_kind_label: None,
-            request_kind_detail: None,
-            result_status: None,
-            failure_kind: None,
-            error_message: None,
-            counts_business_quota: None,
-            user_id: None,
-            user_display_name: None,
-            user_username: None,
-            reason_code: None,
-            reason_summary: None,
-            reason_detail: None,
-            job_id: None,
-            job_type: None,
-            job_trigger_source: None,
-            job_status: None,
-            job_attempt: None,
-            job_message: None,
-            job_queued_at: None,
-            job_started_at: None,
-            job_finished_at: None,
-        }
-    }
-
-    /// Reads one source's projection state; used by the write-path test to obtain the generation
-    /// it must present to the optimistic state update.
-    #[cfg(test)]
-    pub(crate) async fn alert_projection_generation_for_test(
-        &self,
-        source_kind: &str,
-    ) -> Result<i64, ProxyError> {
-        let mut session = self.begin_pg_read_session().await?;
-        let generation = sqlx::query_scalar::<_, i64>(
-            "SELECT generation FROM observability.dashboard_alert_projection_state WHERE source_kind = $1",
-        )
-        .bind(source_kind)
-        .fetch_one(&mut *session.connection())
-        .await?;
-        session.finish().await?;
-        Ok(generation)
-    }
-
     pub(crate) async fn alert_projection_status(&self) -> Result<AlertProjectionStatus, ProxyError> {
-        if self.pg_pool.is_some() {
-            return self.alert_projection_status_pg().await;
-        }
         let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime
