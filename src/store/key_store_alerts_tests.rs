@@ -938,4 +938,3 @@ fn alert_grouping_fragments_use_postgres_constructs() {
         "'day:' || CAST(alerts.occurred_at AS text)"
     );
 }
-

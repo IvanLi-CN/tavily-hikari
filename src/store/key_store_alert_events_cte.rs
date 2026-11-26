@@ -22,6 +22,30 @@ fn postgres_alert_sql(sql: &str) -> String {
         "json_extract(payload_json, '$.occurred_at')",
         "(payload_json ->> 'occurred_at')::bigint",
     )
+    .replace(
+        "json_extract(payload_json, '$.request_log_id')",
+        "(payload_json ->> 'request_log_id')::bigint",
+    )
+    .replace(
+        "json_extract(payload_json, '$.counts_business_quota')",
+        "(payload_json ->> 'counts_business_quota')::bigint",
+    )
+    .replace(
+        "json_extract(payload_json, '$.job_attempt')",
+        "(payload_json ->> 'job_attempt')::bigint",
+    )
+    .replace(
+        "json_extract(payload_json, '$.job_queued_at')",
+        "(payload_json ->> 'job_queued_at')::bigint",
+    )
+    .replace(
+        "json_extract(payload_json, '$.job_started_at')",
+        "(payload_json ->> 'job_started_at')::bigint",
+    )
+    .replace(
+        "json_extract(payload_json, '$.job_finished_at')",
+        "(payload_json ->> 'job_finished_at')::bigint",
+    )
     .replace("json_extract(", "jsonb_extract_path_text(")
     .replace(
         "printf('atl:%020lld', atl.id)",
@@ -646,7 +670,7 @@ impl KeyStore {
                 'job_failed' AS reason_code,
                 j.message AS reason_summary,
                 NULL AS reason_detail,
-                j.id AS job_id,
+                CAST(j.id AS TEXT) AS job_id,
                 j.job_type AS job_type,
                 j.trigger_source AS job_trigger_source,
                 j.status AS job_status,
@@ -1234,7 +1258,7 @@ impl KeyStore {
                 'job_failed' AS reason_code,
                 j.message AS reason_summary,
                 NULL AS reason_detail,
-                j.id AS job_id,
+                CAST(j.id AS TEXT) AS job_id,
                 j.job_type AS job_type,
                 j.trigger_source AS job_trigger_source,
                 j.status AS job_status,
