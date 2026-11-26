@@ -294,7 +294,7 @@ impl KeyStore {
                     };
                     candidates.extend(rows.into_iter().map(|(occurred_at, id)| {
                         AlertProjectionSourceKey {
-                            source_id: format!("atl:{id:020}"),
+                            source_id: id.to_string(),
                             occurred_at,
                             row_sort_id: format!("atl:{id:020}"),
                         }
@@ -378,7 +378,7 @@ impl KeyStore {
                     };
                     candidates.extend(rows.into_iter().map(|(occurred_at, id)| {
                         AlertProjectionSourceKey {
-                            source_id: format!("job:{id:020}"),
+                            source_id: id.to_string(),
                             occurred_at,
                             row_sort_id: format!("job:{id:020}"),
                         }
@@ -456,10 +456,11 @@ impl KeyStore {
                         }
                     };
                     candidates.extend(rows.into_iter().map(|(occurred_at, source_id)| {
+                        let row_sort_id = format!("maint:{source_id}");
                         AlertProjectionSourceKey {
-                            source_id: format!("maint:{source_id}"),
+                            source_id,
                             occurred_at,
-                            row_sort_id: format!("maint:{source_id}"),
+                            row_sort_id,
                         }
                     }));
                 }
