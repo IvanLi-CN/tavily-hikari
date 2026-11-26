@@ -735,16 +735,23 @@ async fn seed_alert_events(proxy: &TavilyProxy, backend: Backend, token_id: &str
     for (index, (result_status, failure_kind, counts_business_quota, error_message)) in
         rows.iter().enumerate()
     {
-        execute_statement(
-            proxy.key_store.as_ref(),
-            backend,
+        let relation = match backend {
+            Backend::Sqlite => "auth_token_logs",
+            Backend::Postgres => "core.auth_token_logs",
+        };
+        let sql = format!(
             r#"
-            INSERT INTO auth_token_logs (
+            INSERT INTO {relation} (
                 token_id, method, path, request_kind_key, request_kind_label, request_kind_detail,
                 result_status, error_message, failure_kind, key_effect_code, binding_effect_code,
                 selection_effect_code, counts_business_quota, created_at
             ) VALUES (?, 'POST', '/mcp', 'mcp_call', 'MCP call', 'MCP call', ?, ?, ?, 'none', 'none', 'none', ?, ?)
-            "#,
+            "#
+        );
+        execute_statement(
+            proxy.key_store.as_ref(),
+            backend,
+            &sql,
             &[
                 Bind::Text(token_id),
                 Bind::Text(result_status),
