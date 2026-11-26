@@ -22,30 +22,6 @@ fn postgres_alert_sql(sql: &str) -> String {
         "json_extract(payload_json, '$.occurred_at')",
         "(payload_json ->> 'occurred_at')::bigint",
     )
-    .replace(
-        "json_extract(payload_json, '$.request_log_id')",
-        "(payload_json ->> 'request_log_id')::bigint",
-    )
-    .replace(
-        "json_extract(payload_json, '$.counts_business_quota')",
-        "(payload_json ->> 'counts_business_quota')::bigint",
-    )
-    .replace(
-        "json_extract(payload_json, '$.job_attempt')",
-        "(payload_json ->> 'job_attempt')::bigint",
-    )
-    .replace(
-        "json_extract(payload_json, '$.job_queued_at')",
-        "(payload_json ->> 'job_queued_at')::bigint",
-    )
-    .replace(
-        "json_extract(payload_json, '$.job_started_at')",
-        "(payload_json ->> 'job_started_at')::bigint",
-    )
-    .replace(
-        "json_extract(payload_json, '$.job_finished_at')",
-        "(payload_json ->> 'job_finished_at')::bigint",
-    )
     .replace("NULL AS job_attempt", "CAST(NULL AS bigint) AS job_attempt")
     .replace("NULL AS job_queued_at", "CAST(NULL AS bigint) AS job_queued_at")
     .replace("NULL AS job_started_at", "CAST(NULL AS bigint) AS job_started_at")
@@ -53,6 +29,13 @@ fn postgres_alert_sql(sql: &str) -> String {
     .replace("NULL AS request_log_id", "CAST(NULL AS bigint) AS request_log_id")
     .replace("NULL AS counts_business_quota", "CAST(NULL AS bigint) AS counts_business_quota")
     .replace("json_extract(", "jsonb_extract_path_text(")
+    .replace("jsonb_extract_path_text(payload_json, '$.request_log_id')", "(payload_json ->> 'request_log_id')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.counts_business_quota')", "(payload_json ->> 'counts_business_quota')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.job_attempt')", "(payload_json ->> 'job_attempt')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.job_queued_at')", "(payload_json ->> 'job_queued_at')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.job_started_at')", "(payload_json ->> 'job_started_at')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.job_finished_at')", "(payload_json ->> 'job_finished_at')::bigint")
+    .replace("jsonb_extract_path_text(payload_json, '$.occurred_at')", "(payload_json ->> 'occurred_at')::bigint")
     .replace(
         "printf('atl:%020lld', atl.id)",
         "('atl:' || lpad(CAST(atl.id AS text), 20, '0'))",
