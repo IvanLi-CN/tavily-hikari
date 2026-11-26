@@ -1832,30 +1832,20 @@ async fn alert_projection_slice_runs_end_to_end_on_postgres() {
             .expect("postgres projection slice");
     }
 
-    let projected = fetch_scalar(
+    // The PostgreSQL database is shared by every test in this binary, so the projection
+    // already holds rows from other tests. Assert this test's source row specifically.
+    let seeded_row = fetch_scalar(
         &pair.postgres.key_store,
         Backend::Postgres,
         "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
-         WHERE source_id = $1",
+         WHERE source_kind = 'auth_token_log' AND source_id = $1",
         &[Bind::Text(&log_id.to_string())],
     )
     .await;
-    if projected != 1 {
-        let all: Vec<(String, String)> = sqlx::query_as(
-            "SELECT source_kind, source_id FROM observability.dashboard_alert_projection_events",
-        )
-        .fetch_all(pair.postgres.key_store.pg().expect("postgres pool"))
-        .await
-        .expect("dump projected rows");
-        let state: Vec<(String, i64, i64, String)> = sqlx::query_as(
-            "SELECT source_kind, cursor_occurred_at, generation, phase \
-             FROM observability.dashboard_alert_projection_state ORDER BY source_kind",
-        )
-        .fetch_all(pair.postgres.key_store.pg().expect("postgres pool"))
-        .await
-        .expect("dump projection state");
-        panic!("expected source_id {log_id}; projected={all:?}; state={state:?}");
-    }
+    assert_eq!(
+        seeded_row, 1,
+        "the slice must project the seeded alert (row id {log_id})"
+    );
 
     let status = pair
         .postgres
