@@ -1388,9 +1388,20 @@ async fn filtered_alert_page_reads_the_postgres_projection() {
         .await
         .expect("postgres filtered page");
 
-    assert_eq!(page.total, 3);
-    let ids: Vec<&str> = page.items.iter().map(|item| item.id.as_str()).collect();
-    assert_eq!(ids, expected_ids);
+    // The PostgreSQL store is shared by every test in this binary, so the page also contains rows
+    // other tests projected. Assert this test's rows and their order instead of a global total.
+    let ids: Vec<&str> = page
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .filter(|id| id.contains(&tag))
+        .collect();
+    assert_eq!(ids, expected_ids, "seeded rows keep newest-first order");
+    assert!(
+        page.total >= 3,
+        "page total must include the seeded rows: {}",
+        page.total
+    );
 }
 
 /// The reconciliation progress reader must run on PostgreSQL: this exercises every statement in
