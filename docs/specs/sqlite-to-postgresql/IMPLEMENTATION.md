@@ -72,6 +72,28 @@
   `alert_projection_status` 走同一事务模型（切片单事务、状态更新按 `generation` 乐观比较），
   写入侧不再依赖 SQLite 的 owned immediate 包装。
 
+#### 迁移硬约束（由真实失败得出）
+
+1. 纯装配逻辑可抽成双方言共享函数，但 SQLite 的 `complete_query_or_defer` /
+   `complete_native_read` 必须留在原分支——它们负责归还读连接；抽走会让连接被丢弃。
+2. 方言差异必须逐条核对：无默认值的 NOT NULL 列、`CASE ... THEN 1 ELSE 0`（PG 为 int4）、
+   `SUM` 与窗口 `SUM`（PG 为 numeric）、`UNION ALL` 分支按位置严格匹配。
+3. **跨表事务单元必须整库迁移**。告警投影族（切片推进器 + `persist_alert_projection_slice`
+   - `alert_projection_status` + 投影读路径）是同一个逻辑事务；只迁写入侧会让
+     generation 乐观比较永不匹配（实测：`alert projection state changed while a slice was in flight`），并留下未回滚的投影行。
+
+W3 删除顺序也由此确定：投影族整体移植完成前，投影读路径的 PG 化没有意义——PG 的
+`observability.dashboard_alert_projection_events` 在生产里仍是空的。
+
+#### W3 阻塞项（复核后修正）
+
+- `key_store_ha*`、`key_store_ha_gc_online` 仍被 `server/schedulers.rs` 与
+  `tavily_proxy/proxy_ha.rs` 调用，不能仅因 ADR 0004 就删除。
+- `key_store_observability_sidecar` 仍被 `mod.rs` 与 `bin/support/sqlite_sidecar.rs` 使用。
+- `reconciliation_projection_controller` 仍被 `key_store_upstream_reconciliation.rs` 的
+  `advance_slice` 调用。
+- 因此 W3 只能在「投影族整体迁移」与「HA/sidecar 替代路径就位」之后开始。
+
 尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
 告警投影写入侧、`admin_privacy_read`、对账 research/admission。
 
