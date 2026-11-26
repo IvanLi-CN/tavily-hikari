@@ -1859,3 +1859,34 @@ async fn alert_projection_slice_runs_end_to_end_on_postgres() {
         status
     );
 }
+
+/// The upstream privacy diagnostic must run on PostgreSQL. The response is assembled from ~20
+/// statements across `core` and `observability`; this asserts the ported path completes and
+/// reports the expected controller phase rather than failing on a dialect difference.
+#[tokio::test]
+async fn upstream_privacy_status_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-upstream-privacy-status", now).await else {
+        return;
+    };
+    let status = pair
+        .postgres
+        .key_store
+        .upstream_privacy_status_pg()
+        .await
+        .expect("postgres upstream privacy status");
+
+    assert!(
+        !status.phase.is_empty(),
+        "controller phase must be reported: {status:?}"
+    );
+    assert!(status.total_gates > 0, "the gate list must be populated");
+    assert_eq!(status.completed_gates <= status.total_gates, true);
+    assert!(
+        status.dashboard_alert_projection.coverage == "ok"
+            || status.dashboard_alert_projection.coverage == "projecting"
+            || status.dashboard_alert_projection.coverage == "stale",
+        "projection coverage must be one of the documented states: {}",
+        status.dashboard_alert_projection.coverage
+    );
+}

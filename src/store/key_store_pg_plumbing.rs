@@ -22,6 +22,12 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Whether a PostgreSQL pool is attached. Converted callers branch on this to keep the SQLite
+    /// path intact until the cutover removes it.
+    pub(crate) fn has_postgres(&self) -> bool {
+        self.pg_pool.is_some()
+    }
+
     /// Opens the repeatable-read snapshot used by converted readers that must build one response
     /// from several statements.
     pub(crate) async fn begin_pg_read_session(&self) -> Result<PgReadSession, ProxyError> {

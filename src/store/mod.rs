@@ -2809,6 +2809,7 @@ include!("key_store_reconciliation_key_observations.rs");
 include!("key_store_upstream_reconciliation_research.rs");
 include!("key_store_upstream_reconciliation_research_pg.rs");
 include!("key_store_admin_privacy_read.rs");
+include!("key_store_admin_privacy_read_pg.rs");
 include!("key_store_reconciliation_controller.rs");
 include!("reconciliation_projection_controller.rs");
 include!("key_store_reconciliation_progress.rs");
