@@ -1828,10 +1828,13 @@ async fn alert_projection_slice_runs_end_to_end_on_postgres() {
         Backend::Postgres,
         "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
          WHERE source_id = $1",
-        &[Bind::Text(&format!("atl:{log_id:020}"))],
+        &[Bind::Text(&log_id.to_string())],
     )
     .await;
-    assert_eq!(projected, 1, "the slice must project the seeded alert");
+    assert_eq!(
+        projected, 1,
+        "the slice must project the seeded alert with its numeric source id"
+    );
 
     let status = pair
         .postgres
