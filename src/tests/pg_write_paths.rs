@@ -705,10 +705,7 @@ struct AlertTrace {
     group_event_total: i64,
 }
 
-async fn seed_alert_events(proxy: &TavilyProxy, token_id: &str, now: i64) {
-    // The alert projection is not ported to PostgreSQL yet: it reads the SQLite source lane
-    // even when a pool is attached. Both store configurations therefore get the same
-    // SQLite-only seed, which is exactly the contract this case pins down.
+async fn seed_alert_events(proxy: &TavilyProxy, backend: Backend, token_id: &str, now: i64) {
     let rows: [(&str, Option<&str>, i64, Option<&str>); 4] = [
         (
             "quota_exhausted",
@@ -738,7 +735,9 @@ async fn seed_alert_events(proxy: &TavilyProxy, token_id: &str, now: i64) {
     for (index, (result_status, failure_kind, counts_business_quota, error_message)) in
         rows.iter().enumerate()
     {
-        sqlx::query(
+        execute_statement(
+            proxy.key_store.as_ref(),
+            backend,
             r#"
             INSERT INTO auth_token_logs (
                 token_id, method, path, request_kind_key, request_kind_label, request_kind_detail,
@@ -746,16 +745,16 @@ async fn seed_alert_events(proxy: &TavilyProxy, token_id: &str, now: i64) {
                 selection_effect_code, counts_business_quota, created_at
             ) VALUES (?, 'POST', '/mcp', 'mcp_call', 'MCP call', 'MCP call', ?, ?, ?, 'none', 'none', 'none', ?, ?)
             "#,
+            &[
+                Bind::Text(token_id),
+                Bind::Text(result_status),
+                Bind::Text(error_message.unwrap_or_default()),
+                Bind::Text(failure_kind.unwrap_or_default()),
+                Bind::Int(*counts_business_quota),
+                Bind::Int(now - 300 + index as i64),
+            ],
         )
-        .bind(token_id)
-        .bind(*result_status)
-        .bind(*error_message)
-        .bind(*failure_kind)
-        .bind(*counts_business_quota)
-        .bind(now - 300 + index as i64)
-        .execute(&proxy.key_store.pool)
-        .await
-        .expect("seed alert source row");
+        .await;
     }
 }
 
@@ -845,7 +844,7 @@ async fn advance_alert_projection_until(
     panic!("alert projection did not converge: last snapshot {last:?}");
 }
 
-async fn reset_alert_projection(proxy: &TavilyProxy) {
+async fn reset_alert_projection(proxy: &TavilyProxy, backend: Backend) {
     for statement in [
         "DELETE FROM observability.dashboard_alert_projection_events",
         "DELETE FROM observability.dashboard_alert_projection_recent_summaries",
@@ -856,23 +855,24 @@ async fn reset_alert_projection(proxy: &TavilyProxy) {
          cursor_row_sort_id = '', fence_occurred_at = NULL, fence_row_sort_id = NULL, \
          phase = 'catching_up'",
     ] {
-        sqlx::query(statement)
-            .execute(&proxy.key_store.pool)
-            .await
-            .unwrap_or_else(|err| panic!("reset alert projection `{statement}`: {err}"));
+        execute_statement(proxy.key_store.as_ref(), backend, statement, &[]).await;
     }
 }
 
-async fn run_alert_rebuild_sequence(proxy: &TavilyProxy, now: i64) -> (AlertTrace, AlertTrace) {
+async fn run_alert_rebuild_sequence(
+    proxy: &TavilyProxy,
+    backend: Backend,
+    now: i64,
+) -> (AlertTrace, AlertTrace) {
     let store = proxy.key_store.as_ref();
     let token = store
         .create_access_token(Some("pg write paths alerts"))
         .await
         .expect("create alert source token");
-    seed_alert_events(proxy, &token.id, now).await;
+    seed_alert_events(proxy, backend, &token.id, now).await;
 
     let first = advance_alert_projection_until(proxy, &token.id, 4).await;
-    reset_alert_projection(proxy).await;
+    reset_alert_projection(proxy, backend).await;
     let second = advance_alert_projection_until(proxy, &token.id, 4).await;
     (first, second)
 }
@@ -884,8 +884,10 @@ async fn alert_projection_rebuild_is_idempotent() {
         return;
     };
 
-    let (sqlite_first, sqlite_second) = run_alert_rebuild_sequence(&pair.sqlite, now).await;
-    let (postgres_first, postgres_second) = run_alert_rebuild_sequence(&pair.postgres, now).await;
+    let (sqlite_first, sqlite_second) =
+        run_alert_rebuild_sequence(&pair.sqlite, Backend::Sqlite, now).await;
+    let (postgres_first, postgres_second) =
+        run_alert_rebuild_sequence(&pair.postgres, Backend::Postgres, now).await;
 
     assert_eq!(
         sqlite_first, sqlite_second,
