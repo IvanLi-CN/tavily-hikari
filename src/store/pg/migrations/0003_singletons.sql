@@ -24,3 +24,25 @@ INSERT INTO core.upstream_reconciliation_research_scan_state (id) VALUES ('local
 
 -- `core.ha_node_state` is deliberately not seeded: its node identity columns have no defaults
 -- and HA retires at cutover (ADR 0004), so fabricating a node row would invent state.
+
+-- Per-source projection state. Every NOT NULL column carries a default, so the seed names only
+-- the source. The three sources mirror `ALERT_PROJECTION_SOURCES`.
+INSERT INTO observability.dashboard_alert_projection_state (source_kind) VALUES ('auth_token_log')
+    ON CONFLICT (source_kind) DO NOTHING;
+INSERT INTO observability.dashboard_alert_projection_state (source_kind) VALUES ('api_key_maintenance_record')
+    ON CONFLICT (source_kind) DO NOTHING;
+INSERT INTO observability.dashboard_alert_projection_state (source_kind) VALUES ('scheduled_job')
+    ON CONFLICT (source_kind) DO NOTHING;
+
+INSERT INTO observability.dashboard_alert_projection_history_state (source_kind) VALUES ('auth_token_log')
+    ON CONFLICT (source_kind) DO NOTHING;
+INSERT INTO observability.dashboard_alert_projection_history_state (source_kind) VALUES ('api_key_maintenance_record')
+    ON CONFLICT (source_kind) DO NOTHING;
+INSERT INTO observability.dashboard_alert_projection_history_state (source_kind) VALUES ('scheduled_job')
+    ON CONFLICT (source_kind) DO NOTHING;
+
+INSERT INTO observability.dashboard_alert_projection_revision_state (singleton) VALUES (1)
+    ON CONFLICT (singleton) DO NOTHING;
+
+INSERT INTO observability.admin_alert_canonical_groups_state (singleton) VALUES (1)
+    ON CONFLICT (singleton) DO NOTHING;

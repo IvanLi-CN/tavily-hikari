@@ -1632,6 +1632,38 @@ async fn reconciliation_singletons_are_seeded_on_postgres() {
             "{relation} must carry exactly one local singleton"
         );
     }
+    for relation in [
+        "dashboard_alert_projection_state",
+        "dashboard_alert_projection_history_state",
+    ] {
+        let sources = fetch_scalar(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            &format!("SELECT COUNT(*)::bigint FROM observability.{relation}"),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            sources, 3,
+            "observability.{relation} must seed one row per alert source"
+        );
+    }
+    for relation in [
+        "dashboard_alert_projection_revision_state",
+        "admin_alert_canonical_groups_state",
+    ] {
+        let seeded = fetch_scalar(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            &format!("SELECT COUNT(*)::bigint FROM observability.{relation} WHERE singleton = 1"),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            seeded, 1,
+            "observability.{relation} must seed its singleton row"
+        );
+    }
 }
 
 /// The research selector must run on PostgreSQL: with a seeded pollable row whose usage window
@@ -1803,5 +1835,38 @@ async fn alert_projection_slice_writes_on_postgres() {
     assert!(
         advanced > generation,
         "generation must advance: {generation} -> {advanced}"
+    );
+}
+
+/// The SQLite schema-upgrade shims must be no-ops on PostgreSQL: the baseline already carries the
+/// semantic quota columns and the scoped passkey tables, so running them must not error.
+#[tokio::test]
+async fn schema_upgrade_shims_are_noops_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-schema-shims", now).await else {
+        return;
+    };
+    pair.postgres
+        .key_store
+        .migrate_quota_schema_to_semantic_columns()
+        .await
+        .expect("postgres quota schema shim");
+    pair.postgres
+        .key_store
+        .ensure_admin_passkey_schema()
+        .await
+        .expect("postgres passkey schema shim");
+    let semantic_column = fetch_scalar(
+        &pair.postgres.key_store,
+        Backend::Postgres,
+        "SELECT COUNT(*)::bigint FROM information_schema.columns \
+         WHERE table_schema = 'core' AND table_name = 'account_quota_limits' \
+           AND column_name = 'business_calls_1h_limit'",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        semantic_column, 1,
+        "baseline must carry the semantic quota column"
     );
 }
