@@ -1749,3 +1749,59 @@ async fn alert_groups_page_runs_on_postgres() {
         "group item must settle on the seeded latest event"
     );
 }
+
+/// The projection writer must commit on PostgreSQL: writing one row advances the source
+/// generation and the shared revision, which is what the status reader and groups page consume.
+#[tokio::test]
+async fn alert_projection_slice_writes_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-alert-projection-write", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let source_kind = "auth_token_log";
+    let generation = pair
+        .postgres
+        .key_store
+        .alert_projection_generation_for_test(source_kind)
+        .await
+        .expect("postgres projection generation");
+    let source_id = format!("atl:{tag}");
+    let row = pair
+        .postgres
+        .key_store
+        .projection_row_for_test(source_kind, &source_id, now - 60);
+
+    pair.postgres
+        .key_store
+        .persist_alert_projection_slice_for_test(
+            source_kind,
+            crate::store::AlertProjectionLane::RecentTail,
+            generation,
+            &row,
+            now,
+        )
+        .await
+        .expect("postgres projection slice write");
+
+    let stored = fetch_scalar(
+        &pair.postgres.key_store,
+        Backend::Postgres,
+        "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
+         WHERE source_id = $1 AND projection_revision > 0",
+        &[Bind::Text(&source_id)],
+    )
+    .await;
+    assert_eq!(stored, 1, "projected row must be stored with a revision");
+
+    let advanced = pair
+        .postgres
+        .key_store
+        .alert_projection_generation_for_test(source_kind)
+        .await
+        .expect("postgres projection generation after write");
+    assert!(
+        advanced > generation,
+        "generation must advance: {generation} -> {advanced}"
+    );
+}

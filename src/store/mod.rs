@@ -2830,6 +2830,7 @@ include!("key_store_alert_canonical_semantic_reduction.rs");
 include!("key_store_alert_group_records.rs");
 include!("key_store_alert_events_cte.rs");
 include!("key_store_alert_projection.rs");
+include!("key_store_alert_projection_pg.rs");
 include!("key_store_announcements.rs");
 include!("key_store_dashboard_window_metrics.rs");
 include!("key_store_dashboard_window_metrics_pg.rs");

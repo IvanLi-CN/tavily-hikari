@@ -68,6 +68,9 @@
 - 告警分组页：`fetch_admin_alert_groups_page` 的 PG 分支在一个可重复读会话内完成计数、
   分页、每组最新事件与母组补全。
 - PG 迁移新增 `0003_singletons.sql`：播种 5 张对账单例表的 `id='local'`，否则 PG 读全部为空。
+- 告警投影写入与状态读取同批接 PG：`persist_alert_projection_slice` 与
+  `alert_projection_status` 走同一事务模型（切片单事务、状态更新按 `generation` 乐观比较），
+  写入侧不再依赖 SQLite 的 owned immediate 包装。
 
 尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
 告警投影写入侧、`admin_privacy_read`、对账 research/admission。
