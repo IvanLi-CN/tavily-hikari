@@ -857,10 +857,10 @@ async fn reset_alert_projection(proxy: &TavilyProxy, backend: Backend) {
         "DELETE FROM observability.dashboard_alert_projection_recent_summaries",
         "UPDATE observability.dashboard_alert_projection_state SET cursor_occurred_at = 0, \
          cursor_row_sort_id = '', fence_occurred_at = NULL, fence_row_sort_id = NULL, \
-         phase = 'catching_up', stale_reason = NULL",
+         phase = 'catching_up', stale_reason = NULL, generation = 0",
         "UPDATE observability.dashboard_alert_projection_history_state SET cursor_occurred_at = 0, \
          cursor_row_sort_id = '', fence_occurred_at = NULL, fence_row_sort_id = NULL, \
-         phase = 'catching_up'",
+         phase = 'catching_up', generation = 0",
     ] {
         execute_statement(proxy.key_store.as_ref(), backend, statement, &[]).await;
     }
