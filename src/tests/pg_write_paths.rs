@@ -826,7 +826,10 @@ async fn advance_alert_projection_for_token(
     token_id: &str,
     _now: i64,
 ) -> AlertTrace {
-    for _ in 0..8 {
+    // A throwaway SQLite store starts at cursor 0 and needs several slices; a shared PostgreSQL
+    // store may need none. Loop on the slice count, not on the outcome, so both produce a stable
+    // snapshot for the idempotence comparison.
+    for _ in 0..24 {
         let _ = proxy
             .advance_dashboard_alert_projection_slice()
             .await
