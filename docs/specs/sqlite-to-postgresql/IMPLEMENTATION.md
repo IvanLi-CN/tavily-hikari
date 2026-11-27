@@ -57,6 +57,17 @@
 告警与对账读模块都持有 "一个响应一个只读快照" 的合同，移植时先落 PG 只读快照（
 `REPEATABLE READ READ ONLY`），再逐函数接 `self.pg()`。
 
+台账口径（2026-11-27 复核）：`src/store` 共 102 个模块，90 个含 SQL；其中 62 个带
+`self.pg()` 分支或 `*_pg.rs` 双胞胎。按检测规则看剩余 28 个，但逐个复核后都不是待移植项：
+
+- 22 个是 `*_pg.rs` 双胞胎或 `*_tests.rs`，本就不需要自己分派；
+- 4 个是 `key_store_ha*`，ADR 0004 退役；
+- 7 个是 `immediate_transaction`、`bootstrap_legacy`、`migrations_{a,b}`、
+  `schema_migrations{,_convergence}`、`reconciliation_projection_controller`、`sqlite_runtime*`，
+  属 W3-cleanup 删除；
+- 1 个是 `key_store_dashboard_window_metrics`，四个函数都有 `_pg` 双胞胎，调用方
+  `key_store_dashboard_month_series` 已按方言选路，无需分派。
+
 已完成入口（均带 `pg-write-paths` 跨后端对拍测试）：
 
 - `PgReadSession`：`REPEATABLE READ, READ ONLY` 单事务，替代 SQLite 读会话的一致性职责；
