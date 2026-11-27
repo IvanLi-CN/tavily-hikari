@@ -101,6 +101,24 @@
 W3 删除顺序也由此确定：投影族整体移植完成前，投影读路径的 PG 化没有意义——PG 的
 `observability.dashboard_alert_projection_events` 在生产里仍是空的。
 
+#### W3 可执行删除顺序（实测调用链）
+
+`observability_sidecar` 与 `bootstrap_legacy` 不是被独立的生产路径调用，而是被 SQLite 的
+attach 探测（`store/mod.rs` 的 `select_observability_attach_path` →
+`configure_observability_journal_mode`）调用。因此删除顺序应当是自顶向下：
+
+1. 让 `KeyStore::open` 在 `pg_pool` 存在时完全跳过 SQLite attach 探测（当前只是绕过读取，初始化仍在跑）。
+2. 删除该探测及其 `configure_observability_journal_mode` 调用 → `observability_sidecar` 失去调用者。
+3. 删除 `observability_sidecar` → `bootstrap_legacy` 失去调用者。
+4. 删除 `bootstrap_legacy`。
+5. `reconciliation_projection_controller` 的类型 `ReconciliationProjectionSliceOutcome` 被
+   `key_store_upstream_reconciliation.rs` 与 `proxy_quota_sync_and_jobs.rs` 引用，需先把该类型
+   移到独立模块或改为新投影路径的类型，再删旧实现。
+6. 上述完成后，`Cargo.toml` 的 `sqlx/sqlite` 与 `libsqlite3-sys` 才可移除；此时编译器会列出
+   剩余全部 SQLite 引用（当前 173 个文件），逐条删除或改为 PG。
+
+每个步骤都要保持 `cargo check` 通过，且不能在同一提交里既删调用者又留着被调用者。
+
 #### W3 阻塞项（复核后修正）
 
 - `key_store_ha*`、`key_store_ha_gc_online` 仍被 `server/schedulers.rs` 与
