@@ -71,7 +71,6 @@ fn manual_trigger_supported(job_type: &str) -> bool {
             | "linuxdo_user_status_sync"
             | "linuxdo_user_tag_binding_refresh"
             | "forward_proxy_geo_refresh"
-            | "db_compaction"
     )
 }
 
@@ -292,7 +291,7 @@ mod manual_trigger_tests {
     #[test]
     fn manual_global_jobs_reject_key_id() {
         let err =
-            manual_trigger_key_id_for_claim("db_compaction", Some("key-1".to_string())).unwrap_err();
+            manual_trigger_key_id_for_claim("request_logs_gc", Some("key-1".to_string())).unwrap_err();
         assert_eq!(err, ManualTriggerKeyIdError::NotSupported);
     }
 

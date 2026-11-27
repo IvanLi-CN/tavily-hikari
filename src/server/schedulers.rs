@@ -2734,9 +2734,6 @@ async fn run_manual_claimed_job(
             )
             .await
         },
-        "db_compaction" => {
-            run_db_compaction_claimed_job(state, job_id, claim_generation).await
-        }
         _ => finish(state, "error", format!("unsupported manual job type: {job_type}")).await,
     }
 }
@@ -2899,113 +2896,6 @@ async fn defer_reconciliation_for_sqlite_admission(
         )
         .await
         .is_ok()
-}
-
-async fn finish_db_compaction_claimed_job(
-    state: Arc<AppState>,
-    job_id: i64,
-    claim_generation: i64,
-) -> bool {
-    let finish = |state: Arc<AppState>, status: &'static str, message: String| async move {
-        let succeeded = status == "success";
-        let _ = state
-            .proxy
-            .scheduled_job_finish_claimed(job_id, claim_generation, status, Some(&message))
-            .await;
-        succeeded
-    };
-
-    match run_db_compaction_once(state.proxy.sqlite_database_path(), false).await {
-        Ok(report) => {
-            let message = if report.skipped {
-                format!(
-                    "skipped=true forced={} reason={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
-                    report.forced,
-                    report.reason.unwrap_or_else(|| "unknown".to_string()),
-                    report.before.database_bytes,
-                    report.after.database_bytes,
-                    report.before.wal_bytes,
-                    report.after.wal_bytes,
-                    report.before.reclaimable_bytes,
-                    report.after.reclaimable_bytes,
-                    report.before.freelist_count,
-                    report.after.freelist_count
-                )
-            } else {
-                format!(
-                    "skipped=false forced={} database_bytes_before={} database_bytes_after={} wal_bytes_before={} wal_bytes_after={} reclaimable_bytes_before={} reclaimable_bytes_after={} freelist_before={} freelist_after={}",
-                    report.forced,
-                    report.before.database_bytes,
-                    report.after.database_bytes,
-                    report.before.wal_bytes,
-                    report.after.wal_bytes,
-                    report.before.reclaimable_bytes,
-                    report.after.reclaimable_bytes,
-                    report.before.freelist_count,
-                    report.after.freelist_count
-                )
-            };
-            finish(state, "success", message).await
-        }
-        Err(err) => finish(state, "error", err.to_string()).await,
-    }
-}
-
-async fn run_db_compaction_claimed_job(
-    state: Arc<AppState>,
-    job_id: i64,
-    claim_generation: i64,
-) -> bool {
-    let _maintenance = acquire_db_maintenance_write_gate().await;
-    finish_db_compaction_claimed_job(state, job_id, claim_generation).await
-}
-
-fn spawn_db_compaction_scheduler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut next_allowed_at = state.proxy.backend_time().instant_now();
-        loop {
-            state.proxy.backend_time().sleep(Duration::from_secs(3600)).await;
-            if state.proxy.backend_time().instant_now() < next_allowed_at {
-                continue;
-            }
-            let _job_execution_gate = acquire_db_job_execution_gate_for_state(state.as_ref()).await;
-            let _maintenance = acquire_db_maintenance_write_gate().await;
-            let stats = match state.proxy.sqlite_db_stats().await {
-                Ok(stats) => stats,
-                Err(err) => {
-                    tracing::warn!(
-                        component = "db_compaction",
-                        event = "stats_read_failed",
-                        err = %err,
-                    );
-                    continue;
-                }
-            };
-            if stats.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
-                || stats.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO
-            {
-                continue;
-            }
-            if let Err(err) = enqueue_scheduled_job(
-                state.as_ref(),
-                "db_compaction",
-                None,
-                TRIGGER_SOURCE_AUTO,
-            )
-            .await
-            {
-                tracing::warn!(
-                    component = "db_compaction",
-                    event = "enqueue_failed",
-                    err = %err,
-                );
-                continue;
-            }
-            next_allowed_at = state.proxy.backend_time().deadline_after(Duration::from_secs(
-                DB_COMPACTION_COOLDOWN_SECS,
-            ));
-        }
-    });
 }
 
 fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {

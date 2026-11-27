@@ -624,7 +624,7 @@ async fn scheduled_job_claim_serializes_concurrent_duplicate_triggers() {
 
     let results = futures_util::future::join_all(
         (0..crate::SQLITE_POOL_MAX_CONNECTIONS_DEFAULT)
-            .map(|_| proxy.scheduled_job_claim("db_compaction", "manual", None, 1)),
+            .map(|_| proxy.scheduled_job_claim("request_logs_gc", "manual", None, 1)),
     )
     .await;
     let mut claimed = Vec::new();
@@ -708,13 +708,13 @@ async fn scheduled_job_enqueue_coalesces_running_job_and_promotes_manual_source(
         .expect("proxy created");
 
     let running_job_id = proxy
-        .scheduled_job_claim("db_compaction", "scheduler", None, 1)
+        .scheduled_job_claim("request_logs_gc", "scheduler", None, 1)
         .await
         .expect("claim scheduler compaction job")
         .expect("scheduler compaction job created");
 
     let manual = proxy
-        .scheduled_job_enqueue("db_compaction", "manual", None, 1)
+        .scheduled_job_enqueue("request_logs_gc", "manual", None, 1)
         .await
         .expect("enqueue manual duplicate for running job");
     assert_eq!(manual.job_id, running_job_id);
@@ -787,7 +787,7 @@ async fn scheduled_job_mark_running_sets_started_at_after_queue_time() {
         .expect("proxy created");
 
     let queued = proxy
-        .scheduled_job_enqueue("db_compaction", "manual", None, 1)
+        .scheduled_job_enqueue("request_logs_gc", "manual", None, 1)
         .await
         .expect("enqueue manual compaction");
     let row = proxy
@@ -867,7 +867,7 @@ async fn abandon_active_scheduled_jobs_abandons_queued_and_running_rows() {
         .await
         .expect("enqueue manual job");
     let running = proxy
-        .scheduled_job_claim("db_compaction", "auto", None, 1)
+        .scheduled_job_claim("request_logs_gc", "auto", None, 1)
         .await
         .expect("claim running job")
         .expect("running job created");
@@ -905,7 +905,7 @@ async fn abandoned_running_scheduled_jobs_unblocks_future_claims() {
         .expect("proxy created");
 
     let stale_job_id = proxy
-        .scheduled_job_claim("db_compaction", "auto", None, 1)
+        .scheduled_job_claim("request_logs_gc", "auto", None, 1)
         .await
         .expect("claim stale job")
         .expect("stale job claimed");
@@ -923,7 +923,7 @@ async fn abandoned_running_scheduled_jobs_unblocks_future_claims() {
     assert_eq!(status, "abandoned");
 
     let next_job_id = proxy
-        .scheduled_job_claim("db_compaction", "manual", None, 1)
+        .scheduled_job_claim("request_logs_gc", "manual", None, 1)
         .await
         .expect("claim after abandoned")
         .expect("new job claimed");

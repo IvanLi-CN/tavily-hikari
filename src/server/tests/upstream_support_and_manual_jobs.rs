@@ -1967,7 +1967,7 @@ pub(super) async fn manual_jobs_trigger_coalesces_running_job_and_returns_repres
         .await
         .expect("proxy created");
     let running_job_id = proxy
-        .scheduled_job_claim("db_compaction", "scheduler", None, 1)
+        .scheduled_job_claim("request_logs_gc", "scheduler", None, 1)
         .await
         .expect("claim scheduler job")
         .expect("scheduler job created");
@@ -1981,7 +1981,7 @@ pub(super) async fn manual_jobs_trigger_coalesces_running_job_and_returns_repres
     let response = Client::new()
         .post(format!("http://{admin_addr}/api/jobs/trigger"))
         .json(&serde_json::json!({
-            "jobType": "db_compaction"
+            "jobType": "request_logs_gc"
         }))
         .send()
         .await
