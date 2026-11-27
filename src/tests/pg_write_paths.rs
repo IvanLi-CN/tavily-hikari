@@ -1818,24 +1818,27 @@ async fn alert_projection_slice_runs_end_to_end_on_postgres() {
     .await
     .expect("seed auth token log");
 
-    for _ in 0..8 {
+    // The PostgreSQL database is shared by every test in this binary, so the shared cursor may be
+    // anywhere: advance until this test's row lands, with a bounded budget.
+    let mut seeded_row = 0;
+    for _ in 0..240 {
         pair.postgres
             .key_store
             .advance_alert_projection_slice_for_test()
             .await
             .expect("postgres projection slice");
+        seeded_row = fetch_scalar(
+            &pair.postgres.key_store,
+            Backend::Postgres,
+            "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
+             WHERE source_kind = 'auth_token_log' AND source_id = $1",
+            &[Bind::Text(&log_id.to_string())],
+        )
+        .await;
+        if seeded_row == 1 {
+            break;
+        }
     }
-
-    // The PostgreSQL database is shared by every test in this binary, so the projection
-    // already holds rows from other tests. Assert this test's source row specifically.
-    let seeded_row = fetch_scalar(
-        &pair.postgres.key_store,
-        Backend::Postgres,
-        "SELECT COUNT(*)::bigint FROM observability.dashboard_alert_projection_events \
-         WHERE source_kind = 'auth_token_log' AND source_id = $1",
-        &[Bind::Text(&log_id.to_string())],
-    )
-    .await;
     assert_eq!(
         seeded_row, 1,
         "the slice must project the seeded alert (row id {log_id})"
