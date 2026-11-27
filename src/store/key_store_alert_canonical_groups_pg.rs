@@ -1601,7 +1601,7 @@ impl KeyStore {
             .await?;
         let group = serde_json::from_str(&payload)
             .map_err(|_| ProxyError::Other("invalid canonical alert group payload".to_string()))?;
-        self.complete_admin_alert_canonical_group_payload(snapshot, position, payload)
+        self.complete_admin_alert_canonical_group_payload_pg(snapshot, position, payload)
             .await?;
         Ok(group)
     }
@@ -2168,5 +2168,111 @@ impl KeyStore {
                     };
         tx.commit().await.map_err(ProxyError::Database)?;
         Ok(reclaimed)
+    }
+}
+
+impl KeyStore {
+    async fn complete_admin_alert_canonical_group_payload_pg(
+        &self,
+        snapshot: AdminAlertsCanonicalSnapshot,
+        position: i64,
+        payload: String,
+    ) -> Result<(), ProxyError> {
+        self.ensure_admin_alerts_cache_warm_write_admitted()?;
+        let mut tx = self.begin_pg_write().await?;
+        let owner: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM observability.admin_alert_canonical_groups_state \
+              WHERE singleton = 1 \
+                AND ((active_generation = $1 AND active_projection_revision = $2 \
+                      AND source_recent_generation = $3 AND source_history_generation = $4 \
+                      AND build_generation = 0) \
+                  OR (build_generation = $5 AND build_projection_revision = $6 \
+                      AND build_source_recent_generation = $7 \
+                      AND build_source_history_generation = $8 \
+                      AND build_phase = 'aggregating')))",
+        )
+        .bind(snapshot.build_generation)
+        .bind(snapshot.projection_revision)
+        .bind(snapshot.source_fence.0)
+        .bind(snapshot.source_fence.1)
+        .bind(snapshot.build_generation)
+        .bind(snapshot.projection_revision)
+        .bind(snapshot.source_fence.0)
+        .bind(snapshot.source_fence.1)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !owner {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_owner_lost".to_string(),
+            });
+        }
+        let changed = sqlx::query(
+            "UPDATE observability.admin_alert_canonical_groups \
+                SET payload_json = $1 \
+              WHERE build_generation = $2 AND position = $3",
+        )
+        .bind(payload)
+        .bind(snapshot.build_generation)
+        .bind(position)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Other(
+                "canonical alert group payload row is unavailable".to_string(),
+            ));
+        }
+        sqlx::query(
+            "DELETE FROM observability.admin_alert_canonical_group_payload_read_chunks_v2 \
+              WHERE build_generation = $1 AND build_projection_revision = $2 \
+                AND source_recent_generation = $3 AND source_history_generation = $4 \
+                AND position = $5",
+        )
+        .bind(snapshot.build_generation)
+        .bind(snapshot.projection_revision)
+        .bind(snapshot.source_fence.0)
+        .bind(snapshot.source_fence.1)
+        .bind(position)
+        .execute(&mut *tx)
+        .await?;
+        let state = sqlx::query(
+            "UPDATE observability.admin_alert_canonical_groups_state \
+                SET payload_read_generation = 0, payload_read_position = 0, \
+                    payload_read_chunk_position = 0, payload_read_json = '' \
+              WHERE singleton = 1 \
+                AND ((active_generation = $1 AND active_projection_revision = $2 \
+                      AND source_recent_generation = $3 AND source_history_generation = $4 \
+                      AND build_generation = 0) \
+                  OR (build_generation = $5 AND build_projection_revision = $6 \
+                      AND build_source_recent_generation = $7 \
+                      AND build_source_history_generation = $8 \
+                      AND build_phase = 'aggregating')) \
+                AND payload_read_generation = $9 AND payload_read_position = $10",
+        )
+        .bind(snapshot.build_generation)
+        .bind(snapshot.projection_revision)
+        .bind(snapshot.source_fence.0)
+        .bind(snapshot.source_fence.1)
+        .bind(snapshot.build_generation)
+        .bind(snapshot.projection_revision)
+        .bind(snapshot.source_fence.0)
+        .bind(snapshot.source_fence.1)
+        .bind(snapshot.build_generation)
+        .bind(position)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if state != 1 {
+            tx.rollback().await.ok();
+            return Err(ProxyError::Deferred {
+                operation: "admin_alerts_cache_warm",
+                reason: "groups_snapshot_replaced".to_string(),
+            });
+        }
+        tx.commit().await.map_err(ProxyError::Database)?;
+        Ok(())
     }
 }

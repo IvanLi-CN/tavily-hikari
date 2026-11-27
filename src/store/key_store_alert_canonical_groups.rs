@@ -2244,6 +2244,11 @@ impl KeyStore {
         position: i64,
         payload: String,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .complete_admin_alert_canonical_group_payload_pg(snapshot, position, payload)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime

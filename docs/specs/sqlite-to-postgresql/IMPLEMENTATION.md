@@ -43,12 +43,13 @@
 
 | 类别         | 模块                                                                                                                                                                                                                                                                                    | 处置             |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| 待移植（1）  | `key_store_alert_canonical_groups`（82 条 SQL，`rowid`/`INDEXED BY` 依赖需先定 PG 栅栏方案）                                                                                                                                                                                            | 加 PG 分支       |
+| 待移植（0）  | 无：`key_store_alert_canonical_groups` 已在本轮完成（`rowid` → `ctid`、`INDEXED BY` 去掉、`build_source_rowid_upper_bound` → `projection_revision` 栅栏）                                                                                                                               | —                |
 | 待退役（4）  | `key_store_ha`、`key_store_ha_gc_online`、`key_store_ha_schema`、`key_store_ha_watermarks`                                                                                                                                                                                              | 删除（ADR 0004） |
 | 待删除（14） | `sqlite_runtime`、`sqlite_runtime_cooperative`、`immediate_transaction`、`key_store_observability_sidecar`、`key_store_bootstrap{,_legacy}`、`key_store_migrations_{a,b}`、`key_store_schema_migrations{,_convergence}`、`reconciliation_projection_controller`、`mod` 中的 SQLite 装配 | W3-cleanup       |
 
 本轮完成的模块：`key_store_alert_projection`（投影族整体）、`key_store_admin_privacy_read`、
-`key_store_alert_canonical_catalog`、`key_store_alert_canonical_semantic_reduction`。
+`key_store_alert_canonical_catalog`、`key_store_alert_canonical_semantic_reduction`、
+`key_store_alert_canonical_groups`。
 `key_store_alerts`、`key_store_reconciliation_{progress,key_observations}`、
 `key_store_upstream_reconciliation_{admission,research}`、`key_store_quota_schema_semantic_migration`、
 `key_store_admin_passkey_schema` 已在更早批次接入 PG。
