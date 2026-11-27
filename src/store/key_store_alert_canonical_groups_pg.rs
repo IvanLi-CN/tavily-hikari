@@ -66,7 +66,11 @@ impl KeyStore {
                 row.try_get("build_partition_cursor_row_sort_id")?,
             ),
             build_partition_events_json: row.try_get("build_partition_events_json")?,
-            build_partition_source_complete: row.try_get("build_partition_source_complete")?,
+            // `build_partition_source_complete` is `bigint` by the affinity mapping; SQLite decodes
+            // 0/1 into bool, PostgreSQL does not.
+            build_partition_source_complete: row
+                .try_get::<i64, _>("build_partition_source_complete")?
+                != 0,
             build_partition_fragment_next_position: row
                 .try_get("build_partition_fragment_next_position")?,
             build_partition_finalize_fragment_position: row
@@ -468,7 +472,7 @@ impl KeyStore {
                 r#"UPDATE observability.admin_alert_canonical_groups_state
                       SET build_cursor_occurred_at = $1,
                           build_cursor_row_sort_id = $2,
-                          build_phase = CASE WHEN $3 THEN 'aggregating' ELSE 'copying' END
+                          build_phase = CASE WHEN $3 <> 0 THEN 'aggregating' ELSE 'copying' END
                     WHERE singleton = 1 AND build_generation = $4
                       AND build_projection_revision = $5
                       AND build_cursor_occurred_at = $6
@@ -484,7 +488,7 @@ impl KeyStore {
             )
             .bind(committed_cursor.0)
             .bind(&committed_cursor.1)
-            .bind(chunk_complete)
+            .bind(i64::from(chunk_complete))
             .bind(snapshot.build_generation)
             .bind(snapshot.projection_revision)
             .bind(prior_cursor.0)
@@ -623,7 +627,7 @@ impl KeyStore {
         )
         .bind(next_cursor.0)
         .bind(&next_cursor.1)
-        .bind(complete)
+        .bind(i64::from(complete))
         .bind(next_fragment_position)
         .bind(snapshot.build_generation)
         .bind(snapshot.projection_revision)
