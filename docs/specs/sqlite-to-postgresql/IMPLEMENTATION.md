@@ -119,6 +119,22 @@
 W3 删除顺序也由此确定：投影族整体移植完成前，投影读路径的 PG 化没有意义——PG 的
 `observability.dashboard_alert_projection_events` 在生产里仍是空的。
 
+#### W3 进度（2026-11-27）
+
+已退役的 SQLite-only 入口（`Dockerfile` 与代码同步移除）：
+
+| 入口                                                                     | 处置 | 依据                                              |
+| ------------------------------------------------------------------------ | ---- | ------------------------------------------------- |
+| `observability_sidecar_migrate`（镜像内二进制 + 3 个测试）               | 删除 | 单一 PG 库 + 两个 schema 后无此概念（REQ-PG-011） |
+| `observability_lock_holder`（镜像内二进制）                              | 删除 | 无协作进程文件锁（REQ-PG-009）                    |
+| `db_compaction_once`（镜像内二进制）                                     | 删除 | 无 `VACUUM`/freelist 合同（REQ-PG-009）           |
+| `db_compaction` 应用内 job（调度器、执行函数、权限、报告类型、2 个测试） | 删除 | 同上；autovacuum 承接                             |
+
+仍需处理：`key_store_ha*` 四模块退役（调用点在 `server/schedulers.rs` 与
+`tavily_proxy/proxy_ha.rs`）、`sqlite_runtime*`、`bootstrap_legacy`、`migrations_{a,b}`、
+`schema_migrations{,_convergence}`、`reconciliation_projection_controller`，
+以及 `Cargo.toml` 的 `sqlx/sqlite` 与 `libsqlite3-sys`。
+
 #### W3 可执行删除顺序（实测调用链）
 
 `observability_sidecar` 与 `bootstrap_legacy` 不是被独立的生产路径调用，而是被 SQLite 的
