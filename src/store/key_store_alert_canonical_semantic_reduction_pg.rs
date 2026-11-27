@@ -154,8 +154,9 @@ impl KeyStore {
                 r#"INSERT INTO observability.admin_alert_canonical_group_reduction_events
                        (build_generation, partition_key, event_position, child_ordinal, event_json)
                    VALUES ($1, $2, $3, $4, $5)
-                   ON CONFLICT (build_generation, partition_key, event_position, child_ordinal)
-                   DO UPDATE SET event_json = excluded.event_json"#,
+                   ON CONFLICT (build_generation, partition_key, event_position)
+                   DO UPDATE SET child_ordinal = excluded.child_ordinal,
+                                 event_json = excluded.event_json"#,
             )
             .bind(snapshot.build_generation)
             .bind(&partition)
