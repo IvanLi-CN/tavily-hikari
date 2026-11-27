@@ -44,6 +44,7 @@ fn postgres_alert_sql(sql: &str) -> String {
     .replace("CAST(atl.id AS TEXT)", "CAST(atl.id AS text)")
     .replace("CAST(m.id AS TEXT)", "CAST(m.id AS text)")
     .replace("CAST(j.id AS TEXT)", "CAST(j.id AS text)")
+    .replace("j.id AS job_id,", "CAST(j.id AS text) AS job_id,")
         .replace("FROM api_key_maintenance_records", "FROM core.api_key_maintenance_records")
         .replace("FROM api_key_transient_backoffs", "FROM core.api_key_transient_backoffs")
         .replace("FROM auth_token_logs", "FROM core.auth_token_logs")
@@ -689,7 +690,7 @@ impl KeyStore {
                 'job_failed' AS reason_code,
                 j.message AS reason_summary,
                 NULL AS reason_detail,
-                CAST(j.id AS TEXT) AS job_id,
+                j.id AS job_id,
                 j.job_type AS job_type,
                 j.trigger_source AS job_trigger_source,
                 j.status AS job_status,
@@ -1277,7 +1278,7 @@ impl KeyStore {
                 'job_failed' AS reason_code,
                 j.message AS reason_summary,
                 NULL AS reason_detail,
-                CAST(j.id AS TEXT) AS job_id,
+                j.id AS job_id,
                 j.job_type AS job_type,
                 j.trigger_source AS job_trigger_source,
                 j.status AS job_status,
