@@ -23,9 +23,6 @@ RUN cargo build --release --locked \
     --bin monthly_quota_rebase \
     --bin mcp_search_billing_repair \
     --bin mcp_request_log_retry_repair \
-    --bin observability_sidecar_migrate \
-    --bin observability_lock_holder \
-    --bin db_compaction_once \
     --bin request_logs_gc_once \
     --bin ha_outbox_cleanup_once \
     --bin ha_trigger_repair_once
@@ -80,9 +77,6 @@ COPY --from=maintenance-builder /app/target/release/billing_ledger_audit /payloa
 COPY --from=maintenance-builder /app/target/release/monthly_quota_rebase /payload/bin/monthly_quota_rebase
 COPY --from=maintenance-builder /app/target/release/mcp_search_billing_repair /payload/bin/mcp_search_billing_repair
 COPY --from=maintenance-builder /app/target/release/mcp_request_log_retry_repair /payload/bin/mcp_request_log_retry_repair
-COPY --from=maintenance-builder /app/target/release/observability_sidecar_migrate /payload/bin/observability_sidecar_migrate
-COPY --from=maintenance-builder /app/target/release/observability_lock_holder /payload/bin/observability_lock_holder
-COPY --from=maintenance-builder /app/target/release/db_compaction_once /payload/bin/db_compaction_once
 COPY --from=maintenance-builder /app/target/release/request_logs_gc_once /payload/bin/request_logs_gc_once
 COPY --from=maintenance-builder /app/target/release/ha_outbox_cleanup_once /payload/bin/ha_outbox_cleanup_once
 COPY --from=maintenance-builder /app/target/release/ha_trigger_repair_once /payload/bin/ha_trigger_repair_once
@@ -108,9 +102,6 @@ RUN set -eux; \
       /payload/bin/monthly_quota_rebase \
       /payload/bin/mcp_search_billing_repair \
       /payload/bin/mcp_request_log_retry_repair \
-      /payload/bin/observability_sidecar_migrate \
-      /payload/bin/observability_lock_holder \
-      /payload/bin/db_compaction_once \
       /payload/bin/request_logs_gc_once \
       /payload/bin/ha_outbox_cleanup_once \
       /payload/bin/ha_trigger_repair_once \
@@ -170,15 +161,6 @@ RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_search_bil
 RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/mcp_request_log_retry_repair,target=/tmp/mcp_request_log_retry_repair,ro \
     install -m 0755 -o 0 -g 0 /tmp/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair \
     && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/mcp_request_log_retry_repair /usr/local/bin /etc /tmp
-RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_sidecar_migrate,target=/tmp/observability_sidecar_migrate,ro \
-    install -m 0755 -o 0 -g 0 /tmp/observability_sidecar_migrate /usr/local/bin/observability_sidecar_migrate \
-    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/observability_sidecar_migrate /usr/local/bin /etc /tmp
-RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/observability_lock_holder,target=/tmp/observability_lock_holder,ro \
-    install -m 0755 -o 0 -g 0 /tmp/observability_lock_holder /usr/local/bin/observability_lock_holder \
-    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/observability_lock_holder /usr/local/bin /etc /tmp
-RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/db_compaction_once,target=/tmp/db_compaction_once,ro \
-    install -m 0755 -o 0 -g 0 /tmp/db_compaction_once /usr/local/bin/db_compaction_once \
-    && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/db_compaction_once /usr/local/bin /etc /tmp
 RUN --mount=type=bind,from=payload-normalizer,source=/payload/bin/request_logs_gc_once,target=/tmp/request_logs_gc_once,ro \
     install -m 0755 -o 0 -g 0 /tmp/request_logs_gc_once /usr/local/bin/request_logs_gc_once \
     && touch -d "@${SOURCE_DATE_EPOCH}" /usr/local/bin/request_logs_gc_once /usr/local/bin /etc /tmp

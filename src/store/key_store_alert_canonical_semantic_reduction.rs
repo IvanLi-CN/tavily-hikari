@@ -120,6 +120,15 @@ impl KeyStore {
         partition_key: &str,
         child_ordinal: i64,
     ) -> Result<i64, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .admin_alert_canonical_semantic_child_event_bytes_pg(
+                    snapshot,
+                    partition_key,
+                    child_ordinal,
+                )
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -440,6 +449,19 @@ impl KeyStore {
         children: Vec<SemanticChildReduction>,
         mothers: Vec<SemanticMotherReduction>,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .commit_admin_alert_canonical_semantic_classification_pg(
+                    snapshot,
+                    state,
+                    progress_json,
+                    next_fragment_position,
+                    staged_events,
+                    children,
+                    mothers,
+                )
+                .await;
+        }
         let partition = state.build_partition_key.clone();
         let prior_progress_json = state.build_partition_events_json.clone();
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
@@ -583,6 +605,11 @@ impl KeyStore {
         partition_key: &str,
         ordinal: i64,
     ) -> Result<Option<SemanticChildReduction>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .read_admin_alert_canonical_semantic_child_pg(snapshot, partition_key, ordinal)
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -637,6 +664,11 @@ impl KeyStore {
         partition_key: &str,
         ordinal: i64,
     ) -> Result<Option<SemanticMotherReduction>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .read_admin_alert_canonical_semantic_mother_pg(snapshot, partition_key, ordinal)
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;

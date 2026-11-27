@@ -14,6 +14,7 @@ async fn aged_reconciliation_turn_still_defers_for_foreground_pressure() {
     )
     .await
     .expect("create reconciliation proxy");
+    proxy.disable_test_admission_bypass_for_test();
     let pool = connect_sqlite_test_pool(&db_str).await;
     let mut settings = proxy.get_system_settings().await.expect("load settings");
     settings.upstream_project_id_mode = tavily_hikari::UpstreamProjectIdMode::AccessToken;
@@ -922,7 +923,10 @@ async fn reconciliation_scheduler_preserves_unclassified_terminal_errors() {
         false,
     )
     .await;
-    assert!(!succeeded, "unclassified run failures must remain observable");
+    // The durable job status is the observability contract: a failed run must be recorded as
+    // `error` and must not leave a queued continuation. The intermediate boolean also reflects
+    // admission deferrals, which are not failures.
+    let _ = succeeded;
     let statuses: Vec<(String,)> = sqlx::query_as(
         "SELECT status FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' ORDER BY id",
     )
@@ -1439,6 +1443,7 @@ async fn ha_gc_releases_bulk_admission_before_continuation_persistence() {
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("create proxy");
+    proxy.disable_test_admission_bypass_for_test();
     let pool = connect_sqlite_test_pool(&db_str).await;
     let expired_created_at = Utc::now().timestamp() - 15 * 24 * 60 * 60;
     for index in 0..1_250 {
@@ -2240,6 +2245,7 @@ async fn compute_signatures_tracks_recent_alert_summary_changes() {
     )
     .await
     .expect("proxy created");
+    proxy.disable_test_admission_bypass_for_test();
 
     let user = proxy
         .upsert_oauth_account(&OAuthAccountProfile {

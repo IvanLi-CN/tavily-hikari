@@ -36,6 +36,138 @@
 3. 删除被退役模块与维护二进制；补齐 PG 版维护入口。
 4. 测试改造：PG 基线、CI 服务容器、并发回归与确定性时间合同保持。
 
+#### 现状（2026-11-27）
+
+含 SQL 的 `src/store` 模块共 78 个，其中 38 个已有 PG 路径（`self.pg()` 分支或 `*_pg.rs`
+双胞胎模块）。剩余 30 个分三类：
+
+| 类别         | 模块                                                                                                                                                                                                                                                                                    | 处置             |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| 待移植（0）  | 无：`key_store_alert_canonical_groups` 已在本轮完成（`rowid` → `ctid`、`INDEXED BY` 去掉、`build_source_rowid_upper_bound` → `projection_revision` 栅栏）                                                                                                                               | —                |
+| 待退役（4）  | `key_store_ha`、`key_store_ha_gc_online`、`key_store_ha_schema`、`key_store_ha_watermarks`                                                                                                                                                                                              | 删除（ADR 0004） |
+| 待删除（14） | `sqlite_runtime`、`sqlite_runtime_cooperative`、`immediate_transaction`、`key_store_observability_sidecar`、`key_store_bootstrap{,_legacy}`、`key_store_migrations_{a,b}`、`key_store_schema_migrations{,_convergence}`、`reconciliation_projection_controller`、`mod` 中的 SQLite 装配 | W3-cleanup       |
+
+本轮完成的模块：`key_store_alert_projection`（投影族整体）、`key_store_admin_privacy_read`、
+`key_store_alert_canonical_catalog`、`key_store_alert_canonical_semantic_reduction`、
+`key_store_alert_canonical_groups`。
+`key_store_alerts`、`key_store_reconciliation_{progress,key_observations}`、
+`key_store_upstream_reconciliation_{admission,research}`、`key_store_quota_schema_semantic_migration`、
+`key_store_admin_passkey_schema` 已在更早批次接入 PG。
+
+告警与对账读模块都持有 "一个响应一个只读快照" 的合同，移植时先落 PG 只读快照（
+`REPEATABLE READ READ ONLY`），再逐函数接 `self.pg()`。
+
+台账口径（2026-11-27 复核）：`src/store` 共 102 个模块，90 个含 SQL；其中 62 个带
+`self.pg()` 分支或 `*_pg.rs` 双胞胎。按检测规则看剩余 28 个，但逐个复核后都不是待移植项：
+
+- 22 个是 `*_pg.rs` 双胞胎或 `*_tests.rs`，本就不需要自己分派；
+- 4 个是 `key_store_ha*`，ADR 0004 退役；
+- 7 个是 `immediate_transaction`、`bootstrap_legacy`、`migrations_{a,b}`、
+  `schema_migrations{,_convergence}`、`reconciliation_projection_controller`、`sqlite_runtime*`，
+  属 W3-cleanup 删除；
+- 1 个是 `key_store_dashboard_window_metrics`，四个函数都有 `_pg` 双胞胎，调用方
+  `key_store_dashboard_month_series` 已按方言选路，无需分派。
+
+已完成入口（均带 `pg-write-paths` 跨后端对拍测试）：
+
+- `PgReadSession`：`REPEATABLE READ, READ ONLY` 单事务，替代 SQLite 读会话的一致性职责；
+  不带 cooperative 预算（那是为了管不可取消的原生 SQLite 工作）。
+- 告警事件页：`fetch_admin_alert_events_page_for_canonical_snapshot`、
+  `fetch_admin_alert_events_page_for_operation`（复用双方言 CTE builder）。
+- 对账进度：`daily_reconciliation_progress`（含空窗口 PG 冒烟测试）。
+- 告警分组 CTE：`instr`/`strftime` 本地日月中点/`printf` 窗口键改为按方言生成；
+  `UNION ALL` 两支在 PG 下使用显式类型字面量（SQLite 动态类型容忍、PG 按位置严格匹配）。
+  分组 SQL 已在 `pg-write-paths` 中直接执行验证。
+- 对账 key observations：读与写都走 PG（写侧用 `FOR UPDATE` 锁工作行代替 SQLite 立即事务）。
+- 对账运行统计与 research 不可用标记：`upstream_reconciliation_last_run_stats`、
+  `mark_upstream_reconciliation_research_unavailable` 已接 PG，并有跨库/落库断言。
+- 对账 research 候选选择：`next_upstream_reconciliation_research_candidates` 有 PG twin，
+  游标遍历、hydrate 与冷却计数同源，页面装配为双方言共享纯函数。
+- 告警分组页：`fetch_admin_alert_groups_page` 的 PG 分支在一个可重复读会话内完成计数、
+  分页、每组最新事件与母组补全。
+- PG 迁移新增 `0003_singletons.sql`：播种 5 张对账单例表的 `id='local'`，否则 PG 读全部为空。
+- 告警投影写入与状态读取同批接 PG：`persist_alert_projection_slice` 与
+  `alert_projection_status` 走同一事务模型（切片单事务、状态更新按 `generation` 乐观比较），
+  写入侧不再依赖 SQLite 的 owned immediate 包装。
+
+#### PostgreSQL 类型适配清单（每条来自一次真实 CI 失败）
+
+| 现象                                            | 根因                                                | 处置                                                                          |
+| ----------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `UNION types text and bigint cannot be matched` | 分支列类型不同                                      | 给整数列/`NULL` 显式定型                                                      |
+| `INT8 ... TEXT` on decode                       | `json_extract` → `->>` 恒返回 text                  | 整数成员加 `::bigint`                                                         |
+| `invalid input syntax for type bigint: "true"`  | payload 存 JSON 布尔                                | `CASE WHEN ... = 'true' THEN 1 ELSE 0 END`，且结果 `::bigint`（CASE 是 int4） |
+| `column "bound_users" does not exist`           | PG 的 `HAVING` 不支持 select 别名                   | `HAVING` 重复完整聚合表达式                                                   |
+| `SUM(...)` decode 失败                          | PG 把 bigint 的 `SUM` 提升为 numeric                | `CAST(... AS BIGINT)`                                                         |
+| `relation "x" does not exist`                   | 未加 schema 前缀                                    | `core.` / `observability.`                                                    |
+| `relation "observability.core.x"`               | 重写把已带前缀的再前缀一次                          | 先替换 `core.<已带前缀>` 回原样                                               |
+| 投影切片返回 0 行                               | `AlertProjectionSourceKey::source_id` 应为裸 id     | 只让 `row_sort_id` 带前缀                                                     |
+| 投影 CTE 的类型修复无效                         | 它走 `alert_payload_projection_sql`，不经通用重写器 | 在该函数内处理类型                                                            |
+
+**排查顺序**：先确认 SQL 由哪条路径生成（通用重写器 / 专用 helper），再核对该路径的类型处理；否则会陷入「同一错误反复修复」。
+
+#### 迁移硬约束（由真实失败得出）
+
+1. 纯装配逻辑可抽成双方言共享函数，但 SQLite 的 `complete_query_or_defer` /
+   `complete_native_read` 必须留在原分支——它们负责归还读连接；抽走会让连接被丢弃。
+2. 方言差异必须逐条核对：无默认值的 NOT NULL 列、`CASE ... THEN 1 ELSE 0`（PG 为 int4）、
+   `SUM` 与窗口 `SUM`（PG 为 numeric）、`UNION ALL` 分支按位置严格匹配。
+3. **跨表事务单元必须整库迁移**。告警投影族（切片推进器 + `persist_alert_projection_slice`
+   - `alert_projection_status` + 投影读路径）是同一个逻辑事务；只迁写入侧会让
+     generation 乐观比较永不匹配（实测：`alert projection state changed while a slice was in flight`），并留下未回滚的投影行。
+
+W3 删除顺序也由此确定：投影族整体移植完成前，投影读路径的 PG 化没有意义——PG 的
+`observability.dashboard_alert_projection_events` 在生产里仍是空的。
+
+#### W3 进度（2026-11-27）
+
+已退役的 SQLite-only 入口（`Dockerfile` 与代码同步移除）：
+
+| 入口                                                                     | 处置 | 依据                                              |
+| ------------------------------------------------------------------------ | ---- | ------------------------------------------------- |
+| `observability_sidecar_migrate`（镜像内二进制 + 3 个测试）               | 删除 | 单一 PG 库 + 两个 schema 后无此概念（REQ-PG-011） |
+| `observability_lock_holder`（镜像内二进制）                              | 删除 | 无协作进程文件锁（REQ-PG-009）                    |
+| `db_compaction_once`（镜像内二进制）                                     | 删除 | 无 `VACUUM`/freelist 合同（REQ-PG-009）           |
+| `db_compaction` 应用内 job（调度器、执行函数、权限、报告类型、2 个测试） | 删除 | 同上；autovacuum 承接                             |
+
+仍需处理：`key_store_ha*` 四模块退役（调用点在 `server/schedulers.rs` 与
+`tavily_proxy/proxy_ha.rs`）、`sqlite_runtime*`、`bootstrap_legacy`、`migrations_{a,b}`、
+`schema_migrations{,_convergence}`、`reconciliation_projection_controller`，
+以及 `Cargo.toml` 的 `sqlx/sqlite` 与 `libsqlite3-sys`。
+
+#### W3 可执行删除顺序（实测调用链）
+
+`observability_sidecar` 与 `bootstrap_legacy` 不是被独立的生产路径调用，而是被 SQLite 的
+attach 探测（`store/mod.rs` 的 `select_observability_attach_path` →
+`configure_observability_journal_mode`）调用。因此删除顺序应当是自顶向下：
+
+1. 让 `KeyStore::open` 在 `pg_pool` 存在时完全跳过 SQLite attach 探测（当前只是绕过读取，初始化仍在跑）。
+2. 删除该探测及其 `configure_observability_journal_mode` 调用 → `observability_sidecar` 失去调用者。
+3. 删除 `observability_sidecar` → `bootstrap_legacy` 失去调用者。
+4. 删除 `bootstrap_legacy`。
+5. `reconciliation_projection_controller` 的类型 `ReconciliationProjectionSliceOutcome` 被
+   `key_store_upstream_reconciliation.rs` 与 `proxy_quota_sync_and_jobs.rs` 引用，需先把该类型
+   移到独立模块或改为新投影路径的类型，再删旧实现。
+6. 上述完成后，`Cargo.toml` 的 `sqlx/sqlite` 与 `libsqlite3-sys` 才可移除；此时编译器会列出
+   剩余全部 SQLite 引用（当前 173 个文件），逐条删除或改为 PG。
+
+每个步骤都要保持 `cargo check` 通过，且不能在同一提交里既删调用者又留着被调用者。
+
+#### W3 阻塞项（复核后修正）
+
+- `key_store_ha*`、`key_store_ha_gc_online` 仍被 `server/schedulers.rs` 与
+  `tavily_proxy/proxy_ha.rs` 调用，不能仅因 ADR 0004 就删除。
+- `key_store_observability_sidecar` 仍被 `mod.rs` 与 `bin/support/sqlite_sidecar.rs` 使用。
+- `reconciliation_projection_controller` 仍被 `key_store_upstream_reconciliation.rs` 的
+  `advance_slice` 调用。
+- 因此 W3 只能在「投影族整体迁移」与「HA/sidecar 替代路径就位」之后开始。
+
+尚未完成：告警分组页与目录的 PG 读取路径（SQL 已可执行，差行解码与两个 session 化辅助函数）、
+告警投影写入侧、`admin_privacy_read`、对账 research/admission。
+
+告警投影的“状态读取”与“写入”必须同批落地：写入仍走 SQLite 时，PG 读到的覆盖状态永远停在
+`projecting`，会让 `alert_projection_rebuild_is_idempotent` 这类收敛断言无法完成。
+
 ### D4 发布
 
 1. 第二个镜像进入 release 流水线：digest 分集、manifest 合并、平台校验、标签与版本标注。
@@ -47,6 +179,25 @@
 1. 在生产规模快照上跑完整流程，记录各阶段耗时。
 2. 复核账本类表结论；记录失败与重试处置。
 3. 报告存放位置不入库；只在 SPEC/IMPLEMENTATION 保留不含生产信息的摘要。
+
+#### 首轮演练（2026-11-24，生产数据副本）
+
+全链路在隔离 VM 内完成，生产实例只读。各阶段耗时与结论：
+
+| 阶段                           | 规模                    | 耗时          |
+| ------------------------------ | ----------------------- | ------------- |
+| 在线快照（两库 `VACUUM INTO`） | 9.14 GiB + 17.5 GiB     | 2m20s + 51s   |
+| 传输（服务器 → 中转 → VM）     | 11.84 GB                | 2m30s + 3m20s |
+| `s2pg snapshot`                | 123 表 / 23,416,266 行  | 3m22s         |
+| `s2pg load --reset`            | 23,416,266 行 / 17 序列 | 10m33s        |
+| `s2pg verify`                  | 123 表三类比对          | 约 6m         |
+
+结论：`overall: OK`，两侧行数均为 23,416,266，失败项 0。两段 sha256 与源文件一致。
+
+演练首次暴露并修复的三个工具缺陷见 [HISTORY.md](HISTORY.md)：`.backup` 在持续写入下反复重启，
+改用 `VACUUM INTO`；`load` 必须挂起用户触发器；`verify` 改按列集合而非列顺序比对。
+
+报告与快照保存在不入库的位置，不随仓库分发。
 
 ## 顺序与停靠点
 

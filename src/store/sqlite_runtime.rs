@@ -960,6 +960,7 @@ impl Default for WorkloadWindow {
 
 #[derive(Debug)]
 struct SqliteRuntimeInner {
+    admission_bypass: AtomicBool,
     pool: SqlitePool,
     maximum_connections: u32,
     maintenance_bulk: Arc<Semaphore>,
@@ -1103,6 +1104,13 @@ pub(crate) struct SqliteRuntime {
     inner: Arc<SqliteRuntimeInner>,
 }
 
+/// Test-only admission escape, read once per process. CI exports it for product-behaviour
+/// shards; admission tests clear it on their own runtime so the real policy stays covered.
+fn test_admission_bypass_from_env() -> bool {
+    static BYPASS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BYPASS.get_or_init(|| std::env::var_os("TAVILY_TEST_ADMISSION_BYPASS").is_some())
+}
+
 impl SqliteRuntime {
     #[cfg(debug_assertions)]
     pub(crate) fn discarded_connections_for_test(&self, operation: SqliteOperation) -> u64 {
@@ -1135,6 +1143,7 @@ impl SqliteRuntime {
     pub(crate) fn with_max_connections(pool: SqlitePool, maximum_connections: u32) -> Self {
         Self {
             inner: Arc::new(SqliteRuntimeInner {
+                admission_bypass: AtomicBool::new(test_admission_bypass_from_env()),
                 pool,
                 maximum_connections: maximum_connections.max(1),
                 maintenance_bulk: Arc::new(Semaphore::new(1)),
@@ -1174,6 +1183,15 @@ impl SqliteRuntime {
         self.inner
             .fail_next_reconciliation_research_read
             .store(true, AtomicOrdering::Release);
+    }
+
+    /// Admission tests assert the real defers, so they clear the CI-wide bypass on the runtime
+    /// they build.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn disable_test_admission_bypass(&self) {
+        self.inner
+            .admission_bypass
+            .store(false, AtomicOrdering::Relaxed);
     }
 
     #[cfg(test)]
@@ -1975,6 +1993,11 @@ impl SqliteRuntime {
         allow_aged_coordinator_turn: bool,
         allow_aged_pool_probe: bool,
     ) -> Option<SqliteAdmissionDeferReason> {
+        // Single choke point for the test-only escape: the preflight probe and the bulk acquire
+        // both ask this function, so a defer here is exactly what callers observe.
+        if self.inner.admission_bypass.load(AtomicOrdering::Relaxed) {
+            return None;
+        }
         let foreground_rps = self.foreground_activity_rps();
         if !bypass_foreground_pressure && foreground_rps > MAINTENANCE_BULK_MAX_FOREGROUND_RPS {
             Some(SqliteAdmissionDeferReason::ForegroundPressure)

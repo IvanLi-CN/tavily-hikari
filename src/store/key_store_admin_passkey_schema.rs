@@ -110,7 +110,12 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn ensure_admin_passkey_schema(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn ensure_admin_passkey_schema(&self) -> Result<(), ProxyError> {
+        // The PostgreSQL baseline ships the scoped passkey tables; only SQLite needs the upgrade
+        // path that rewrites pre-scope primary keys.
+        if self.pg_pool.is_some() {
+            return Ok(());
+        }
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS admin_passkey_scopes (

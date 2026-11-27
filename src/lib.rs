@@ -557,19 +557,6 @@ pub struct RequestStatisticsRecoveryReport {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DbCompactionReport {
-    pub skipped: bool,
-    pub forced: bool,
-    pub reason: Option<String>,
-    pub min_reclaimable_bytes: u64,
-    pub min_reclaimable_ratio: f64,
-    pub before: SqliteDbStats,
-    pub after: SqliteDbStats,
-    pub elapsed_ms: u128,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ObservabilitySidecarMigrationReport {
     pub dry_run: bool,
     pub offline_lock_acquired: bool,
@@ -1161,52 +1148,9 @@ pub const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
 pub const QUOTA_SYNC_FETCH_TIMEOUT_SECS: u64 = USAGE_PROBE_TIMEOUT_SECS;
 pub const QUOTA_SYNC_JOB_TIMEOUT_SECS: u64 = 20;
 pub const QUOTA_SYNC_STALE_RUNNING_SECS: i64 = 40;
-pub const DB_COMPACTION_MIN_RECLAIMABLE_BYTES: u64 = 512 * 1024 * 1024;
-pub const DB_COMPACTION_MIN_RECLAIMABLE_RATIO: f64 = 0.20;
-pub const DB_COMPACTION_COOLDOWN_SECS: u64 = 24 * 60 * 60;
 pub const HA_OUTBOX_GC_DEFAULT_BATCH_SIZE: i64 = 20_000;
 pub const HA_OUTBOX_GC_DEFAULT_MAX_BATCHES: i64 = 8;
 pub const HA_OUTBOX_GC_DEFAULT_MAX_RUNTIME_SECS: u64 = 20;
-
-pub async fn run_db_compaction_once(
-    database_path: &str,
-    force: bool,
-) -> Result<DbCompactionReport, ProxyError> {
-    let key_store = crate::store::KeyStore::open_for_request_logs_gc(database_path).await?;
-    let started = Instant::now();
-    let before = key_store.sqlite_db_stats().await?;
-
-    if !force
-        && (before.reclaimable_bytes < DB_COMPACTION_MIN_RECLAIMABLE_BYTES
-            || before.reclaimable_ratio < DB_COMPACTION_MIN_RECLAIMABLE_RATIO)
-    {
-        return Ok(DbCompactionReport {
-            skipped: true,
-            forced: false,
-            reason: Some(format!(
-                "reclaimable space below threshold (bytes={} ratio={:.6})",
-                before.reclaimable_bytes, before.reclaimable_ratio
-            )),
-            min_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES,
-            min_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
-            before: before.clone(),
-            after: before,
-            elapsed_ms: started.elapsed().as_millis(),
-        });
-    }
-
-    let after = key_store.compact_sqlite_database().await?;
-    Ok(DbCompactionReport {
-        skipped: false,
-        forced: force,
-        reason: None,
-        min_reclaimable_bytes: DB_COMPACTION_MIN_RECLAIMABLE_BYTES,
-        min_reclaimable_ratio: DB_COMPACTION_MIN_RECLAIMABLE_RATIO,
-        before,
-        after,
-        elapsed_ms: started.elapsed().as_millis(),
-    })
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct HaOutboxGcOptions {

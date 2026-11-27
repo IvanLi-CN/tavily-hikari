@@ -354,7 +354,12 @@ impl KeyStore {
         rebuild_result.map_err(ProxyError::Database)
     }
 
-    async fn migrate_quota_schema_to_semantic_columns(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn migrate_quota_schema_to_semantic_columns(&self) -> Result<(), ProxyError> {
+        // The PostgreSQL baseline already carries the semantic columns; this shim only exists to
+        // upgrade SQLite schemas written before the rename.
+        if self.pg_pool.is_some() {
+            return Ok(());
+        }
         self.rebuild_account_quota_limits_with_semantic_columns()
             .await?;
         self.rebuild_user_tags_with_semantic_columns().await?;

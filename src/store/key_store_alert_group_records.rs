@@ -80,7 +80,7 @@ impl KeyStore {
             return Ok(HashMap::new());
         }
         let mut query = QueryBuilder::new("");
-        Self::push_projected_alert_events_cte(&mut query, filters);
+        Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
         query.push(" SELECT * FROM alerts WHERE row_sort_id IN (");
         {
             let mut separated = query.separated(", ");

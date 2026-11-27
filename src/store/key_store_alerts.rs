@@ -805,7 +805,7 @@ impl KeyStore {
     ) {
         match source {
             AlertReadSource::Raw => Self::push_alert_events_cte(query, filters),
-            AlertReadSource::Projected => Self::push_projected_alert_events_cte(query, filters),
+            AlertReadSource::Projected => Self::push_projected_alert_events_cte(query, filters, SqlDialect::Sqlite),
         }
     }
 
@@ -996,6 +996,21 @@ impl KeyStore {
         per_page: i64,
         operation: SqliteOperation,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_admin_alert_events_page_pg(
+                    alert_type,
+                    since,
+                    until,
+                    user_id,
+                    token_id,
+                    key_id,
+                    request_kinds,
+                    page,
+                    per_page,
+                )
+                .await;
+        }
         let requested_filters = AlertEventFilters {
             alert_type,
             since,
@@ -1034,7 +1049,7 @@ impl KeyStore {
             self.ensure_admin_alert_projection_coverage(&mut session).await?;
 
             let mut count_query = QueryBuilder::new("");
-            Self::push_projected_alert_events_cte(&mut count_query, filters);
+            Self::push_projected_alert_events_cte(&mut count_query, filters, SqlDialect::Sqlite);
             count_query.push(" SELECT COUNT(*) FROM alerts WHERE 1 = 1");
             Self::push_alert_request_kind_filter(
                 &mut count_query,
@@ -1045,7 +1060,7 @@ impl KeyStore {
             let total = session.query(count_result).await?;
 
             let mut query = QueryBuilder::new("");
-            Self::push_projected_alert_events_cte(&mut query, filters);
+            Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
             query.push(" SELECT * FROM alerts WHERE 1 = 1");
             Self::push_alert_request_kind_filter(
                 &mut query,
@@ -1084,6 +1099,15 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<PaginatedAlertEvents, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_admin_alert_events_page_for_canonical_snapshot_pg(
+                    build_generation,
+                    page,
+                    per_page,
+                )
+                .await;
+        }
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100);
         let offset = (page - 1) * per_page;
@@ -1134,6 +1158,7 @@ impl KeyStore {
         result
     }
 
+
     async fn fetch_projected_alert_events_page(
         &self,
         filters: AlertEventFilters<'_>,
@@ -1173,7 +1198,7 @@ impl KeyStore {
         let offset = (page - 1) * per_page;
 
         let mut count_query = QueryBuilder::new("");
-        Self::push_projected_alert_events_cte(&mut count_query, filters);
+        Self::push_projected_alert_events_cte(&mut count_query, filters, SqlDialect::Sqlite);
         count_query.push(" SELECT COUNT(*) FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut count_query,
@@ -1185,7 +1210,7 @@ impl KeyStore {
             .await?;
 
         let mut query = QueryBuilder::new("");
-        Self::push_projected_alert_events_cte(&mut query, filters);
+        Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
         query.push(" SELECT * FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut query,
@@ -1376,26 +1401,154 @@ impl KeyStore {
         format!("COALESCE(NULLIF(TRIM({alias}.request_kind_key), ''), 'unknown')")
     }
 
+    /// Case-sensitive substring test. SQLite spells it `instr`, PostgreSQL `strpos`; both return
+    /// a 1-based position or zero.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_text_contains_sql(expr: &str, needle: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!("instr({expr}, '{needle}') > 0"),
+            SqlDialect::Postgres => format!("strpos({expr}, '{needle}') > 0"),
+        }
+    }
+
+    /// Start of the server-local day or month that contains `expr` (an epoch second), as an epoch
+    /// second. SQLite converts through `localtime`; PostgreSQL needs an explicit zone, which the
+    /// read session pins with `SET LOCAL TimeZone`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_local_period_start_sql(period: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!(
+                "CAST(strftime('%s', datetime({expr}, 'unixepoch', 'localtime', 'start of {period}', 'utc')) AS INTEGER)"
+            ),
+            SqlDialect::Postgres => format!(
+                "CAST(EXTRACT(EPOCH FROM (date_trunc('{period}', to_timestamp({expr}) AT TIME ZONE current_setting('TimeZone'))) AT TIME ZONE current_setting('TimeZone')) AS BIGINT)"
+            ),
+        }
+    }
+
+    /// Last second of the server-local day or month that contains `expr`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_local_period_end_sql(period: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!(
+                "CAST(strftime('%s', datetime({expr}, 'unixepoch', 'localtime', 'start of {period}', '+1 {period}', 'utc')) AS INTEGER) - 1"
+            ),
+            SqlDialect::Postgres => format!(
+                "CAST(EXTRACT(EPOCH FROM (date_trunc('{period}', to_timestamp({expr}) AT TIME ZONE current_setting('TimeZone')) + interval '1 {period}' - interval '1 second') AT TIME ZONE current_setting('TimeZone')) AS BIGINT)"
+            ),
+        }
+    }
+
+    /// Typed null or zero literal for a union branch. SQLite tolerates untyped `NULL` against a
+    /// typed column in `UNION ALL`; PostgreSQL requires the branch types to match exactly.
+    fn alert_typed_null_sql(kind: &str, dialect: SqlDialect) -> String {
+        let sql_type = match dialect {
+            SqlDialect::Sqlite => match kind {
+                "text" => "TEXT",
+                _ => "INTEGER",
+            },
+            SqlDialect::Postgres => match kind {
+                "text" => "text",
+                _ => "bigint",
+            },
+        };
+        format!("CAST(NULL AS {sql_type})")
+    }
+
+    fn alert_typed_zero_sql(dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => "CAST(0 AS INTEGER)".to_string(),
+            SqlDialect::Postgres => "CAST(0 AS bigint)".to_string(),
+        }
+    }
+
+    /// Window identity string `<prefix>:<value>`.
+    #[allow(dead_code)] // wired into the grouping CTE next
+    fn alert_window_key_sql(prefix: &str, expr: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Sqlite => format!("printf('{prefix}:%lld', {expr})"),
+            SqlDialect::Postgres => format!("'{prefix}:' || CAST({expr} AS text)"),
+        }
+    }
+
+    /// Renders the grouped-alert count query for one dialect. Test-only seam: the PostgreSQL
+    /// grouping SQL has no other consumer until the groups page is ported, and this lets the
+    /// `pg-write-paths` job execute it against a real server.
+    #[cfg(test)]
+    pub(crate) fn projected_alert_groups_count_sql_for_test(dialect: SqlDialect) -> String {
+        let filters = AlertEventFilters {
+            alert_type: None,
+            since: None,
+            until: None,
+            user_id: None,
+            token_id: None,
+            key_id: None,
+            request_kinds: &[],
+        };
+        let mut inner = AlertSql::new(dialect);
+        Self::push_projected_alert_groups_cte_any(&mut inner, filters, dialect);
+        format!("{} SELECT COUNT(*) FROM grouped_alerts", inner.sql())
+    }
+
+    #[allow(dead_code)] // consumed by the groups page port and its SQL seam
+    fn push_projected_alert_groups_cte_any<'a>(
+        query: &mut AlertSql<'a>,
+        filters: AlertEventFilters<'a>,
+        dialect: SqlDialect,
+    ) {
+        Self::push_projected_alert_events_cte_any(query, filters, dialect);
+        Self::push_alert_grouping_cte_tail(query, filters, dialect);
+    }
+
     fn push_alert_groups_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        Self::push_alert_events_cte(query, filters);
-        Self::push_alert_grouping_cte_tail(query, filters);
+        let mut inner = AlertSql::new(SqlDialect::Sqlite);
+        Self::push_alert_events_cte_any(&mut inner, filters);
+        Self::push_alert_grouping_cte_tail(&mut inner, filters, SqlDialect::Sqlite);
+        *query = inner.into_sqlite().expect("sqlite alert builder");
     }
 
     fn push_projected_alert_groups_cte<'a>(
         query: &mut QueryBuilder<'a, Sqlite>,
         filters: AlertEventFilters<'a>,
     ) {
-        Self::push_projected_alert_events_cte(query, filters);
-        Self::push_alert_grouping_cte_tail(query, filters);
+        let mut inner = AlertSql::new(SqlDialect::Sqlite);
+        Self::push_projected_alert_events_cte_any(&mut inner, filters, SqlDialect::Sqlite);
+        Self::push_alert_grouping_cte_tail(&mut inner, filters, SqlDialect::Sqlite);
+        *query = inner.into_sqlite().expect("sqlite alert builder");
     }
 
     fn push_alert_grouping_cte_tail<'a>(
-        query: &mut QueryBuilder<'a, Sqlite>,
+        query: &mut AlertSql<'a>,
         filters: AlertEventFilters<'a>,
+        dialect: SqlDialect,
     ) {
+        let error_message = "COALESCE(alerts.error_message, '')";
+        let occurred_at = "alerts.occurred_at";
+        let instr_month = Self::alert_text_contains_sql(error_message, "month window", dialect);
+        let instr_day = Self::alert_text_contains_sql(error_message, "day window", dialect);
+        let instr_hour = Self::alert_text_contains_sql(error_message, "hour window", dialect);
+        let day_start = Self::alert_local_period_start_sql("day", occurred_at, dialect);
+        let day_end = Self::alert_local_period_end_sql("day", occurred_at, dialect);
+        let month_start = Self::alert_local_period_start_sql("month", occurred_at, dialect);
+        let month_end = Self::alert_local_period_end_sql("month", occurred_at, dialect);
+        let key_hour = Self::alert_window_key_sql("hour", "alerts.occurred_at - 3540", dialect);
+        let key_day = Self::alert_window_key_sql("day", &day_start, dialect);
+        let key_month = Self::alert_window_key_sql("month", &month_start, dialect);
+        let null_kind = Self::alert_typed_null_sql("text", dialect);
+        let null_minutes = Self::alert_typed_null_sql("int", dialect);
+        let null_start = Self::alert_typed_null_sql("int", dialect);
+        let null_end = Self::alert_typed_null_sql("int", dialect);
+        let null_request_kind = Self::alert_typed_null_sql("text", dialect);
+        let zero_count = Self::alert_typed_zero_sql(dialect);
+        // PostgreSQL widens `SUM` over bigint to `numeric`; the row decoder reads `i64`, so the
+        // window result must be cast back. SQLite needs neither wrapper.
+        let (total_count_sum, total_count_cast) = match dialect {
+            SqlDialect::Sqlite => ("", ""),
+            SqlDialect::Postgres => ("CAST(", " AS BIGINT)"),
+        };
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
         let request_kind_sql = Self::alert_group_request_kind_sql("alerts");
@@ -1414,9 +1567,9 @@ impl KeyStore {
                             THEN 'mother'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
                              AND (
-                                 instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                                 OR instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                                 OR instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                                 {instr_month}
+                                 OR {instr_day}
+                                 OR {instr_hour}
                              )
                             THEN 'mother'
                         ELSE 'compat'
@@ -1425,13 +1578,13 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN 'request_rate'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
+                             AND {instr_month}
                             THEN 'month'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
+                             AND {instr_day}
                             THEN 'day'
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN 'rolling_hour'
                         ELSE NULL
                     END AS semantic_window_kind,
@@ -1439,7 +1592,7 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN {request_rate_minutes}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN 60
                         ELSE NULL
                     END AS semantic_window_minutes,
@@ -1447,42 +1600,42 @@ impl KeyStore {
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN alerts.occurred_at - {request_rate_seconds}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN alerts.occurred_at - 3540
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', 'utc')) AS INTEGER)
+                             AND {instr_day}
+                            THEN {day_start}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month')) AS INTEGER)
+                             AND {instr_month}
+                            THEN {month_start}
                         ELSE NULL
                     END AS semantic_window_start,
                     CASE
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN alerts.occurred_at
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
+                             AND {instr_hour}
                             THEN alerts.occurred_at
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', '+1 day', 'utc')) AS INTEGER) - 1
+                             AND {instr_day}
+                            THEN {day_end}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month', '+1 month')) AS INTEGER) - 1
+                             AND {instr_month}
+                            THEN {month_end}
                         ELSE NULL
                     END AS semantic_window_end,
                     CASE
                         WHEN alerts.alert_type = 'user_request_rate_limited'
                             THEN NULL
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'hour window') > 0
-                            THEN printf('hour:%lld', alerts.occurred_at - 3540)
+                             AND {instr_hour}
+                            THEN {key_hour}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'day window') > 0
-                            THEN printf('day:%lld', CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'localtime', 'start of day', 'utc')) AS INTEGER))
+                             AND {instr_day}
+                            THEN {key_day}
                         WHEN alerts.alert_type = 'user_quota_exhausted'
-                             AND instr(COALESCE(alerts.error_message, ''), 'month window') > 0
-                            THEN printf('month:%lld', CAST(strftime('%s', datetime(alerts.occurred_at, 'unixepoch', 'start of month')) AS INTEGER))
+                             AND {instr_month}
+                            THEN {key_month}
                         ELSE NULL
                     END AS semantic_window_key
                 FROM alerts
@@ -1492,7 +1645,7 @@ impl KeyStore {
                 WHERE 1 = 1
             "#
         ));
-        Self::push_alert_request_kind_filter(
+        Self::push_alert_request_kind_filter_any(
             query,
             "COALESCE(NULLIF(TRIM(request_kind_key_normalized), ''), 'unknown')",
             filters.request_kinds,
@@ -1710,15 +1863,15 @@ impl KeyStore {
                     semantic_mother_heads.alert_type AS alert_type,
                     semantic_mother_heads.subject_kind AS subject_kind,
                     semantic_mother_heads.subject_id AS subject_id,
-                    NULL AS request_kind_key_normalized,
-                    SUM(semantic_mother_heads.child_event_count) OVER (
+                    {null_request_kind} AS request_kind_key_normalized,
+                    {total_count_sum}SUM(semantic_mother_heads.child_event_count) OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
                                      semantic_mother_heads.subject_id,
                                      semantic_mother_heads.semantic_window_kind,
                                      COALESCE(semantic_mother_heads.semantic_window_minutes, 0),
                                      semantic_mother_heads.mother_ordinal
-                    ) AS total_count,
+                    ){total_count_cast} AS total_count,
                     MIN(semantic_mother_heads.child_first_seen) OVER (
                         PARTITION BY semantic_mother_heads.alert_type,
                                      semantic_mother_heads.subject_kind,
@@ -1799,11 +1952,11 @@ impl KeyStore {
                                      filtered_alerts.subject_id,
                                      filtered_alerts.request_kind_key_normalized
                     ) AS last_seen,
-                    NULL AS semantic_window_kind,
-                    NULL AS semantic_window_minutes,
-                    NULL AS semantic_window_start,
-                    NULL AS semantic_window_end,
-                    0 AS child_count,
+                    {null_kind} AS semantic_window_kind,
+                    {null_minutes} AS semantic_window_minutes,
+                    {null_start} AS semantic_window_start,
+                    {null_end} AS semantic_window_end,
+                    {zero_count} AS child_count,
                     ROW_NUMBER() OVER (
                         PARTITION BY filtered_alerts.alert_type,
                                      filtered_alerts.subject_kind,
@@ -2147,7 +2300,7 @@ impl KeyStore {
         let mut query = QueryBuilder::new("");
         let subject_kind_sql = Self::alert_subject_kind_sql("alerts");
         let subject_id_sql = Self::alert_subject_id_sql("alerts");
-        Self::push_projected_alert_events_cte(&mut query, filters);
+        Self::push_projected_alert_events_cte(&mut query, filters, SqlDialect::Sqlite);
         query.push(" SELECT * FROM alerts WHERE 1 = 1");
         Self::push_alert_request_kind_filter(
             &mut query,
@@ -2287,6 +2440,7 @@ impl KeyStore {
         projection.occurred_at = row.try_get("occurred_at")?;
         Ok(projection)
     }
+
 
     fn build_alert_event_from_projection(mut row: AlertEventProjectionRow) -> Option<AlertEventRecord> {
         normalize_alert_event_projection_display_text(&mut row);
@@ -2587,6 +2741,11 @@ impl KeyStore {
                 page,
                 per_page,
             });
+        }
+        if self.pg_pool.is_some() {
+            return self
+                .fetch_admin_alert_groups_page_pg(filters, page, per_page)
+                .await;
         }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(operation)

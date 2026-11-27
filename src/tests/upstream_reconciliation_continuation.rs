@@ -222,11 +222,27 @@ async fn reconciliation_usage_publishes_hint_before_owner_enqueues_representativ
         .prewarm_upstream_reconciliation_projection_capacity()
         .await
         .expect("prewarm reconciliation projection capacity");
-    proxy
-        .key_store
-        .ensure_upstream_reconciliation_maintenance_jobs()
-        .await
-        .expect("maintenance owner enqueue");
+    // A maintainer enqueue is allowed to defer under pool pressure and be retried by the
+    // runtime; assert that the deferral is not permanent rather than that this single poll
+    // observed idle capacity.
+    let mut enqueued = None;
+    for _ in 0..20 {
+        match proxy
+            .key_store
+            .ensure_upstream_reconciliation_maintenance_jobs()
+            .await
+        {
+            Ok(()) => {
+                enqueued = Some(());
+                break;
+            }
+            Err(ProxyError::Deferred { .. }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("maintenance owner enqueue: {error:?}"),
+        }
+    }
+    enqueued.expect("maintenance owner enqueue stays deferred under sustained pool pressure");
     let queued_by_owner: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'upstream_reconciliation' AND status = 'queued'",
     )

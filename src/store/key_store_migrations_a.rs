@@ -1404,6 +1404,97 @@ impl KeyStore {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_subject_key_breakage_tx_pg(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        subject_kind: &str,
+        subject_id: &str,
+        key_id: &str,
+        break_at: i64,
+        key_status: &str,
+        reason_code: Option<&str>,
+        reason_summary: Option<&str>,
+        source: &str,
+        breaker_token_id: Option<&str>,
+        breaker_user_id: Option<&str>,
+        breaker_user_display_name: Option<&str>,
+        manual_actor_display_name: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let month_start = start_of_month(
+            Utc.timestamp_opt(break_at, 0)
+                .single()
+                .unwrap_or_else(|| self.backend_time.now_utc()),
+        )
+        .timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO core.subject_key_breakages (
+                subject_kind, subject_id, key_id, month_start, created_at, updated_at,
+                latest_break_at, key_status, reason_code, reason_summary, source,
+                breaker_token_id, breaker_user_id, breaker_user_display_name,
+                manual_actor_display_name
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT (subject_kind, subject_id, key_id, month_start)
+            DO UPDATE SET
+                updated_at = excluded.updated_at,
+                latest_break_at = GREATEST(core.subject_key_breakages.latest_break_at, excluded.latest_break_at),
+                key_status = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.key_status
+                    ELSE core.subject_key_breakages.key_status
+                END,
+                reason_code = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.reason_code
+                    ELSE core.subject_key_breakages.reason_code
+                END,
+                reason_summary = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.reason_summary
+                    ELSE core.subject_key_breakages.reason_summary
+                END,
+                source = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.source
+                    ELSE core.subject_key_breakages.source
+                END,
+                breaker_token_id = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_token_id
+                    ELSE core.subject_key_breakages.breaker_token_id
+                END,
+                breaker_user_id = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_user_id
+                    ELSE core.subject_key_breakages.breaker_user_id
+                END,
+                breaker_user_display_name = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.breaker_user_display_name
+                    ELSE core.subject_key_breakages.breaker_user_display_name
+                END,
+                manual_actor_display_name = CASE
+                    WHEN excluded.latest_break_at >= core.subject_key_breakages.latest_break_at THEN excluded.manual_actor_display_name
+                    ELSE core.subject_key_breakages.manual_actor_display_name
+                END
+            "#,
+        )
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(key_id)
+        .bind(month_start)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(key_status)
+        .bind(reason_code)
+        .bind(reason_summary)
+        .bind(source)
+        .bind(breaker_token_id)
+        .bind(breaker_user_id)
+        .bind(breaker_user_display_name)
+        .bind(manual_actor_display_name)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_subject_key_breakage_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -1504,170 +1595,17 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn sum_usage_buckets(
-        &self,
-        token_id: &str,
-        granularity: &str,
-        bucket_start_at_least: i64,
-    ) -> Result<i64, ProxyError> {
-        let sum = sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT SUM(count)
-            FROM token_usage_buckets
-            WHERE token_id = ? AND granularity = ? AND bucket_start >= ?
-            "#,
-        )
-        .bind(token_id)
-        .bind(granularity)
-        .bind(bucket_start_at_least)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(sum.unwrap_or(0))
-    }
 
-    pub(crate) async fn sum_usage_buckets_between(
-        &self,
-        token_id: &str,
-        granularity: &str,
-        bucket_start_at_least: i64,
-        bucket_start_before: i64,
-    ) -> Result<i64, ProxyError> {
-        let sum = sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT SUM(count)
-            FROM token_usage_buckets
-            WHERE token_id = ?
-              AND granularity = ?
-              AND bucket_start >= ?
-              AND bucket_start < ?
-            "#,
-        )
-        .bind(token_id)
-        .bind(granularity)
-        .bind(bucket_start_at_least)
-        .bind(bucket_start_before)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(sum.unwrap_or(0))
-    }
 
-    pub(crate) async fn sum_account_usage_buckets(
-        &self,
-        user_id: &str,
-        granularity: &str,
-        bucket_start_at_least: i64,
-    ) -> Result<i64, ProxyError> {
-        let sum = sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT SUM(count)
-            FROM account_usage_buckets
-            WHERE user_id = ? AND granularity = ? AND bucket_start >= ?
-            "#,
-        )
-        .bind(user_id)
-        .bind(granularity)
-        .bind(bucket_start_at_least)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(sum.unwrap_or(0))
-    }
 
-    pub(crate) async fn sum_account_usage_buckets_between(
-        &self,
-        user_id: &str,
-        granularity: &str,
-        bucket_start_at_least: i64,
-        bucket_start_before: i64,
-    ) -> Result<i64, ProxyError> {
-        let sum = sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT SUM(count)
-            FROM account_usage_buckets
-            WHERE user_id = ?
-              AND granularity = ?
-              AND bucket_start >= ?
-              AND bucket_start < ?
-            "#,
-        )
-        .bind(user_id)
-        .bind(granularity)
-        .bind(bucket_start_at_least)
-        .bind(bucket_start_before)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(sum.unwrap_or(0))
-    }
 
-    pub(crate) async fn sum_account_usage_buckets_bulk(
-        &self,
-        user_ids: &[String],
-        granularity: &str,
-        bucket_start_at_least: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let mut builder = QueryBuilder::new(
-            "SELECT user_id, SUM(count) as total FROM account_usage_buckets WHERE granularity = ",
-        );
-        builder.push_bind(granularity);
-        builder.push(" AND bucket_start >= ");
-        builder.push_bind(bucket_start_at_least);
-        builder.push(" AND user_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for user_id in user_ids {
-                separated.push_bind(user_id);
-            }
-        }
-        builder.push(") GROUP BY user_id");
-        let rows = builder
-            .build_query_as::<(String, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-        let mut map = HashMap::new();
-        for (user_id, total) in rows {
-            map.insert(user_id, total);
-        }
-        Ok(map)
-    }
 
-    pub(crate) async fn sum_account_usage_buckets_bulk_between(
-        &self,
-        user_ids: &[String],
-        granularity: &str,
-        bucket_start_at_least: i64,
-        bucket_start_before: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let mut builder = QueryBuilder::new(
-            "SELECT user_id, SUM(count) as total FROM account_usage_buckets WHERE granularity = ",
-        );
-        builder.push_bind(granularity);
-        builder.push(" AND bucket_start >= ");
-        builder.push_bind(bucket_start_at_least);
-        builder.push(" AND bucket_start < ");
-        builder.push_bind(bucket_start_before);
-        builder.push(" AND user_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for user_id in user_ids {
-                separated.push_bind(user_id);
-            }
-        }
-        builder.push(") GROUP BY user_id");
-        let rows = builder
-            .build_query_as::<(String, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-        let mut map = HashMap::new();
-        for (user_id, total) in rows {
-            map.insert(user_id, total);
-        }
-        Ok(map)
-    }
+
+
+
+
+
+
 
     pub(crate) async fn sum_usage_buckets_bulk(
         &self,
@@ -1810,157 +1748,13 @@ impl KeyStore {
         Ok(map)
     }
 
-    pub(crate) async fn fetch_monthly_counts(
-        &self,
-        token_ids: &[String],
-        current_month_start: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if token_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
 
-        let mut builder = QueryBuilder::new(
-            "SELECT token_id, month_start, month_count FROM auth_token_quota WHERE token_id IN (",
-        );
-        {
-            let mut separated = builder.separated(", ");
-            for token_id in token_ids {
-                separated.push_bind(token_id);
-            }
-        }
-        builder.push(")");
 
-        let rows = builder
-            .build_query_as::<(String, i64, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
 
-        let mut map = HashMap::new();
-        let mut stale_ids = Vec::new();
-        for (token_id, stored_start, stored_count) in rows {
-            if stored_start < current_month_start {
-                map.insert(token_id.clone(), 0);
-                stale_ids.push(token_id);
-            } else {
-                map.insert(token_id, stored_count);
-            }
-        }
 
-        for token_id in stale_ids {
-            sqlx::query(
-                "UPDATE auth_token_quota SET month_start = ?, month_count = 0 WHERE token_id = ?",
-            )
-            .bind(current_month_start)
-            .bind(&token_id)
-            .execute(&self.pool)
-            .await?;
-        }
 
-        Ok(map)
-    }
 
-    pub(crate) async fn fetch_monthly_count(
-        &self,
-        token_id: &str,
-        current_month_start: i64,
-    ) -> Result<i64, ProxyError> {
-        let row = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
-        )
-        .bind(token_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some((stored_start, stored_count)) = row else {
-            return Ok(0);
-        };
-        if stored_start < current_month_start {
-            sqlx::query(
-                "UPDATE auth_token_quota SET month_start = ?, month_count = 0 WHERE token_id = ?",
-            )
-            .bind(current_month_start)
-            .bind(token_id)
-            .execute(&self.pool)
-            .await?;
-            return Ok(0);
-        }
-        Ok(stored_count)
-    }
 
-    pub(crate) async fn fetch_account_monthly_count(
-        &self,
-        user_id: &str,
-        current_month_start: i64,
-    ) -> Result<i64, ProxyError> {
-        let row = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ?",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some((stored_start, stored_count)) = row else {
-            return Ok(0);
-        };
-        if stored_start < current_month_start {
-            sqlx::query(
-                "UPDATE account_monthly_quota SET month_start = ?, month_count = 0 WHERE user_id = ?",
-            )
-            .bind(current_month_start)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
-            return Ok(0);
-        }
-        Ok(stored_count)
-    }
-
-    pub(crate) async fn fetch_account_monthly_counts(
-        &self,
-        user_ids: &[String],
-        current_month_start: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut builder = QueryBuilder::new(
-            "SELECT user_id, month_start, month_count FROM account_monthly_quota WHERE user_id IN (",
-        );
-        {
-            let mut separated = builder.separated(", ");
-            for user_id in user_ids {
-                separated.push_bind(user_id);
-            }
-        }
-        builder.push(")");
-
-        let rows = builder
-            .build_query_as::<(String, i64, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-
-        let mut map = HashMap::new();
-        let mut stale_ids = Vec::new();
-        for (user_id, stored_start, stored_count) in rows {
-            if stored_start < current_month_start {
-                map.insert(user_id.clone(), 0);
-                stale_ids.push(user_id);
-            } else {
-                map.insert(user_id, stored_count);
-            }
-        }
-
-        for user_id in stale_ids {
-            sqlx::query(
-                "UPDATE account_monthly_quota SET month_start = ?, month_count = 0 WHERE user_id = ?",
-            )
-            .bind(current_month_start)
-            .bind(&user_id)
-            .execute(&self.pool)
-            .await?;
-        }
-
-        Ok(map)
-    }
 
     pub(crate) async fn delete_old_usage_buckets(
         &self,

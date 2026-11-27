@@ -214,6 +214,60 @@ impl KeyStore {
         passkey_scope: Option<&AdminPasskeyScope>,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            if !external_admin_login_available {
+                if !runtime_passkey_login_available {
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+                let active_passkey_count = match passkey_scope {
+                    Some(scope) => sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE scope_id = $1 AND revoked_at IS NULL",
+                    )
+                    .bind(&scope.id)
+                    .fetch_one(pool)
+                    .await?,
+                    None => sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE revoked_at IS NULL",
+                    )
+                    .fetch_one(pool)
+                    .await?,
+                };
+                if active_passkey_count == 0 {
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+            }
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                r#"INSERT INTO core.admin_password_settings (id, password_hash, disabled_at, updated_at, login_totp_required)
+                   VALUES (1, NULL, $1, $2, 0)
+                   ON CONFLICT (id) DO UPDATE SET
+                       password_hash = NULL,
+                       disabled_at = excluded.disabled_at,
+                       updated_at = excluded.updated_at"#,
+            )
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            let login_totp_required = sqlx::query_scalar::<_, i64>(
+                r#"SELECT login_totp_required
+                   FROM core.admin_password_settings
+                   WHERE id = 1
+                   LIMIT 1"#,
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(0)
+                != 0;
+            tx.commit().await?;
+            return Ok(AdminPasswordSettingsRecord {
+                password_hash: None,
+                disabled_at: Some(now),
+                updated_at: now,
+                login_totp_required,
+            });
+        }
         let mut conn = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
 
         let result: Result<AdminPasswordSettingsRecord, ProxyError> = async {
@@ -288,6 +342,53 @@ impl KeyStore {
         passkey_scope: Option<&AdminPasskeyScope>,
     ) -> Result<AdminPasswordSettingsRecord, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                r#"INSERT INTO core.admin_password_settings (
+                       id, password_hash, disabled_at, updated_at, login_totp_required
+                   )
+                   VALUES (1, NULL, NULL, $1, $2)
+                   ON CONFLICT (id) DO UPDATE SET
+                       login_totp_required = excluded.login_totp_required,
+                       updated_at = excluded.updated_at"#,
+            )
+            .bind(now)
+            .bind(if required { 1_i64 } else { 0_i64 })
+            .execute(&mut *tx)
+            .await?;
+            if required {
+                if let Some(scope) = passkey_scope {
+                    sqlx::query(
+                        "UPDATE core.admin_passkey_sessions SET revoked_at = $1 WHERE scope_id = $2 AND revoked_at IS NULL",
+                    )
+                    .bind(now)
+                    .bind(&scope.id)
+                    .execute(&mut *tx)
+                    .await?;
+                } else {
+                    sqlx::query(
+                        "UPDATE core.admin_passkey_sessions SET revoked_at = $1 WHERE revoked_at IS NULL",
+                    )
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+            let settings = sqlx::query_as::<_, (Option<String>, Option<i64>, i64, i64)>(
+                "SELECT password_hash, disabled_at, updated_at, login_totp_required FROM core.admin_password_settings WHERE id = 1 LIMIT 1",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(AdminPasswordSettingsRecord {
+                password_hash: settings.0,
+                disabled_at: settings.1,
+                updated_at: settings.2,
+                login_totp_required: settings.3 != 0,
+            });
+        }
         let mut conn = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
 
         let result: Result<AdminPasswordSettingsRecord, ProxyError> = async {
@@ -1005,6 +1106,70 @@ impl KeyStore {
         runtime_password_available: bool,
     ) -> Result<bool, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let pool = self.pg()?;
+            let mut tx = pool.begin().await?;
+            let target_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE credential_id = $1 AND scope_id = $2 AND revoked_at IS NULL",
+            )
+            .bind(credential_id)
+            .bind(&scope.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if target_active == 0 {
+                tx.commit().await?;
+                return Ok(false);
+            }
+            if !external_admin_login_available {
+                let other_active_passkey_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM core.admin_passkey_credentials WHERE credential_id != $1 AND scope_id = $2 AND revoked_at IS NULL",
+                )
+                .bind(credential_id)
+                .bind(&scope.id)
+                .fetch_one(&mut *tx)
+                .await?;
+                let password_row = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
+                    r#"SELECT password_hash, disabled_at
+                       FROM core.admin_password_settings
+                       WHERE id = 1
+                       LIMIT 1"#,
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+                let password_disabled = password_row
+                    .as_ref()
+                    .and_then(|(_, disabled_at)| *disabled_at)
+                    .is_some();
+                let persisted_password_available = runtime_password_available
+                    && password_row
+                        .as_ref()
+                        .and_then(|(password_hash, _)| password_hash.as_deref())
+                        .is_some_and(|password_hash| !password_hash.trim().is_empty())
+                    && !password_disabled;
+                let runtime_password_available = runtime_password_available && !password_disabled;
+                if other_active_passkey_count == 0
+                    && !persisted_password_available
+                    && !runtime_password_available
+                {
+                    let _ = tx.rollback().await;
+                    return Err(ProxyError::LastAdminLoginMethod);
+                }
+            }
+            let updated = sqlx::query(
+                r#"UPDATE core.admin_passkey_credentials
+                   SET revoked_at = $1, updated_at = $2
+                   WHERE credential_id = $3 AND scope_id = $4 AND revoked_at IS NULL"#,
+            )
+            .bind(now)
+            .bind(now)
+            .bind(credential_id)
+            .bind(&scope.id)
+            .execute(&mut *tx)
+            .await?;
+            let revoked = updated.rows_affected() > 0;
+            tx.commit().await?;
+            return Ok(revoked);
+        }
         let mut conn = ImmediateSqliteTransaction::begin(self.pool.acquire().await?).await?;
 
         let result: Result<bool, ProxyError> = async {

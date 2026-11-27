@@ -7,6 +7,13 @@
 //! back the load transaction and reports the table plus primary key. Tables are loaded in
 //! foreign key order, so constraints stay enabled for the whole load.
 //!
+//! User triggers are suspended for the duration of the load. The snapshot already contains the
+//! rows those triggers maintain — `core.upstream_reconciliation_work` is derived from
+//! `core.upstream_reconciliation_usage`, and the observability revision tables are derived from
+//! `observability.request_logs` — so replaying them would insert the same derived rows twice and
+//! abort the COPY on a primary-key conflict. Suspension is transactional DDL: a failed load
+//! rolls back and leaves every trigger enabled.
+//!
 //! `--reset` drops `core` and `observability` and clears this tool's `_sqlx_migrations`
 //! bookkeeping; without the latter `sqlx::migrate!` would consider the baseline already
 //! applied and leave the schemas empty.
@@ -74,7 +81,13 @@ pub async fn run(args: &LoadArgs) -> Result<LoadSummary> {
         .await
         .map_err(|err| postgres_error("begin load transaction", err))?;
 
-    let outcome = copy_all(&mut pg, &mut sqlite, &ordered, &plan_by_name).await;
+    let outcome = async {
+        let suspended = suspend_triggers(&mut pg).await?;
+        let rows = copy_all(&mut pg, &mut sqlite, &ordered, &plan_by_name).await?;
+        resume_triggers(&mut pg, &suspended).await?;
+        Ok::<u64, Error>(rows)
+    }
+    .await;
     let rows = match outcome {
         Ok(rows) => {
             sqlx::query("COMMIT")
@@ -135,6 +148,39 @@ async fn apply_migrations(pg: &mut PgConnection) -> Result<()> {
         .run(&mut *pg)
         .await
         .map_err(|err| Error::msg(format!("apply PostgreSQL migrations: {err}")))
+}
+
+/// Suspends every user trigger in the managed schemas and returns the relations it touched.
+async fn suspend_triggers(pg: &mut PgConnection) -> Result<Vec<String>> {
+    let relations: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT n.nspname || '.' || c.relname \
+           FROM pg_trigger t \
+           JOIN pg_class c ON c.oid = t.tgrelid \
+           JOIN pg_namespace n ON n.oid = c.relnamespace \
+          WHERE NOT t.tgisinternal AND n.nspname = ANY($1) \
+          ORDER BY 1",
+    )
+    .bind(&catalog::SCHEMAS[..])
+    .fetch_all(&mut *pg)
+    .await
+    .map_err(|err| postgres_error("list trigger relations", err))?;
+    for relation in &relations {
+        sqlx::query(&format!("ALTER TABLE {relation} DISABLE TRIGGER USER"))
+            .execute(&mut *pg)
+            .await
+            .map_err(|err| postgres_error(format!("suspend triggers on {relation}"), err))?;
+    }
+    Ok(relations)
+}
+
+async fn resume_triggers(pg: &mut PgConnection, relations: &[String]) -> Result<()> {
+    for relation in relations {
+        sqlx::query(&format!("ALTER TABLE {relation} ENABLE TRIGGER USER"))
+            .execute(&mut *pg)
+            .await
+            .map_err(|err| postgres_error(format!("resume triggers on {relation}"), err))?;
+    }
+    Ok(())
 }
 
 fn build_plans(tables: &[SqliteTable], catalog: &Catalog) -> Result<Vec<CopyPlan>> {

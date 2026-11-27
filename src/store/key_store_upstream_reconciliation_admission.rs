@@ -16,6 +16,20 @@ impl KeyStore {
     pub(crate) async fn upstream_reconciliation_last_run_stats(
         &self,
     ) -> Result<UpstreamReconciliationLastRunStats, ProxyError> {
+        if self.pg_pool.is_some() {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT key, value FROM core.meta WHERE key IN ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1)
+            .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
+            .fetch_all(self.pg()?)
+            .await?;
+            return Ok(Self::upstream_reconciliation_last_run_stats_from_rows(rows));
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::ScheduledJobControl)
@@ -31,25 +45,7 @@ impl KeyStore {
                     .bind(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1)
                     .fetch_all(&mut *conn)
                     .await?;
-            let values = rows
-                .into_iter()
-                .collect::<std::collections::HashMap<_, _>>();
-            let value_i64 = |key: &str| {
-                values
-                    .get(key)
-                    .and_then(|value| value.parse::<i64>().ok())
-                    .unwrap_or(0)
-            };
-            Ok((
-                values
-                    .get(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
-                    .and_then(|value| value.parse::<i64>().ok()),
-                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1),
-                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1),
-                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1),
-                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1),
-                value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1) != 0,
-            ))
+            Ok(Self::upstream_reconciliation_last_run_stats_from_rows(rows))
         }
         .await;
         let close = conn.close().await;
@@ -57,6 +53,30 @@ impl KeyStore {
             (Ok(stats), Ok(())) => Ok(stats),
             (Err(err), _) | (_, Err(err)) => Err(err),
         }
+    }
+
+    fn upstream_reconciliation_last_run_stats_from_rows(
+        rows: Vec<(String, String)>,
+    ) -> UpstreamReconciliationLastRunStats {
+        let values = rows
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let value_i64 = |key: &str| {
+            values
+                .get(key)
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0)
+        };
+        (
+            values
+                .get(META_KEY_UPSTREAM_RECONCILIATION_LAST_DURATION_MS_V1)
+                .and_then(|value| value.parse::<i64>().ok()),
+            value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_ATTEMPTED_V1),
+            value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_SETTLED_V1),
+            value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_NO_ADJUSTMENT_V1),
+            value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_429_V1),
+            value_i64(META_KEY_UPSTREAM_RECONCILIATION_LAST_BUDGET_EXHAUSTED_V1) != 0,
+        )
     }
 
     async fn begin_reconciliation_control(&self) -> Result<SqliteImmediateTransaction, ProxyError> {

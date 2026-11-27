@@ -2301,6 +2301,15 @@ impl UserBusinessCalls1hWindow {
 }
 
 impl TavilyProxy {
+    /// Test-only admission escape used by suites that assert deferral behaviour.
+    #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
+    pub fn disable_test_admission_bypass_for_test(&self) {
+        self.key_store
+            .sqlite_runtime
+            .disable_test_admission_bypass();
+    }
+
     #[cfg(test)]
     pub(crate) fn enable_controlled_reconciliation_retry_for_test(&self) {
         self.reconciliation_controlled_retry

@@ -1673,7 +1673,6 @@ fn spawn_business_background_tasks(state: Arc<AppState>) {
         spawn_linuxdo_credit_recharge_lifecycle_scheduler(state.clone());
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());
-    spawn_db_compaction_scheduler(state);
 }
 
 fn background_tasks_disabled_via_env() -> bool {

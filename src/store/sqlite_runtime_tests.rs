@@ -898,6 +898,7 @@ async fn maintenance_bulk_expires_an_idle_pending_class() {
 #[tokio::test]
 async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
         .expect("first maintenance slice");
@@ -949,6 +950,7 @@ async fn maintenance_bulk_retains_a_pending_class_when_pool_pressure_returns() {
 #[tokio::test]
 async fn maintenance_bulk_ticket_survives_scheduled_pressure_backoff() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
         .expect("first maintenance slice");
@@ -1153,6 +1155,7 @@ async fn maintenance_bulk_ages_a_pending_class_through_pool_pressure() {
 #[tokio::test]
 async fn maintenance_bulk_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
         .expect("first maintenance slice");
@@ -1189,6 +1192,7 @@ async fn maintenance_bulk_age_does_not_bypass_foreground_pressure() {
 #[tokio::test]
 async fn bounded_recovery_bulk_allows_foreground_pressure_after_ticket_ages() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     for _ in 0..6 {
         runtime.record_foreground_activity();
     }
@@ -1227,6 +1231,7 @@ async fn bounded_recovery_bulk_allows_foreground_pressure_after_ticket_ages() {
 #[tokio::test]
 async fn bounded_recovery_bulk_is_scoped_to_the_two_recovery_operations() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     for _ in 0..6 {
         runtime.record_foreground_activity();
     }
@@ -1265,6 +1270,7 @@ async fn bounded_recovery_bulk_allows_both_recovery_operations_after_aging() {
         SqliteOperation::RequestLogsGc,
     ] {
         let runtime = three_connection_runtime().await;
+        runtime.disable_test_admission_bypass();
         for _ in 0..6 {
             runtime.record_foreground_activity();
         }
@@ -1302,6 +1308,7 @@ async fn bounded_recovery_bulk_allows_both_recovery_operations_after_aging() {
 #[tokio::test]
 async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     for _ in 0..6 {
         runtime.record_foreground_activity();
     }
@@ -1335,6 +1342,7 @@ async fn reconciliation_preflight_age_does_not_bypass_foreground_pressure() {
 #[tokio::test]
 async fn reconciliation_preflight_ages_a_pool_pressure_ticket_into_a_bounded_turn() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let first_foreground = runtime
         .inner
         .pool
@@ -1392,6 +1400,7 @@ async fn reconciliation_preflight_guard_cancels_without_a_bulk_attempt() {
 #[tokio::test]
 async fn reconciliation_preflight_bulk_busy_retains_ticket_for_retry() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let holder = runtime
         .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
         .expect("hold the shared bulk permit");
@@ -1417,6 +1426,7 @@ async fn reconciliation_preflight_bulk_busy_retains_ticket_for_retry() {
 #[tokio::test]
 async fn reconciliation_preflight_retains_ticket_when_coordinator_orders_an_older_class() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     runtime
         .inner
         .maintenance_coordinator
@@ -1754,6 +1764,7 @@ async fn reconciliation_projection_can_probe_a_partially_open_idle_pool() {
             .expect("lazy three connection pool"),
         3,
     );
+    runtime.disable_test_admission_bypass();
     let foreground = runtime.inner.pool.acquire().await.expect("foreground");
     let second = runtime.inner.pool.acquire().await.expect("grow pool");
     drop(second);
@@ -1817,6 +1828,7 @@ async fn reconciliation_preserves_foreground_pool_reservation() {
             .expect("lazy three connection pool"),
         3,
     );
+    runtime.disable_test_admission_bypass();
     let foreground = runtime.inner.pool.acquire().await.expect("foreground");
     let second = runtime.inner.pool.acquire().await.expect("grow pool");
     drop(second);
@@ -2089,6 +2101,7 @@ async fn reconciliation_projection_prewarm_does_not_block_foreground_capacity() 
 #[tokio::test]
 async fn sqlite_runtime_never_admits_bulk_from_a_single_connection_pool() {
     let runtime = single_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     assert_eq!(
         runtime
             .try_admit_maintenance_bulk(SqliteOperation::HaOutboxGc)
@@ -2110,6 +2123,7 @@ async fn sqlite_runtime_rate_limits_process_wide_heap_trims() {
 #[tokio::test]
 async fn sqlite_runtime_defers_bulk_before_foreground_pool_capacity_is_exhausted() {
     let runtime = three_connection_runtime().await;
+    runtime.disable_test_admission_bypass();
     let first_foreground = runtime
         .inner
         .pool

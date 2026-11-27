@@ -247,6 +247,9 @@ impl KeyStore {
     async fn load_admin_alert_canonical_groups_state(
         &self,
     ) -> Result<AdminAlertCanonicalGroupsState, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.load_admin_alert_canonical_groups_state_pg().await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -317,6 +320,9 @@ impl KeyStore {
     async fn start_admin_alert_canonical_groups_build(
         &self,
     ) -> Result<AdminAlertsCanonicalSnapshot, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.start_admin_alert_canonical_groups_build_pg().await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, |tx| {
@@ -397,6 +403,9 @@ impl KeyStore {
         &self,
         state: &AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.discard_admin_alert_canonical_groups_build_pg(state).await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let build_generation = state.build_generation;
         let projection_revision = state.build_projection_revision;
@@ -479,6 +488,11 @@ impl KeyStore {
         &self,
         snapshot: AdminAlertsCanonicalSnapshot,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .clear_admin_alert_canonical_groups_build_slot_pg(snapshot)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let advanced = self
             .sqlite_runtime
@@ -611,6 +625,11 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .copy_admin_alert_canonical_groups_snapshot_slice_pg(snapshot, state)
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -811,13 +830,28 @@ impl KeyStore {
         state: AdminAlertCanonicalGroupsState,
     ) -> Result<(), ProxyError> {
         if state.build_partition_key.is_empty() {
+            if self.pg_pool.is_some() {
+                return self
+                    .select_admin_alert_canonical_groups_partition_pg(snapshot, state)
+                    .await;
+            }
             return self
                 .select_admin_alert_canonical_groups_partition(snapshot, state)
                 .await;
         }
         if !state.build_partition_source_complete {
+            if self.pg_pool.is_some() {
+                return self
+                    .capture_admin_alert_canonical_groups_partition_slice_pg(snapshot, state)
+                    .await;
+            }
             return self
                 .capture_admin_alert_canonical_groups_partition_slice(snapshot, state)
+                .await;
+        }
+        if self.pg_pool.is_some() {
+            return self
+                .finalize_admin_alert_canonical_groups_partition_pg(snapshot, state)
                 .await;
         }
         self.finalize_admin_alert_canonical_groups_partition(snapshot, state)
@@ -1201,6 +1235,15 @@ impl KeyStore {
         partition_key: &str,
         position: i64,
     ) -> Result<Option<(i64, Vec<AlertEventRecord>)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .read_admin_alert_canonical_groups_partition_fragment_pg(
+                    snapshot,
+                    partition_key,
+                    position,
+                )
+                .await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;
@@ -1311,6 +1354,11 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         row_count: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .publish_admin_alert_canonical_groups_snapshot_pg(snapshot, row_count)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let published = self
             .sqlite_runtime
@@ -1374,6 +1422,11 @@ impl KeyStore {
     pub(crate) async fn reclaim_admin_alert_canonical_groups_generations(
         &self,
     ) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .reclaim_admin_alert_canonical_groups_generations_pg()
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_reclaimer_write_admitted()?;
         self.sqlite_runtime
             .run_owned_immediate(SqliteOperation::AlertProjection, |tx| {
@@ -1812,6 +1865,11 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         position: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .reset_admin_alert_canonical_group_payload_read_pg(snapshot, position)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -1877,6 +1935,17 @@ impl KeyStore {
         next_chunk_position: i64,
         chunks: Vec<(i64, String)>,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .checkpoint_admin_alert_canonical_group_payload_read_pg(
+                    snapshot,
+                    position,
+                    prior_chunk_position,
+                    next_chunk_position,
+                    chunks,
+                )
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -1979,6 +2048,15 @@ impl KeyStore {
         position: i64,
         prior_chunk_position: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .mark_admin_alert_canonical_group_payload_read_ready_pg(
+                    snapshot,
+                    position,
+                    prior_chunk_position,
+                )
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -2058,6 +2136,18 @@ impl KeyStore {
         segment_position: i64,
         segment_payload: String,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .checkpoint_admin_alert_canonical_group_payload_assembly_pg(
+                    snapshot,
+                    position,
+                    prior_chunk_position,
+                    next_chunk_position,
+                    segment_position,
+                    segment_payload,
+                )
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -2154,6 +2244,11 @@ impl KeyStore {
         position: i64,
         payload: String,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .complete_admin_alert_canonical_group_payload_pg(snapshot, position, payload)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -2264,6 +2359,11 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         position: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .clear_admin_alert_canonical_group_payload_read_pg(snapshot, position)
+                .await;
+        }
         self.ensure_admin_alerts_cache_warm_write_admitted()?;
         let changed = self
             .sqlite_runtime
@@ -2334,6 +2434,15 @@ impl KeyStore {
         position: i64,
         expected_chunks: Option<i64>,
     ) -> Result<String, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .read_admin_alert_canonical_group_payload_chunks_pg(
+                    snapshot,
+                    position,
+                    expected_chunks,
+                )
+                .await;
+        }
         const PAYLOAD_CHUNK_READ_ROWS: i64 = 16;
         let state = self.load_admin_alert_canonical_groups_state().await?;
         let state_matches = state.payload_read_generation
@@ -2581,6 +2690,11 @@ impl KeyStore {
         snapshot: AdminAlertsCanonicalSnapshot,
         position: i64,
     ) -> Result<AlertGroupRecord, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .read_admin_alert_canonical_group_payload_pg(snapshot, position)
+                .await;
+        }
         let payload = self
             .read_admin_alert_canonical_group_payload_chunks(snapshot, position, None)
             .await?;
@@ -2595,6 +2709,9 @@ impl KeyStore {
         &self,
         snapshot: AdminAlertsCanonicalSnapshot,
     ) -> Result<PaginatedAlertGroups, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.read_admin_alert_canonical_groups_model_pg(snapshot).await;
+        }
         let mut session = self
             .begin_admin_alerts_read_session_for_operation(SqliteOperation::AdminAlertsCacheWarm)
             .await?;

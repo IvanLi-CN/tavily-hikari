@@ -63,7 +63,7 @@ def load_manifest():
         shard.setdefault("isolated_prefixes", [])
         shard.setdefault("isolated_process_workers", 1)
         shard.setdefault("filtered_test_threads", 1)
-        shard.setdefault("filtered_process_workers", 3)
+        shard.setdefault("filtered_process_workers", 2)
         if (
             not isinstance(shard["isolated_process_workers"], int)
             or shard["isolated_process_workers"] < 1
@@ -159,9 +159,7 @@ def artifact_target_dir_name(target_id):
 
 
 SUPPORT_BINARIES_BY_TARGET = {
-    "lib": {
-        "OBSERVABILITY_LOCK_HOLDER_BIN": "observability_lock_holder",
-    },
+    "lib": {},
     "integration:mcp_billing_regression": {
         "TAVILY_HIKARI_TEST_BIN": "tavily-hikari",
     },
@@ -1179,6 +1177,10 @@ def run_shard(
 
     target_id = shard["coverage_target"]
     extra_env = os.environ.copy()
+    # CI shards share one cgroup, so SQLite admission samples the writes of the preceding
+    # shard. Product-behaviour tests must not inherit that pressure; admission tests clear the
+    # bypass on the runtime they build.
+    extra_env["TAVILY_TEST_ADMISSION_BYPASS"] = "1"
     if shard["mode"] == "all":
         if prebuilt_root:
             executables, support_binaries = load_prebuilt_executables(prebuilt_root, target_id)

@@ -400,6 +400,45 @@ impl KeyStore {
     ) -> Result<Announcement, ProxyError> {
         let input = normalize_announcement_mutation(input)?;
         let published_at = (status == ANNOUNCEMENT_STATUS_PUBLISHED).then_some(now);
+        if self.pg_pool.is_some() {
+            loop {
+                let id = Self::new_announcement_id();
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO core.announcements (
+                        id, content, display_kind, status,
+                        created_at, updated_at, published_at, archived_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+                    "#,
+                )
+                .bind(&id)
+                .bind(&input.content)
+                .bind(&input.display_kind)
+                .bind(status)
+                .bind(now)
+                .bind(now)
+                .bind(published_at)
+                .execute(self.pg()?)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        return Ok(Announcement {
+                            id,
+                            content: input.content,
+                            display_kind: input.display_kind,
+                            status: status.to_string(),
+                            created_at: now,
+                            updated_at: now,
+                            published_at,
+                            archived_at: None,
+                        });
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => return Err(ProxyError::Database(err)),
+                }
+            }
+        }
         loop {
             let id = Self::new_announcement_id();
             let res = sqlx::query(
@@ -504,6 +543,11 @@ impl KeyStore {
     ) -> Result<Option<Announcement>, ProxyError> {
         let input = normalize_announcement_mutation(input)?;
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            return self
+                .update_announcement_pg(id, input, now)
+                .await;
+        }
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query(
             r#"
@@ -640,11 +684,237 @@ impl KeyStore {
         }))
     }
 
+    async fn update_announcement_pg(
+        &self,
+        id: &str,
+        input: AnnouncementMutation,
+        now: i64,
+    ) -> Result<Option<Announcement>, ProxyError> {
+        let mut tx = self.pg()?.begin().await?;
+        let existing = sqlx::query(
+            r#"
+            SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+              FROM core.announcements
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .try_map(|row| announcement_from_row(&row))
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(existing) = existing else {
+            tx.rollback().await?;
+            return Ok(None);
+        };
+
+        if existing.status == ANNOUNCEMENT_STATUS_PUBLISHED {
+            sqlx::query(
+                r#"UPDATE core.announcements
+                      SET status = $1, updated_at = $2, archived_at = $3
+                    WHERE id = $4"#,
+            )
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .bind(now)
+            .bind(now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+            loop {
+                let new_id = Self::new_announcement_id();
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO core.announcements (
+                        id, content, display_kind, status,
+                        created_at, updated_at, published_at, archived_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+                    "#,
+                )
+                .bind(&new_id)
+                .bind(&input.content)
+                .bind(&input.display_kind)
+                .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+                .bind(now)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        tx.commit().await?;
+                        return Ok(Some(Announcement {
+                            id: new_id,
+                            content: input.content,
+                            display_kind: input.display_kind,
+                            status: ANNOUNCEMENT_STATUS_PUBLISHED.to_string(),
+                            created_at: now,
+                            updated_at: now,
+                            published_at: Some(now),
+                            archived_at: None,
+                        }));
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => return Err(ProxyError::Database(err)),
+                }
+            }
+        }
+
+        if existing.status == ANNOUNCEMENT_STATUS_ARCHIVED {
+            loop {
+                let new_id = Self::new_announcement_id();
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO core.announcements (
+                        id, content, display_kind, status,
+                        created_at, updated_at, published_at, archived_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
+                    "#,
+                )
+                .bind(&new_id)
+                .bind(&input.content)
+                .bind(&input.display_kind)
+                .bind(ANNOUNCEMENT_STATUS_DRAFT)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        tx.commit().await?;
+                        return Ok(Some(Announcement {
+                            id: new_id,
+                            content: input.content,
+                            display_kind: input.display_kind,
+                            status: ANNOUNCEMENT_STATUS_DRAFT.to_string(),
+                            created_at: now,
+                            updated_at: now,
+                            published_at: None,
+                            archived_at: None,
+                        }));
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => return Err(ProxyError::Database(err)),
+                }
+            }
+        }
+
+        sqlx::query(
+            r#"UPDATE core.announcements
+                  SET content = $1, display_kind = $2, updated_at = $3
+                WHERE id = $4"#,
+        )
+        .bind(&input.content)
+        .bind(&input.display_kind)
+        .bind(now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(Some(Announcement {
+            id: existing.id,
+            content: input.content,
+            display_kind: input.display_kind,
+            status: existing.status,
+            created_at: existing.created_at,
+            updated_at: now,
+            published_at: existing.published_at,
+            archived_at: existing.archived_at,
+        }))
+    }
+
     pub(crate) async fn publish_announcement(
         &self,
         id: &str,
     ) -> Result<Option<Announcement>, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            let mut tx = self.pg()?.begin().await?;
+            let existing = sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 WHERE id = $1
+                "#,
+            )
+            .bind(id)
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(existing) = existing else {
+                tx.rollback().await?;
+                return Ok(None);
+            };
+            if existing.status == ANNOUNCEMENT_STATUS_PUBLISHED {
+                tx.commit().await?;
+                return Ok(Some(existing));
+            }
+            if existing.status == ANNOUNCEMENT_STATUS_DRAFT {
+                let published_at = existing.published_at.or(Some(now));
+                sqlx::query(
+                    r#"UPDATE core.announcements
+                          SET status = $1, updated_at = $2, published_at = $3, archived_at = NULL
+                        WHERE id = $4"#,
+                )
+                .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+                .bind(now)
+                .bind(published_at)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(Some(Announcement {
+                    id: existing.id,
+                    content: existing.content,
+                    display_kind: existing.display_kind,
+                    status: ANNOUNCEMENT_STATUS_PUBLISHED.to_string(),
+                    created_at: existing.created_at,
+                    updated_at: now,
+                    published_at,
+                    archived_at: None,
+                }));
+            }
+            loop {
+                let new_id = Self::new_announcement_id();
+                let res = sqlx::query(
+                    r#"
+                    INSERT INTO core.announcements (
+                        id, content, display_kind, status,
+                        created_at, updated_at, published_at, archived_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+                    "#,
+                )
+                .bind(&new_id)
+                .bind(&existing.content)
+                .bind(&existing.display_kind)
+                .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+                .bind(now)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+                match res {
+                    Ok(_) => {
+                        tx.commit().await?;
+                        return Ok(Some(Announcement {
+                            id: new_id,
+                            content: existing.content,
+                            display_kind: existing.display_kind,
+                            status: ANNOUNCEMENT_STATUS_PUBLISHED.to_string(),
+                            created_at: now,
+                            updated_at: now,
+                            published_at: Some(now),
+                            archived_at: None,
+                        }));
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => return Err(ProxyError::Database(err)),
+                }
+            }
+        }
         let mut tx = self.pool.begin().await?;
         let existing = sqlx::query(
             r#"
@@ -739,6 +1009,22 @@ impl KeyStore {
         id: &str,
     ) -> Result<Option<Announcement>, ProxyError> {
         let now = self.backend_time.now_ts();
+        if self.pg_pool.is_some() {
+            sqlx::query(
+                r#"UPDATE core.announcements
+                      SET status = $1, updated_at = $2, archived_at = COALESCE(archived_at, $3)
+                    WHERE id = $4
+                      AND status != $5"#,
+            )
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .bind(now)
+            .bind(now)
+            .bind(id)
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .execute(self.pg()?)
+            .await?;
+            return self.get_announcement(id).await;
+        }
         let updated = sqlx::query(
             r#"UPDATE announcements
                   SET status = ?, updated_at = ?, archived_at = COALESCE(archived_at, ?)
@@ -764,6 +1050,20 @@ impl KeyStore {
         &self,
         id: &str,
     ) -> Result<Option<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 WHERE id = $1
+                "#,
+            )
+            .bind(id)
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_optional(self.pg()?)
+            .await
+            .map_err(ProxyError::Database);
+        }
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
@@ -781,6 +1081,29 @@ impl KeyStore {
     pub(crate) async fn list_user_active_announcements(
         &self,
     ) -> Result<Vec<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            let mut out = Vec::new();
+            for display_kind in [ANNOUNCEMENT_DISPLAY_MODAL, ANNOUNCEMENT_DISPLAY_TICKER] {
+                if let Some(item) = sqlx::query(
+                    r#"
+                    SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                      FROM core.announcements
+                     WHERE status = $1 AND display_kind = $2
+                     ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
+                     LIMIT 1
+                    "#,
+                )
+                .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+                .bind(display_kind)
+                .try_map(|row| announcement_from_row(&row))
+                .fetch_optional(self.pg()?)
+                .await?
+                {
+                    out.push(item);
+                }
+            }
+            return Ok(out);
+        }
         let mut out = Vec::new();
         for display_kind in [ANNOUNCEMENT_DISPLAY_MODAL, ANNOUNCEMENT_DISPLAY_TICKER] {
             if let Some(item) = sqlx::query(
@@ -807,6 +1130,29 @@ impl KeyStore {
     pub(crate) async fn list_user_announcement_history(
         &self,
     ) -> Result<Vec<Announcement>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return sqlx::query(
+                r#"
+                SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at
+                  FROM core.announcements
+                 WHERE status IN ($1, $2)
+                   AND (status != $3 OR published_at IS NOT NULL)
+                 ORDER BY
+                   CASE
+                     WHEN status = 'archived' THEN COALESCE(archived_at, published_at, updated_at, created_at)
+                     ELSE COALESCE(published_at, updated_at, created_at)
+                   END DESC,
+                   id DESC
+                "#,
+            )
+            .bind(ANNOUNCEMENT_STATUS_PUBLISHED)
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .bind(ANNOUNCEMENT_STATUS_ARCHIVED)
+            .try_map(|row| announcement_from_row(&row))
+            .fetch_all(self.pg()?)
+            .await
+            .map_err(ProxyError::Database);
+        }
         sqlx::query(
             r#"
             SELECT id, content, display_kind, status, created_at, updated_at, published_at, archived_at

@@ -8,6 +8,11 @@ crosses one manifest shard.
 worker, and two filtered test threads. Use `--diagnostic` for a fixed `1/1/1` execution when
 investigating interference. Keep `benchmark` for measurement; it is not the development default.
 
+CI shards default to two filtered process workers. SQLite admission samples cgroup-wide write
+pressure, so a job running three or more test processes reports `pool_pressure` defers and turns
+unrelated admission-sensitive tests red. Raise a shard's worker count only with evidence that its
+tests do not depend on idle admission.
+
 Treat `run-all`, release builds, and Compose checks as heavy targets. Select an execution target
 explicitly before starting them. If it is unavailable, report the missing validation and wait for
 the selected target or CI; do not automatically move a heavy command to a different machine.

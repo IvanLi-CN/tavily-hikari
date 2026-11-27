@@ -53,6 +53,11 @@ impl KeyStore {
         if key_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
+        if self.pg_pool.is_some() {
+            return self
+                .reconciliation_key_observations_pg(candidate, work_generation, key_ids)
+                .await;
+        }
         let mut session = self
             .sqlite_runtime
             .begin_reconciliation_read(ReconciliationReadKind::CandidateHydrate)
@@ -118,6 +123,75 @@ impl KeyStore {
         Ok(matching)
     }
 
+    /// PostgreSQL twin of [`Self::reconciliation_key_observations`]. SQLite's read budget and
+    /// identity counters belong to the native SQLite runtime and are not part of this branch.
+    async fn reconciliation_key_observations_pg(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        work_generation: i64,
+        key_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, i64>, ProxyError> {
+        let mut session = self.begin_pg_read_session().await?;
+        let source_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT key_id, request_count, first_used_at, last_used_at \
+             FROM core.upstream_reconciliation_usage \
+             WHERE token_id = $1 AND period_code = $2 ORDER BY key_id ASC",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_all(&mut *session.connection())
+        .await?;
+        let source_identity =
+            Self::reconciliation_key_observation_source_identity_from_rows(candidate, source_rows);
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT key_id, upstream_usage, key_source_identity \
+             FROM core.upstream_reconciliation_key_observations WHERE token_id = ",
+        );
+        query
+            .push_bind(&candidate.token_id)
+            .push(" AND period_code = ")
+            .push_bind(&candidate.period_code)
+            .push(" AND candidate_identity = ")
+            .push_bind(&source_identity.candidate_identity)
+            .push(" AND key_set_identity = ")
+            .push_bind(&source_identity.key_set_identity)
+            .push(" AND key_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        query.push(") AND (");
+        for (index, key_id) in key_ids.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(key_id = ")
+                .push_bind(key_id)
+                .push(" AND key_source_identity = ")
+                .push_bind(source_identity.key_identity(key_id))
+                .push(")");
+        }
+        query
+            .push(") AND work_generation <= ")
+            .push_bind(work_generation)
+            .push(" ORDER BY work_generation DESC, observed_at DESC");
+        let rows = query
+            .build_query_as::<(String, i64, String)>()
+            .fetch_all(&mut *session.connection())
+            .await?;
+        session.finish().await?;
+        Ok(rows.into_iter().fold(
+            std::collections::HashMap::new(),
+            |mut matching, (key_id, upstream_usage, _key_source_identity)| {
+                matching.entry(key_id).or_insert(upstream_usage);
+                matching
+            },
+        ))
+    }
+
     pub(crate) async fn persist_reconciliation_key_observations(
         &self,
         candidate: &UpstreamReconciliationCandidate,
@@ -125,6 +199,16 @@ impl KeyStore {
         observations: &[ReconciliationKeyObservation],
         fence: Option<ReconciliationWorkFence>,
     ) -> Result<ReconciliationKeyObservationPersistOutcome, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .persist_reconciliation_key_observations_pg(
+                    candidate,
+                    work_generation,
+                    observations,
+                    fence,
+                )
+                .await;
+        }
         if observations.is_empty() {
             return Ok(ReconciliationKeyObservationPersistOutcome::Persisted);
         }
@@ -186,6 +270,110 @@ impl KeyStore {
             .await?;
         }
         tx.finish(Ok(())).await?;
+        Ok(ReconciliationKeyObservationPersistOutcome::Persisted)
+    }
+
+    /// PostgreSQL twin of [`Self::persist_reconciliation_key_observations`]. The claim fence
+    /// reads the running job row and locks the work row with `FOR UPDATE`, which is the
+    /// PostgreSQL equivalent of starting the write transaction with the SQLite writer lock.
+    async fn persist_reconciliation_key_observations_pg(
+        &self,
+        candidate: &UpstreamReconciliationCandidate,
+        work_generation: i64,
+        observations: &[ReconciliationKeyObservation],
+        fence: Option<ReconciliationWorkFence>,
+    ) -> Result<ReconciliationKeyObservationPersistOutcome, ProxyError> {
+        if observations.is_empty() {
+            return Ok(ReconciliationKeyObservationPersistOutcome::Persisted);
+        }
+        let mut read = self.begin_pg_read_session().await?;
+        let source_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT key_id, request_count, first_used_at, last_used_at \
+             FROM core.upstream_reconciliation_usage \
+             WHERE token_id = $1 AND period_code = $2 ORDER BY key_id ASC",
+        )
+        .bind(&candidate.token_id)
+        .bind(&candidate.period_code)
+        .fetch_all(&mut *read.connection())
+        .await?;
+        read.finish().await?;
+        let source_identity =
+            Self::reconciliation_key_observation_source_identity_from_rows(candidate, source_rows);
+
+        let mut tx = self.begin_pg_write().await?;
+        let stale = async {
+            if let Some((job_id, claim_generation)) = fence.and_then(|fence| fence.claimed_job) {
+                let current_claim = sqlx::query_scalar::<_, i64>(
+                    "SELECT claim_generation FROM core.scheduled_jobs \
+                     WHERE id = $1 AND status = 'running'",
+                )
+                .bind(job_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if current_claim != Some(claim_generation) {
+                    return Ok(Some(ReconciliationKeyObservationPersistOutcome::StaleClaim));
+                }
+            }
+            if fence.is_none() {
+                return Ok(None);
+            }
+            let current = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT work_generation, completed_generation \
+                 FROM core.upstream_reconciliation_work \
+                 WHERE token_id = $1 AND period_code = $2 FOR UPDATE",
+            )
+            .bind(&candidate.token_id)
+            .bind(&candidate.period_code)
+            .fetch_optional(&mut *tx)
+            .await?;
+            match current {
+                Some((current_generation, completed_generation))
+                    if current_generation == work_generation
+                        && completed_generation < current_generation => Ok(None),
+                _ => Ok(Some(
+                    ReconciliationKeyObservationPersistOutcome::StaleGeneration,
+                )),
+            }
+        }
+        .await;
+        match stale {
+            Ok(None) => {}
+            Ok(Some(outcome)) => {
+                tx.rollback().await.ok();
+                return Ok(outcome);
+            }
+            Err(error) => {
+                tx.rollback().await.ok();
+                return Err(error);
+            }
+        }
+        for observation in observations {
+            sqlx::query(
+                r#"INSERT INTO core.upstream_reconciliation_key_observations (
+                       token_id, period_code, work_generation, key_id,
+                       upstream_usage, candidate_identity, key_set_identity,
+                       key_source_identity, observed_at
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                   ON CONFLICT(token_id, period_code, work_generation, key_id)
+                   DO UPDATE SET upstream_usage = EXCLUDED.upstream_usage,
+                                 candidate_identity = EXCLUDED.candidate_identity,
+                                 key_set_identity = EXCLUDED.key_set_identity,
+                                 key_source_identity = EXCLUDED.key_source_identity,
+                                 observed_at = EXCLUDED.observed_at"#,
+            )
+            .bind(&candidate.token_id)
+            .bind(&candidate.period_code)
+            .bind(work_generation)
+            .bind(&observation.key_id)
+            .bind(observation.upstream_usage)
+            .bind(&source_identity.candidate_identity)
+            .bind(&source_identity.key_set_identity)
+            .bind(source_identity.key_identity(&observation.key_id))
+            .bind(self.backend_time.now_ts())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await.map_err(ProxyError::Database)?;
         Ok(ReconciliationKeyObservationPersistOutcome::Persisted)
     }
 

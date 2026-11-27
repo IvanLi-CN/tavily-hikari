@@ -85,6 +85,9 @@ impl KeyStore {
         &self,
         lane: AlertProjectionLane,
     ) -> Result<Option<AlertProjectionSourceState>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.alert_projection_source_state_pg(lane).await;
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -149,6 +152,11 @@ impl KeyStore {
         lane: AlertProjectionLane,
         source_kind: &str,
     ) -> Result<Option<AlertProjectionSourceState>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .alert_projection_source_state_for_kind_pg(lane, source_kind)
+                .await;
+        }
         let table = match lane {
             AlertProjectionLane::RecentTail => {
                 "observability.dashboard_alert_projection_state"
@@ -205,6 +213,9 @@ impl KeyStore {
         &self,
         source_kind: &str,
     ) -> Result<Option<(i64, String)>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.alert_projection_source_fence_pg(source_kind).await;
+        }
         let mut conn = self
             .sqlite_runtime
             .acquire_operation_connection(SqliteOperation::AlertProjection)
@@ -284,6 +295,11 @@ impl KeyStore {
         cursor: (i64, &str),
         fence: (i64, &str),
     ) -> Result<Vec<AlertProjectionSourceKey>, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .alert_projection_source_keys_pg(source_kind, cursor, fence)
+                .await;
+        }
         let cursor_id = Self::alert_projection_source_cursor_id(source_kind, cursor.1);
         let fence_id = Self::alert_projection_source_cursor_id(source_kind, fence.1);
         let retention_since = self.alert_projection_retention_since();
@@ -604,6 +620,11 @@ impl KeyStore {
         if source_keys.is_empty() {
             return Ok(Vec::new());
         }
+        if self.pg_pool.is_some() {
+            return self
+                .alert_projection_hydrate_source_keys_pg(source_kind, source_keys)
+                .await;
+        }
         let filters = AlertEventFilters {
             alert_type: None,
             since: None,
@@ -639,6 +660,9 @@ impl KeyStore {
     }
 
     async fn prune_expired_alert_projection_slice(&self) -> Result<bool, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.prune_expired_alert_projection_slice_pg().await;
+        }
         let retention_since = self.alert_projection_retention_since();
         let observed_at = self.backend_time.now_ts();
         self.sqlite_runtime
@@ -947,6 +971,18 @@ impl KeyStore {
         complete: bool,
         observed_at: i64,
     ) -> Result<(), ProxyError> {
+        if self.pg_pool.is_some() {
+            return self
+                .persist_alert_projection_slice_pg(
+                    state,
+                    fence,
+                    rows,
+                    next_cursor,
+                    complete,
+                    observed_at,
+                )
+                .await;
+        }
         let next_cursor = next_cursor
             .unwrap_or_else(|| (state.cursor_occurred_at, state.cursor_row_sort_id.clone()));
         let state = state.clone();
@@ -1075,7 +1111,20 @@ impl KeyStore {
             .await
     }
 
+    /// Test-only driver for one projection slice on the attached backend. The production advancer
+    /// also runs admission and dashboard bookkeeping; this exposes the slice alone so the
+    /// `pg-write-paths` job can prove the read/hydrate/write chain end to end.
+    #[cfg(test)]
+    pub(crate) async fn advance_alert_projection_slice_for_test(
+        &self,
+    ) -> Result<AlertProjectionSliceOutcome, ProxyError> {
+        self.advance_admitted_alert_projection_slice().await
+    }
+
     pub(crate) async fn alert_projection_status(&self) -> Result<AlertProjectionStatus, ProxyError> {
+        if self.pg_pool.is_some() {
+            return self.alert_projection_status_pg().await;
+        }
         let now = self.backend_time.now_ts();
         let mut conn = self
             .sqlite_runtime

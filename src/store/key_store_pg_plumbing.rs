@@ -21,4 +21,24 @@ impl KeyStore {
         self.pg_pool = Some(pg_store.pool().clone());
         Ok(())
     }
+
+    /// Whether a PostgreSQL pool is attached. Converted callers branch on this to keep the SQLite
+    /// path intact until the cutover removes it.
+    pub(crate) fn has_postgres(&self) -> bool {
+        self.pg_pool.is_some()
+    }
+
+    /// Opens the repeatable-read snapshot used by converted readers that must build one response
+    /// from several statements.
+    pub(crate) async fn begin_pg_read_session(&self) -> Result<PgReadSession, ProxyError> {
+        PgReadSession::begin(self.pg()?).await
+    }
+
+    /// Opens a read-write transaction for converted writers. Row locks replace the SQLite
+    /// immediate-transaction write lock where the caller needs claim fencing.
+    pub(crate) async fn begin_pg_write(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, ProxyError> {
+        self.pg()?.begin().await.map_err(ProxyError::Database)
+    }
 }

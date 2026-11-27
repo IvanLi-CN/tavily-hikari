@@ -48,6 +48,10 @@ impl TavilyProxy {
     }
 
     pub async fn upstream_privacy_status(&self) -> Result<UpstreamPrivacyStatus, ProxyError> {
+        if self.key_store.has_postgres() {
+            let status = self.key_store.upstream_privacy_status_pg().await?;
+            return Ok(Self::with_research_drain_runtime_diagnostics(status));
+        }
         let mut session = self.key_store.begin_admin_privacy_read_session().await?;
         let result = self
             .key_store

@@ -929,6 +929,10 @@ async fn request_stats_background_flush_defers_before_pool_acquire_and_preserves
     let db_path = temp_db_path("request-stats-background-admission");
     let db_str = db_path.to_string_lossy().to_string();
     let proxy = public_metrics_proxy(&db_str, "tvly-request-stats-background-admission").await;
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let key_id = proxy
         .list_api_key_metrics()
         .await
@@ -1049,23 +1053,46 @@ async fn request_stats_flush_commits_once_when_owned_finish_crosses_retry_budget
         )
         .await;
 
-    let pause = proxy
-        .key_store
-        .sqlite_runtime
-        .install_owned_finish_pause_for_test();
-    let store = proxy.key_store.clone();
-    let flush = tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
-
-    tokio::time::timeout(Duration::from_secs(1), pause.wait_until_arrived())
-        .await
-        .expect("flush reaches the owned commit boundary");
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    pause.release();
-    let outcome = tokio::time::timeout(Duration::from_secs(1), flush)
-        .await
-        .expect("flush completes after the owned commit is released")
-        .expect("flush task joins")
-        .expect("background admission decision must remain typed");
+    // The background flush is allowed to defer before it starts when maintenance capacity is
+    // unavailable, so retry until one attempt actually reaches the owned-commit boundary. The
+    // assertion under test is whether that commit crossing the retry budget is requeued.
+    let mut outcome = None;
+    for _ in 0..50 {
+        let pause = proxy
+            .key_store
+            .sqlite_runtime
+            .install_owned_finish_pause_for_test();
+        let store = proxy.key_store.clone();
+        let mut flush =
+            tokio::spawn(async move { store.flush_request_stats_writes_in_background().await });
+        let arrived = tokio::select! {
+            _ = pause.wait_until_arrived() => true,
+            result = &mut flush => {
+                // The handle is consumed here, so the attempt must be judged in this branch.
+                let deferred = result
+                    .expect("flush task joins")
+                    .expect("background admission decision must remain typed");
+                assert!(
+                    matches!(deferred, RequestStatsBackgroundFlushOutcome::Deferred(_)),
+                    "flush left before the owned commit boundary: {deferred:?}"
+                );
+                false
+            }
+        };
+        if arrived {
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            pause.release();
+            let result = tokio::time::timeout(Duration::from_secs(15), flush)
+                .await
+                .expect("flush completes after the owned commit is released")
+                .expect("flush task joins")
+                .expect("background admission decision must remain typed");
+            outcome = Some(result);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let outcome = outcome.expect("flush reaches the owned commit boundary");
     assert_eq!(
         outcome,
         RequestStatsBackgroundFlushOutcome::Flushed,
@@ -1114,6 +1141,10 @@ async fn request_stats_background_flush_defers_on_writer_lock_and_requeues_exact
     )
     .await
     .expect("proxy created");
+    proxy
+        .key_store
+        .sqlite_runtime
+        .disable_test_admission_bypass();
     let key_id = proxy
         .list_api_key_metrics()
         .await

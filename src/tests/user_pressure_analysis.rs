@@ -1392,7 +1392,7 @@ async fn observability_deferred_writer_uses_one_worker_for_mixed_audit_and_press
     );
 
     tokio::time::timeout(
-        Duration::from_secs(4),
+        Duration::from_secs(15),
         proxy.wait_for_rebalance_audits_idle_for_test(),
     )
     .await

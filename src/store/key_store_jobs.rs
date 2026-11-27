@@ -122,9 +122,9 @@ impl KeyStore {
 
     fn scheduled_job_priority(job_type: &str, trigger_source: &str) -> i64 {
         match (trigger_source, job_type) {
-            ("manual", "request_logs_gc" | "db_compaction") => 0,
+            ("manual", "request_logs_gc") => 0,
             ("manual", _) => 1,
-            (_, "request_logs_gc" | "db_compaction") => 2,
+            (_, "request_logs_gc") => 2,
             (
                 _,
                 "auth_token_logs_gc"
