@@ -530,7 +530,6 @@
         "tests::ha_outbox_and_compaction::ha_peer_health_",
         "tests::ha_outbox_and_compaction::online_ha_gc_",
         "tests::ha_outbox_and_compaction::online_gc_",
-        "tests::ha_outbox_and_compaction::db_",
         "tests::maintenance_control_admission::",
         "tests::request_logs_gc_admission::",
         "tests::account_quota_and_billing::monthly_",
