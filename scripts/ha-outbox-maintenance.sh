@@ -6,8 +6,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB_PATH="${DB_PATH:-tavily_proxy.db}"
 RUN_UNTIL_COMPLETE="${RUN_UNTIL_COMPLETE:-true}"
 JSON="${JSON:-true}"
-COMPACT_AFTER="${COMPACT_AFTER:-false}"
-FORCE_COMPACTION="${FORCE_COMPACTION:-false}"
 REPAIR_TRIGGERS="${REPAIR_TRIGGERS:-true}"
 HA_MODE="${HA_MODE:-active_standby}"
 BATCH_SIZE="${BATCH_SIZE:-20000}"
@@ -66,19 +64,5 @@ fi
 
 echo "Running HA outbox cleanup against $DB_PATH ..."
 "${cleanup_cmd[@]}"
-
-if [[ "$COMPACT_AFTER" == "true" || "$COMPACT_AFTER" == "1" ]]; then
-  compaction_runner="$(build_command db_compaction_once)"
-  IFS=' ' read -r -a compaction_cmd <<<"$compaction_runner"
-  compaction_cmd+=(--db-path "$DB_PATH")
-  if [[ "$FORCE_COMPACTION" == "true" || "$FORCE_COMPACTION" == "1" ]]; then
-    compaction_cmd+=(--force)
-  fi
-  if [[ "$JSON" == "true" || "$JSON" == "1" ]]; then
-    compaction_cmd+=(--json)
-  fi
-  echo "Running SQLite compaction against $DB_PATH ..."
-  "${compaction_cmd[@]}"
-fi
 
 popd >/dev/null

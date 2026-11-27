@@ -40,7 +40,7 @@ class BackendTestRunnerContractTests(unittest.TestCase):
                     support_digest: {
                         "path": "executables/support-source",
                         "sha256": support_digest,
-                        "name": "observability_lock_holder",
+                        "name": "request_logs_gc_once",
                     },
                 },
                 "coverage_targets": {
@@ -62,9 +62,9 @@ class BackendTestRunnerContractTests(unittest.TestCase):
             )
             self.assertEqual(
                 RUNNER.artifact_executable_path(
-                    root, support_digest, "observability_lock_holder"
+                    root, support_digest, "request_logs_gc_once"
                 ).name,
-                f"observability_lock_holder-{support_digest}",
+                f"request_logs_gc_once-{support_digest}",
             )
             executable.write_bytes(b"tampered")
             with self.assertRaises(SystemExit):
