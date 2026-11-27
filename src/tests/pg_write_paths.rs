@@ -1918,3 +1918,76 @@ async fn upstream_privacy_status_runs_on_postgres() {
         status.dashboard_alert_projection.coverage
     );
 }
+
+/// The canonical Groups builder is a multi-slice state machine: clear the previous generation,
+/// copy the projection snapshot, aggregate one partition at a time, then publish. Every slice
+/// returns `Deferred` until the build completes, so drive it to completion and assert the
+/// published page carries the row this test seeded.
+#[tokio::test]
+async fn canonical_groups_build_runs_on_postgres() {
+    let now = unique_epoch();
+    let Some(pair) = StorePair::open("pg-canonical-groups-build", now).await else {
+        return;
+    };
+    let tag = nanoid!(8);
+    let source_id = format!("atl:{tag}");
+    // Seed at the head of the timeline: the build copies with a `projection_revision` fence, and
+    // the shared database already holds every other test's rows.
+    let seeded_at: i64 = sqlx::query_scalar(
+        "SELECT GREATEST(COALESCE(MAX(occurred_at), 0), $1) + 1 \
+         FROM observability.dashboard_alert_projection_events",
+    )
+    .bind(now)
+    .fetch_one(pair.postgres.key_store.pg().expect("postgres pool"))
+    .await
+    .expect("resolve seed timestamp");
+    let payload = canonical_alert_payload(&source_id, seeded_at);
+    execute_statement(
+        &pair.postgres.key_store,
+        Backend::Postgres,
+        "INSERT INTO observability.dashboard_alert_projection_events \
+         (source_kind, source_id, occurred_at, row_sort_id, payload_json, projected_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+        &[
+            Bind::Text("auth_token_log"),
+            Bind::Text(&source_id),
+            Bind::Int(seeded_at),
+            Bind::Text(&source_id),
+            Bind::Text(&payload),
+            Bind::Int(now),
+        ],
+    )
+    .await;
+
+    // The builder paces itself: each call advances one slice and reports `Deferred` until the
+    // snapshot is published. Bound the loop so a stalled state machine fails instead of hanging.
+    let mut published = None;
+    for _ in 0..400 {
+        match pair
+            .postgres
+            .key_store
+            .admin_alert_canonical_groups_page_for_warm()
+            .await
+        {
+            Ok(page) => {
+                published = Some(page.0);
+                break;
+            }
+            Err(err) if is_deferred_admission(&err) => continue,
+            Err(err) => panic!("canonical groups build: {err}"),
+        }
+    }
+    let groups = published.expect("the build must publish within the slice budget");
+    assert!(
+        groups
+            .items
+            .iter()
+            .any(|item| item.latest_event.id.contains(&tag)),
+        "the published page must carry the seeded group: {:?}",
+        groups
+            .items
+            .iter()
+            .map(|item| item.latest_event.id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
