@@ -2829,6 +2829,7 @@ include!("key_store_alert_canonical_catalog.rs");
 include!("key_store_alert_canonical_catalog_pg.rs");
 include!("key_store_alert_canonical_groups.rs");
 include!("key_store_alert_canonical_semantic_reduction.rs");
+include!("key_store_alert_canonical_semantic_reduction_pg.rs");
 include!("key_store_alert_group_records.rs");
 include!("key_store_alert_events_cte.rs");
 include!("key_store_alert_projection.rs");
